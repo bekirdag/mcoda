@@ -46,7 +46,13 @@ test("a b64 response is written to disk and returned as a path", async () => {
   const result = await tool.handler({ prompt: "a puppy" }, { workspaceRoot: root });
 
   const filePath = (result.data as { path: string }).path;
-  assert.match(filePath, /\.codali\/artifacts\/run-1\/img-.*\.png$/);
+  // Compared through path.join: Windows uses backslashes, and a hardcoded
+  // forward-slash pattern fails there while passing everywhere else.
+  assert.ok(
+    filePath.startsWith(path.join(root, ".codali", "artifacts", "run-1")),
+    `unexpected artifact location: ${filePath}`,
+  );
+  assert.match(filePath, /img-.*\.png$/);
   assert.deepEqual(await readFile(filePath), PNG_BYTES);
   assert.equal(artifacts.length, 1);
 });

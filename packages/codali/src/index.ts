@@ -1039,7 +1039,6 @@ export { filterLocallyDrivable, isLocallyDrivable } from "./agents/AgentInventor
 export {
   CODALI_MCP_CLIENT_INFO,
   CODALI_MCP_PROTOCOL_VERSION,
-  CODALI_MCP_SDK_PROTOCOL_VERSION,
   McpClient,
   McpClientError,
   createMcpClient,

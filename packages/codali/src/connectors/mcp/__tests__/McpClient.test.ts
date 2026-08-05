@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import {
   CODALI_MCP_PROTOCOL_VERSION,
-  CODALI_MCP_SDK_PROTOCOL_VERSION,
   McpClient,
   McpClientError,
   flattenMcpContent,
@@ -16,7 +16,7 @@ import {
  */
 test("the SDK speaks the protocol version this build was written against", () => {
   assert.equal(
-    CODALI_MCP_SDK_PROTOCOL_VERSION,
+    LATEST_PROTOCOL_VERSION,
     CODALI_MCP_PROTOCOL_VERSION,
     "MCP protocol version changed; re-verify tools/list and tools/call before bumping",
   );

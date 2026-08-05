@@ -1,7 +1,3 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 
 /**
  * Minimal MCP client.
@@ -23,7 +19,38 @@ import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
  * than silently against a live server.
  */
 export const CODALI_MCP_PROTOCOL_VERSION = "2025-11-25";
-export const CODALI_MCP_SDK_PROTOCOL_VERSION = LATEST_PROTOCOL_VERSION;
+
+/**
+ * The SDK is imported lazily, only when a run actually connects to an MCP
+ * server.
+ *
+ * mswarm vendors Codali's built output and does not depend on the SDK itself,
+ * so a top-level import broke every mswarm test with a module-resolution error
+ * for a package its cloud path never uses. Loading on demand keeps the
+ * dependency where it belongs: paid for by whoever configures a server.
+ */
+const loadMcpSdk = async () => {
+  try {
+    const [clientModule, stdioModule, httpModule] = await Promise.all([
+      import("@modelcontextprotocol/sdk/client/index.js"),
+      import("@modelcontextprotocol/sdk/client/stdio.js"),
+      import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
+    ]);
+    return {
+      Client: clientModule.Client,
+      StdioClientTransport: stdioModule.StdioClientTransport,
+      StreamableHTTPClientTransport: httpModule.StreamableHTTPClientTransport,
+    };
+  } catch (error) {
+    throw new McpClientError(
+      "mcp_sdk_unavailable",
+      "sdk",
+      "MCP support needs @modelcontextprotocol/sdk, which is not installed in this build. " +
+        "Remove the configured mcpServers, or install the package.",
+      { cause: error },
+    );
+  }
+};
 
 export const CODALI_MCP_CLIENT_INFO = {
   name: "codali",
@@ -200,14 +227,15 @@ export class McpClient {
     }
 
     const definition = this.options.definition;
-    const client = new Client(CODALI_MCP_CLIENT_INFO, {
+    const sdk = await loadMcpSdk();
+    const client = new sdk.Client(CODALI_MCP_CLIENT_INFO, {
       capabilities: {},
     });
 
     try {
       if (definition.transport === "stdio") {
         await client.connect(
-          new StdioClientTransport({
+          new sdk.StdioClientTransport({
             command: definition.command,
             args: definition.args,
             env: definition.env,
@@ -219,7 +247,7 @@ export class McpClient {
         );
       } else {
         await client.connect(
-          new StreamableHTTPClientTransport(new URL(definition.url), {
+          new sdk.StreamableHTTPClientTransport(new URL(definition.url), {
             requestInit: definition.headers ? { headers: definition.headers } : undefined,
           }),
         );
