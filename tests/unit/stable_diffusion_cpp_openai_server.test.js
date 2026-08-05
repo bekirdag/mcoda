@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
@@ -274,6 +276,13 @@ test(
       return;
     }
 
+    const upstreamApiKey = "test-only-upstream-key-0123456789abcdef";
+    const keyDirectory = mkdtempSync(path.join(os.tmpdir(), "mcoda-sd-key-"));
+    const keyPath = path.join(keyDirectory, "api-key");
+    writeFileSync(keyPath, `${upstreamApiKey}\n`, { encoding: "ascii", mode: 0o600 });
+    if (process.platform !== "win32") chmodSync(keyPath, 0o600);
+    t.after(() => rmSync(keyDirectory, { recursive: true, force: true }));
+
     let redirectOriginHits = 0;
     const redirectTarget = http.createServer((request, response) => {
       redirectOriginHits += 1;
@@ -295,6 +304,10 @@ test(
     let holdRelease = null;
     let holdSeenResolve = null;
     const native = http.createServer(async (request, response) => {
+      if (request.headers.authorization !== `Bearer ${upstreamApiKey}`) {
+        sendJson(response, 401, { error: "missing upstream authentication" });
+        return;
+      }
       if (request.method === "GET" && request.url === "/v1/models") {
         if (catalogRedirect) {
           sendRedirect(
@@ -403,6 +416,8 @@ test(
         "0",
         "--upstream-base-url",
         `http://127.0.0.1:${nativeAddress.port}`,
+        "--upstream-api-key-file",
+        keyPath,
         "--min-width",
         "1",
         "--min-height",

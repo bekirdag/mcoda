@@ -85,7 +85,9 @@ test("planner supports a generic direct-answer path without worker tasks", async
   assert.equal(result.planner.workerTasks.length, 0);
   assert.equal(provider.requests[0]?.responseFormat?.type, "json_schema");
   assert.equal(provider.requests[1]?.responseFormat?.type, "json_schema");
-  assert.match(provider.requests[1]?.messages[1]?.content ?? "", /Allowed tools:\n- none/);
+  // With no allowed tools the planner prompt must say so explicitly rather
+  // than omitting the section, so the model cannot invent tool names.
+  assert.match(provider.requests[1]?.messages[1]?.content ?? "", /Allowed tools[^\n]*:\n- none/);
 });
 
 test("planner can produce Docdex and app-tool worker tasks from effective policy tools", async () => {
@@ -558,4 +560,76 @@ test("unparseable stage output reports what the model actually returned", async 
       return true;
     },
   );
+});
+
+test("planning uses the orchestrator model, not the synthesizer", async () => {
+  // These stages run on every question and emit only JSON, so they want a fast
+  // model. Sharing one provider sent planning to the large synthesizer, and on
+  // a slow local node every run paid that latency before any tool ran.
+  const plannerModel = new StubProvider([
+    jsonResponse({
+      queryType: "general",
+      needsPrivateData: false,
+      needsFreshData: false,
+      needsDocdex: false,
+      needsAppTools: false,
+      needsImageWorker: false,
+    }),
+    jsonResponse({ queryType: "general", subquestions: [], workerTasks: [] }),
+  ]);
+  const synthModel = new StubProvider([]);
+
+  const { createCodaliGateway } = await import("../CodaliGateway.js");
+  const gateway = createCodaliGateway({
+    provider: synthModel,
+    plannerProvider: plannerModel,
+  });
+  await gateway.plan(baseRequest());
+
+  assert.equal(plannerModel.requests.length, 2, "classifier and planner ran on the planner model");
+  assert.equal(synthModel.requests.length, 0, "the synthesizer model was not touched");
+});
+
+test("a clarification that restates the question is discarded", async () => {
+  // A small model told to flag ambiguity will sometimes echo the question back.
+  // Stopping the run to ask it tells the user nothing.
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "general",
+      needsPrivateData: false,
+      needsFreshData: true,
+      needsDocdex: false,
+      needsAppTools: false,
+      needsImageWorker: false,
+      needsClarification: "What is the GDP of France in 2025?",
+    }),
+    jsonResponse({ queryType: "general", subquestions: [], workerTasks: [] }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({ query: "What is the GDP of France in 2025?" }),
+  });
+
+  assert.equal(result.classifier.needsClarification, undefined);
+  assert.equal(provider.requests.length, 2, "planning continued instead of stopping");
+});
+
+test("a clarification that adds information is kept", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "general",
+      needsPrivateData: true,
+      needsFreshData: false,
+      needsDocdex: false,
+      needsAppTools: false,
+      needsImageWorker: false,
+      needsClarification: "Which Bekir do you mean, there are three in the directory?",
+    }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({ query: "How is Bekir doing?" }),
+  });
+
+  assert.match(result.classifier.needsClarification ?? "", /three in the directory/);
 });

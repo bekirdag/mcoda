@@ -406,3 +406,60 @@ test("DocdexTools expose expanded docdex toolset", { concurrency: false }, async
   assert.ok(calls.some((url) => url.endsWith("/v1/hooks/validate")));
   assert.ok(calls.some((url) => url.endsWith("/v1/delegate")));
 });
+
+test("docdex_search falls back to the web when the local index has no hits", async () => {
+  // The local-then-web waterfall belongs inside the search tool, not in the
+  // orchestrator: the router should only have to know "search".
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    search: async (query: string, options: Record<string, unknown> = {}) => {
+      calls.push({ query, ...options });
+      return options.forceWeb
+        ? {
+            hits: [],
+            web_context: [{ url: "https://example.com", ai_digested_content: "answer" }],
+            webDiscovery: { status: "served", discovery: { results: [{ url: "https://example.com" }] } },
+          }
+        : { hits: [] };
+    },
+  } as unknown as DocdexClient;
+
+  const tool = createDocdexTools(client).find((entry) => entry.name === "docdex_search");
+  assert.ok(tool);
+  const result = await tool.handler({ query: "external fact" }, { workspaceRoot: "/tmp" });
+
+  assert.equal(calls.length, 2, "local first, then web");
+  assert.equal(calls[0]?.forceWeb, undefined);
+  assert.equal(calls[1]?.forceWeb, true);
+  assert.match(result.output, /example\.com/);
+});
+
+test("docdex_search does not go to the web when the local index answered", async () => {
+  const calls: unknown[] = [];
+  const client = {
+    search: async (query: string, options: Record<string, unknown> = {}) => {
+      calls.push(options);
+      return { hits: [{ doc_id: "d1", text: "local answer" }] };
+    },
+  } as unknown as DocdexClient;
+
+  const tool = createDocdexTools(client).find((entry) => entry.name === "docdex_search");
+  assert.ok(tool);
+  await tool.handler({ query: "repo question" }, { workspaceRoot: "/tmp" });
+
+  assert.equal(calls.length, 1, "a satisfied local search must not incur a web call");
+});
+
+test("web discovery being unavailable does not fail an empty local search", async () => {
+  const client = {
+    search: async (_query: string, options: Record<string, unknown> = {}) => {
+      if (options.forceWeb) throw new Error("web discovery disabled");
+      return { hits: [] };
+    },
+  } as unknown as DocdexClient;
+
+  const tool = createDocdexTools(client).find((entry) => entry.name === "docdex_search");
+  assert.ok(tool);
+  const result = await tool.handler({ query: "anything" }, { workspaceRoot: "/tmp" });
+  assert.match(result.output, /"hits": \[\]/);
+});

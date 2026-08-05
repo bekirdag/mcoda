@@ -1,14 +1,30 @@
 import {
   ToolExecutionError,
+  toolCapabilityForName,
   toolErrorCategoryForCode,
+  type ToolCapability,
   type ToolContext,
   type ToolDefinition,
+  type ToolDescriptor,
   type ToolError,
   type ToolErrorCode,
   type ToolExecutionResult,
   type ToolSchemaDefinition,
   type ToolSchemaPrimitiveType,
 } from "./ToolTypes.js";
+
+/**
+ * Projects a registered tool into its model-facing descriptor. Kept as a free
+ * function so connector adapters can reuse the same defaulting rules.
+ */
+export const toolDescriptorFor = (tool: ToolDefinition): ToolDescriptor => ({
+  name: tool.name,
+  description: tool.description,
+  inputSchema: tool.inputSchema,
+  outputSchema: tool.outputSchema,
+  readOnly: tool.readOnly ?? false,
+  capability: tool.capability ?? toolCapabilityForName(tool.name),
+});
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -296,6 +312,32 @@ export class ToolRegistry {
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));
+  }
+
+  /**
+   * Model-facing view of the registry, optionally narrowed to a set of tool
+   * names. This is derived on every call rather than cached so the planner can
+   * never see a schema the executor would not honour.
+   */
+  catalog(names?: readonly string[]): ToolDescriptor[] {
+    const filter = names ? new Set(names) : undefined;
+    return this.list()
+      .filter((tool) => !filter || filter.has(tool.name))
+      .map((tool) => toolDescriptorFor(tool));
+  }
+
+  /** Capability -> tools, for the first stage of two-level tool exposure. */
+  capabilities(names?: readonly string[]): Map<ToolCapability, ToolDescriptor[]> {
+    const grouped = new Map<ToolCapability, ToolDescriptor[]>();
+    for (const descriptor of this.catalog(names)) {
+      const bucket = grouped.get(descriptor.capability);
+      if (bucket) {
+        bucket.push(descriptor);
+      } else {
+        grouped.set(descriptor.capability, [descriptor]);
+      }
+    }
+    return grouped;
   }
 
   async execute(name: string, args: unknown, context: ToolContext): Promise<ToolExecutionResult> {

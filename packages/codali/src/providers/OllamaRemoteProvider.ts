@@ -161,6 +161,9 @@ const applyResponseFormat = (
 };
 
 export class OllamaRemoteProvider implements Provider {
+  /** Ollama's chat API returns structured tool calls. */
+  readonly supportsToolCalls = true;
+
   name = "ollama-remote";
 
   constructor(private config: ProviderConfig) {}

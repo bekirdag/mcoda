@@ -284,6 +284,74 @@ const parseMaybeJson = (value: string): { parsed?: unknown; malformed: boolean }
   }
 };
 
+/**
+ * Builds a claim from a record that carries no explicit `claim` field.
+ *
+ * Connector results are lists of domain records — commits, issues, messages —
+ * none of which name a field "claim". Without this every item in a 12-commit
+ * result collapsed into one placeholder ("Tool … returned structured data"),
+ * so the synthesizer never saw the commits at all and could only report the
+ * one the worker happened to mention in prose.
+ *
+ * Deliberately field-name based rather than connector-specific: GitHub nests
+ * the message under `commit.message`, Jira under `fields.summary`, Graph puts
+ * it at `subject` or `body.content`. One set of conventional names covers all
+ * of them, and an unrecognized shape simply yields nothing rather than a guess.
+ */
+const DESCRIPTIVE_FIELDS = [
+  "message",
+  "summary",
+  "subject",
+  "title",
+  "description",
+  "text",
+  "content",
+  "name",
+  "displayName",
+  "topic",
+] as const;
+
+/** Containers connectors nest their fields inside. */
+const NESTED_CONTAINERS = ["commit", "fields", "body", "properties", "attributes"] as const;
+
+const describeRecord = (record: Record<string, unknown>): string | undefined => {
+  const direct = readString(record, DESCRIPTIVE_FIELDS as unknown as string[]);
+  if (direct) return direct;
+  for (const container of NESTED_CONTAINERS) {
+    const nested = record[container];
+    if (isRecord(nested)) {
+      const value = readString(nested, DESCRIPTIVE_FIELDS as unknown as string[]);
+      if (value) return value;
+    }
+  }
+  return undefined;
+};
+
+/** Identifier and timestamp, so items from different sources can be correlated. */
+const recordIdentity = (
+  record: Record<string, unknown>,
+): { id?: string; timestamp?: string } => {
+  const id = readString(record, ["id", "key", "sha", "number", "uid", "messageId"]);
+  let timestamp = readString(record, [
+    "date", "createdDateTime", "receivedDateTime", "created_at", "createdAt",
+    "updated", "updatedAt", "lastUpdatedDateTime", "timestamp",
+  ]);
+  if (!timestamp) {
+    for (const container of NESTED_CONTAINERS) {
+      const nested = record[container];
+      if (!isRecord(nested)) continue;
+      timestamp = readString(nested, ["date", "created_at", "createdAt", "updated", "timestamp"]);
+      if (timestamp) break;
+      const author = nested.author;
+      if (isRecord(author)) {
+        timestamp = readString(author, ["date", "createdAt", "timestamp"]);
+        if (timestamp) break;
+      }
+    }
+  }
+  return { id, timestamp };
+};
+
 const buildCandidateFromRecord = (
   record: Record<string, unknown>,
   context: CollectionContext,
@@ -306,10 +374,13 @@ const buildCandidateFromRecord = (
   const rawExcerpt =
     truncate(readString(record, ["rawExcerpt", "raw_excerpt", "excerpt", "snippet", "text"])) ??
     (source ? truncate(readString(source, ["rawExcerpt", "raw_excerpt", "excerpt", "snippet", "text"])) : undefined);
+  const described = describeRecord(record);
+  const identity = recordIdentity(record);
   const claim =
     readString(record, ["claim", "fact", "statement", "summary", "description", "text", "content"]) ??
     rawExcerpt ??
-    sourceTitle;
+    sourceTitle ??
+    described;
 
   if (!claim) {
     return undefined;
@@ -332,6 +403,7 @@ const buildCandidateFromRecord = (
   };
   const path = readString(record, ["rel_path", "relPath", "path", "file"]);
   if (path) metadata.path = path;
+  if (identity.id && !metadata.recordId) metadata.recordId = identity.id;
   if (source && Object.keys(source).length > 0) metadata.source = source;
 
   const unprovenanced = !provenancePresent({
@@ -541,6 +613,19 @@ export const normalizeCodaliEvidence = (
   const rejected: CodaliEvidenceRejectedItem[] = [];
   const candidates: EvidenceCandidate[] = [];
 
+  /**
+   * Whether this task actually retrieved anything.
+   *
+   * A worker that made no successful tool call has only its own text to offer,
+   * and a model will happily supply a `sourceId` for a file it invented — that
+   * fabricated path then became a citable source, and the final answer stated
+   * it with confidence. So when nothing was retrieved, everything the worker
+   * says is forced to `unprovenanced` regardless of the provenance it claims.
+   */
+  const retrievedSomething = (input.toolCalls ?? []).some(
+    (call) => !call.status || call.status === "success",
+  );
+
   for (const evidence of input.evidence ?? []) {
     candidates.push(...collectCandidates(evidence, {
       sourceType: input.defaultSourceType,
@@ -559,6 +644,14 @@ export const normalizeCodaliEvidence = (
       depth: 0,
       rootStringMode: true,
     }, warnings));
+  }
+
+  // Everything gathered so far came from the worker's own words. If the task
+  // retrieved nothing, strip any provenance it claimed for itself.
+  if (!retrievedSomething) {
+    for (const candidate of candidates) {
+      candidate.unprovenanced = true;
+    }
   }
 
   for (const call of input.toolCalls ?? []) {

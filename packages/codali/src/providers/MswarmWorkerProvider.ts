@@ -51,6 +51,9 @@ const parseToolCalls = (payload: Record<string, unknown>): ProviderToolCall[] | 
 };
 
 export class MswarmWorkerProvider implements Provider {
+  /** Delegates to a remote worker; tool calls are not surfaced to the caller. */
+  readonly supportsToolCalls = false;
+
   readonly name = "mswarm-worker";
   private readonly runUrl: string;
   private readonly apiKey: string;

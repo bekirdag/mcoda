@@ -69,6 +69,8 @@ export const createFileTools = (): ToolDefinition[] => {
     {
       name: "read_file",
       description: "Read a text file from the workspace.",
+      readOnly: true,
+      capability: "workspace",
       inputSchema: {
         type: "object",
         required: ["path"],
@@ -87,6 +89,8 @@ export const createFileTools = (): ToolDefinition[] => {
     {
       name: "write_file",
       description: "Write content to a file inside the workspace.",
+      readOnly: false,
+      capability: "workspace",
       inputSchema: {
         type: "object",
         required: ["path", "content"],
@@ -110,6 +114,8 @@ export const createFileTools = (): ToolDefinition[] => {
     {
       name: "list_files",
       description: "List files under a directory within the workspace.",
+      readOnly: true,
+      capability: "workspace",
       inputSchema: {
         type: "object",
         properties: {
@@ -129,6 +135,8 @@ export const createFileTools = (): ToolDefinition[] => {
     {
       name: "stat_path",
       description: "Get stat info for a file or directory.",
+      readOnly: true,
+      capability: "workspace",
       inputSchema: {
         type: "object",
         required: ["path"],

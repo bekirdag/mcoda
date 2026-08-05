@@ -15,6 +15,8 @@ const runGitStatus = (cwd: string): { ok: boolean; output: string; error?: strin
 export const createDiffTool = (): ToolDefinition => ({
   name: "diff_summary",
   description: "Show a git status summary of workspace changes.",
+  readOnly: true,
+  capability: "workspace",
   inputSchema: {
     type: "object",
     properties: {

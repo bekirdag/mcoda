@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/codali",
-  "version": "0.1.108",
+  "version": "0.1.109",
   "description": "Standalone tool-runner adapter for mcoda.",
   "type": "module",
   "main": "dist/index.js",
@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@mcoda/db": "workspace:*",
-    "@mcoda/shared": "workspace:*"
+    "@mcoda/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0"
   }
 }

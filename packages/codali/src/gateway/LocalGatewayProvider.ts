@@ -1,0 +1,209 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import { ClaudeCliProvider } from "../providers/ClaudeCliProvider.js";
+import { CodexCliProvider } from "../providers/CodexCliProvider.js";
+import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
+import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
+import type { Provider, ProviderConfig } from "../providers/ProviderTypes.js";
+import type { CodaliGatewayAgentAssignment } from "./AgentTierResolver.js";
+
+/**
+ * Builds a `Provider` from a resolved mcoda agent so the gateway can run
+ * in-process from the CLI, without a round trip through mswarm.
+ *
+ * mswarm keeps its own cloud path; both should end up sharing this factory so
+ * local and cloud behaviour cannot drift.
+ */
+
+export interface LocalProviderOptions {
+  timeoutMs?: number;
+  apiKey?: string;
+}
+
+/**
+ * Request timeout for a locally-hosted model.
+ *
+ * The providers default to 60s, which suits a hosted API and not a local one:
+ * qwen3.6 on the self-hosted node takes ~47s for a one-line prompt, so a full
+ * context pack aborted every time and surfaced as "the final model was
+ * unavailable" — a timeout wearing the costume of an outage.
+ */
+const LOCAL_MODEL_TIMEOUT_MS = 600_000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const readString = (record: Record<string, unknown>, keys: string[]): string | undefined => {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+};
+
+const readBoolean = (
+  record: Record<string, unknown>,
+  keys: string[],
+): boolean | undefined => {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+};
+
+/**
+ * mcoda adapter -> Codali provider. Adapters not listed fall through to the
+ * OpenAI-compatible provider, which is the correct default for local runners
+ * (llama.cpp, vLLM, LocalAI) and most hosted endpoints.
+ */
+export const providerNameForAdapter = (adapter: string | undefined): string => {
+  switch ((adapter ?? "").toLowerCase()) {
+    case "claude-cli":
+      return "claude-cli";
+    case "codex-cli":
+      return "codex-cli";
+    case "ollama-cli":
+    case "ollama-remote":
+    case "ollama":
+      return "ollama";
+    default:
+      return "openai-compatible";
+  }
+};
+
+export const createProviderForName = (
+  name: string,
+  config: ProviderConfig,
+): Provider => {
+  switch (name) {
+    case "claude-cli":
+      return new ClaudeCliProvider(config);
+    case "codex-cli":
+      return new CodexCliProvider(config);
+    case "ollama":
+      return new OllamaRemoteProvider(config);
+    default:
+      return new OpenAiCompatibleProvider(config);
+  }
+};
+
+/**
+ * The mswarm API key, used to reach self-hosted agents served through the
+ * mswarm gateway. `mcoda agent list --json` reports `auth.configured: true` but
+ * never discloses the key itself, so it is read from local trusted config.
+ *
+ * Local CLI only. A multi-tenant deployment must receive credentials from its
+ * host rather than reading the operator's files.
+ */
+let cachedMswarmKey: string | null | undefined;
+
+export const resolveMswarmApiKey = (): string | undefined => {
+  if (cachedMswarmKey !== undefined) return cachedMswarmKey ?? undefined;
+
+  const fromEnv = process.env.MSWARM_API_KEY?.trim();
+  if (fromEnv) {
+    cachedMswarmKey = fromEnv;
+    return fromEnv;
+  }
+
+  const configPath = path.join(homedir(), ".docdex", "config.toml");
+  if (existsSync(configPath)) {
+    try {
+      const raw = readFileSync(configPath, "utf8");
+      // Minimal TOML read: find api_key inside [integrations.mswarm].
+      const section = raw.split(/^\[integrations\.mswarm\]\s*$/m)[1];
+      const match = section?.match(/^\s*api_key\s*=\s*"([^"]+)"/m);
+      if (match?.[1]) {
+        cachedMswarmKey = match[1];
+        return cachedMswarmKey;
+      }
+    } catch {
+      // Unreadable config is not fatal; the provider will fail with a clearer
+      // authentication error than anything we could raise here.
+    }
+  }
+
+  cachedMswarmKey = null;
+  return undefined;
+};
+
+const isMswarmEndpoint = (baseUrl: string | undefined): boolean =>
+  Boolean(baseUrl && /(^|\/\/)([^/]*\.)?mswarm\.org/i.test(baseUrl));
+
+/**
+ * Creates a provider for an assigned agent. The raw inventory entry carries the
+ * transport details (base URL, runner kind, auth mode) that the tier resolver
+ * does not model, so it is read here.
+ */
+export const createProviderForAssignment = (
+  assignment: CodaliGatewayAgentAssignment,
+  options: LocalProviderOptions = {},
+): Provider => {
+  const raw = isRecord(assignment.candidate.raw) ? assignment.candidate.raw : {};
+  // mcoda nests transport details under `config`; older entries put them at the
+  // top level. Read both, preferring the nested form.
+  const nested = isRecord(raw.config) ? raw.config : {};
+  const adapter = assignment.candidate.adapter ?? readString(raw, ["adapter"]);
+  const providerName = providerNameForAdapter(adapter);
+
+  const baseUrl =
+    readString(nested, ["baseUrl", "base_url", "apiBaseUrl", "api_base_url"]) ??
+    readString(raw, ["baseUrl", "base_url"]);
+
+  const apiKey =
+    options.apiKey ??
+    readString(nested, ["apiKey", "api_key"]) ??
+    readString(raw, ["apiKey", "api_key"]) ??
+    (isMswarmEndpoint(baseUrl) ? resolveMswarmApiKey() : undefined);
+
+  const config: ProviderConfig = {
+    model: assignment.candidate.model ?? readString(raw, ["defaultModel", "model"]) ?? "",
+    baseUrl,
+    apiKey,
+    timeoutMs: options.timeoutMs ?? LOCAL_MODEL_TIMEOUT_MS,
+    runnerKind: readString(nested, ["runnerKind", "runner_kind"]) as ProviderConfig["runnerKind"],
+    authMode: readString(nested, ["authMode", "auth_mode"]) as ProviderConfig["authMode"],
+    localRunner: isRecord(nested.localRunner)
+      ? (nested.localRunner as ProviderConfig["localRunner"])
+      : undefined,
+    supportsTools: assignment.candidate.supportsTools ?? readBoolean(raw, ["supportsTools"]),
+    supportsJsonSchema:
+      assignment.candidate.supportsJsonSchema ?? readBoolean(raw, ["supportsJsonSchema"]),
+    supportsStreaming:
+      assignment.candidate.supportsStreaming ?? readBoolean(raw, ["supportsStreaming"]),
+  };
+
+  return createProviderForName(providerName, config);
+};
+
+/**
+ * Routes each gateway role to its own provider.
+ *
+ * Codali's whole premise is that a small model does the errands and a large one
+ * writes the answer. A single shared provider would silently collapse that: the
+ * planner and the synthesizer would run on the same model and the cost/quality
+ * split would be lost. So role dispatch is explicit, with a declared fallback
+ * rather than an accidental one.
+ */
+export class RoleRoutingProvider implements Provider {
+  readonly name = "codali-role-router";
+
+  constructor(
+    private readonly providers: Record<string, Provider>,
+    private readonly fallback: Provider,
+    private readonly resolveRole: () => string | undefined = () => undefined,
+  ) {}
+
+  providerForRole(role: string | undefined): Provider {
+    if (!role) return this.fallback;
+    return this.providers[role] ?? this.fallback;
+  }
+
+  async generate(
+    request: Parameters<Provider["generate"]>[0],
+  ): ReturnType<Provider["generate"]> {
+    return this.providerForRole(this.resolveRole()).generate(request);
+  }
+}

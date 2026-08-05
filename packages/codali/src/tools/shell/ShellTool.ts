@@ -46,6 +46,8 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
   description: "Run a shell command from the workspace root (allowlist only).",
+  readOnly: false,
+  capability: "shell",
   inputSchema: {
     type: "object",
     required: ["command"],

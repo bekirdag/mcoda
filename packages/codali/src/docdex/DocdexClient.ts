@@ -92,6 +92,8 @@ export class DocdexRuntimeError extends Error {
 export interface DocdexSearchOptions {
   limit?: number;
   dagSessionId?: string;
+  /** Skip the local index and go straight to web discovery. */
+  forceWeb?: boolean;
 }
 
 export interface DocdexSnippetOptions {
@@ -740,6 +742,10 @@ export class DocdexClient {
       const params = new URLSearchParams({ q: searchQuery });
       if (options.limit !== undefined) params.set("limit", String(options.limit));
       if (dagSessionId) params.set("dag_session_id", dagSessionId);
+      if (options.forceWeb) {
+        params.set("force_web", "true");
+        params.set("skip_local_search", "true");
+      }
       this.withRepoId(params);
       return fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
         headers: this.buildHeaders(dagSessionId),

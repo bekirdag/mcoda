@@ -49,6 +49,11 @@ export interface CodaliGatewayCompiledToolCapability {
 
 export interface ToolCapabilityCompilerInput {
   policy: CodaliGatewayPolicy;
+  /**
+   * Tools whose read-only status has been declared by policy rather than
+   * inferred from their name. See {@link classifyCapabilityRisk}.
+   */
+  declaredReadOnlyTools?: string[];
   docdex?: CodaliRuntimeDocdexInput;
   tools?: CodaliRuntimeToolManifest;
   requiredDocdexOperations?: string[];
@@ -181,12 +186,31 @@ const hasRiskToken = (tool: string, tokens: Set<string>): boolean => {
     [...tokens].some((token) => normalized === token || normalized.endsWith(`_${token}`));
 };
 
+/**
+ * Classifies a tool's risk.
+ *
+ * The name heuristic exists because, before connectors, a tool's name was the
+ * only signal available. It cannot distinguish "get a commit" from "commit
+ * something": `get_commit` ends with `_commit` and was therefore classified as
+ * a write, which blocked an ordinary read.
+ *
+ * A tool whose read-only status has been *declared* — an operator marking an
+ * MCP server read-only, or an HTTP tool restricted to GET/HEAD — carries better
+ * information than its name, so the declaration wins.
+ *
+ * The destructive check is not overridable. A declaration that `delete_file` is
+ * read-only is a configuration mistake, and the floor should hold against it.
+ */
 const classifyCapabilityRisk = (
   name: string,
   readOnly: boolean,
+  declaredReadOnly = false,
 ): CodaliGatewayToolRiskCategory => {
   if (hasRiskToken(name, DESTRUCTIVE_TOOL_TOKENS)) {
     return "destructive_blocked";
+  }
+  if (declaredReadOnly && readOnly) {
+    return "read_only";
   }
   if (!readOnly || hasRiskToken(name, WRITE_TOOL_TOKENS)) {
     return "write_with_approval";
@@ -471,6 +495,16 @@ export const compileToolCapabilities = (
     unique(input.requiredDocdexOperations ?? []),
   );
 
+  const declaredReadOnly = new Set(
+    unique([
+      ...(input.declaredReadOnlyTools ?? []),
+      ...readManifestTools(input.tools ?? input.docdex?.toolManifest, [
+        "readOnlyTools",
+        "read_only_tools",
+      ]),
+    ]),
+  );
+
   const addCapability = (
     name: string,
     kind: CodaliGatewayToolCapabilityKind,
@@ -479,7 +513,11 @@ export const compileToolCapabilities = (
     backingTools: string[],
     reasons: string[],
   ): void => {
-    const riskCategory = classifyCapabilityRisk(name, readOnly);
+    const riskCategory = classifyCapabilityRisk(
+      name,
+      readOnly,
+      declaredReadOnly.has(name),
+    );
     capabilities.push({
       name,
       kind,

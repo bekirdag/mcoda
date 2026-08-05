@@ -20,6 +20,7 @@ import {
   type GatewayPolicyCompilation,
 } from "./GatewayPolicyCompiler.js";
 import { normalizeCodaliEvidence } from "./EvidenceNormalizer.js";
+import { buildTemporalContext, renderTemporalContext } from "./TemporalContext.js";
 import { validateCodaliGatewayVerifierOutput } from "./CodaliGatewaySchemas.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
 import {
@@ -353,6 +354,11 @@ export const buildCodaliGatewayWorkerPrompt = (input: {
   CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.tenantScope,
   "Return structured evidence, source references, tool telemetry, and any errors.",
   `User query: ${input.request.query}`,
+  // The worker is what actually forms tool arguments, so it needs the resolved
+  // window. Without it a model invents dates — observed producing 2023 and
+  // 2024 ranges for "the last two weeks" in 2026 — and the tool call is
+  // syntactically fine but silently answers a different question.
+  ...renderTemporalContext(buildTemporalContext(input.request.query)),
   `Task id: ${input.task.id}`,
   `Worker role: ${input.task.workerRole}`,
   `Objective: ${input.task.objective}`,

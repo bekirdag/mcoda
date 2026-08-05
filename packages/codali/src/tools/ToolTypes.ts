@@ -136,9 +136,61 @@ export interface ToolExecutionResult extends ToolHandlerResult {
 
 export type ToolHandler = (args: unknown, context: ToolContext) => Promise<ToolHandlerResult>;
 
+/**
+ * Capability group a tool belongs to. The orchestrator selects capabilities
+ * first and only then sees the full schemas of the tools inside them, so this
+ * value is what keeps the planner prompt bounded as the registry grows.
+ */
+export type ToolCapability = string;
+
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema?: ToolInputSchema;
+  /** Shape of `ToolHandlerResult.data`, when the tool returns structured data. */
+  outputSchema?: ToolSchemaDefinition;
+  /**
+   * Whether the tool can mutate anything. Decided by Codali policy, never by a
+   * connector's self-description: an MCP server advertising `readOnlyHint` is a
+   * hint, not a security boundary.
+   */
+  readOnly?: boolean;
+  capability?: ToolCapability;
   handler: ToolHandler;
 }
+
+/**
+ * The model-facing view of a tool. Derived from {@link ToolDefinition} on
+ * demand — never stored separately, so the planner and the executor cannot
+ * drift onto different schemas.
+ */
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema?: ToolInputSchema;
+  outputSchema?: ToolSchemaDefinition;
+  readOnly: boolean;
+  capability: ToolCapability;
+}
+
+export const DEFAULT_TOOL_CAPABILITY = "general";
+
+/**
+ * Capability inferred from a tool name when the definition does not declare
+ * one. Names are conventionally `<capability>_<action>` (`docdex_search`) or
+ * `<source>:<server>:<tool>` for connector-backed tools.
+ */
+export const toolCapabilityForName = (name: string): ToolCapability => {
+  const trimmed = name.trim();
+  if (!trimmed) return DEFAULT_TOOL_CAPABILITY;
+  const namespaced = trimmed.split(":");
+  if (namespaced.length >= 3) {
+    // "mcp:github:list_issues" -> "github"
+    return namespaced[1] || DEFAULT_TOOL_CAPABILITY;
+  }
+  const underscored = trimmed.split("_");
+  if (underscored.length >= 2 && underscored[0]) {
+    return underscored[0];
+  }
+  return DEFAULT_TOOL_CAPABILITY;
+};

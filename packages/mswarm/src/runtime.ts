@@ -6750,9 +6750,18 @@ export class SelfHostedNodeRuntime {
   ): Promise<Record<string, unknown>> {
     const baseUrl = optionalText(agent.baseUrl);
     if (!baseUrl) {
+      /*
+       * Name the agent. "agent has no local runner base URL" alone cannot be
+       * acted on: a node holds several entries per model - the local runner and
+       * the gateway's mirror of it - and this says nothing about which one was
+       * resolved or whether it carried a config at all.
+       */
       throw new SelfHostedPreStartJobError(
         "selected_agent_unavailable",
-        "agent has no local runner base URL for OpenAI tool pass-through"
+        `agent has no local runner base URL for OpenAI tool pass-through ` +
+          `(slug=${optionalText(agent.slug) || "?"} adapter=${optionalText(agent.adapter) || "?"} ` +
+          `runnerKind=${optionalText(agent.runnerKind) || "?"} ` +
+          `localRunner=${agent.localRunner ? "yes" : "no"} model=${optionalText(agent.model) || "?"})`
       );
     }
     const headers: Record<string, string> = { "content-type": "application/json" };

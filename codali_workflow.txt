@@ -1,0 +1,56 @@
+ok, without changing the ai-chat, we must fix the codali first.
+
+  codali is an orchestrator and must be using many llms and tools to answer a request as precise as possible.
+
+  Codali must have a flexible api/mcp tool conenctions to it, so that it can easily talk to different tools to gather data, do web searches,
+  index searches, get data from third party sources such as github, jira, microsoft etc.
+
+  Codali is a tool in mcoda ecosystem.
+
+  ~/Documents/apps/mcoda.
+
+  Our main goal is to bring codali into a state that it alone is a perfect orchestrator. If we manage to do that, we cna integrate codali
+  into products like okacma ai chat, line items, badges, employee daily log reviews. SO one tool to  serve them all, we won't have to
+  re-build everything for each tool.
+
+  The design must be plain, simple and strong.
+
+  we need a Router to understand the request, direct it into media generation tools or understand what mcps/apis/tools are available for it,
+   (multiple router steps or llm usages are fine if necessary), then it must perfectly understand what tools and what tool features are available for it. Then it must make a list of calls that it wants to make. So, basically it should divide the job into smaller pieces, make calls to the tools, gather data, and iterate until it is happy with the data it has. 
+   When it has all the data, it must pass it to the synthesiser, who will know the first request, all the data gathered and then udnerstand what is required of it, and answer in a formatted way. 
+   
+   Here is an example
+   
+ EXAMPLE #1: Write me a simple html/js pingpong code
+ 
+	|- router should understand this is a code writing request, so no media generation. Since this request is an independent request from the repo, not tied to any other piece of code, it can pass the request directly to the synthesizer, and gather the result and print it out
+	 
+ EXAMPLE #2: What is the GDP or France in 2025? 
+ 	|- router understand this a question that needs to be search on web (it is a way too generic data, it can search on the local repo as well for gdp, france etc. but it will most likely won't get any info. docdex search does exactly this. it first searches in local and then it fallbacks to web search), check the availabe tools/apis/mcps available to it, find a tool which can search on the web, do the search, get the result back and answer directly without passing it to the synthesizer. 
+	
+ EXAMPLE #3: Generate an image of a puppy.
+ 	|- router understands this is an image generation request, see if it has an image generation llm availble connected to codali, send the request to it, get the output back and print the image out. 
+	
+ EXAMPLE #4: How is Bekir's performance going for the last two weeks? 
+ 	|- router understands that Bekir is a generic name, so it is worth to search in the repo index/memory. Finds that Bekir is an employee in the company which this repo belongs to. It then starts learning about the tools connected to it to gather data. For exmaple it finds github, jira, daily employee logs etc. Then it starts to search for the full name of the employee Bekir Dağ in this connected tools. Then it gathers git commits, jira tickets, teams communications/meetings transcripts, dating 2 weeks from today's date. Then it iterates a few times in itself to see if it needs more data from what it got. For example, if it gathered bekir 's projects on JIRA, it can ask itself the question, "let me gather more data about this project first to understand the context", so that it can call jira to learn more about the project, where it is at in general, who are working on the project etc. Then with all the data it gathers, it can pass it to the synthesizer with the original question for it to generate a very precise answer. 
+    
+ EXAMPLE #5: What are the current blockers of Project X?
+     |- router starts a docdex search, understand what project x is. then gets available tools and how to use them from the local setup as usual. then makes calls to github, jşra, teams etc. to gather more data. get all the tickets, github issues, teams chats, etc. to go over one by one to understand the relationships between them. when it has enough information, it can then similar to the above, continues the job. synthesizer most likely will point out the blockers.
+     
+ EXAMPLE #6: Which Clients of Hakan Gönül needs attention, who hasn't been communicated in the last 2 weeks?
+     |- router searches for Hakan Gönül, understand who he is, understand the available tools, find the crm tool, get Hakan's all client's list from the crm api/mcp, get all of Hakan's emails, teams chats and other digital footprint from the other tools, then send all data to synthesizer, cause synthesizer has enough data to understand who is pinged, who hasn't been emailed, messaged etc. then generate a proper answer. 
+     
+Non of the above should be hardcoded and should work generically as the questions can be about literally anything. 
+
+codali api/mcp/service connections must be standart, whatever other ai systems are using we should use the same. 
+
+codali llms should be configurable with mcoda agents. for example sythesizer: suku box mcoda qwen3.6 agent, image generated: suku mcoda sd3.5 etc. 
+
+You should build codali locally first before deploying anything. We should connect mcp/api tools for sample queries to ensure that it works on the terminal first. when we are happy, we can npm publish the version, but no rush to that. 
+
+codali docdex are in the same ecosystem so make them work flawlessly. 
+
+codali should be able to connect to docdex encrypted server repos. 
+
+You have the api key for mswarm to access all of these. see ~/.docdex/config.toml for the mswarm api key
+

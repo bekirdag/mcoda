@@ -6,7 +6,102 @@ const toOutput = (payload: unknown): { output: string; data: unknown } => ({
   data: payload,
 });
 
-export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
+/**
+ * Docdex tools that mutate state (index, memory, profile, repo binding). Every
+ * other docdex tool is read-only. Listed as the exception set so a newly added
+ * read tool is safe by default and a newly added write tool must be declared.
+ */
+const DOCDEX_WRITE_TOOLS = new Set([
+  "docdex_initialize",
+  "docdex_index_rebuild",
+  "docdex_index_ingest",
+  "docdex_memory_save",
+  "docdex_save_preference",
+  "docdex_delegate",
+]);
+
+/**
+ * Docdex is one capability from the orchestrator's point of view, except web
+ * research, which is a distinct capability ("current external information")
+ * even though docdex happens to serve it.
+ */
+const docdexCapabilityFor = (name: string): string =>
+  name === "docdex_web_research" ? "web" : "docdex";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+/**
+ * Whether a docdex search payload actually returned anything usable. Docdex
+ * answers with `hits: []` rather than an error when the index has no match, so
+ * an empty result is a normal outcome that the waterfall must recognize.
+ */
+const hasSearchHits = (payload: unknown): boolean => {
+  if (!isRecord(payload)) return false;
+  for (const key of ["hits", "results", "matches"]) {
+    const value = payload[key];
+    if (Array.isArray(value) && value.length > 0) return true;
+  }
+  return false;
+};
+
+/**
+ * Whether a forced-web search actually discovered anything.
+ *
+ * Docdex reports web findings under `webDiscovery.discovery.results` and leaves
+ * `hits` empty until the fetched pages are indexed, so judging a web result by
+ * `hits` alone throws away everything it just found.
+ */
+const hasWebFindings = (payload: unknown): boolean => {
+  if (hasSearchHits(payload)) return true;
+  if (!isRecord(payload)) return false;
+  const discovery = isRecord(payload.webDiscovery) ? payload.webDiscovery : undefined;
+  if (!discovery) return false;
+  const inner = isRecord(discovery.discovery) ? discovery.discovery : undefined;
+  const results = inner?.results ?? discovery.results;
+  if (Array.isArray(results) && results.length > 0) return true;
+  const fetches = discovery.fetches;
+  return Array.isArray(fetches) && fetches.length > 0;
+};
+
+const withDocdexMetadata = (tools: ToolDefinition[]): ToolDefinition[] =>
+  tools.map((tool) => ({
+    ...tool,
+    readOnly: tool.readOnly ?? !DOCDEX_WRITE_TOOLS.has(tool.name),
+    capability: tool.capability ?? docdexCapabilityFor(tool.name),
+  }));
+
+/**
+ * Judges whether search results actually answer the question.
+ *
+ * Needed because presence is not relevance. The local index returns *something*
+ * for almost any query — "GDP of France 2025" scores 29.07 against this
+ * repository, higher than "gateway planner class" at 14.35, because a test
+ * fixture happens to contain the phrase. A score threshold would therefore be
+ * both arbitrary and wrong, and keyword rules ("if the query mentions GDP, go
+ * to the web") are exactly the hardcoding this project rules out.
+ *
+ * So the judgement is delegated to a model: cheap, generic, and it degrades to
+ * the old presence-based behaviour when no judge is supplied.
+ */
+export type RelevanceJudge = (input: {
+  query: string;
+  results: unknown;
+}) => Promise<boolean>;
+
+export interface DocdexToolOptions {
+  judgeRelevance?: RelevanceJudge;
+}
+
+export const createDocdexTools = (
+  client: DocdexClient,
+  options: DocdexToolOptions = {},
+): ToolDefinition[] => withDocdexMetadata(docdexToolDefinitions(client, options));
+
+const docdexToolDefinitions = (
+  client: DocdexClient,
+  options: DocdexToolOptions,
+): ToolDefinition[] => [
   {
     name: "docdex_health",
     description: "Check docdex healthz endpoint.",
@@ -34,7 +129,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_search",
-    description: "Search docdex index.",
+    description: "Search the indexed repository and organizational memory for code, docs, and prior decisions. Ranked snippets with file paths and doc ids. Searches locally first and falls back to the web when the local index has nothing relevant, so this is the default tool for both repo questions and general external questions.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -45,13 +140,44 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
     },
     handler: async (args) => {
       const { query, limit } = args as { query: string; limit?: number };
-      const result = await client.search(query, { limit });
-      return toOutput(result);
+      const local = await client.search(query, { limit });
+
+      // The local-then-web waterfall lives here, inside the search tool, rather
+      // than in the orchestrator. The orchestrator should only have to know
+      // "search"; whether an answer comes from the repository index or the
+      // public web is an implementation detail of searching. Putting this
+      // decision in the router would make it special-case logic that every new
+      // question type has to be taught.
+      let localAnswers = hasSearchHits(local);
+
+      // Hits alone do not mean the question was answered. Ask a model whether
+      // they are actually relevant before settling for them.
+      if (localAnswers && options.judgeRelevance) {
+        try {
+          localAnswers = await options.judgeRelevance({ query, results: local });
+        } catch {
+          // A judge that fails must not block a search that already succeeded.
+        }
+      }
+
+      if (!localAnswers) {
+        try {
+          const web = await client.search(query, { limit, forceWeb: true });
+          if (hasWebFindings(web)) {
+            return toOutput(web);
+          }
+        } catch {
+          // Web discovery being unavailable must not fail a local search that
+          // simply found nothing. Return the local (empty) result instead.
+        }
+      }
+
+      return toOutput(local);
     },
   },
   {
     name: "docdex_open",
-    description: "Open a file by path or fetch a snippet by doc id.",
+    description: "Read an exact slice of a file, either by repo-relative path or by a doc id returned from a search. Use after a search has identified a target rather than guessing paths.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,7 +215,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_symbols",
-    description: "Fetch docdex symbols for a file.",
+    description: "List the definitions in a file with their exact signatures and line numbers - functions, classes, methods, exported constants. Use to confirm where something is defined before relying on it.",
     inputSchema: {
       type: "object",
       required: ["path"],
@@ -105,7 +231,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_ast",
-    description: "Fetch docdex AST nodes for a file.",
+    description: "Query a file's syntax tree for precise structure: class and function definitions, call sites, imports. More exact than text search when the question is structural.",
     inputSchema: {
       type: "object",
       required: ["path"],
@@ -122,7 +248,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_impact_graph",
-    description: "Fetch docdex impact graph for a file.",
+    description: "Show what depends on a file and what it depends on. Answers \"what breaks if this changes\" and identifies the blast radius of an edit.",
     inputSchema: {
       type: "object",
       required: ["file"],
@@ -146,7 +272,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_impact_diagnostics",
-    description: "Fetch docdex impact diagnostics (dynamic imports).",
+    description: "List unresolved or dynamic imports that the dependency graph could not follow, so gaps in impact analysis are visible rather than silent.",
     inputSchema: {
       type: "object",
       properties: {
@@ -185,7 +311,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_tree",
-    description: "Render a folder tree from docdex.",
+    description: "Render the repository folder tree with build output and vendor directories excluded. Use to orient in an unfamiliar repo instead of listing directories manually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -252,7 +378,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_get_profile",
-    description: "Fetch docdex profile preferences.",
+    description: "Read stored global preferences and constraints that should shape the answer, such as style rules or disallowed libraries.",
     inputSchema: {
       type: "object",
       properties: {
@@ -285,7 +411,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_memory_recall",
-    description: "Recall repo memory from docdex.",
+    description: "Recall durable facts previously recorded about this repository - architectural decisions, gotchas, where things live.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -302,7 +428,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_web_research",
-    description: "Run docdex web research (requires DOCDEX_WEB_ENABLED=1).",
+    description: "Search the public web for current external information: facts, news, third-party documentation, anything not in this repository. Returns sourced results with URLs.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -398,7 +524,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_batch_search",
-    description: "Run batched docdex search queries via optional batch endpoint/tool.",
+    description: "Run several related search queries in one call. Use when a question decomposes into multiple independent lookups, to save round trips.",
     inputSchema: {
       type: "object",
       required: ["queries"],
@@ -435,7 +561,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_stats",
-    description: "Fetch docdex index stats.",
+    description: "Report index size and when it was last updated. Use to detect a stale index before trusting a negative search result.",
     inputSchema: { type: "object", properties: {} },
     handler: async () => {
       const result = await client.stats();
@@ -444,7 +570,7 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_files",
-    description: "List docdex indexed files.",
+    description: "List the files currently present in the index, to confirm coverage before concluding that something does not exist.",
     inputSchema: {
       type: "object",
       properties: {

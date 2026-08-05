@@ -122,6 +122,9 @@ test("normalizer deduplicates evidence by source and claim fingerprint", () => {
     runId: "run-dup",
     taskId: "task-dup",
     defaultTenantScoped: true,
+    // A successful tool call is what lets worker claims keep their provenance;
+    // without one they are treated as the model's own words.
+    toolCalls: [{ tool: "docdex_search", status: "success", result: {} }],
     workerOutput: {
       evidence: [
         {
@@ -202,4 +205,98 @@ test("unprovenanced facts are retained only as low-confidence model observations
   assert.equal(evidence?.sourceType, "model_observation");
   assert.equal(evidence?.metadata?.unprovenanced, true);
   assert.ok((evidence?.confidence ?? 1) <= 0.25);
+});
+
+
+test("a worker that retrieved nothing cannot claim a source", () => {
+  // Observed with qwen3.6: zero tool calls, yet the model emitted a sourceId
+  // for a file it invented. That fabricated path became a citable source and
+  // the final answer stated it confidently.
+  const result = normalizeCodaliEvidence({
+    runId: "run-fab",
+    taskId: "task-fab",
+    defaultTenantScoped: true,
+    toolCalls: [],
+    workerOutput: {
+      evidence: [
+        {
+          claim: "CodaliGatewayPlanner is defined in src/planner/CodaliGatewayPlanner.py",
+          sourceType: "docdex",
+          sourceId: "src/planner/CodaliGatewayPlanner.py",
+          confidence: 0.95,
+        },
+      ],
+    },
+  });
+
+  const evidence = result.evidence[0];
+  assert.equal(evidence?.sourceType, "model_observation");
+  assert.ok((evidence?.confidence ?? 1) <= 0.25, "an unretrieved claim must not read as confident");
+});
+
+test("a failed tool call does not launder a claim into a source", () => {
+  const result = normalizeCodaliEvidence({
+    runId: "run-fail",
+    taskId: "task-fail",
+    defaultTenantScoped: true,
+    toolCalls: [{ tool: "docdex_search", status: "failed", result: {} }],
+    workerOutput: {
+      evidence: [
+        { claim: "Something was found.", sourceType: "docdex", sourceId: "doc-1", confidence: 0.9 },
+      ],
+    },
+  });
+
+  assert.equal(result.evidence[0]?.sourceType, "model_observation");
+});
+
+test("each record in a connector list becomes its own evidence item", () => {
+  // Connector results are lists of domain records, none of which name a field
+  // "claim". Before this they collapsed into one placeholder — "Tool … returned
+  // structured data" — and the synthesizer never saw the underlying items.
+  const commits = Array.from({ length: 12 }, (_, i) => ({
+    sha: `sha${i}`,
+    commit: { message: `Commit ${i} does a thing`, author: { name: "Bekir", date: "2026-08-01T00:00:00Z" } },
+  }));
+
+  const result = normalizeCodaliEvidence({
+    runId: "run-list",
+    taskId: "task-list",
+    defaultTenantScoped: true,
+    maxEvidenceItems: 40,
+    toolCalls: [{ tool: "mcp:github:list_commits", status: "success", result: commits }],
+  });
+
+  assert.equal(result.evidence.length, 12);
+  assert.ok(result.evidence.every((item) => /Commit \d+ does a thing/.test(item.claim)));
+});
+
+test("the describer works across connector shapes, not just one", () => {
+  const shapes: Array<[string, unknown]> = [
+    ["jira", [{ key: "ENG-1", fields: { summary: "Ticket summary", updated: "2026-08-01T00:00:00Z" } }]],
+    ["graph mail", [{ id: "m1", subject: "Email subject", receivedDateTime: "2026-08-01T00:00:00Z" }]],
+    ["teams chat", [{ id: "c1", topic: "Chat topic", lastUpdatedDateTime: "2026-08-01T00:00:00Z" }]],
+  ];
+
+  for (const [label, payload] of shapes) {
+    const result = normalizeCodaliEvidence({
+      runId: "run-shape",
+      taskId: "task-shape",
+      defaultTenantScoped: true,
+      toolCalls: [{ tool: "x", status: "success", result: payload }],
+    });
+    assert.equal(result.evidence.length, 1, `${label} produced no evidence`);
+    assert.ok(result.evidence[0]!.claim.length > 0, `${label} produced an empty claim`);
+  }
+});
+
+test("an unrecognized record shape yields nothing rather than a guess", () => {
+  const result = normalizeCodaliEvidence({
+    runId: "run-odd",
+    taskId: "task-odd",
+    defaultTenantScoped: true,
+    toolCalls: [{ tool: "x", status: "success", result: [{ a: 1, b: 2 }, { a: 3, b: 4 }] }],
+  });
+  // A placeholder is acceptable; inventing a claim from numeric fields is not.
+  assert.ok(result.evidence.every((item) => !/^\d+$/.test(item.claim)));
 });

@@ -933,3 +933,241 @@ export type {
   SubagentSpec,
   SubagentStatus,
 } from "./subagents/SubagentOrchestrator.js";
+
+// ---------------------------------------------------------------------------
+// Phase 1 orchestrator surface.
+// ---------------------------------------------------------------------------
+
+export { AskCommand, runAsk, parseAskArgs } from "./cli/AskCommand.js";
+export type { AskOptions, AskOutcome, AskDependencies } from "./cli/AskCommand.js";
+
+export {
+  getAgentInventory,
+  loadAgentInventory,
+  resetAgentInventoryCache,
+} from "./agents/AgentInventory.js";
+export type {
+  AgentInventoryEntry,
+  AgentInventoryLoadOptions,
+  AgentInventoryLoadResult,
+} from "./agents/AgentInventory.js";
+
+export { PHASE_ONE_ROLES, resolveConfigurableRoles } from "./agents/RoleResolution.js";
+export type {
+  CodaliConfigurableRole,
+  RoleResolutionInput,
+  RoleResolutionResult,
+} from "./agents/RoleResolution.js";
+
+export {
+  LocalConfigRunContextResolver,
+  ProvidedRunContextResolver,
+  mergeRunContexts,
+  resolveRunContext,
+  scrubRepoConfig,
+} from "./runcontext/RunContextResolver.js";
+export type {
+  RunContext,
+  RunContextAgentRoles,
+  RunContextDocdex,
+  RunContextLimits,
+  RunContextRepo,
+  RunContextResolveInput,
+  RunContextResolver,
+  RunContextTenant,
+} from "./runcontext/RunContextResolver.js";
+
+export {
+  LocalGatewayTaskRunner,
+  createLocalGatewayTaskRunner,
+  MAX_MODEL_CALLS_PER_TASK,
+  MAX_TOOL_CALLS_PER_TASK,
+} from "./gateway/LocalGatewayTaskRunner.js";
+export type {
+  LocalGatewayTaskRunnerEvent,
+  LocalGatewayTaskRunnerOptions,
+} from "./gateway/LocalGatewayTaskRunner.js";
+
+export {
+  RoleRoutingProvider,
+  createProviderForAssignment,
+  createProviderForName,
+  providerNameForAdapter,
+} from "./gateway/LocalGatewayProvider.js";
+
+export {
+  artifactRefsFromStored,
+  decideFinalizerMode,
+  formatArtifactAnswer,
+  formatDeterministicAnswer,
+} from "./gateway/Finalizer.js";
+export type { FinalizerDecision, FinalizerMode } from "./gateway/Finalizer.js";
+
+export {
+  describeViolations,
+  extractJsonPayload,
+  validateResponseAgainstSchema,
+} from "./gateway/ResponseSchema.js";
+export type {
+  ResponseSchemaValidation,
+  ResponseSchemaViolation,
+} from "./gateway/ResponseSchema.js";
+
+export { GatewayTracer, sanitizeArgs } from "./gateway/GatewayTracer.js";
+export type { GatewayTraceRecord, GatewayTracerOptions } from "./gateway/GatewayTracer.js";
+
+export {
+  MAX_EXPANDED_TOOLS,
+  renderCapabilityLines,
+  renderToolLines,
+} from "./gateway/ToolExposure.js";
+
+export {
+  gatewayToolDescriptorsFromDefinitions,
+  gatewayToolDescriptorsFromRegistry,
+} from "./gateway/ToolDescriptorSource.js";
+
+export { toolCapabilityForName, DEFAULT_TOOL_CAPABILITY } from "./tools/ToolTypes.js";
+export type { ToolCapability, ToolDescriptor } from "./tools/ToolTypes.js";
+export { toolDescriptorFor } from "./tools/ToolRegistry.js";
+export { filterLocallyDrivable, isLocallyDrivable } from "./agents/AgentInventory.js";
+
+// ---------------------------------------------------------------------------
+// Phase 2 MCP connector surface.
+// ---------------------------------------------------------------------------
+
+export {
+  CODALI_MCP_CLIENT_INFO,
+  CODALI_MCP_PROTOCOL_VERSION,
+  CODALI_MCP_SDK_PROTOCOL_VERSION,
+  McpClient,
+  McpClientError,
+  createMcpClient,
+  flattenMcpContent,
+} from "./connectors/mcp/McpClient.js";
+export type {
+  McpCallResult,
+  McpHttpTransportConfig,
+  McpServerConfig,
+  McpServerDefinition,
+  McpStdioTransportConfig,
+  McpToolDefinition,
+  McpTransportConfig,
+  McpTransportKind,
+} from "./connectors/mcp/McpClient.js";
+
+export {
+  mcpToolName,
+  mcpToolToDefinition,
+  mcpToolsToDefinitions,
+  normalizeMcpInputSchema,
+  parseMcpToolName,
+} from "./connectors/mcp/McpToolAdapter.js";
+export type { McpToolAdapterOptions } from "./connectors/mcp/McpToolAdapter.js";
+
+export {
+  DEFAULT_MAX_CONCURRENT_CALLS,
+  McpServerRegistry,
+  createMcpServerRegistry,
+} from "./connectors/mcp/McpServerRegistry.js";
+export type {
+  McpRegistryEvent,
+  McpServerHealth,
+  McpServerRegistryOptions,
+} from "./connectors/mcp/McpServerRegistry.js";
+
+export { attachMcpTools } from "./connectors/mcp/McpToolSource.js";
+export type { McpAttachOptions, McpAttachResult } from "./connectors/mcp/McpToolSource.js";
+
+export { ToolsCommand, runTools, parseToolsArgs } from "./cli/ToolsCommand.js";
+export type { ToolsOptions, ToolsDependencies } from "./cli/ToolsCommand.js";
+
+export { redactSecretValues } from "./gateway/GatewayTracer.js";
+
+// ---------------------------------------------------------------------------
+// Phase 3 research surface.
+// ---------------------------------------------------------------------------
+
+export {
+  buildTemporalContext,
+  renderTemporalContext,
+  resolveRelativeRange,
+} from "./gateway/TemporalContext.js";
+export type { AbsoluteRange, TemporalContext } from "./gateway/TemporalContext.js";
+
+export {
+  applyResponseSelector,
+  buildHttpUrl,
+  httpConnectorToDefinitions,
+  httpToolName,
+  httpToolToDefinition,
+} from "./connectors/http/HttpToolDefinition.js";
+export type {
+  HttpConnectorAuth,
+  HttpConnectorDefinition,
+  HttpToolDeclaration,
+  HttpToolMethod,
+} from "./connectors/http/HttpToolDefinition.js";
+
+export { attachHttpTools } from "./connectors/http/HttpToolSource.js";
+export type { HttpAttachOptions, HttpAttachResult } from "./connectors/http/HttpToolSource.js";
+
+// ---------------------------------------------------------------------------
+// Phase 4: the canonical product API.
+// ---------------------------------------------------------------------------
+
+export { runCodali, messagesToQuery } from "./api/CodaliApi.js";
+export type {
+  CodaliMessage,
+  CodaliRequest,
+  CodaliResult,
+  CodaliRunDependencies,
+  CodaliSourceRef,
+} from "./api/CodaliApi.js";
+
+export { handleChatCompletion, toCodaliMessages } from "./api/ChatCompletionsAdapter.js";
+export type {
+  ChatAdapterDependencies,
+  ChatCompletionMessage,
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+} from "./api/ChatCompletionsAdapter.js";
+
+export { createCodaliServer, startCodaliServer } from "./api/CodaliServer.js";
+export type { CodaliServerOptions, CodaliServerPrincipal } from "./api/CodaliServer.js";
+
+export {
+  IMAGE_TOOL_NAME,
+  createImageGenerationTool,
+} from "./connectors/media/ImageGenerationTool.js";
+export type {
+  ImageGenerationConfig,
+  ImageToolOptions,
+} from "./connectors/media/ImageGenerationTool.js";
+export { ServeCommand, runServe } from "./cli/ServeCommand.js";
+export {
+  credentialFilePath,
+  loadCredentialFile,
+  parseCredentialFile,
+  resetCredentialCache,
+  resolveCredential,
+} from "./runcontext/CredentialFile.js";
+
+export { AuthCommand, runAuth, upsertCredential } from "./cli/AuthCommand.js";
+export {
+  MICROSOFT_GRAPH_SCOPES,
+  DeviceCodeError,
+  microsoftEndpoints,
+  pollForDeviceCodeTokens,
+  refreshAccessToken,
+  startDeviceCode,
+} from "./connectors/oauth/DeviceCodeAuth.js";
+export type {
+  DeviceCodeConfig,
+  DeviceCodeStartResult,
+  DeviceCodeTokens,
+} from "./connectors/oauth/DeviceCodeAuth.js";
+export { resetAccessTokenCache } from "./connectors/http/HttpToolDefinition.js";
+export { createRelevanceJudge, summarizeResultTitles } from "./gateway/RelevanceJudge.js";
+export type { RelevanceJudgeOptions } from "./gateway/RelevanceJudge.js";
+export type { RelevanceJudge, DocdexToolOptions } from "./tools/docdex/DocdexTools.js";

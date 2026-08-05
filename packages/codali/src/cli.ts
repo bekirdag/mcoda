@@ -2,14 +2,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AskCommand } from "./cli/AskCommand.js";
 import { RunCommand } from "./cli/RunCommand.js";
+import { ToolsCommand } from "./cli/ToolsCommand.js";
+import { ServeCommand } from "./cli/ServeCommand.js";
+import { AuthCommand } from "./cli/AuthCommand.js";
 import { FeedbackCommand } from "./cli/FeedbackCommand.js";
 import { EvalCommand } from "./cli/EvalCommand.js";
 import { DatasetCommand } from "./cli/DatasetCommand.js";
 import { ImprovementCommand } from "./cli/ImprovementCommand.js";
 
 const HELP_TEXT =
-  "Usage: codali run [--workspace-root <path>] --agent <slug> [--task <file>]\n" +
+  "Usage: codali ask \"<question>\" [--trace] [--json] [--workspace-root <path>]\n" +
+  "   or: codali tools <list|describe|call|health> [options]\n" +
+  "   or: codali auth <microsoft>\n" +
+  "   or: codali serve [--port <n>] [--api-key <key>]\n" +
+  "   or: codali run [--workspace-root <path>] --agent <slug> [--task <file>]\n" +
   "   or: codali run [--workspace-root <path>] --provider <name> --model <model> [--task <file>]\n" +
   "   or: codali <fix|review|explain|test> [run options] [--task <file>]\n" +
   "   or: codali eval --suite <path> [eval options]\n" +
@@ -20,6 +28,10 @@ const HELP_TEXT =
   "   or: codali learn --confirm <dedupe_key> [--confirm <dedupe_key> ...]\n" +
   "\n" +
   "Commands:\n" +
+  "  ask      Ask a question. Routes, gathers evidence with tools, answers with citations.\n" +
+  "  tools    Inspect the tools a run can reach, including MCP servers.\n" +
+  "  auth     Sign in to a connector that needs a user context (Microsoft Graph).\n" +
+  "  serve    Serve Codali over HTTP with the same contract as the CLI.\n" +
   "  run      Run a single task (advanced/general profile).\n" +
   "  fix      Apply fix workflow profile (patch-focused output).\n" +
   "  review   Apply review workflow profile (findings-focused output).\n" +
@@ -89,6 +101,26 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
 
   if (command === "doctor" || command === "--doctor") {
     printDoctor();
+    return;
+  }
+
+  if (command === "ask") {
+    await AskCommand.run(rest);
+    return;
+  }
+
+  if (command === "auth") {
+    await AuthCommand.run(rest);
+    return;
+  }
+
+  if (command === "serve") {
+    await ServeCommand.run(rest);
+    return;
+  }
+
+  if (command === "tools" || command === "mcp") {
+    await ToolsCommand.run(command === "mcp" ? ["health", ...rest] : rest);
     return;
   }
 

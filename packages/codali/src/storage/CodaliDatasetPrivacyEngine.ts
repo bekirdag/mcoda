@@ -25,7 +25,8 @@ export type CodaliDatasetSecretFindingKind =
   | "github_token"
   | "jwt"
   | "private_key"
-  | "env_secret_assignment";
+  | "env_secret_assignment"
+  | "connector_api_key";
 
 export type CodaliDatasetEligibilityBlockerCode =
   | "secrets_detected"
@@ -218,6 +219,18 @@ const SECRET_VALUE_PATTERNS: readonly {
     pattern:
       /\b(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)=["']?[^"'\s]{8,}["']?/gi,
   },
+  // Connector credentials. Added alongside the first MCP connector, because
+  // that is the point at which third-party secrets first flow through a run.
+  // The `sk-` rule above does not match underscore-delimited keys such as
+  // mswarm's `sk_prod_mswarm_...`, so those need their own rule.
+  {
+    kind: "connector_api_key",
+    pattern: /\bsk_[A-Za-z0-9]+_[A-Za-z0-9_]{8,}\b/g,
+  },
+  { kind: "connector_api_key", pattern: /\bglpat-[A-Za-z0-9_-]{16,}\b/g },
+  { kind: "connector_api_key", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "connector_api_key", pattern: /\bAIza[0-9A-Za-z_-]{30,}\b/g },
+  { kind: "connector_api_key", pattern: /\bnpm_[A-Za-z0-9]{30,}\b/g },
 ];
 
 const PERSONAL_KEY_PATTERNS: readonly RegExp[] = [

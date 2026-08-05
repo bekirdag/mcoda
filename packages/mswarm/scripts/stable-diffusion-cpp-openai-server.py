@@ -10,10 +10,12 @@ import ipaddress
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import signal
 import socket
+import stat
 import struct
 import threading
 import time
@@ -121,6 +123,7 @@ class UpstreamTimeout(UpstreamError):
 @dataclass
 class ServerState:
     upstream_base_url: str
+    upstream_api_key: str | None
     model_id: str
     upstream_model_id: str
     max_request_bytes: int
@@ -431,9 +434,12 @@ def _bounded_json_request(
     timeout: float | None,
     max_bytes: int,
     payload: dict[str, Any] | None = None,
+    api_key: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     body = None
     headers = {"accept": "application/json"}
+    if api_key is not None:
+        headers["authorization"] = f"Bearer {api_key}"
     if payload is not None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         headers["content-type"] = "application/json"
@@ -476,6 +482,7 @@ def _check_upstream_model(state: ServerState) -> None:
         method="GET",
         timeout=state.request_timeout_seconds,
         max_bytes=1_048_576,
+        api_key=state.upstream_api_key,
     )
     data = payload.get("data")
     if (
@@ -510,6 +517,7 @@ def _generate_image(state: ServerState, request: dict[str, Any]) -> dict[str, An
         timeout=None,
         max_bytes=max_json_bytes,
         payload=_native_request(request),
+        api_key=state.upstream_api_key,
     )
     if status == 429:
         raise ApiError(
@@ -980,11 +988,45 @@ def _arg_size(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("size must use WIDTHxHEIGHT") from error
 
 
+def _read_api_key_file(path: str | None) -> str | None:
+    if path is None:
+        return None
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise SystemExit("--upstream-api-key-file cannot be opened safely") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit("--upstream-api-key-file must be a regular file")
+        if os.name == "posix":
+            if metadata.st_uid != os.geteuid():
+                raise SystemExit("--upstream-api-key-file must be owned by the service user")
+            if stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise SystemExit("--upstream-api-key-file must not be accessible by group or others")
+        raw = os.read(descriptor, 4_097)
+        if len(raw) > 4_096 or os.read(descriptor, 1):
+            raise SystemExit("--upstream-api-key-file is too large")
+    finally:
+        os.close(descriptor)
+    try:
+        api_key = raw.decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise SystemExit("--upstream-api-key-file must contain an ASCII token") from error
+    if not 32 <= len(api_key) <= 4_096 or any(character.isspace() for character in api_key):
+        raise SystemExit("--upstream-api-key-file contains an invalid token")
+    return api_key
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--upstream-base-url", default=DEFAULT_UPSTREAM_BASE_URL)
+    parser.add_argument("--upstream-api-key-file")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--upstream-model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument(
@@ -1048,6 +1090,7 @@ def main() -> int:
     if not 1 <= args.port <= 65_535 and args.port != 0:
         raise SystemExit("--port must be 0 or between 1 and 65535")
     upstream_base_url = _validate_loopback_origin(args.upstream_base_url)
+    upstream_api_key = _read_api_key_file(args.upstream_api_key_file)
     if MODEL_ID_PATTERN.fullmatch(args.model_id) is None:
         raise SystemExit("--model-id is invalid")
     if MODEL_ID_PATTERN.fullmatch(args.upstream_model_id) is None:
@@ -1090,6 +1133,7 @@ def main() -> int:
 
     state = ServerState(
         upstream_base_url=upstream_base_url,
+        upstream_api_key=upstream_api_key,
         model_id=args.model_id,
         upstream_model_id=args.upstream_model_id,
         max_request_bytes=args.max_request_bytes,

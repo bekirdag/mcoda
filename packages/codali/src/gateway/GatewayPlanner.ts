@@ -19,11 +19,17 @@ import {
   type GatewayPolicyCompilation,
 } from "./GatewayPolicyCompiler.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
+import { renderCapabilityLines, renderToolLines } from "./ToolExposure.js";
+import { buildTemporalContext, renderTemporalContext } from "./TemporalContext.js";
 
 export interface CodaliGatewayPlannerToolDescriptor {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  /** Capability group used for two-level tool exposure. See ToolExposure.ts. */
+  capability?: string;
+  readOnly?: boolean;
 }
 
 export interface GatewayPlannerInput {
@@ -80,6 +86,8 @@ export const CODALI_GATEWAY_CLASSIFIER_SCHEMA = {
     needsAppTools: { type: "boolean" },
     needsImageWorker: { type: "boolean" },
     directAnswerCandidate: { type: "string" },
+    capabilities: { type: "array", items: { type: "string" } },
+    needsClarification: { type: "string" },
     rationale: { type: "string" },
     confidence: { enum: ["high", "medium", "low"] },
     metadata: { type: "object" },
@@ -449,6 +457,14 @@ const validateClassifierOutput = (
       directAnswerCandidate:
         readString(record, "directAnswerCandidate") ??
         readString(record, "direct_answer_candidate"),
+      capabilities: readCapabilities(record),
+      needsClarification: (() => {
+        const asked =
+          readString(record, "needsClarification") ??
+          readString(record, "needs_clarification");
+        const originalQuery = input?.request.query ?? "";
+        return asked && isRealClarification(asked, originalQuery) ? asked : undefined;
+      })(),
       rationale: readString(record, "rationale"),
       confidence,
       metadata: isRecord(record.metadata) ? record.metadata : undefined,
@@ -456,22 +472,44 @@ const validateClassifierOutput = (
   };
 };
 
-const describeTool = (
-  name: string,
-  descriptors: GatewayPlannerInput["toolDescriptions"],
-): string => {
-  const descriptor = descriptors?.[name];
-  if (!descriptor) {
-    return `${name}: read-only allowed tool`;
-  }
-  if (typeof descriptor === "string") {
-    return `${name}: ${descriptor}`;
-  }
-  return `${name}: ${descriptor.description ?? "read-only allowed tool"}`;
-};
-
 const allowedToolNames = (compilation: GatewayPolicyCompilation): string[] =>
   [...compilation.effectiveAllowedTools].sort();
+
+/**
+ * Capability names the classifier selected for stage-2 tool expansion. Absent
+ * or unparseable means "no narrowing", which expands everything - a wrong
+ * selection must degrade to a bigger prompt, never to a blind planner.
+ */
+/**
+ * A clarifying question must add something. A small model asked "set
+ * needsClarification if the request is ambiguous" will sometimes echo the
+ * question back, which stops the run and tells the user nothing — worse than
+ * attempting an answer. Restatements are therefore discarded.
+ */
+const normalizeForCompare = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+
+const isRealClarification = (question: string, query: string): boolean => {
+  const asked = normalizeForCompare(question);
+  const original = normalizeForCompare(query);
+  if (!asked) return false;
+  if (asked === original) return false;
+  // A near-restatement: nothing in it that was not already in the question.
+  if (original.includes(asked) || asked.includes(original)) return false;
+  const originalWords = new Set(original.split(" "));
+  const novel = asked.split(" ").filter((word) => word.length > 2 && !originalWords.has(word));
+  return novel.length > 0;
+};
+
+const readCapabilities = (record: Record<string, unknown>): string[] | undefined => {
+  const raw = record.capabilities ?? record.capability_groups ?? record.capabilityGroups;
+  if (!Array.isArray(raw)) return undefined;
+  const values = raw
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return values.length > 0 ? values : undefined;
+};
 
 export const buildCodaliGatewayClassifierMessages = (
   input: GatewayPlannerInput,
@@ -492,8 +530,12 @@ export const buildCodaliGatewayClassifierMessages = (
     `Product: ${input.request.product?.name ?? "generic"}`,
     `Tenant scoped: ${input.request.tenant?.id || input.request.tenant?.slug ? "yes" : "unknown"}`,
     `Image worker allowed: ${input.request.policy.allowImageWorker === true ? "yes" : "no"}`,
-    `Available tools: ${tools.length > 0 ? tools.join(", ") : "none"}`,
+    ...renderTemporalContext(buildTemporalContext(input.request.query)),
+    "Available capabilities:",
+    renderCapabilityLines(tools, input.toolDescriptions),
     "Decide these booleans: needsPrivateData, needsFreshData, needsDocdex, needsAppTools, needsImageWorker.",
+    "If the request is genuinely ambiguous — an unidentifiable person, project, or scope — set needsClarification to the single question that would resolve it. Never guess an identity.",
+    "List in `capabilities` only the capability names above that this query actually needs; the planner will then see the full tool schemas for just those.",
     "If a direct answer is possible without private/runtime tools, include directAnswerCandidate.",
   ].join("\n");
   return [
@@ -508,10 +550,10 @@ export const buildCodaliGatewayPlannerMessages = (
 ): ProviderMessage[] => {
   const policy = input.policyCompilation ?? compileCodaliGatewayPolicy({ request: input.request });
   const tools = allowedToolNames(policy);
-  const toolLines =
-    tools.length > 0
-      ? tools.map((tool) => `- ${describeTool(tool, input.toolDescriptions)}`).join("\n")
-      : "- none";
+  // Stage 2 of two-level exposure: expand full schemas, but only for the
+  // capabilities the classifier selected.
+  const exposure = renderToolLines(tools, input.toolDescriptions, classifier.capabilities);
+  const toolLines = exposure.text;
   const workerRoles = [
     "direct_answer",
     "rag_worker",
@@ -534,11 +576,15 @@ export const buildCodaliGatewayPlannerMessages = (
     `Query: ${input.request.query}`,
     `Classifier: ${JSON.stringify(classifier)}`,
     `Policy limits: maxIterations=${input.request.policy.maxIterations}, maxToolCalls=${policy.security.limits.maxToolCalls}, maxModelCalls=${policy.security.limits.maxModelCalls}, maxEvidenceItems=${policy.security.limits.maxEvidenceItems}, maxImageArtifacts=${policy.security.limits.maxImageArtifacts}`,
+    ...renderTemporalContext(buildTemporalContext(input.request.query)),
     `Worker roles available: ${workerRoles}`,
-    "Allowed tools:",
+    "Allowed tools (name, purpose, and argument shape). Use these names exactly:",
     toolLines,
+    exposure.truncated
+      ? `(Tool list truncated to ${exposure.expandedTools.length}; narrow the capabilities if the needed tool is absent.)`
+      : "",
     "Output planner JSON with queryType, subquestions, workerTasks, expectedEvidenceCount, maxIterations, requiresFinalLargeModel, and metadata.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   return [
     { role: "system", content: system },
     { role: "user", content: user },
@@ -932,6 +978,27 @@ export class CodaliGatewayPlanner {
     }
 
     const classifierResult = await this.classify({ ...input, policyCompilation });
+
+    // A request the classifier could not disambiguate has nothing to plan.
+    // Skipping the planner stage saves a model call and, more importantly,
+    // avoids producing a plan built on a guessed identity.
+    if (classifierResult.classifier.needsClarification?.trim()) {
+      return {
+        policyCompilation,
+        classifier: classifierResult.classifier,
+        planner: {
+          queryType: classifierResult.classifier.queryType,
+          subquestions: [],
+          workerTasks: [],
+        } as CodaliGatewayPlannerOutput,
+        warnings: [...classifierResult.warnings, "planner_skipped:needs_clarification"],
+        classifierRepairAttempts: classifierResult.repairAttempts,
+        plannerRepairAttempts: 0,
+        classifierRawContent: classifierResult.rawContent,
+        plannerRawContent: "",
+      };
+    }
+
     const plannerMessages = buildCodaliGatewayPlannerMessages(
       { ...input, policyCompilation },
       classifierResult.classifier,

@@ -117,6 +117,9 @@ const isIgnorableStdinError = (error: NodeJS.ErrnoException): boolean =>
   error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED";
 
 export class CodexCliProvider implements Provider {
+  /** Driven through the codex CLI's text interface; no structured tool calls. */
+  readonly supportsToolCalls = false;
+
   name = "codex-cli";
 
   constructor(private config: ProviderConfig) {}

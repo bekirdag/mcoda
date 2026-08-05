@@ -97,5 +97,20 @@ export interface ProviderConfig {
 
 export interface Provider {
   name: string;
+  /**
+   * Whether this adapter can return `ProviderResponse.toolCalls`.
+   *
+   * Distinct from an agent's advertised `supportsTools`: a CLI-backed agent may
+   * well have tools of its own, but this adapter drives it through a text
+   * interface and can never surface a structured tool call. Treating the two as
+   * the same produces a plan full of tool tasks and then zero tool calls, with
+   * nothing in the trace explaining why.
+   *
+   * Undefined is read as false.
+   */
+  supportsToolCalls?: boolean;
   generate(request: ProviderRequest): Promise<ProviderResponse>;
 }
+
+export const providerSupportsToolCalls = (provider: Provider): boolean =>
+  provider.supportsToolCalls === true;

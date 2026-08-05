@@ -122,6 +122,8 @@ const gatewayResult = (
   runId: "dataset-run",
   status: "succeeded",
   answer: "Dataset objects remain local-only unless policy metadata allows upload.",
+  artifacts: [],
+  warnings: [],
   sources: [
     {
       evidenceId: "ev-retention",

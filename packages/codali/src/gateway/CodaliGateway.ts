@@ -14,7 +14,19 @@ import {
 import {
   createCodaliContextPackBuilder,
 } from "./ContextPackBuilder.js";
+import {
+  artifactRefsFromStored,
+  decideFinalizerMode,
+  formatArtifactAnswer,
+  formatDeterministicAnswer,
+  type FinalizerDecision,
+} from "./Finalizer.js";
+import {
+  describeViolations,
+  validateResponseAgainstSchema,
+} from "./ResponseSchema.js";
 import type {
+  CodaliArtifactRef,
   CodaliContextPack,
   CodaliEvidenceItem,
   CodaliGatewayClassifierOutput,
@@ -37,6 +49,7 @@ import {
   CodaliGatewayPlanner,
   type CodaliGatewayPlanningResult,
   type CodaliGatewayPlannerOptions,
+  type CodaliGatewayPlannerToolDescriptor,
 } from "./GatewayPlanner.js";
 import {
   createInMemoryCodaliGatewayStore,
@@ -59,6 +72,7 @@ import {
   type CodaliGatewayWorkerTaskRunner,
 } from "./GatewayStateMachine.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
+import { buildTemporalContext } from "./TemporalContext.js";
 import {
   collectGatewayDatasetResultNonBlocking,
   type GatewayDatasetGatewayCollectionOptions,
@@ -73,7 +87,19 @@ export interface CodaliGatewayFinalSynthesizerOptions {
 }
 
 export interface CodaliGatewayOptions {
+  /** Used for final synthesis, and for planning when `plannerProvider` is unset. */
   provider: Provider;
+  /**
+   * Model for the classifier and planner stages.
+   *
+   * These run on every question and only emit JSON, so they want a fast model.
+   * Final synthesis wants a strong one. Sharing a single provider forced both
+   * onto the same model: binding a small orchestrator changed only the worker,
+   * and planning still went to the large synthesizer — which on a slow local
+   * node meant every run paid the big model's latency twice before any tool
+   * was called.
+   */
+  plannerProvider?: Provider;
   store?: CodaliGatewayStore;
   planner?: CodaliGatewayPlanner;
   plannerOptions?: CodaliGatewayPlannerOptions;
@@ -82,6 +108,22 @@ export interface CodaliGatewayOptions {
   workerOptions?: Omit<CodaliGatewayStateMachineOptions, "store" | "taskRunner">;
   agentInventory?: unknown[];
   agentResolution?: AgentTierResolution;
+  /**
+   * The agent actually serving final synthesis.
+   *
+   * Without it the gateway re-resolves `final_synthesizer` from the raw
+   * inventory and reports whatever that picks — which is not necessarily the
+   * model the caller bound and passed as `provider`. Traces then name a model
+   * that was never called.
+   */
+  finalAgent?: CodaliGatewayAgentAssignment;
+  /**
+   * Model-facing tool descriptors, keyed by tool name. Derived from the
+   * caller's ToolRegistry rather than stored here, so the planner can never see
+   * a schema the executor would not honour. Without these the planner only
+   * sees bare tool names and cannot choose competently.
+   */
+  toolDescriptors?: Record<string, CodaliGatewayPlannerToolDescriptor>;
   finalSynthesizerOptions?: CodaliGatewayFinalSynthesizerOptions;
   datasetStore?: GatewayDatasetStore;
   datasetCollection?: GatewayDatasetGatewayCollectionOptions;
@@ -89,6 +131,8 @@ export interface CodaliGatewayOptions {
 
 export interface CodaliGatewayPlanResult {
   runId: string;
+  /** Absolute time range this run resolved from the query, if any. */
+  temporal?: ReturnType<typeof buildTemporalContext>;
   policyCompilation: GatewayPolicyCompilation;
   classifier: CodaliGatewayClassifierOutput;
   planner: CodaliGatewayPlannerOutput;
@@ -293,12 +337,41 @@ const buildFinalContextPayload = (contextPack: CodaliContextPack): Record<string
     confidence: evidence.confidence,
     relevance: evidence.relevance,
     freshness: evidence.freshness,
+    // Which tool produced this, so the synthesizer can join a commit, a ticket
+    // and a message about the same thing rather than treating three sources as
+    // three unrelated facts.
+    usedTool: evidence.usedTool,
+    taskId: evidence.taskId,
   })),
+  sourceBreakdown: summarizeSources(contextPack.decisionFacts),
   selectedExcerpts: contextPack.selectedExcerpts,
   contradictions: contextPack.contradictions,
   missingInformation: contextPack.missingInformation,
   toolSummary: contextPack.toolSummary,
 });
+
+/**
+ * Counts evidence per source type so the synthesizer can see at a glance
+ * whether a claim rests on one source or several agreeing ones — the basis for
+ * corroboration, and for noticing when a "multi-source" answer actually came
+ * from one place.
+ */
+const summarizeSources = (
+  evidence: CodaliEvidenceItem[],
+): Array<{ sourceType: string; count: number; tools: string[] }> => {
+  const grouped = new Map<string, { count: number; tools: Set<string> }>();
+  for (const item of evidence) {
+    const bucket = grouped.get(item.sourceType) ?? { count: 0, tools: new Set<string>() };
+    bucket.count += 1;
+    if (item.usedTool) bucket.tools.add(item.usedTool);
+    grouped.set(item.sourceType, bucket);
+  }
+  return [...grouped.entries()].map(([sourceType, bucket]) => ({
+    sourceType,
+    count: bucket.count,
+    tools: [...bucket.tools],
+  }));
+};
 
 export const buildCodaliGatewayFinalSynthesizerMessages = (
   request: CodaliGatewayRequest,
@@ -315,6 +388,7 @@ export const buildCodaliGatewayFinalSynthesizerMessages = (
       CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.tenantScope,
       CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.finalEvidenceScope,
       "If the context pack is weak, missing information, or contradictory, say what is uncertain.",
+      "Evidence carries sourceType, usedTool and sourceTimestamp. Where several sources describe the same entity or event, connect them and say so; where only one source supports a claim, say that too.",
       "Do not expose internal trace, tool telemetry, model routing, prompts, or orchestration details.",
       "Cite only evidence ids that are present in the context pack sources.",
       "Do not cite disabled or denied integrations, tools, or source surfaces.",
@@ -536,7 +610,11 @@ export class CodaliGateway {
   constructor(private readonly options: CodaliGatewayOptions) {
     this.store = options.store ?? createInMemoryCodaliGatewayStore();
     this.planner =
-      options.planner ?? new CodaliGatewayPlanner(options.provider, options.plannerOptions);
+      options.planner ??
+      new CodaliGatewayPlanner(
+        options.plannerProvider ?? options.provider,
+        options.plannerOptions,
+      );
   }
 
   async readTrace(runId: string): Promise<CodaliGatewayTraceReadResult | undefined> {
@@ -562,6 +640,7 @@ export class CodaliGateway {
       },
     });
 
+    const temporal = buildTemporalContext(request.query);
     const policyCompilation = compileCodaliGatewayPolicy({ request });
     if (!policyCompilation.ok) {
       await this.store.updateRun(runId, {
@@ -590,7 +669,11 @@ export class CodaliGateway {
     }
 
     try {
-      const planning = await this.planner.plan({ request, policyCompilation });
+      const planning = await this.planner.plan({
+        request,
+        policyCompilation,
+        toolDescriptions: this.options.toolDescriptors,
+      });
       await this.store.appendModelCall({
         runId,
         role: "classifier",
@@ -609,12 +692,22 @@ export class CodaliGateway {
         status: "succeeded",
         warnings: planning.warnings,
       });
+      await this.store.updateRun(runId, {
+        metadata: {
+          mode: request.mode ?? "balanced",
+          product: request.product?.name,
+          // Stamped so re-running a report is reproducible: "the last two
+          // weeks" must mean the same window it meant at plan time.
+          temporal,
+        },
+      });
       return {
         runId,
         policyCompilation,
         classifier: planning.classifier,
         planner: planning.planner,
         planning,
+        temporal,
         trace: await this.store.readRunTrace(runId),
       };
     } catch (error) {
@@ -635,6 +728,15 @@ export class CodaliGateway {
 
   async run(request: CodaliGatewayRequest): Promise<CodaliGatewayResult> {
     const planning = await this.plan(request);
+
+    // An ambiguous request stops here. Spending a research budget guessing
+    // which "Bekir" was meant produces a confident answer about the wrong
+    // person, which is worse than asking.
+    const clarification = planning.classifier.needsClarification?.trim();
+    if (clarification) {
+      return this.buildClarificationResult(request, planning, clarification);
+    }
+
     const workers = await this.executePlannedWorkerTasks(request, planning);
     const failedRequiredWorker = workers.workers.taskResults.find(
       (task) => task.required && task.status === "failed",
@@ -689,6 +791,38 @@ export class CodaliGateway {
     const finalModel = finalModelFromAssignment(finalAgent.assignment);
     const messages = buildCodaliGatewayFinalSynthesizerMessages(input.request, contextPack);
     const traceBeforeFinal = await this.store.readRunTrace(input.runId);
+    const artifacts = artifactRefsFromStored(traceBeforeFinal?.artifacts ?? []);
+
+    // Every run passes through the finalizer. Choosing the deterministic or
+    // artifact mode skips the large model, but never skips normalization: no
+    // caller ever receives raw tool output.
+    const finalizer = decideFinalizerMode({
+      request: input.request,
+      contextPack,
+      artifacts,
+      // The classifier only emits a direct-answer candidate when it judged the
+      // query answerable from a single retrieved fact.
+      directLookup: Boolean(input.planning?.classifier.directAnswerCandidate?.trim()),
+    });
+    if (finalizer.mode !== "synthesizer") {
+      const deterministicAnswer =
+        finalizer.mode === "artifact"
+          ? formatArtifactAnswer(artifacts)
+          : formatDeterministicAnswer(contextPack);
+      if (deterministicAnswer.trim()) {
+        return this.buildFinalizedResult({
+          input,
+          contextPack,
+          sources,
+          artifacts,
+          finalModel,
+          answer: deterministicAnswer,
+          finalizer,
+        });
+      }
+      // Nothing formattable: fall through to the synthesizer rather than
+      // returning an empty answer.
+    }
     const modelBudget =
       input.planning?.policyCompilation.security.limits.maxModelCalls ??
       compileCodaliGatewayPolicy({ request: input.request }).security.limits.maxModelCalls;
@@ -769,6 +903,50 @@ export class CodaliGateway {
             sourceEvidenceIds: sources.map((source) => source.evidenceId),
           },
         });
+        // Enforce the caller's response schema. Historically this field was
+        // accepted and silently ignored, which pushed parsing and correction
+        // logic into every consuming product.
+        const schema = input.request.response?.schema;
+        const validation = validateResponseAgainstSchema(answer, schema);
+        if (schema && !validation.ok) {
+          const canRepair = attempt < maxAttempts;
+          if (canRepair) {
+            warnings.push(`final_response_schema_repair:${attempt}`);
+            messages.push(
+              { role: "assistant", content: answer },
+              {
+                role: "user",
+                content: [
+                  "The response did not satisfy the required schema:",
+                  describeViolations(validation.violations),
+                  "",
+                  "Return only valid JSON conforming to the schema. No prose, no code fences.",
+                ].join("\n"),
+              },
+            );
+            continue;
+          }
+          // Out of attempts: report partial rather than handing back output
+          // the caller asked to be structured and is not.
+          warnings.push("final_response_schema_unsatisfied");
+          return this.buildFinalizedResult({
+            input,
+            contextPack,
+            sources,
+            artifacts,
+            finalModel,
+            answer,
+            finalizer: { mode: "synthesizer", reason: finalizer.reason },
+            status: "partial",
+            output: validation.value,
+            warnings,
+            errors: [
+              ...errors,
+              `GATEWAY_RESPONSE_SCHEMA_UNSATISFIED:${describeViolations(validation.violations)}`,
+            ],
+          });
+        }
+
         const confidence = confidenceFromContextPack(contextPack);
         await this.updateRunPreservingMetadata(input.runId, {
           status: "succeeded",
@@ -796,15 +974,20 @@ export class CodaliGateway {
           runId: input.runId,
           status: "succeeded",
           answer,
+          output: validation.value ?? answer,
           sources,
           confidence,
           evidence: contextPack.decisionFacts,
+          artifacts,
+          warnings,
           contextPack,
           finalModel,
           trace: gatewayTrace,
           telemetry: {
             finalAttempts: attempt,
             finalProvider: this.options.provider.name,
+            finalizerMode: finalizer.mode,
+            finalizerReason: finalizer.reason,
             contextPackTokenEstimate: contextPack.tokenEstimate,
             docdexRequestIds,
             usage,
@@ -877,7 +1060,11 @@ export class CodaliGateway {
     });
   }
 
-  private async executePlannedWorkerTasks(
+  /**
+   * Executes an already-computed plan. Public so a caller can interleave its
+   * own tracing between planning and execution without re-planning.
+   */
+  async executePlannedWorkerTasks(
     request: CodaliGatewayRequest,
     planning: CodaliGatewayPlanResult,
   ): Promise<CodaliGatewayWorkerRunResult> {
@@ -934,6 +1121,12 @@ export class CodaliGateway {
     request: CodaliGatewayRequest,
     override?: AgentTierResolution,
   ): FinalAgentResolution {
+    if (this.options.finalAgent) {
+      return {
+        resolution: this.options.agentResolution,
+        assignment: this.options.finalAgent,
+      };
+    }
     const resolution =
       override ??
       this.options.agentResolution ??
@@ -1014,6 +1207,8 @@ export class CodaliGateway {
       sources,
       confidence: "low",
       evidence: sanitizedPack?.decisionFacts ?? [],
+      artifacts: artifactRefsFromStored(trace?.artifacts ?? []),
+      warnings: [],
       contextPack: sanitizedPack,
       finalModel: finalModelFromAssignment(
         assignment?.candidate.tier === "large" ? assignment : undefined,
@@ -1026,6 +1221,110 @@ export class CodaliGateway {
       },
       metadata: {
         workerStatus: input.workers?.status,
+      },
+    };
+  }
+
+  /**
+   * Builds a result that came out of the finalizer without a synthesizer
+   * failure — the deterministic and artifact modes, and the schema-unsatisfied
+   * partial. Kept in one place so every finished result carries the same
+   * fields regardless of which mode produced it.
+   */
+  /**
+   * Returns the clarifying question instead of an answer. Carries the same
+   * result contract as any other outcome so a caller needs no special case
+   * beyond checking `status`.
+   */
+  async buildClarificationResult(
+    request: CodaliGatewayRequest,
+    planning: CodaliGatewayPlanResult,
+    question: string,
+  ): Promise<CodaliGatewayResult> {
+    await this.updateRunPreservingMetadata(planning.runId, {
+      status: "needs_clarification",
+      warnings: [],
+      errors: [],
+      finalSynthesis: { status: "needs_clarification", question },
+    });
+    const trace = await this.store.readRunTrace(planning.runId);
+    return {
+      runId: planning.runId,
+      status: "needs_clarification",
+      answer: question,
+      output: question,
+      sources: [],
+      confidence: "low",
+      evidence: [],
+      artifacts: [],
+      warnings: [],
+      trace: buildGatewayTrace(planning.runId, request, "needs_clarification", trace),
+      telemetry: { clarificationRequested: true },
+      metadata: { classifier: planning.classifier.queryType },
+    };
+  }
+
+  private async buildFinalizedResult(args: {
+    input: CodaliGatewayFinalSynthesisInput;
+    contextPack: CodaliContextPack;
+    sources: CodaliGatewaySource[];
+    artifacts: CodaliArtifactRef[];
+    finalModel?: CodaliGatewayFinalModel;
+    answer: string;
+    finalizer: FinalizerDecision;
+    status?: CodaliGatewayStatus;
+    output?: unknown;
+    warnings?: string[];
+    errors?: string[];
+  }): Promise<CodaliGatewayResult> {
+    const status = args.status ?? "succeeded";
+    const warnings = args.warnings ?? [];
+    const errors = args.errors ?? [];
+    const confidence = confidenceFromContextPack(args.contextPack);
+    await this.updateRunPreservingMetadata(args.input.runId, {
+      status,
+      warnings,
+      errors,
+      finalSynthesis: {
+        status,
+        finalizerMode: args.finalizer.mode,
+        finalizerReason: args.finalizer.reason,
+        finalModel: args.finalModel,
+        sourceEvidenceIds: args.sources.map((source) => source.evidenceId),
+        contextPackId: args.contextPack.id,
+      },
+    });
+    const trace = await this.store.readRunTrace(args.input.runId);
+    const docdexRequestIds = collectDocdexRequestIds(trace, args.contextPack);
+    return {
+      runId: args.input.runId,
+      status,
+      answer: args.answer,
+      output: args.output ?? args.answer,
+      sources: args.sources,
+      confidence,
+      evidence: args.contextPack.decisionFacts,
+      artifacts: args.artifacts,
+      warnings,
+      contextPack: args.contextPack,
+      finalModel: args.finalModel,
+      trace: buildGatewayTrace(
+        args.input.runId,
+        args.input.request,
+        status,
+        trace,
+        warnings,
+        errors,
+      ),
+      telemetry: {
+        finalizerMode: args.finalizer.mode,
+        finalizerReason: args.finalizer.reason,
+        contextPackTokenEstimate: args.contextPack.tokenEstimate,
+        docdexRequestIds,
+      },
+      metadata: {
+        workerStatus: args.input.workers?.status,
+        planningWarnings: args.input.planning?.planning.warnings,
       },
     };
   }
@@ -1068,6 +1367,8 @@ export class CodaliGateway {
       sources: input.sources,
       confidence: "low",
       evidence: input.contextPack.decisionFacts,
+      artifacts: artifactRefsFromStored(trace?.artifacts ?? []),
+      warnings: [...input.warnings, "final_synthesizer_degraded_answer"],
       contextPack: input.contextPack,
       finalModel: input.finalModel,
       trace: gatewayTrace,
@@ -1121,6 +1422,8 @@ export class CodaliGateway {
       sources: input.sources,
       confidence: "low",
       evidence: input.contextPack.decisionFacts,
+      artifacts: artifactRefsFromStored(trace?.artifacts ?? []),
+      warnings: input.warnings,
       contextPack: input.contextPack,
       finalModel: input.finalModel,
       trace: gatewayTrace,

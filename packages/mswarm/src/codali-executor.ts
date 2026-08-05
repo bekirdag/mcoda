@@ -2077,6 +2077,13 @@ function createRequiredGatewayProtocolProvider(input: {
   };
 }
 
+/**
+ * Steps a gateway worker task may take: one to select tools, one to turn the
+ * results into the task output. Kept in step with `MAX_MODEL_CALLS_PER_TASK` in
+ * the local runner so cloud and local execution cannot drift apart.
+ */
+const MAX_WORKER_TASK_STEPS = 2;
+
 function createGatewayTaskRunner(input: {
   runtimeInput: CodaliRuntimeInput;
   runCodali: (runtimeInput: CodaliRuntimeInput) => Promise<CodaliRuntimeResult>;
@@ -2095,6 +2102,16 @@ function createGatewayTaskRunner(input: {
             needs: requiredProtocolNeeds,
           })
         : undefined;
+      // The gateway state machine owns iteration. A worker task here must be a
+      // single bounded pass, not another open-ended agent loop: nesting the two
+      // meant neither could bound the other, and a runaway task could not be
+      // attributed to either. `MAX_WORKER_TASK_STEPS` mirrors the local runner
+      // in `packages/codali/src/gateway/LocalGatewayTaskRunner.ts` — select
+      // tools, then summarize. Insufficient evidence is the verifier's call,
+      // and it schedules another round against `maxIterations`.
+      const maxSteps = requiredProtocolProvider
+        ? Math.max(2, MAX_WORKER_TASK_STEPS)
+        : MAX_WORKER_TASK_STEPS;
       const result = await input.runCodali({
         ...input.runtimeInput,
         task: prompt,
@@ -2103,9 +2120,7 @@ function createGatewayTaskRunner(input: {
           ...input.runtimeInput.policy,
           allowedTools,
           maxToolCalls: Math.max(0, remainingToolCalls),
-          maxSteps: requiredProtocolProvider
-            ? Math.max(2, input.runtimeInput.policy.maxSteps)
-            : input.runtimeInput.policy.maxSteps,
+          maxSteps: Math.min(maxSteps, input.runtimeInput.policy.maxSteps),
           mode: requiredProtocolProvider
             ? "protocol_loop"
             : input.runtimeInput.policy.mode,

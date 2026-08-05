@@ -24,6 +24,9 @@ const isIgnorableStdinError = (error: NodeJS.ErrnoException): boolean =>
   error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED";
 
 export class ClaudeCliProvider implements Provider {
+  /** Driven through the claude CLI's text interface; no structured tool calls. */
+  readonly supportsToolCalls = false;
+
   name = "claude-cli";
 
   constructor(private readonly config: ProviderConfig) {}

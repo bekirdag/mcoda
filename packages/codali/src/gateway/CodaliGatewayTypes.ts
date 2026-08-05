@@ -254,13 +254,37 @@ export interface CodaliGatewayFinalModel {
   model?: string;
 }
 
+/**
+ * A non-text output produced during a run — a generated image, a rendered
+ * file. Artifacts are referenced, never inlined, so a result stays small
+ * regardless of what was produced.
+ */
+export interface CodaliArtifactRef {
+  id: string;
+  type: string;
+  uri?: string;
+  path?: string;
+  mimeType?: string;
+  model?: string;
+  taskId?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface CodaliGatewayResult {
   runId: string;
   status: CodaliGatewayStatus;
   answer: string;
+  /**
+   * Structured output when the caller supplied `response.schema`, validated
+   * against it. Falls back to `answer` when no schema was requested.
+   */
+  output?: unknown;
   sources: CodaliGatewaySource[];
   confidence: CodaliGatewayConfidence;
   evidence: CodaliEvidenceItem[];
+  artifacts: CodaliArtifactRef[];
+  /** Non-fatal problems the caller should be able to surface or log. */
+  warnings: string[];
   contextPack?: CodaliContextPack;
   finalModel?: CodaliGatewayFinalModel;
   trace: CodaliGatewayTrace;
@@ -283,6 +307,17 @@ export interface CodaliGatewayClassifierOutput {
   needsAppTools: boolean;
   needsImageWorker: boolean;
   directAnswerCandidate?: string;
+  /**
+   * Capability groups the classifier selected. Drives stage-2 tool expansion
+   * in the planner prompt; absent means "expand everything".
+   */
+  capabilities?: string[];
+  /**
+   * Set when the request cannot be answered without more information — an
+   * unidentifiable person, project, or scope. Produces a
+   * `needs_clarification` result rather than a guessed identity.
+   */
+  needsClarification?: string;
   rationale?: string;
   confidence?: CodaliGatewayConfidence;
   metadata?: Record<string, unknown>;

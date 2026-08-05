@@ -132,6 +132,9 @@ const buildPromptOnlyFormatInstruction = (format: ProviderResponseFormat | undef
 };
 
 export class OpenAiCompatibleProvider implements Provider {
+  /** OpenAI-style function calling is supported and parsed from `tool_calls`. */
+  readonly supportsToolCalls = true;
+
   name = "openai-compatible";
   private localRunner: LocalOpenAiCompatibleRunnerConfig;
   private authMode: LocalRunnerAuthMode;

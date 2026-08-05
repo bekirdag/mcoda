@@ -27,7 +27,9 @@ const runGrepFallback = (query: string, cwd: string): { ok: boolean; output: str
 
 export const createSearchTool = (): ToolDefinition => ({
   name: "search_repo",
-  description: "Search for text in the workspace using rg when available.",
+  description: "Search for literal text in the working tree. Use when an exact string is known; prefer docdex_search for conceptual questions.",
+  readOnly: true,
+  capability: "workspace",
   inputSchema: {
     type: "object",
     required: ["query"],
