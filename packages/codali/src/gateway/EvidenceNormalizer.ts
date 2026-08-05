@@ -80,6 +80,9 @@ const MAX_DEPTH = 5;
 const MAX_EXCERPT_CHARS = 1_200;
 
 const EVIDENCE_ARRAY_KEYS = [
+  // Web research returns the pages it downloaded under `pages`; without this
+  // an external question produced no evidence at all.
+  "pages",
   "evidence",
   "evidenceItems",
   "evidence_items",

@@ -213,6 +213,60 @@ codali tools call <name> --args-json '{}'   # test one tool without a model
 
 ---
 
+## Behaviour suite (added 2026-08-05)
+
+Unit tests say the machinery compiles; they say nothing about whether an answer
+is any good. `packages/codali/eval/behaviour-suite.json` asks fifty live
+questions across eight behaviours and grades each mechanically, so it can be
+re-run after every change without a person reading fifty answers.
+
+```
+node packages/codali/eval/run-behaviour-suite.mjs --concurrency 2
+node packages/codali/eval/run-behaviour-suite.mjs --only repo,web
+node packages/codali/eval/run-behaviour-suite.mjs --ids repo-01,gen-01
+```
+
+The grader checks the things that actually go wrong: a cited path that does not
+exist on disk, repo files cited for a question about the world, a generation
+request that came back as a literature review, a hedge where the evidence held
+the answer, and a leaked secret.
+
+### Where it stands
+
+Five consecutive runs scored 37, 38, 39, 39, 37 out of 50. Generation is 8/8,
+honesty 5/5 and adversarial 2/2 on every run.
+
+Of the thirteen or so failures in any given run, only seven are the same ones
+each time. The rest flip between runs — the same question passes and fails with
+no code change, because a 3B orchestrator on a loaded local box is not
+deterministic. Chasing those with more code changes would be fitting to noise.
+
+**Consistently failing, in rough order of value:**
+
+- `repo-05`, `repo-11`, `repo-12` — questions needing a specific value or a file
+  listing. Docdex ranks by whole-file similarity, so `ToolRegistry.ts` loses to
+  files that merely discuss registering tools.
+- `repo-06` — finds the constant, reports "a negative priority", never quotes
+  `-10`.
+- `web-04`, `web-05` — external facts where the fetched pages did not contain
+  the specific figure or name.
+- `priv-06` — picks web research over the Graph mail connector for the user's
+  own mailbox, despite both the classifier and planner prompts now saying to
+  match the tool to where the answer lives.
+
+Every one of these is the same underlying limit: a 3B model choosing and
+following up on tools. The measured alternative is worse — swapping the worker
+to qwen3.6 scored **0/12** on the repo category, timing out rather than
+answering, which is why the small worker stays.
+
+### Note on the index
+
+`.docdexignore` excludes `packages/codali/eval/` because the suite states its
+own expected answers. Indexed, it was being returned as a search hit for the
+very questions it grades. Docdex's index is additive, so if it ever gets in
+again, the fix is to move `~/.docdex/state/repos/<id>/index` aside, restart the
+daemon, and reindex.
+
 ## Current setup, for reference
 
 Credentials in `~/.codali/.creds` (`KEY=value`, one per line, mode 600):

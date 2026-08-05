@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DocdexClient } from "../../../docdex/DocdexClient.js";
-import { createDocdexTools } from "../DocdexTools.js";
+import { createDocdexTools, toRepoRelativePath } from "../DocdexTools.js";
 
 type StubResponse = {
   ok: boolean;
@@ -462,4 +462,76 @@ test("web discovery being unavailable does not fail an empty local search", asyn
   assert.ok(tool);
   const result = await tool.handler({ query: "anything" }, { workspaceRoot: "/tmp" });
   assert.match(result.output, /"hits": \[\]/);
+});
+
+test("DocdexTools search returns the part of the file that matches the query", { concurrency: false }, async () => {
+  // Search snippets start at line one, so a question about a constant came back
+  // with three files' worth of imports and the worker reported it could not
+  // find the value. The follow-up tools exist, but a small model searches once
+  // and stops, so the first result has to carry the content.
+  const snippetUrls: string[] = [];
+  await withStubbedFetch((url) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    if (url.includes("/snippet/")) {
+      snippetUrls.push(url);
+      return makeJsonResponse({
+        snippet: { text: "export const MAX_TOOL_CALLS_PER_TASK = 8;", origin: "query" },
+      });
+    }
+    if (url.includes("/search")) {
+      return makeJsonResponse({
+        hits: [{ doc_id: "runner.ts", snippet: 'import x from "y";' }],
+      });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const tools = createDocdexTools(client);
+    const searchTool = tools.find((tool) => tool.name === "docdex_search");
+
+    const result = await searchTool!.handler(
+      { query: "MAX_TOOL_CALLS_PER_TASK" },
+      { workspaceRoot: process.cwd() },
+    );
+
+    assert.match(result.output, /MAX_TOOL_CALLS_PER_TASK = 8/);
+    assert.equal(snippetUrls.length, 1);
+    assert.match(snippetUrls[0]!, /q=MAX_TOOL_CALLS_PER_TASK/);
+  });
+});
+
+test("DocdexTools search keeps the original snippet when re-snippeting fails", { concurrency: false }, async () => {
+  await withStubbedFetch((url) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    if (url.includes("/snippet/")) return makeErrorResponse(500, "boom");
+    if (url.includes("/search")) {
+      return makeJsonResponse({ hits: [{ doc_id: "doc-1", snippet: "original text" }] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const tools = createDocdexTools(client);
+    const searchTool = tools.find((tool) => tool.name === "docdex_search");
+
+    // A worse snippet is much better than a failed search.
+    const result = await searchTool!.handler({ query: "anything" }, { workspaceRoot: process.cwd() });
+    assert.match(result.output, /original text/);
+  });
+});
+
+test("tree paths are normalized into the form docdex accepts", () => {
+  // Docdex answers `invalid path` for a leading slash, a "./" prefix, or an
+  // absolute path — and those are exactly what a model reaches for when asked
+  // to list a repository.
+  const root = "/Users/x/repo";
+  assert.equal(toRepoRelativePath("/", root), undefined);
+  assert.equal(toRepoRelativePath(".", root), undefined);
+  assert.equal(toRepoRelativePath("./", root), undefined);
+  assert.equal(toRepoRelativePath("", root), undefined);
+  assert.equal(toRepoRelativePath(undefined, root), undefined);
+  assert.equal(toRepoRelativePath("./packages", root), "packages");
+  assert.equal(toRepoRelativePath("/packages/codali", root), "packages/codali");
+  assert.equal(toRepoRelativePath("/Users/x/repo/packages", root), "packages");
+  assert.equal(toRepoRelativePath("packages//codali", root), "packages/codali");
+  assert.equal(toRepoRelativePath("packages/codali", root), "packages/codali");
 });

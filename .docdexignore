@@ -1,0 +1,4 @@
+# The behaviour suite states the expected answer for every question it asks.
+# Indexed, it turns up as a search hit for the very questions it grades, so a
+# run could pass by reading the answer key instead of the codebase.
+packages/codali/eval/

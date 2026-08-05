@@ -121,3 +121,39 @@ test("common words alone do not count as a match", () => {
     false,
   );
 });
+
+test("a CamelCase symbol in the question matches the file that defines it", () => {
+  // The measured failure: the question flattened to one token
+  // `codaligatewayplannererror`, while the path flattened to
+  // `gateway gatewayplanner ts`, so the correct file was discarded and the run
+  // reported that the class could not be found.
+  assert.equal(
+    titlesShareTermsWithQuery("Which file defines the CodaliGatewayPlannerError class?", [
+      "packages/codali/src/gateway/GatewayPlanner.ts",
+    ]),
+    true,
+  );
+});
+
+test("an acronym boundary splits too", () => {
+  assert.equal(
+    titlesShareTermsWithQuery("where is the HTTPClient defined", ["src/net/HttpClient.ts"]),
+    true,
+  );
+});
+
+test("an unrelated question still does not match", () => {
+  assert.equal(
+    titlesShareTermsWithQuery("What is the capital of Australia?", [
+      "packages/codali/src/gateway/GatewayPlanner.ts",
+      "packages/codali/src/tools/ToolRegistry.ts",
+    ]),
+    false,
+  );
+});
+
+test("a shared word must be a whole word, not a fragment", () => {
+  // `StringUtils.ts` splits to `string utils`, so "string" matches; but a
+  // question about "strings" must not match on a substring of some other word.
+  assert.equal(titlesShareTermsWithQuery("what is a monad", ["src/util/Monadic.ts"]), false);
+});

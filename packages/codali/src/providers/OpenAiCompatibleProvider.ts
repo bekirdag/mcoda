@@ -131,6 +131,52 @@ const buildPromptOnlyFormatInstruction = (format: ProviderResponseFormat | undef
   return undefined;
 };
 
+/**
+ * A single dropped connection must not fail a whole run.
+ *
+ * Self-hosted llama.cpp behind a relay closes sockets under load, surfacing as
+ * a bare `TypeError: fetch failed` with no status. Measured over fifty live
+ * questions this took out four runs outright — the caller saw an empty result,
+ * not a slow one. Retried, each of them succeeded.
+ *
+ * Deliberately narrow: only connection-level errors are retried. An HTTP error
+ * status is the server's considered answer and repeating it just wastes a
+ * minute, and an abort is our own timeout firing, where retrying would double
+ * the wait the caller already declined.
+ */
+const TRANSIENT_RETRIES = 2;
+const TRANSIENT_RETRY_DELAY_MS = 750;
+
+const isTransientNetworkError = (error: unknown): boolean => {
+  if (error instanceof Error && error.name === "AbortError") return false;
+  const cause = (error as { cause?: { code?: string } } | undefined)?.cause;
+  const code = cause?.code ?? (error as { code?: string } | undefined)?.code;
+  if (typeof code === "string") {
+    return ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "UND_ERR_SOCKET"].includes(code);
+  }
+  return error instanceof TypeError && /fetch failed|network|socket/i.test(error.message);
+};
+
+export const fetchWithTransientRetry = async (
+  url: string,
+  init: RequestInit,
+  controller?: AbortController,
+): Promise<Response> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= TRANSIENT_RETRIES; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      // Our own timeout already fired; there is no time left to spend.
+      if (controller?.signal.aborted || !isTransientNetworkError(error)) throw error;
+      if (attempt === TRANSIENT_RETRIES) break;
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS * (attempt + 1)));
+    }
+  }
+  throw lastError;
+};
+
 export class OpenAiCompatibleProvider implements Provider {
   /** OpenAI-style function calling is supported and parsed from `tool_calls`. */
   readonly supportsToolCalls = true;
@@ -224,12 +270,16 @@ export class OpenAiCompatibleProvider implements Provider {
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      const response = await fetchWithTransientRetry(
+        url,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+        controller,
+      );
 
       if (!response.ok) {
         const errorBody = await response.text();

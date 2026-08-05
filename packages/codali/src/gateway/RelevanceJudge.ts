@@ -71,6 +71,27 @@ const STOPWORDS = new Set([
 ]);
 
 /**
+ * Splits text into comparable words, breaking CamelCase as well as punctuation.
+ *
+ * A symbol name is one word to a human and several to a path. Asked "which file
+ * defines CodaliGatewayPlannerError", the question yields the single term
+ * `codaligatewayplannererror`, while `gateway/GatewayPlanner.ts` flattens to
+ * `gateway gatewayplanner ts` — no overlap, so the correct file was discarded.
+ * Splitting both sides on case boundaries puts `gateway` and `planner` on each
+ * side, and the match succeeds.
+ */
+const wordsIn = (value: string): string[] =>
+  value
+    // Insert a break between a lowercase/digit and a following uppercase, so
+    // `GatewayPlanner` becomes `Gateway Planner` before the lowercase pass.
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    // And between an acronym and a following word: `HTTPClient` -> `HTTP Client`.
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+
+/**
  * Whether any result title shares a distinctive word with the question.
  *
  * A cheap pre-check that exists because the judge was answering obvious cases
@@ -84,16 +105,16 @@ export const titlesShareTermsWithQuery = (
   query: string,
   titles: readonly string[],
 ): boolean => {
-  const terms = query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((word) => word.length > 3 && !STOPWORDS.has(word));
+  const terms = wordsIn(query).filter(
+    (word) => word.length > 3 && !STOPWORDS.has(word),
+  );
   if (terms.length === 0) return false;
 
-  // Split titles the same way so `LocalGatewayTaskRunner.ts` matches
-  // `localgatewaytaskrunner` from the question.
-  const haystack = titles.join(" ").toLowerCase().replace(/[^a-z0-9]+/g, " ");
-  return terms.some((term) => haystack.includes(term));
+  // Whole words only. Splitting both sides the same way already lets a symbol
+  // in the question meet the same symbol in a path, so a substring pass would
+  // add nothing but false matches ("string" hitting `StringUtils.ts`).
+  const haystack = ` ${wordsIn(titles.join(" ")).join(" ")} `;
+  return terms.some((term) => haystack.includes(` ${term} `));
 };
 
 export const createRelevanceJudge = (

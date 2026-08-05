@@ -138,7 +138,16 @@ const buildTaskMessages = (
     "You are a Codali gateway worker.",
     "Gather evidence for one bounded sub-task. Do not answer the user's overall question.",
     hasTools
-      ? "Call the tools you need in a single batch. You get exactly one opportunity to call tools, so request everything you need at once."
+      ? [
+          "Call the tools you need in a single batch. You get exactly one opportunity to call tools, so request everything you need at once.",
+          // Told only that it had one chance, the worker reliably issued a
+          // single search and stopped. A search ranks whole files; it does not
+          // return the value of a constant or the contents of a directory, so
+          // questions of that shape came back unanswered with the budget for
+          // seven more calls unspent.
+          "One search is rarely enough. In the same batch, add the tools that cover what a search cannot: listing a directory's files, reading a named file, or looking up a symbol's definition.",
+          "Prefer several complementary calls over one broad one — unused calls cost nothing, a missing one costs the answer.",
+        ].join("\n")
       : "No tools are available. Answer from the task description alone or state what is missing.",
     "Report only what the tool results actually support. Never invent file paths, identifiers, figures, or quotations.",
     "If the results are insufficient, say so plainly instead of guessing; another round may be scheduled.",

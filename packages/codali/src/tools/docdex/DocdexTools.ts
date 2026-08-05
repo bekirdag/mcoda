@@ -71,11 +71,154 @@ const hasWebFindings = (payload: unknown): boolean => {
  */
 const hasWebContent = (payload: unknown): boolean => {
   if (!isRecord(payload)) return false;
-  for (const key of ["web_context", "webContext", "hits", "results"]) {
+  // Fetched pages first. `hits` is not evidence of a successful fetch: with
+  // forceWeb it still carries local index matches, so judging by it alone
+  // reports success for a call that downloaded nothing.
+  const discovery = isRecord(payload.webDiscovery) ? payload.webDiscovery : undefined;
+  const fetches = Array.isArray(discovery?.fetches) ? discovery.fetches : [];
+  if (fetches.some((page) => isRecord(page) && (page.ai_digested_content || page.content))) {
+    return true;
+  }
+  for (const key of ["web_context", "webContext"]) {
     const value = payload[key];
     if (Array.isArray(value) && value.length > 0) return true;
   }
   return false;
+};
+
+/**
+ * Rewrites a path into the repo-relative form docdex accepts.
+ *
+ * Docdex answers `invalid path` for a leading slash, a `./` prefix, or an
+ * absolute path, and a model asked to list a repository reaches for exactly
+ * those. That took out every "which files are in X" question: the tool was
+ * chosen correctly and then rejected on a formatting detail. Normalising here
+ * is the adapter's job — the caller meant the same directory either way.
+ *
+ * Returns undefined for "the whole repository", which is what docdex wants when
+ * no path is given.
+ */
+export const toRepoRelativePath = (
+  value: string | undefined,
+  workspaceRoot?: string,
+): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  let candidate = value.trim();
+  if (!candidate || candidate === "." || candidate === "./" || candidate === "/") {
+    return undefined;
+  }
+  if (workspaceRoot && candidate.startsWith(workspaceRoot)) {
+    candidate = candidate.slice(workspaceRoot.length);
+  }
+  candidate = candidate.replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+  return candidate || undefined;
+};
+
+/** Pages to keep from a web research call, and how much of each. */
+const MAX_WEB_PAGES = 6;
+const MAX_WEB_PAGE_CHARS = 6_000;
+
+/**
+ * Reduces a web-research response to the pages it actually fetched.
+ *
+ * The raw response is the wrong shape twice over. The fetched pages — the whole
+ * point of the call — are buried at `webDiscovery.fetches`, where the evidence
+ * normalizer does not look, while `hits` holds whatever the *local* index
+ * matched. For an external question those hits are repo source files, so a
+ * question about a central bank's interest rate came back citing eight files
+ * from this repository and none of the eight pages just downloaded.
+ *
+ * Suppressing local hits by asking docdex to skip its local search does not
+ * work: docdex indexes the pages it fetches and serves them back through that
+ * same path, so skipping it returns nothing at all. The response has to be
+ * reshaped here instead.
+ */
+const toWebResearchOutput = (payload: unknown): unknown => {
+  if (!isRecord(payload)) return payload;
+  const discovery = isRecord(payload.webDiscovery) ? payload.webDiscovery : undefined;
+  const fetches = Array.isArray(discovery?.fetches) ? discovery.fetches : [];
+  if (fetches.length === 0) return payload;
+
+  const pages = fetches
+    .filter(isRecord)
+    .filter((page) => typeof page.url === "string")
+    .sort((a, b) => Number(b.relevance_score ?? 0) - Number(a.relevance_score ?? 0))
+    .slice(0, MAX_WEB_PAGES)
+    .map((page) => {
+      // The digest is the model-written summary docdex already produced; it
+      // says more per character than the raw page and costs the run less.
+      const body =
+        (typeof page.ai_digested_content === "string" && page.ai_digested_content) ||
+        (typeof page.content === "string" && page.content) ||
+        "";
+      return {
+        url: page.url,
+        content: body.slice(0, MAX_WEB_PAGE_CHARS),
+        ...(page.relevance_score !== undefined ? { relevanceScore: page.relevance_score } : {}),
+      };
+    })
+    .filter((page) => page.content.trim().length > 0);
+
+  if (pages.length === 0) return payload;
+  return {
+    query: isRecord(discovery?.discovery) ? discovery.discovery.query : undefined,
+    pages,
+  };
+};
+
+/** Hits to re-snippet. Enough to cover the answer, few enough to stay quick. */
+const QUERY_SNIPPET_HITS = 3;
+const QUERY_SNIPPET_WINDOW = 8;
+
+/**
+ * Replaces each hit's snippet with the part of the file that matches the query.
+ *
+ * Search returns a window starting at line one, which for a code file is the
+ * import block. Asked for the value of a constant, a worker therefore received
+ * three files' worth of imports and reported that it could not find the value —
+ * correct about what it was given, useless as an answer. The follow-up tools
+ * exist (`docdex_open`, `docdex_symbols`) and the tool description recommends
+ * them, but a small model reliably searches once and stops, so the first result
+ * has to carry the content.
+ *
+ * Best-effort throughout: a failed re-snippet leaves the original hit alone,
+ * because a worse snippet is much better than a failed search.
+ */
+const withQueryCentredSnippets = async (
+  client: DocdexClient,
+  query: string,
+  payload: unknown,
+): Promise<unknown> => {
+  if (!isRecord(payload)) return payload;
+  const key = ["hits", "results", "matches"].find((candidate) =>
+    Array.isArray(payload[candidate]),
+  );
+  if (!key) return payload;
+  const hits = payload[key] as unknown[];
+  if (hits.length === 0) return payload;
+
+  const enriched = await Promise.all(
+    hits.map(async (hit, index) => {
+      if (index >= QUERY_SNIPPET_HITS || !isRecord(hit)) return hit;
+      const docId = hit.doc_id ?? hit.docId ?? hit.rel_path ?? hit.relPath;
+      if (typeof docId !== "string" || !docId) return hit;
+      try {
+        const snippet = await client.openSnippet(docId, {
+          query,
+          window: QUERY_SNIPPET_WINDOW,
+        });
+        const text = isRecord(snippet) && isRecord(snippet.snippet)
+          ? snippet.snippet.text
+          : undefined;
+        if (typeof text !== "string" || text.trim().length === 0) return hit;
+        return { ...hit, snippet: text, snippet_origin: "query_centred" };
+      } catch {
+        return hit;
+      }
+    }),
+  );
+
+  return { ...payload, [key]: enriched };
 };
 
 const withDocdexMetadata = (tools: ToolDefinition[]): ToolDefinition[] =>
@@ -147,9 +290,9 @@ const docdexToolDefinitions = (
       "Search the indexed repository and organizational memory for code, docs, and prior decisions. " +
       "Searches locally first and falls back to the web when the local index has nothing relevant, " +
       "so this is the default tool for both repo questions and general external questions. " +
-      "Returns file paths, doc ids, and a snippet from the START of each file — usually imports, " +
-      "not the part that answers the question. To explain what something does, follow up with " +
-      "docdex_symbols for its signature or docdex_open for the relevant lines.",
+      "Returns file paths, doc ids, and for the top results a snippet taken from the part of the " +
+      "file that matches the query. For more of a file, follow up with docdex_symbols for its " +
+      "signatures or docdex_open for a specific range of lines.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -192,7 +335,7 @@ const docdexToolDefinitions = (
         }
       }
 
-      return toOutput(local);
+      return toOutput(await withQueryCentredSnippets(client, query, local));
     },
   },
   {
@@ -334,7 +477,7 @@ const docdexToolDefinitions = (
   },
   {
     name: "docdex_tree",
-    description: "Render the repository folder tree with build output and vendor directories excluded. Use to orient in an unfamiliar repo instead of listing directories manually.",
+    description: "List the files and folders in the repository, or under one directory, with build output and vendor directories excluded. This is the tool for \"which files are in X\" and \"what packages exist\" — a text search ranks files by content and will not enumerate them.",
     inputSchema: {
       type: "object",
       properties: {
@@ -345,7 +488,7 @@ const docdexToolDefinitions = (
         extraExcludes: { type: "array", items: { type: "string" } },
       },
     },
-    handler: async (args) => {
+    handler: async (args, context) => {
       const { path, maxDepth, dirsOnly, includeHidden, extraExcludes } = args as {
         path?: string;
         maxDepth?: number;
@@ -353,8 +496,18 @@ const docdexToolDefinitions = (
         includeHidden?: boolean;
         extraExcludes?: string[];
       };
-      const result = await client.tree({ path, maxDepth, dirsOnly, includeHidden, extraExcludes });
-      return toOutput(result);
+      const scoped = toRepoRelativePath(path, context?.workspaceRoot);
+      const options = { maxDepth, dirsOnly, includeHidden, extraExcludes };
+      try {
+        return toOutput(await client.tree({ path: scoped, ...options }));
+      } catch (error) {
+        // Docdex fails a directory that does not exist, and a model asked to
+        // list a repository guesses names — "mcoda", "monorepo", "root". The
+        // request was still "show me what is here", so answer that from the
+        // top rather than returning nothing.
+        if (!scoped) throw error;
+        return toOutput(await client.tree(options));
+      }
     },
   },
   {
@@ -471,7 +624,17 @@ const docdexToolDefinitions = (
         webLimit?: number;
         noCache?: boolean;
       };
-      let result = await client.webResearch(query, { forceWeb, skipLocalSearch, webLimit, noCache });
+      // This tool means "go and look outside". Left to default, docdex searches
+      // the local index first and returns whatever it holds, so a question about
+      // a central bank's interest rate came back sourced to this repository's
+      // own documentation. Anything genuinely local is what `docdex_search` is
+      // for; a caller can still ask for the mixed behaviour explicitly.
+      let result = await client.webResearch(query, {
+        forceWeb: forceWeb ?? true,
+        skipLocalSearch,
+        webLimit,
+        noCache,
+      });
 
       // A cache hit returns discovery metadata with no page content at all —
       // no web_context, no hits — so the run sees that a search happened and
@@ -480,7 +643,7 @@ const docdexToolDefinitions = (
       if (!noCache && !hasWebContent(result)) {
         try {
           const fresh = await client.webResearch(query, {
-            forceWeb,
+            forceWeb: forceWeb ?? true,
             skipLocalSearch,
             webLimit,
             noCache: true,
@@ -493,7 +656,7 @@ const docdexToolDefinitions = (
         }
       }
 
-      return toOutput(result);
+      return toOutput(toWebResearchOutput(result));
     },
   },
   {

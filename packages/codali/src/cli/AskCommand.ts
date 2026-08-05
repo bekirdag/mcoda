@@ -598,7 +598,31 @@ export const runAsk = async (
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     tracer.finish({ status: "failed", completionReason: message });
-    write(`Codali run failed: ${message}`);
+    // A caller that asked for JSON gets JSON on every path. Printing prose here
+    // hands a program `Codali run failed: fetch failed`, which parses as
+    // nothing at all — the failure arrives looking like a crash in the caller
+    // rather than a reported error from the run.
+    if (options.json) {
+      write(
+        JSON.stringify(
+          {
+            runId: tracer.snapshot().runId,
+            status: "failed",
+            answer: "",
+            output: "",
+            sources: [],
+            evidence: [],
+            artifacts: [],
+            warnings: [],
+            errors: [{ code: "GATEWAY_RUN_FAILED", message }],
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      write(`Codali run failed: ${message}`);
+    }
     if (options.trace) write(tracer.render());
     return { tracer, exitCode: 1 };
   } finally {

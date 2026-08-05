@@ -489,6 +489,20 @@ const allowedToolNames = (compilation: GatewayPolicyCompilation): string[] =>
 const normalizeForCompare = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
 
+/**
+ * Pronouns that point at something the question never names.
+ *
+ * "it", "he", "they" with no antecedent are the genuine case for asking. First
+ * person is excluded: "I have three apples" introduces its own subject.
+ */
+const DANGLING_REFERENT = /\b(?:it|its|he|him|his|she|her|hers|they|them|their)\b/i;
+
+const CLARIFICATION_STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "are", "was", "you",
+  "your", "about", "which", "what", "who", "does", "did", "specific", "please",
+  "question", "asking", "referring", "mean", "want", "like", "would", "should",
+]);
+
 const isRealClarification = (question: string, query: string): boolean => {
   const asked = normalizeForCompare(question);
   const original = normalizeForCompare(query);
@@ -498,7 +512,17 @@ const isRealClarification = (question: string, query: string): boolean => {
   if (original.includes(asked) || asked.includes(original)) return false;
   const originalWords = new Set(original.split(" "));
   const novel = asked.split(" ").filter((word) => word.length > 2 && !originalWords.has(word));
-  return novel.length > 0;
+  if (novel.length === 0) return false;
+
+  // A clarification has to be anchored in the request. Asked to reason about a
+  // stated word problem, the classifier replied "is the question about a
+  // specific codebase or project?" — an axis of ambiguity it invented, which
+  // stopped the run to learn nothing. Either the question names something the
+  // request mentioned, or the request left a referent dangling.
+  const sharesSubject = asked
+    .split(" ")
+    .some((word) => word.length > 3 && !CLARIFICATION_STOPWORDS.has(word) && originalWords.has(word));
+  return sharesSubject || DANGLING_REFERENT.test(query);
 };
 
 const readCapabilities = (record: Record<string, unknown>): string[] | undefined => {
@@ -534,8 +558,18 @@ export const buildCodaliGatewayClassifierMessages = (
     "Available capabilities:",
     renderCapabilityLines(tools, input.toolDescriptions),
     "Decide these booleans: needsPrivateData, needsFreshData, needsDocdex, needsAppTools, needsImageWorker.",
+    // Left to itself a small classifier sets every boolean true, which sends a
+    // request for a short poem through a repository search.
+    "Set them all false when the request is something you can simply do or already know: writing code, prose, or examples on demand; arithmetic; definitions; general knowledge that does not change.",
+    "Set needsDocdex true only when the answer depends on this specific codebase or its documents.",
+    "Set needsFreshData true only when the answer depends on the current state of the world.",
+    "Set needsPrivateData or needsAppTools true only when the answer depends on the user's own accounts, issues, messages, or repositories.",
     "If the request is genuinely ambiguous — an unidentifiable person, project, or scope — set needsClarification to the single question that would resolve it. Never guess an identity.",
     "List in `capabilities` only the capability names above that this query actually needs; the planner will then see the full tool schemas for just those.",
+    // Asked who currently runs Microsoft, a run picked the GitHub capability
+    // and called get_latest_release. The company name matched a connector; the
+    // question had nothing to do with the user's account.
+    "Choose capabilities by where the answer lives, not by which words the query shares with a tool. A product connector is right only when the answer is inside the user's own account or repositories; a public fact about a company or person is not.",
     "If a direct answer is possible without private/runtime tools, include directAnswerCandidate.",
   ].join("\n");
   return [
@@ -583,6 +617,10 @@ export const buildCodaliGatewayPlannerMessages = (
     exposure.truncated
       ? `(Tool list truncated to ${exposure.expandedTools.length}; narrow the capabilities if the needed tool is absent.)`
       : "",
+    // Asked about the user's own mailbox, the planner chose web research over
+    // the mail connector that was sitting in the allowed list. Public search
+    // cannot reach a private account, so that task could only fail.
+    "Match each task's tools to where its answer lives. When the request says \"my\" or names the user's own account, mailbox, calendar, issues, or repositories, the connector for that system is the only tool that can answer it — a public web search cannot read private data.",
     "Output planner JSON with queryType, subquestions, workerTasks, expectedEvidenceCount, maxIterations, requiresFinalLargeModel, and metadata.",
   ].filter(Boolean).join("\n");
   return [

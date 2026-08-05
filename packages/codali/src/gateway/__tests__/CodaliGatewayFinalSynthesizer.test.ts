@@ -531,7 +531,7 @@ test("unverified model observations are separated from decision facts", () => {
   const user = messages[1]?.content ?? "";
 
   assert.match(system, /unverifiedObservations/);
-  assert.match(system, /[Nn]ever state it as fact/);
+  assert.match(system, /[Nn]ever state (?:it|them) as fact/);
   const payload = JSON.parse(user.slice(user.indexOf("{"), user.lastIndexOf("}") + 1));
   assert.equal(payload.decisionFacts.length, 1, "only retrieved facts are decision facts");
   assert.equal(payload.unverifiedObservations.length, 1);

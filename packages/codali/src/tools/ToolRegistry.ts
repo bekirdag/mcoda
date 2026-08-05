@@ -109,6 +109,74 @@ const validateSchema = (
   return undefined;
 };
 
+/**
+ * Repairs arguments that are nearly right before validating them.
+ *
+ * A worker gets one batch of tool calls, so a rejected call is not retried — it
+ * takes the whole sub-task down. Measured against the live suite, small models
+ * lost calls to two trivial mistakes: naming a field `depth` when the schema
+ * says `maxDepth`, and sending `"2"` where a number was wanted. Both were
+ * reported as `tool_invalid_args` and the question came back unanswered.
+ *
+ * Two repairs, both safe:
+ *
+ * - **Unknown properties are dropped.** The handler would ignore them anyway;
+ *   failing instead only converts a usable call into no call at all. The tool
+ *   still runs with its documented defaults, which beats returning nothing.
+ * - **Scalar strings are coerced** to the declared type when they parse
+ *   exactly. `"2"` becomes `2`; `"two"` stays a string and is still rejected.
+ *
+ * Nothing here weakens validation: a missing required argument, or a value that
+ * cannot be coerced, fails exactly as before.
+ */
+const coerceScalar = (value: unknown, schema: ToolSchemaDefinition): unknown => {
+  if (typeof value !== "string") return value;
+  const types = readSchemaTypes(schema);
+  if (!types || types.some((type) => type === "string")) return value;
+  const trimmed = value.trim();
+  if (types.includes("number") || types.includes("integer")) {
+    const parsed = Number(trimmed);
+    if (trimmed !== "" && Number.isFinite(parsed)) {
+      if (types.includes("integer") && !Number.isInteger(parsed)) return value;
+      return parsed;
+    }
+  }
+  if (types.includes("boolean")) {
+    if (trimmed.toLowerCase() === "true") return true;
+    if (trimmed.toLowerCase() === "false") return false;
+  }
+  return value;
+};
+
+export const sanitizeToolArguments = (
+  value: unknown,
+  schema: ToolSchemaDefinition | undefined,
+): { value: unknown; dropped: string[] } => {
+  const dropped: string[] = [];
+  const walk = (input: unknown, node: ToolSchemaDefinition | undefined, path: string): unknown => {
+    if (!node) return input;
+    if (Array.isArray(input)) {
+      return node.items ? input.map((entry, index) => walk(entry, node.items, `${path}[${index}]`)) : input;
+    }
+    if (!isObject(input)) return coerceScalar(input, node);
+
+    const properties = node.properties;
+    if (!properties) return input;
+    const output: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(input)) {
+      const propertySchema = properties[key];
+      if (!propertySchema) {
+        if (node.additionalProperties === true) output[key] = entry;
+        else dropped.push(path ? `${path}.${key}` : key);
+        continue;
+      }
+      output[key] = walk(entry, propertySchema, path ? `${path}.${key}` : key);
+    }
+    return output;
+  };
+  return { value: walk(value, schema, ""), dropped };
+};
+
 const runtimeTypeOf = (value: unknown): ToolSchemaPrimitiveType | "unknown" => {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";
@@ -358,13 +426,19 @@ export class ToolRegistry {
       return { ok: false, output: "", error: schemaError };
     }
 
-    const validationError = tool.inputSchema ? validateValue(args, tool.inputSchema) : undefined;
+    const sanitized = tool.inputSchema
+      ? sanitizeToolArguments(args, tool.inputSchema)
+      : { value: args, dropped: [] as string[] };
+
+    const validationError = tool.inputSchema
+      ? validateValue(sanitized.value, tool.inputSchema)
+      : undefined;
     if (validationError) {
       return { ok: false, output: "", error: validationError };
     }
 
     try {
-      const result = await tool.handler(args, context);
+      const result = await tool.handler(sanitized.value, context);
       return { ok: true, output: result.output, data: result.data };
     } catch (error) {
       return {

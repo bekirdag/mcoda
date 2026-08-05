@@ -99,6 +99,12 @@ export interface DocdexSearchOptions {
 export interface DocdexSnippetOptions {
   window?: number;
   textOnly?: boolean;
+  /**
+   * Centres the returned window on the part of the file that matches this text.
+   * Without it the snippet starts at line one, which for a code file is the
+   * import block — rarely the part that answers anything.
+   */
+  query?: string;
 }
 
 export interface DocdexImpactOptions {
@@ -815,6 +821,7 @@ export class DocdexClient {
     const params = new URLSearchParams();
     if (options.window !== undefined) params.set("window", String(options.window));
     if (options.textOnly) params.set("text_only", "true");
+    if (options.query) params.set("q", options.query);
     this.withRepoId(params);
     const response = await fetch(`${this.resolveBaseUrl()}/snippet/${encodeURIComponent(docId)}?${params.toString()}`, {
       headers: this.buildHeaders(),
