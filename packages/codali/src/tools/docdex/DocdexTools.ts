@@ -64,6 +64,20 @@ const hasWebFindings = (payload: unknown): boolean => {
   return Array.isArray(fetches) && fetches.length > 0;
 };
 
+/**
+ * Whether a web-research payload carries anything quotable. Docdex answers a
+ * cache hit with discovery metadata only, which reads as success but gives a
+ * model nothing to cite.
+ */
+const hasWebContent = (payload: unknown): boolean => {
+  if (!isRecord(payload)) return false;
+  for (const key of ["web_context", "webContext", "hits", "results"]) {
+    const value = payload[key];
+    if (Array.isArray(value) && value.length > 0) return true;
+  }
+  return false;
+};
+
 const withDocdexMetadata = (tools: ToolDefinition[]): ToolDefinition[] =>
   tools.map((tool) => ({
     ...tool,
@@ -457,7 +471,28 @@ const docdexToolDefinitions = (
         webLimit?: number;
         noCache?: boolean;
       };
-      const result = await client.webResearch(query, { forceWeb, skipLocalSearch, webLimit, noCache });
+      let result = await client.webResearch(query, { forceWeb, skipLocalSearch, webLimit, noCache });
+
+      // A cache hit returns discovery metadata with no page content at all —
+      // no web_context, no hits — so the run sees that a search happened and
+      // nothing it can quote. Retrying uncached fetches the pages the cache
+      // was standing in for.
+      if (!noCache && !hasWebContent(result)) {
+        try {
+          const fresh = await client.webResearch(query, {
+            forceWeb,
+            skipLocalSearch,
+            webLimit,
+            noCache: true,
+          });
+          if (hasWebContent(fresh)) {
+            result = fresh;
+          }
+        } catch {
+          // Keep the cached response rather than failing a search that worked.
+        }
+      }
+
       return toOutput(result);
     },
   },

@@ -19,7 +19,39 @@ import type { CodaliGatewayAgentAssignment } from "./AgentTierResolver.js";
 export interface LocalProviderOptions {
   timeoutMs?: number;
   apiKey?: string;
+  /** Scheduling priority; lower runs sooner. Defaults to CODALI_MSWARM_PRIORITY. */
+  priority?: number;
 }
+
+/**
+ * Attaches the scheduling priority mswarm reads from `scheduling.priority`,
+ * without disturbing any runner settings the agent already carries.
+ */
+const buildLocalRunner = (
+  nested: Record<string, unknown>,
+  baseUrl: string | undefined,
+  priority: number | undefined,
+): ProviderConfig["localRunner"] => {
+  const existing = isRecord(nested.localRunner)
+    ? (nested.localRunner as Record<string, unknown>)
+    : undefined;
+  if (!isMswarmEndpoint(baseUrl)) {
+    return existing as ProviderConfig["localRunner"];
+  }
+  const existingExtra = isRecord(existing?.extraBody) ? existing.extraBody : {};
+  const existingScheduling = isRecord(existingExtra.scheduling) ? existingExtra.scheduling : {};
+  return {
+    ...(existing ?? {}),
+    extraBody: {
+      ...existingExtra,
+      scheduling: {
+        ...existingScheduling,
+        // An explicit value in the agent config wins over the default.
+        priority: existingScheduling.priority ?? priority ?? CODALI_MSWARM_PRIORITY,
+      },
+    },
+  } as ProviderConfig["localRunner"];
+};
 
 /**
  * Request timeout for a locally-hosted model.
@@ -30,6 +62,18 @@ export interface LocalProviderOptions {
  * unavailable" — a timeout wearing the costume of an outage.
  */
 const LOCAL_MODEL_TIMEOUT_MS = 600_000;
+
+/**
+ * Scheduling priority Codali asks mswarm for.
+ *
+ * mswarm sorts ascending, so a lower number runs sooner, and its nodes reserve
+ * capacity for priority <= -1. Codali runs are interactive — someone is waiting
+ * at a terminal or in a chat window — so they should not queue behind batch
+ * work. -10 sits comfortably inside the reserved band without claiming the
+ * extreme of the -100..100 range, leaving room for anything genuinely more
+ * urgent.
+ */
+export const CODALI_MSWARM_PRIORITY = -10;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -165,9 +209,7 @@ export const createProviderForAssignment = (
     timeoutMs: options.timeoutMs ?? LOCAL_MODEL_TIMEOUT_MS,
     runnerKind: readString(nested, ["runnerKind", "runner_kind"]) as ProviderConfig["runnerKind"],
     authMode: readString(nested, ["authMode", "auth_mode"]) as ProviderConfig["authMode"],
-    localRunner: isRecord(nested.localRunner)
-      ? (nested.localRunner as ProviderConfig["localRunner"])
-      : undefined,
+    localRunner: buildLocalRunner(nested, baseUrl, options.priority),
     supportsTools: assignment.candidate.supportsTools ?? readBoolean(raw, ["supportsTools"]),
     supportsJsonSchema:
       assignment.candidate.supportsJsonSchema ?? readBoolean(raw, ["supportsJsonSchema"]),

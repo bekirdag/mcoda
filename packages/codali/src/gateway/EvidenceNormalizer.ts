@@ -92,6 +92,12 @@ const EVIDENCE_ARRAY_KEYS = [
   "hits",
   "items",
   "records",
+  // Docdex web research returns fetched pages here. Without it a web search
+  // produced zero evidence: the model saw that discovery happened and reported
+  // it could not find the answer, while the answer sat in the payload.
+  "web_context",
+  "webContext",
+  "value",
 ] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -299,6 +305,8 @@ const parseMaybeJson = (value: string): { parsed?: unknown; malformed: boolean }
  * of them, and an unrecognized shape simply yields nothing rather than a guess.
  */
 const DESCRIPTIVE_FIELDS = [
+  "ai_digested_content",
+  "aiDigestedContent",
   "message",
   "summary",
   "subject",

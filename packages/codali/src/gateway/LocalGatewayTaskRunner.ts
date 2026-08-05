@@ -5,6 +5,7 @@ import type {
 } from "../providers/ProviderTypes.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolContext } from "../tools/ToolTypes.js";
+import { truncateToolResult } from "../tools/TruncateResult.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
 import type {
   CodaliGatewayWorkerModelCallRecord,
@@ -345,8 +346,14 @@ export class LocalGatewayTaskRunner implements CodaliGatewayWorkerTaskRunner {
             errorCode: result.error?.code,
             errorMessage: result.error?.message,
           },
+          // Structural where the tool returned data: a 258 KB web-research
+          // payload cut at a character count is unparseable, and the model
+          // then reports it found nothing. Applied here so it covers docdex
+          // and built-in tools too, not just the connectors.
           output: result.ok
-            ? truncate(result.output)
+            ? (result.data !== undefined
+                ? truncateToolResult(result.data, result.output, MAX_TOOL_OUTPUT_CHARS).text
+                : truncate(result.output))
             : `Tool failed (${result.error?.code ?? "unknown"}): ${result.error?.message ?? ""}`,
         };
       }),
