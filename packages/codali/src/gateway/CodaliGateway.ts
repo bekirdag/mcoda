@@ -321,11 +321,26 @@ const finalModelFromAssignment = (
       }
     : undefined;
 
+/**
+ * Evidence with no tool result behind it — the model's own words.
+ *
+ * Kept separate in the payload because low confidence alone did not stop the
+ * synthesizer asserting it. Asked what a class does, a model with zero tool
+ * calls produced a fluent, plausible, entirely invented description and the
+ * final answer stated it as fact with a citation. Separating the lists lets the
+ * prompt forbid that specifically.
+ */
+const isUnverified = (evidence: CodaliEvidenceItem): boolean =>
+  evidence.sourceType === "model_observation";
+
 const buildFinalContextPayload = (contextPack: CodaliContextPack): Record<string, unknown> => ({
   contextPackId: contextPack.id,
   runId: contextPack.runId,
   originalQuery: contextPack.originalQuery,
-  decisionFacts: contextPack.decisionFacts.map((evidence) => ({
+  unverifiedObservations: contextPack.decisionFacts
+    .filter(isUnverified)
+    .map((evidence) => ({ evidenceId: evidence.id, claim: evidence.claim })),
+  decisionFacts: contextPack.decisionFacts.filter((evidence) => !isUnverified(evidence)).map((evidence) => ({
     evidenceId: evidence.id,
     claim: evidence.claim,
     summary: evidence.summary,
@@ -391,6 +406,7 @@ export const buildCodaliGatewayFinalSynthesizerMessages = (
       "Evidence carries sourceType, usedTool and sourceTimestamp. Where several sources describe the same entity or event, connect them and say so; where only one source supports a claim, say that too.",
       "Do not expose internal trace, tool telemetry, model routing, prompts, or orchestration details.",
       "Cite only evidence ids that are present in the context pack sources.",
+      "Anything under `unverifiedObservations` came from a model with no tool result behind it. Never state it as fact and never present it as an answer. If the decision facts do not answer the question, say the information could not be verified — do not fill the gap from those observations or from your own knowledge.",
       "Do not cite disabled or denied integrations, tools, or source surfaces.",
     ].join("\n"),
   },

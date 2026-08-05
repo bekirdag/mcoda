@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRelevanceJudge, summarizeResultTitles } from "../RelevanceJudge.js";
+import {
+  createRelevanceJudge,
+  summarizeResultTitles,
+  titlesShareTermsWithQuery,
+} from "../RelevanceJudge.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 
 class StubProvider implements Provider {
@@ -39,7 +43,10 @@ test("an empty result set needs no judgement", async () => {
 
 test("YES keeps the local results", async () => {
   const judge = createRelevanceJudge({ provider: new StubProvider("YES") });
-  assert.equal(await judge({ query: "where is the planner?", results }), true);
+  assert.equal(
+    await judge({ query: "Describe the economic outlook", results }),
+    true,
+  );
 });
 
 test("NO sends the search to the web", async () => {
@@ -51,26 +58,66 @@ test("NO sends the search to the web", async () => {
 
 test("the verdict is read case- and whitespace-insensitively", async () => {
   const judge = createRelevanceJudge({ provider: new StubProvider("  no.\n") });
-  assert.equal(await judge({ query: "q", results }), false);
+  assert.equal(await judge({ query: "Describe the economic outlook", results }), false);
 });
 
 test("an unreadable verdict keeps the local results", async () => {
   // A needless web call is a worse failure than a slightly weak local hit.
   const judge = createRelevanceJudge({ provider: new StubProvider("I'm not sure") });
-  assert.equal(await judge({ query: "q", results }), true);
+  assert.equal(await judge({ query: "Describe the economic outlook", results }), true);
 });
 
 test("the judge asks for a single token so a small model stays fast", async () => {
   const provider = new StubProvider("YES");
-  await createRelevanceJudge({ provider })({ query: "q", results });
+  await createRelevanceJudge({ provider })({ query: "Describe the economic outlook", results });
   assert.ok((provider.requests[0]?.maxTokens ?? 999) <= 10);
   assert.equal(provider.requests[0]?.toolChoice, "none");
 });
 
 test("the question and the titles both reach the model", async () => {
+  // A query with no lexical overlap, so the pre-check defers to the judge.
   const provider = new StubProvider("YES");
-  await createRelevanceJudge({ provider })({ query: "where is the planner?", results });
+  await createRelevanceJudge({ provider })({
+    query: "What was France's economic output last year?",
+    results,
+  });
   const prompt = provider.requests[0]?.messages[1]?.content ?? "";
-  assert.match(prompt, /where is the planner\?/);
+  assert.match(prompt, /economic output/);
   assert.match(prompt, /GatewayPlanner\.ts/);
+});
+
+test("an obvious match skips the model call entirely", async () => {
+  // Asked whether LocalGatewayTaskRunner.ts could answer a question naming that
+  // class, a small model said no — forcing a 45-second web search for a local
+  // file. Lexical overlap settles this without asking.
+  const provider = new StubProvider("NO");
+  const judge = createRelevanceJudge({ provider });
+
+  const verdict = await judge({
+    query: "Summarize what the LocalGatewayTaskRunner class does",
+    results: { hits: [{ rel_path: "packages/codali/src/gateway/LocalGatewayTaskRunner.ts" }] },
+  });
+
+  assert.equal(verdict, true);
+  assert.equal(provider.requests.length, 0, "no model call for an obvious match");
+});
+
+test("no shared terms still goes to the judge", async () => {
+  const provider = new StubProvider("NO");
+  const judge = createRelevanceJudge({ provider });
+
+  const verdict = await judge({
+    query: "What is the GDP of France in 2025?",
+    results: { hits: [{ rel_path: "packages/codali/src/gateway/Finalizer.test.ts" }] },
+  });
+
+  assert.equal(verdict, false);
+  assert.equal(provider.requests.length, 1, "an ambiguous set is worth a model call");
+});
+
+test("common words alone do not count as a match", () => {
+  assert.equal(
+    titlesShareTermsWithQuery("What is the class file for this?", ["src/gateway/Planner.ts"]),
+    false,
+  );
 });

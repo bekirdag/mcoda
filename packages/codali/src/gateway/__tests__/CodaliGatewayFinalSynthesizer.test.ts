@@ -500,3 +500,40 @@ test("final synthesizer prompt helper does not include internal trace text", () 
   assert.doesNotMatch(prompt, /modelCalls/);
   assert.doesNotMatch(prompt, /toolCalls/);
 });
+
+test("unverified model observations are separated from decision facts", () => {
+  // Low confidence alone did not stop the synthesizer asserting them: asked
+  // what a class does, a model with zero tool calls produced a fluent,
+  // entirely invented description that the final answer stated as fact.
+  const pack = {
+    id: "pack-1",
+    runId: "run-1",
+    originalQuery: "What does LocalGatewayTaskRunner do?",
+    decisionFacts: [
+      {
+        id: "ev-real", runId: "run-1", claim: "Real retrieved fact.",
+        sourceType: "docdex", confidence: 0.9, relevance: 0.9, tenantScoped: true,
+      },
+      {
+        id: "ev-made-up", runId: "run-1", claim: "It handles task lifecycle management.",
+        sourceType: "model_observation", confidence: 0.2, relevance: 0.4, tenantScoped: true,
+      },
+    ],
+    contradictions: [], missingInformation: [], selectedExcerpts: [],
+    toolSummary: [], tokenEstimate: 10,
+  } as unknown as Parameters<typeof buildCodaliGatewayFinalSynthesizerMessages>[1];
+
+  const messages = buildCodaliGatewayFinalSynthesizerMessages(
+    { query: "What does LocalGatewayTaskRunner do?", policy: { allowedTools: [] } } as never,
+    pack,
+  );
+  const system = messages[0]?.content ?? "";
+  const user = messages[1]?.content ?? "";
+
+  assert.match(system, /unverifiedObservations/);
+  assert.match(system, /[Nn]ever state it as fact/);
+  const payload = JSON.parse(user.slice(user.indexOf("{"), user.lastIndexOf("}") + 1));
+  assert.equal(payload.decisionFacts.length, 1, "only retrieved facts are decision facts");
+  assert.equal(payload.unverifiedObservations.length, 1);
+  assert.equal(payload.unverifiedObservations[0].evidenceId, "ev-made-up");
+});

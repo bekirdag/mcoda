@@ -57,12 +57,54 @@ export interface RelevanceJudgeOptions {
   maxTokens?: number;
 }
 
+/**
+ * Words too common to signal relevance on their own.
+ *
+ * Not a keyword rule about any subject — just the connectives that appear in
+ * every question and would otherwise match any file path.
+ */
+const STOPWORDS = new Set([
+  "what", "which", "where", "when", "does", "did", "the", "and", "for", "with",
+  "from", "that", "this", "how", "why", "who", "are", "was", "were", "its",
+  "class", "file", "code", "show", "list", "find", "tell", "give", "about",
+  "purpose", "exists", "existence", "summary", "summarize", "explain",
+]);
+
+/**
+ * Whether any result title shares a distinctive word with the question.
+ *
+ * A cheap pre-check that exists because the judge was answering obvious cases
+ * wrongly and expensively: asked whether `LocalGatewayTaskRunner.ts` could
+ * answer "what does LocalGatewayTaskRunner do", a small model said no, which
+ * forced a 45-second web search for a local class. Lexical overlap settles
+ * that case without a model call, leaving the judge for genuinely ambiguous
+ * results — which is where it earns its keep.
+ */
+export const titlesShareTermsWithQuery = (
+  query: string,
+  titles: readonly string[],
+): boolean => {
+  const terms = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 3 && !STOPWORDS.has(word));
+  if (terms.length === 0) return false;
+
+  // Split titles the same way so `LocalGatewayTaskRunner.ts` matches
+  // `localgatewaytaskrunner` from the question.
+  const haystack = titles.join(" ").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  return terms.some((term) => haystack.includes(term));
+};
+
 export const createRelevanceJudge = (
   options: RelevanceJudgeOptions,
 ): RelevanceJudge => async ({ query, results }) => {
   const titles = summarizeResultTitles(results);
   // Nothing to judge; the caller's presence check already decided.
   if (titles.length === 0) return true;
+
+  // An obvious match needs no model call, and no chance of getting it wrong.
+  if (titlesShareTermsWithQuery(query, titles)) return true;
 
   const response = await options.provider.generate({
     messages: [

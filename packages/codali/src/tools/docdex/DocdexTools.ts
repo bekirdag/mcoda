@@ -129,7 +129,13 @@ const docdexToolDefinitions = (
   },
   {
     name: "docdex_search",
-    description: "Search the indexed repository and organizational memory for code, docs, and prior decisions. Ranked snippets with file paths and doc ids. Searches locally first and falls back to the web when the local index has nothing relevant, so this is the default tool for both repo questions and general external questions.",
+    description:
+      "Search the indexed repository and organizational memory for code, docs, and prior decisions. " +
+      "Searches locally first and falls back to the web when the local index has nothing relevant, " +
+      "so this is the default tool for both repo questions and general external questions. " +
+      "Returns file paths, doc ids, and a snippet from the START of each file — usually imports, " +
+      "not the part that answers the question. To explain what something does, follow up with " +
+      "docdex_symbols for its signature or docdex_open for the relevant lines.",
     inputSchema: {
       type: "object",
       required: ["query"],
@@ -215,7 +221,10 @@ const docdexToolDefinitions = (
   },
   {
     name: "docdex_symbols",
-    description: "List the definitions in a file with their exact signatures and line numbers - functions, classes, methods, exported constants. Use to confirm where something is defined before relying on it.",
+    description:
+      "List the definitions in a file with their exact signatures and line numbers — functions, " +
+      "classes, methods, exported constants. Use after docdex_search to find out what a file " +
+      "actually contains, since search snippets only show the file's opening lines.",
     inputSchema: {
       type: "object",
       required: ["path"],
