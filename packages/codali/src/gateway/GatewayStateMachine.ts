@@ -204,13 +204,13 @@ interface CodaliGatewayVerifierIterationRunResult {
  * The old default was a flat 30 seconds, which predates local models. A
  * self-hosted llama.cpp target averages ~46s for a single model call, and a
  * task is allowed two of them plus its tools, so the budget expired before the
- * work could finish: roughly 37 jobs per 4.5 hours died as
- * `GATEWAY_WORKER_TIMEOUT` on the suku node while successful jobs were running
- * to 260s.
+ * work could finish: measured on one such deployment, roughly 37 jobs per 4.5
+ * hours died as `GATEWAY_WORKER_TIMEOUT` while successful jobs ran to 260s.
  *
- * mswarm never set the option at all, so it ran hour-long jobs in which every
- * task was given thirty seconds. Deriving the default from the run's own budget
- * fixes that without every caller having to know the number.
+ * A host that sets a long `maxRuntimeMs` and leaves this unset made it sharper
+ * still — hour-long jobs in which every task was given thirty seconds.
+ * Deriving the default from the run's own budget fixes that without every
+ * caller having to know the number.
  *
  * The floor fits two local model calls and their tools. The ceiling stops a
  * task that has genuinely hung from eating a long run, and still leaves better
