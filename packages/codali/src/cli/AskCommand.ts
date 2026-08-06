@@ -3,7 +3,7 @@ import { filterLocallyDrivable, getAgentInventory } from "../agents/AgentInvento
 import { resolveConfigurableRoles } from "../agents/RoleResolution.js";
 import { attachHttpTools } from "../connectors/http/HttpToolSource.js";
 import { attachMcpTools } from "../connectors/mcp/McpToolSource.js";
-import { DocdexClient } from "../docdex/DocdexClient.js";
+import { DocdexClient, docdexRepoRootFor } from "../docdex/DocdexClient.js";
 import { createCodaliGateway } from "../gateway/CodaliGateway.js";
 import { createLocalGatewayTaskRunner } from "../gateway/LocalGatewayTaskRunner.js";
 import {
@@ -204,10 +204,11 @@ const buildDefaultRegistry = (
 
   const client = new DocdexClient({
     baseUrl: options.docdexBaseUrl ?? context.docdex?.baseUrl ?? "http://127.0.0.1:28491",
-    repoRoot: context.repo?.root ?? options.workspaceRoot,
+    repoRoot: docdexRepoRootFor(context.repo?.root, context.docdex?.repoId, options.workspaceRoot),
     repoId: context.docdex?.repoId,
     apiKey: context.docdex?.apiKey,
     allowedOperations: context.docdex?.allowedOperations,
+    clientIdentity: context.tenant?.slug ?? context.tenant?.id,
   });
 
   for (const tool of createDocdexTools(client, {

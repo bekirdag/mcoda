@@ -289,6 +289,23 @@ const sanitizeSearchRetryQuery = (query: string): string | undefined => {
   return sanitized && sanitized !== original ? sanitized : undefined;
 };
 
+/**
+ * The repository root to disclose to docdex, if any.
+ *
+ * A remote, tenant-scoped repository is addressed by `repoId`; there is no
+ * local checkout behind it. Defaulting the root to the process working
+ * directory sent the *server's* filesystem path to docdex as
+ * `x-docdex-repo-root` on every tenant request — a path that belongs to the
+ * host, describes no repository the tenant owns, and has no business leaving
+ * the machine. A host that does mean a local checkout says so with
+ * `repo.root`.
+ */
+export const docdexRepoRootFor = (
+  contextRepoRoot: string | undefined,
+  repoId: string | undefined,
+  workspaceRoot: string,
+): string | undefined => contextRepoRoot ?? (repoId ? undefined : workspaceRoot);
+
 export class DocdexClient {
   private repoId?: string;
   private dagSessionId?: string;

@@ -5,7 +5,7 @@ import {
   createImageGenerationTool,
   type ImageGenerationConfig,
 } from "../connectors/media/ImageGenerationTool.js";
-import { DocdexClient } from "../docdex/DocdexClient.js";
+import { DocdexClient, docdexRepoRootFor } from "../docdex/DocdexClient.js";
 import { createCodaliGateway } from "../gateway/CodaliGateway.js";
 import { createLocalGatewayTaskRunner } from "../gateway/LocalGatewayTaskRunner.js";
 import { createProviderForAssignment } from "../gateway/LocalGatewayProvider.js";
@@ -408,10 +408,13 @@ const buildDefaultRegistry = (
   const registry = new ToolRegistry();
   const client = new DocdexClient({
     baseUrl: context.docdex?.baseUrl ?? "http://127.0.0.1:28491",
-    repoRoot: context.repo?.root ?? workspaceRoot,
+    repoRoot: docdexRepoRootFor(context.repo?.root, context.docdex?.repoId, workspaceRoot),
     repoId: context.docdex?.repoId,
     apiKey: context.docdex?.apiKey,
     allowedOperations: context.docdex?.allowedOperations,
+    // Same allowlist story as the model calls: a tenant reaching a repository
+    // it does not own is authorised by identity, not by key alone.
+    clientIdentity: context.tenant?.slug ?? context.tenant?.id,
   });
   for (const tool of createDocdexTools(client)) registry.register(tool);
   return registry;

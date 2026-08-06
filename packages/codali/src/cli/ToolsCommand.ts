@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { attachHttpTools } from "../connectors/http/HttpToolSource.js";
 import { attachMcpTools } from "../connectors/mcp/McpToolSource.js";
@@ -7,6 +8,7 @@ import type { RunContext } from "../runcontext/RunContextResolver.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { sanitizeArgs } from "../gateway/GatewayTracer.js";
+import { inspectToolSurface } from "../gateway/ToolSurface.js";
 
 /**
  * `codali tools` — inspect what an orchestration run can actually reach.
@@ -27,6 +29,8 @@ Commands:
 Options:
   --workspace-root <path>   Repository to resolve config against (default: cwd)
   --args-json <json>        Arguments for "call"
+  --context-json <path>     Run against a host-supplied RunContext instead of
+                            local config, to see what one tenant's run gets
   --json                    Machine-readable output
   --help, -h                Show this help
 `;
@@ -36,6 +40,7 @@ export interface ToolsOptions {
   target?: string;
   workspaceRoot: string;
   argsJson?: string;
+  contextJson?: string;
   json: boolean;
 }
 
@@ -49,6 +54,7 @@ export const parseToolsArgs = (argv: string[]): ToolsOptions => {
   let workspaceRoot = process.cwd();
   let argsJson: string | undefined;
   let json = false;
+  let contextJson: string | undefined;
   let target: string | undefined;
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -56,6 +62,9 @@ export const parseToolsArgs = (argv: string[]): ToolsOptions => {
     const next = rest[index + 1];
     if (arg === "--workspace-root" && next) {
       workspaceRoot = path.resolve(next);
+      index += 1;
+    } else if (arg === "--context-json" && next) {
+      contextJson = next;
       index += 1;
     } else if (arg === "--args-json" && next) {
       argsJson = next;
@@ -71,7 +80,7 @@ export const parseToolsArgs = (argv: string[]): ToolsOptions => {
     throw new Error(`codali tools ${command} requires a tool name.\n\n${HELP}`);
   }
 
-  return { command, target, workspaceRoot, argsJson, json };
+  return { command, target, workspaceRoot, argsJson, contextJson, json };
 };
 
 export interface ToolsDependencies {
@@ -109,11 +118,15 @@ export const runTools = async (
   }
 
   const options = parseToolsArgs(argv);
-  const context = deps.resolveRunContext
-    ? await deps.resolveRunContext(options.workspaceRoot)
-    : await new LocalConfigRunContextResolver().resolve({
-        workspaceRoot: options.workspaceRoot,
-      });
+  // A host-supplied context answers the question a product actually has: not
+  // "what can this machine do" but "what would this tenant's run get".
+  const context = options.contextJson
+    ? (JSON.parse(await readFile(options.contextJson, "utf8")) as RunContext)
+    : deps.resolveRunContext
+      ? await deps.resolveRunContext(options.workspaceRoot)
+      : await new LocalConfigRunContextResolver().resolve({
+          workspaceRoot: options.workspaceRoot,
+        });
 
   const registry = (deps.buildBaseRegistry ?? buildBaseRegistryDefault)(
     context,
@@ -151,8 +164,17 @@ export const runTools = async (
     if (options.command === "list") {
       const capabilities = registry.capabilities();
       if (options.json) {
-        write(JSON.stringify(registry.catalog(), null, 2));
+        write(JSON.stringify(inspectToolSurface(context, registry), null, 2));
         return 0;
+      }
+      const surface = inspectToolSurface(context, registry);
+      if (surface.dropped.length > 0) {
+        // Silent loss is the failure this exists to catch: a tool the host
+        // supplied, present in the registry, that the compiler will not let
+        // the planner see. The run does not fail — it answers without it.
+        write(`${surface.dropped.length} tool(s) will NOT reach the planner:`);
+        for (const entry of surface.dropped) write(`  ${entry.tool}  (${entry.reason})`);
+        write("");
       }
       if (capabilities.size === 0) {
         write("No tools available.");

@@ -86,7 +86,19 @@ allowlisted model.
 
 ## C. Remote docdex repositories
 
-**Status: partially supported, unverified end to end.**
+**Status: DONE (0.1.114).** Two faults, both on the path logmira will use.
+
+The repository root defaulted to the process working directory whenever the
+host did not supply one, and `DocdexClient` sends it as `x-docdex-repo-root`.
+A tenant addressing a remote repository by `repoId` therefore leaked the
+*server's* filesystem path to docdex on every request — a path that belongs to
+the host and describes no repository the tenant owns. The root is now sent only
+when the host means a local checkout; a `repoId` with no `repo.root` sends
+none.
+
+The tenant identity was also never passed to `DocdexClient` from either the
+product or the CLI path, so allowlisted access to a remote repository could not
+authorise even after item B. It is now passed alongside the model calls.
 
 `DocdexClient` already takes `baseUrl`, `repoId`, `apiKey`, `authToken` and
 `clientIdentity`, and `RunContext` carries a `docdex` block, so a remote,
@@ -106,7 +118,20 @@ returns cited answers, and no local filesystem path is sent in that mode.
 
 ## D. Tool discovery inside a host product
 
-**Status: mechanism exists, needs a conformance test and documentation.**
+**Status: DONE (0.1.114).** `codali tools list --json` now reports the compiled
+tool surface — `registered`, `visible`, and `dropped` with the compiler's own
+reason for each — and `--context-json <path>` runs it against a host-supplied
+RunContext, so a logmira dev can ask "what would this tenant's run actually
+get" rather than "what can this machine do". `inspectToolSurface` is exported
+for hosts that want it as an assertion in their own tests.
+
+It uses the real compiler rather than reimplementing its rules: a conformance
+check that can disagree with the thing it checks is worse than none.
+
+Writing it caught the same mistake a third time. `actualTools` belongs on the
+tool manifest, not on `policy`, and putting it in the wrong place is silent —
+every connector tool is simply reported `not_declared`. That is precisely the
+failure this surfaces.
 
 Codali never calls back into the host: everything a run may touch arrives as
 `runContext` (tools, credentials, agent bindings, limits). The failure mode
