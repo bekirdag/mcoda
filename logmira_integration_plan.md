@@ -193,7 +193,26 @@ all media services active, restart counter back to zero.
 
 ## F. Tenant onboarding automation
 
-**Status: not designed. Largest unknown; do last.**
+**Status: DESIGNED, not built.** See `logmira_tenant_provisioning_design.md`.
+
+The seam already exists: `TenantsService.createTenant()` emits `tenant.created`
+through the outbox, and `outbox.processor.ts` dispatches it to
+`iamProvisioningService.provisionTenant()`. An `mswarmProvisioningService`
+beside it inherits the retries, ordering and dead-lettering rather than
+reinventing them.
+
+Three gaps: mswarm has no HTTP endpoint for programmatic provisioning (only the
+`ApiKeyStore.issue` library call, with no machine-caller authentication);
+logmira has nowhere to keep the key, since its `api-keys` module hashes what it
+issues and a foreign key must stay recoverable; and nothing grants a new tenant
+access to a node.
+
+Three decisions are the user's, not mine, and each changes the build: whether a
+new tenant gets hardware access automatically at all (two GPUs, and three
+concurrent questions already timed out at 315s during benchmarking); whether
+each logmira tenant is its own mswarm customer or logmira holds one account
+with tenants separated by client identity; and what a tenant looks like while
+provisioning is failing.
 
 Today: a tenant is created in logmira, an mswarm account and API key are made
 by hand, and the key is pasted into logmira's AI settings.
