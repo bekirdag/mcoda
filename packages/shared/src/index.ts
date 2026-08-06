@@ -12,6 +12,7 @@ export * from "./mswarm/GenericJobContract.js";
 export * from "./mswarm/CapabilityContract.js";
 export * from "./mswarm/ArtifactSandboxContract.js";
 export * from "./mswarm/LifecycleContract.js";
+export * from "./mswarm/ClientProductContract.js";
 export * from "./status/TaskStatus.js";
 export type {
   BacklogLaneTotals,

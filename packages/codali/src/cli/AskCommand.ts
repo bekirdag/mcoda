@@ -24,6 +24,7 @@ import type {
 } from "../gateway/CodaliGatewayTypes.js";
 import { providerSupportsToolCalls } from "../providers/ProviderTypes.js";
 import type { Provider } from "../providers/ProviderTypes.js";
+import { resolveMswarmClientProduct } from "@mcoda/shared";
 
 /**
  * `codali ask` — the terminal entry point to the orchestration gateway.
@@ -282,9 +283,12 @@ export const runAsk = async (
   }
 
   const clientIdentity = context.tenant?.slug ?? context.tenant?.id;
+  // Sent alongside the identity, never instead of it: a node may admit this caller
+  // by its product without the tenant itself being allowlisted.
+  const clientProduct = resolveMswarmClientProduct(context.tenant?.product);
   const baseProvider = deps.createProvider ?? createProviderForAssignment;
   const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
-    baseProvider(assignment, { clientIdentity, ...options });
+    baseProvider(assignment, { clientIdentity, clientProduct, ...options });
   const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
   const synthesizerProvider = synthesizer ? makeProvider(synthesizer) : undefined;
   // Either role can stand in for the other if only one resolved; the trace

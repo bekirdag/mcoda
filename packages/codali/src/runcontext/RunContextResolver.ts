@@ -41,6 +41,12 @@ export interface RunContextTenant {
   id?: string;
   slug?: string;
   realm?: string;
+  /**
+   * The product this tenant belongs to, sent to mswarm alongside the per-tenant
+   * identity so a self-hosted node can grant every tenant of a product at once.
+   * Hosts that set `MSWARM_CLIENT_PRODUCT` in their deployment can leave this unset.
+   */
+  product?: string;
 }
 
 export interface RunContextLimits {

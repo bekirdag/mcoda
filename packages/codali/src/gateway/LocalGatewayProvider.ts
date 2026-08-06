@@ -7,6 +7,7 @@ import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import type { Provider, ProviderConfig } from "../providers/ProviderTypes.js";
 import type { CodaliGatewayAgentAssignment } from "./AgentTierResolver.js";
+import { mswarmClientProductHeaders } from "@mcoda/shared";
 
 /**
  * Builds a `Provider` from a resolved mcoda agent so the gateway can run
@@ -32,6 +33,7 @@ export interface LocalProviderOptions {
    * reach an allowlisted repository and never an allowlisted model.
    */
   clientIdentity?: string;
+  clientProduct?: string;
 }
 
 /** mswarm accepts several spellings; send the canonical pair. */
@@ -40,14 +42,25 @@ const CLIENT_IDENTITY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const clientIdentityHeaders = (
   clientIdentity: string | undefined,
   baseUrl: string | undefined,
+  clientProduct?: string | undefined,
 ): Record<string, string> | undefined => {
+  // Same "only for mswarm" rule as the identity: a stray header on someone's
+  // private endpoint is not ours to add.
+  const productHeaders = isMswarmEndpoint(baseUrl)
+    ? mswarmClientProductHeaders(clientProduct)
+    : undefined;
   const value = clientIdentity?.trim();
-  // Only for mswarm, and only when it is a plausible identity: a stray header
-  // on someone's private endpoint is not ours to add.
+  // The product stands on its own. A node that grants the whole product admits this
+  // caller even when the tenant is not separately allowlisted - and a tenant whose
+  // slug fails the identity pattern must not take the product down with it.
   if (!value || !isMswarmEndpoint(baseUrl) || !CLIENT_IDENTITY_PATTERN.test(value)) {
-    return undefined;
+    return productHeaders;
   }
-  return { "x-mswarm-client-identity": value, "x-mswarm-client": value };
+  return {
+    "x-mswarm-client-identity": value,
+    "x-mswarm-client": value,
+    ...(productHeaders ?? {}),
+  };
 };
 
 /**
@@ -59,6 +72,7 @@ const buildLocalRunner = (
   baseUrl: string | undefined,
   priority: number | undefined,
   clientIdentity: string | undefined,
+  clientProduct?: string | undefined,
 ): ProviderConfig["localRunner"] => {
   const existing = isRecord(nested.localRunner)
     ? (nested.localRunner as Record<string, unknown>)
@@ -66,7 +80,7 @@ const buildLocalRunner = (
   if (!isMswarmEndpoint(baseUrl)) {
     return existing as ProviderConfig["localRunner"];
   }
-  const identityHeaders = clientIdentityHeaders(clientIdentity, baseUrl);
+  const identityHeaders = clientIdentityHeaders(clientIdentity, baseUrl, clientProduct);
   const existingHeaders = isRecord(existing?.headers) ? existing.headers : {};
   const existingExtra = isRecord(existing?.extraBody) ? existing.extraBody : {};
   const existingScheduling = isRecord(existingExtra.scheduling) ? existingExtra.scheduling : {};
@@ -267,7 +281,7 @@ export const createProviderForAssignment = (
     timeoutMs: options.timeoutMs ?? LOCAL_MODEL_TIMEOUT_MS,
     runnerKind: readString(nested, ["runnerKind", "runner_kind"]) as ProviderConfig["runnerKind"],
     authMode: readString(nested, ["authMode", "auth_mode"]) as ProviderConfig["authMode"],
-    localRunner: buildLocalRunner(nested, baseUrl, options.priority, options.clientIdentity),
+    localRunner: buildLocalRunner(nested, baseUrl, options.priority, options.clientIdentity, options.clientProduct),
     supportsTools: assignment.candidate.supportsTools ?? readBoolean(raw, ["supportsTools"]),
     supportsJsonSchema:
       assignment.candidate.supportsJsonSchema ?? readBoolean(raw, ["supportsJsonSchema"]),

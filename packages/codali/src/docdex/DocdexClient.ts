@@ -6,6 +6,7 @@ import type {
   DocdexCapabilitySnapshot,
   DocdexCapabilityStatus,
 } from "../cognitive/Types.js";
+import { mswarmClientProductHeaders } from "@mcoda/shared";
 
 export interface DocdexClientOptions {
   baseUrl: string;
@@ -14,6 +15,7 @@ export interface DocdexClientOptions {
   authToken?: string;
   apiKey?: string;
   clientIdentity?: string;
+  clientProduct?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
   required?: boolean;
   allowedOperations?: readonly string[];
@@ -542,6 +544,9 @@ export class DocdexClient {
       headers["x-mswarm-client-identity"] = clientIdentity;
       headers["x-mswarm-client"] = clientIdentity;
     }
+    // Independent of the identity above: a repo may be reachable because the whole
+    // product is allowlisted, even when this tenant is not named individually.
+    Object.assign(headers, mswarmClientProductHeaders(this.options.clientProduct) ?? {});
     if (this.options.repoRoot && !this.isImmutableRuntimeContext()) {
       headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
     }

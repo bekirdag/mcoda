@@ -19,6 +19,7 @@ import {
   type MswarmJobType,
   type SelfHostedGenerativeOperation,
   type UpdateAgentInput,
+  mswarmClientProductHeaders,
 } from '@mcoda/shared';
 import { MswarmConfigStore } from './MswarmConfigStore.js';
 
@@ -2397,6 +2398,7 @@ export class MswarmApi {
       headers?: Record<string, string>;
       baseUrl?: string;
       clientIdentity?: string;
+      clientProduct?: string;
     }
   ): Promise<T> {
     const url = new URL(pathname, init?.baseUrl ?? this.options.baseUrl);
@@ -2424,6 +2426,9 @@ export class MswarmApi {
         headers['x-mswarm-client-identity'] = clientIdentity;
         headers['x-mswarm-client'] = clientIdentity;
       }
+      // Sent whether or not an identity resolved: node access can be granted to the
+      // product as a whole, independently of the individual tenant.
+      Object.assign(headers, mswarmClientProductHeaders(init?.clientProduct) ?? {});
       let body: string | undefined;
       if (init?.body !== undefined) {
         headers['content-type'] = 'application/json';

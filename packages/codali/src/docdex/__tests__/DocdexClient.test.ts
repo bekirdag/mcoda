@@ -146,6 +146,67 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
   });
 });
 
+test("DocdexClient sends the client product alongside the tenant identity", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      // The identity stays per-tenant; the product is what a node can grant to every
+      // tenant at once. Both travel, and neither replaces the other.
+      assert.equal(headers?.["x-mswarm-client-identity"], "acme-corp");
+      assert.equal(headers?.["x-mswarm-client-product"], "okacam");
+      return makeJsonResponse({ results: [] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      clientIdentity: "acme-corp",
+      clientProduct: "OKACAM",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: true },
+    });
+    await client.search("product grant", { limit: 2 });
+  });
+});
+
+test("DocdexClient omits the product header when no product is configured", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.["x-mswarm-client-identity"], "acme-corp");
+      assert.equal(headers?.["x-mswarm-client-product"], undefined);
+      return makeJsonResponse({ results: [] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      clientIdentity: "acme-corp",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: true },
+    });
+    await client.search("no product", { limit: 2 });
+  });
+});
+
 test("DocdexClient uses tenant-scoped encrypted search, web, and batch endpoints", {
   concurrency: false,
 }, async () => {

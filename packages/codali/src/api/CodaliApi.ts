@@ -25,6 +25,7 @@ import type {
   CodaliGatewaySource,
   CodaliGatewayStatus,
 } from "../gateway/CodaliGatewayTypes.js";
+import { resolveMswarmClientProduct } from "@mcoda/shared";
 
 /**
  * The canonical Codali API.
@@ -219,9 +220,12 @@ export const runCodali = async (
   // what the self-hosted setup console registers ("wodo", "heka"); the id is a
   // usable fallback when a host only tracks ids.
   const clientIdentity = context.tenant?.slug ?? context.tenant?.id;
+  // Sent alongside the identity, never instead of it: a node may admit this caller
+  // by its product without the tenant itself being allowlisted.
+  const clientProduct = resolveMswarmClientProduct(context.tenant?.product);
   const baseProvider = deps.createProvider ?? createProviderForAssignment;
   const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
-    baseProvider(assignment, { clientIdentity, ...options });
+    baseProvider(assignment, { clientIdentity, clientProduct, ...options });
   const primary = makeProvider((synthesizer ?? orchestrator)!);
   const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
 
