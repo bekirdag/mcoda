@@ -7,8 +7,13 @@ Goal, as stated: creating a logmira tenant should register their mswarm
 account, mint an API key, link it to that tenant's AI settings, and leave them
 able to use the suku hardware.
 
-No code has been written for this. Three decisions below change the shape of it
-enough that guessing would mean building the wrong thing.
+**Decisions taken 2026-08-06:** every new tenant gets hardware access
+automatically, and each logmira tenant is its own mswarm customer.
+
+**Then the code said otherwise, and it matters.** saas_be is *already* mswarm's
+system of record for API keys, so most of "register their mswarm account" does
+not need building — and building it would create a second, competing path. The
+design below is the corrected one. See "What the code already does" first.
 
 ---
 
@@ -39,23 +44,62 @@ Sharing a node with another tenant works as of `7cdf9fe`: a node's
 heartbeats, and codali 0.1.113 sends `x-mswarm-client-identity` on both model
 and docdex calls so the allowlist is actually consulted.
 
-## What is missing
+## What the code already does — read this before building
 
-1. **mswarm has no programmatic provisioning endpoint.** `ApiKeyStore.issue`
-   is a library call. Nothing exposes "create this tenant and give me a key"
-   over HTTP, and nothing authenticates a machine caller like logmira to do it.
-2. **logmira has nowhere to put the key.** `tenant-config` has no AI or mswarm
-   settings, and the `api-keys` module is built for keys logmira *issues* — it
-   hashes them, because it only ever needs to verify. An mswarm key must be
-   replayed on every call, so it has to be recoverable, which means encrypted
-   at rest with a managed key rather than hashed.
-3. **Nothing grants a new tenant access to a node.** The allowlist is edited by
-   the node owner in the console. Automation would have to add each new
-   tenant's domain to whichever nodes they are entitled to — see decision 1.
+mswarm and saas_be are already integrated for API keys, in both directions, and
+it is live: `SAAS_BE_BASE_URL` and `SAAS_BE_SERVICE_TOKEN` are set in
+`mswarm.env`.
 
-## Decisions needed
+- `POST /v1/admin/api-keys/:tenantId` issues a key, and under a per-tenant
+  cutover flag it delegates to `saasBeClient.issueApiKey()` rather than minting
+  locally. The response carries `source: "saas_be"`.
+- mswarm validates keys by asking saas_be: `saasBeClient.introspectApiKey()`
+  calls `POST /v1/api-keys/introspect` and requires an active key to return
+  both `api_key_id` and `tenant_id`.
 
-### 1. Does a new tenant get the hardware automatically?
+The consequence is the important part: **mswarm derives the tenant from
+saas_be's answer, so there is no separate mswarm account to create.** A logmira
+tenant's own key already authenticates against mswarm and already carries its
+tenant identity. "Each tenant is its own mswarm customer" is therefore already
+true in the sense that matters — separate key, separate identity, separate
+usage — without provisioning a second account anywhere.
+
+That removes the largest piece of the original plan, and it removes a real
+hazard: a parallel provisioning path minting keys in mswarm's local store
+would produce tenants that introspection cannot resolve.
+
+## What is actually missing
+
+1. **A key designated for AI use.** saas_be can already issue one. The catch is
+   that a key secret is shown once at issuance, and codali needs to replay it
+   on every run, so logmira has to keep it recoverable — encrypted at rest with
+   a managed key. Its own `api-keys` module hashes what it issues, because it
+   only ever verifies; this is a different requirement and needs its own store.
+2. **Somewhere to put it.** `tenant-config` has no AI settings at all.
+3. **Node access.** The allowlist is edited by the node owner in the console.
+   With access now automatic, `tenant.created` has to add the tenant's domain
+   to the shared node, which needs the PATCH the other developer built exposed
+   to a machine caller.
+4. **Cutover.** Key issuance delegates to saas_be only where the per-tenant
+   `cp_cutover_policies` document, or the env default, enables it. A new tenant
+   must land on the enabled side or its key will be minted in mswarm's local
+   store and introspection will not resolve it.
+
+## Decisions taken, and what follows from them
+
+Both are recorded here because they carry consequences that outlive the choice.
+
+**Hardware access is automatic for every new tenant.** Capacity is now a
+function of signups. Two RTX 3090s serve every text, image, video and audio
+model, and three concurrent questions already produced 315-second timeouts
+during benchmarking, so a queue in front of the node stops being optional. The
+`scheduling.priority` codali already sends (-10) orders work but does not bound
+it. This should be built before the first cohort, not after.
+
+**Each tenant is its own mswarm customer.** As above, this is already true via
+per-tenant keys and introspection; no second account is provisioned.
+
+### Superseded: does a new tenant get the hardware automatically?
 
 Two RTX 3090s serve every model, plus image, video and audio. Three concurrent
 questions already produced 315-second timeouts during benchmarking. Granting
@@ -70,7 +114,7 @@ every new tenant access on creation makes capacity a function of signups.
 
 I would take opt-in until there is a queue and a measured capacity number.
 
-### 2. One mswarm account per logmira tenant, or one for logmira?
+### Superseded: one mswarm account per logmira tenant, or one for logmira?
 
 The request says "register their mswarm account", which reads as per-tenant.
 It is worth being explicit, because the two are very different:
@@ -87,7 +131,7 @@ It is worth being explicit, because the two are very different:
 The second is closer to what the plumbing already does, but it changes who
 holds the billing relationship, so it is not mine to pick.
 
-### 3. What happens when provisioning fails?
+### Still open: what happens when provisioning fails?
 
 mswarm being down should not stop someone creating a tenant. The outbox will
 retry, so the tenant exists with AI unavailable until it succeeds. That implies
@@ -96,19 +140,23 @@ than a silently missing key — otherwise the first symptom is a chat that
 answers without tools, which is exactly the class of silent failure this
 project has spent the week removing.
 
-## Sketch, once those are settled
+## The build
 
-1. mswarm exposes provisioning behind a machine credential — create or fetch a
-   tenant, issue a labelled key, return it once. Idempotent on tenant id, so an
+1. saas_be gains `MswarmProvisioningService`, called from the existing
+   `tenant.created` branch beside `iamProvisioningService`. It issues one
+   AI-labelled key through its own api-keys module, stores the secret encrypted
+   in tenant config, and sets `ai_provisioning`. Idempotent on tenant id, so an
    outbox retry cannot mint a second key.
-2. saas_be gains `MswarmProvisioningService`, called from the existing
-   `tenant.created` branch. It stores the key encrypted in tenant config and
-   sets `ai_provisioning`.
-3. Optional, per decision 1: add the tenant's domain to the entitled nodes'
-   allowlists.
-4. logmira passes that key, plus `tenant.slug`, into codali's `runContext`.
-   Codali already carries the slug to mswarm and docdex, so nothing further is
-   needed there.
+2. Ensure the tenant is on the enabled side of the api-key-issuance cutover, or
+   mswarm will not resolve its key.
+3. Add the tenant's domain to the shared node's `client_allowlist`, which needs
+   a machine-callable route for the PATCH that exists today only for the
+   console.
+4. logmira passes the key and `tenant.slug` into codali's `runContext`. Codali
+   already carries the slug to both mswarm and docdex as of 0.1.113, and as of
+   0.1.113 it refuses a tenant run that arrives without a context rather than
+   using the operator's own — so this step is what makes tenant runs work at
+   all, not merely what makes them attributable.
 
 ## What must not happen
 
