@@ -1132,6 +1132,9 @@ export type {
   ChatCompletionResponse,
 } from "./api/ChatCompletionsAdapter.js";
 
+export { inspectToolSurface } from "./gateway/ToolSurface.js";
+export type { ToolSurfaceEntry, ToolSurfaceReport } from "./gateway/ToolSurface.js";
+
 export { createCodaliServer, startCodaliServer } from "./api/CodaliServer.js";
 export type { CodaliServerOptions, CodaliServerPrincipal } from "./api/CodaliServer.js";
 
