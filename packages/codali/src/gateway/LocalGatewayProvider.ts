@@ -21,7 +21,34 @@ export interface LocalProviderOptions {
   apiKey?: string;
   /** Scheduling priority; lower runs sooner. Defaults to CODALI_MSWARM_PRIORITY. */
   priority?: number;
+  /**
+   * Who this run is for, as mswarm knows them — a tenant slug such as `wodo`.
+   *
+   * mswarm lets a node be reached two ways: the caller owns it, or the caller's
+   * identity appears in the node's `client_allowlist`. The second route is how
+   * a tenant reaches a node someone else operates, and it is what the
+   * self-hosted setup console configures. It requires the caller to say who it
+   * is. `DocdexClient` already did; model calls did not, so a tenant could
+   * reach an allowlisted repository and never an allowlisted model.
+   */
+  clientIdentity?: string;
 }
+
+/** mswarm accepts several spellings; send the canonical pair. */
+const CLIENT_IDENTITY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+const clientIdentityHeaders = (
+  clientIdentity: string | undefined,
+  baseUrl: string | undefined,
+): Record<string, string> | undefined => {
+  const value = clientIdentity?.trim();
+  // Only for mswarm, and only when it is a plausible identity: a stray header
+  // on someone's private endpoint is not ours to add.
+  if (!value || !isMswarmEndpoint(baseUrl) || !CLIENT_IDENTITY_PATTERN.test(value)) {
+    return undefined;
+  }
+  return { "x-mswarm-client-identity": value, "x-mswarm-client": value };
+};
 
 /**
  * Attaches the scheduling priority mswarm reads from `scheduling.priority`,
@@ -31,6 +58,7 @@ const buildLocalRunner = (
   nested: Record<string, unknown>,
   baseUrl: string | undefined,
   priority: number | undefined,
+  clientIdentity: string | undefined,
 ): ProviderConfig["localRunner"] => {
   const existing = isRecord(nested.localRunner)
     ? (nested.localRunner as Record<string, unknown>)
@@ -38,10 +66,14 @@ const buildLocalRunner = (
   if (!isMswarmEndpoint(baseUrl)) {
     return existing as ProviderConfig["localRunner"];
   }
+  const identityHeaders = clientIdentityHeaders(clientIdentity, baseUrl);
+  const existingHeaders = isRecord(existing?.headers) ? existing.headers : {};
   const existingExtra = isRecord(existing?.extraBody) ? existing.extraBody : {};
   const existingScheduling = isRecord(existingExtra.scheduling) ? existingExtra.scheduling : {};
   return {
     ...(existing ?? {}),
+    // An identity the agent already declares wins; this only fills the gap.
+    headers: { ...(identityHeaders ?? {}), ...existingHeaders },
     extraBody: {
       ...existingExtra,
       scheduling: {
@@ -235,7 +267,7 @@ export const createProviderForAssignment = (
     timeoutMs: options.timeoutMs ?? LOCAL_MODEL_TIMEOUT_MS,
     runnerKind: readString(nested, ["runnerKind", "runner_kind"]) as ProviderConfig["runnerKind"],
     authMode: readString(nested, ["authMode", "auth_mode"]) as ProviderConfig["authMode"],
-    localRunner: buildLocalRunner(nested, baseUrl, options.priority),
+    localRunner: buildLocalRunner(nested, baseUrl, options.priority, options.clientIdentity),
     supportsTools: assignment.candidate.supportsTools ?? readBoolean(raw, ["supportsTools"]),
     supportsJsonSchema:
       assignment.candidate.supportsJsonSchema ?? readBoolean(raw, ["supportsJsonSchema"]),

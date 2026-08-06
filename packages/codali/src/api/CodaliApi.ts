@@ -49,6 +49,20 @@ export interface CodaliRequest {
   messages: CodaliMessage[];
   /** Tenant scope, tools, credentials, agent bindings, limits. */
   runContext?: RunContext;
+  /**
+   * Permits falling back to the operator's own configuration when no context
+   * is supplied — `~/.codali/config.json` and `~/.codali/.creds`.
+   *
+   * Off by default, and it must stay that way. Those files hold the operator's
+   * GitHub, Jira and Microsoft tokens, so a tenant request that forgot its
+   * context would be answered from the wrong account. It would not error: it
+   * would return a plausible answer against someone else's data, and in
+   * development, where the operator is the tenant, it would look correct.
+   *
+   * Set it only where the caller genuinely is the operator: the CLI, and a
+   * server the operator runs for themselves.
+   */
+  allowOperatorConfigFallback?: boolean;
   /** JSON Schema the answer must satisfy. Enforced, with one repair attempt. */
   responseSchema?: Record<string, unknown>;
   responseMode?: "text" | "json" | "artifact";
@@ -148,12 +162,33 @@ export const runCodali = async (
     };
   }
 
-  // Host-supplied context wins; otherwise fall back to local trusted config.
-  const context =
-    request.runContext ??
-    (deps.resolveRunContext
+  // Host-supplied context wins. A host that supplies neither a context nor a
+  // resolver is not configured for tenants, and answering anyway would use the
+  // operator's credentials — so refuse instead of guessing whose data to read.
+  const resolvedContext = request.runContext
+    ? request.runContext
+    : deps.resolveRunContext
       ? await deps.resolveRunContext(workspaceRoot)
-      : await new LocalConfigRunContextResolver().resolve({ workspaceRoot }));
+      : request.allowOperatorConfigFallback
+        ? await new LocalConfigRunContextResolver().resolve({ workspaceRoot })
+        : undefined;
+  if (!resolvedContext) {
+    return {
+      status: "failed",
+      answer:
+        "No run context was supplied. Codali does not call back into the host, " +
+        "so a run must arrive with the tenant's tools, credentials and scope on " +
+        "`request.runContext` (or a `resolveRunContext` dependency). Set " +
+        "`allowOperatorConfigFallback: true` only when the caller is the machine " +
+        "operator — it reads ~/.codali/config.json and ~/.codali/.creds.",
+      output: undefined,
+      sources: [],
+      artifacts: [],
+      warnings: ["run_context_required"],
+      traceId: request.requestId ?? randomUUID(),
+    };
+  }
+  const context = resolvedContext;
   for (const warning of context.warnings ?? []) tracer.addWarning(warning);
 
   const inventory = await (deps.loadInventory ?? getAgentInventory)();
@@ -179,7 +214,14 @@ export const runCodali = async (
     };
   }
 
-  const makeProvider = deps.createProvider ?? createProviderForAssignment;
+  // mswarm reaches a node the caller does not own by matching this against the
+  // node's client allowlist, so every model call has to carry it. The slug is
+  // what the self-hosted setup console registers ("wodo", "heka"); the id is a
+  // usable fallback when a host only tracks ids.
+  const clientIdentity = context.tenant?.slug ?? context.tenant?.id;
+  const baseProvider = deps.createProvider ?? createProviderForAssignment;
+  const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
+    baseProvider(assignment, { clientIdentity, ...options });
   const primary = makeProvider((synthesizer ?? orchestrator)!);
   const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
 

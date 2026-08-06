@@ -124,3 +124,82 @@ test("an mswarm-relayed agent is unaffected by the local key lookup", () => {
     else process.env.CODALI_API_KEY = previous;
   }
 });
+
+test("a tenant identity rides along on mswarm model calls", () => {
+  // mswarm reaches a node the caller does not own by matching this against the
+  // node's client allowlist. DocdexClient already sent it; model calls did not,
+  // so a tenant could reach an allowlisted repository and never an allowlisted
+  // model.
+  const provider = createProviderForAssignment(
+    {
+      candidate: {
+        slug: "mswarm-self-hosted-node-model",
+        adapter: "openai-api",
+        model: "m",
+        raw: { config: { baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai/" } },
+      },
+    } as never,
+    { clientIdentity: "wodo" },
+  );
+  const headers = (provider as unknown as { localRunner?: { headers?: Record<string, string> } })
+    .localRunner?.headers;
+  assert.equal(headers?.["x-mswarm-client-identity"], "wodo");
+  assert.equal(headers?.["x-mswarm-client"], "wodo");
+});
+
+test("no identity is added to an endpoint that is not mswarm", () => {
+  // A stray header on someone's private endpoint is not ours to add.
+  const provider = createProviderForAssignment(
+    {
+      candidate: {
+        slug: "local",
+        adapter: "openai-api",
+        model: "m",
+        raw: { config: { baseUrl: "http://127.0.0.1:11440/v1" } },
+      },
+    } as never,
+    { clientIdentity: "wodo" },
+  );
+  const headers = (provider as unknown as { localRunner?: { headers?: Record<string, string> } })
+    .localRunner?.headers;
+  assert.equal(headers?.["x-mswarm-client-identity"], undefined);
+});
+
+test("an identity the agent already declares wins", () => {
+  const provider = createProviderForAssignment(
+    {
+      candidate: {
+        slug: "mswarm-thing",
+        adapter: "openai-api",
+        model: "m",
+        raw: {
+          config: {
+            baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai/",
+            localRunner: { headers: { "x-mswarm-client-identity": "declared" } },
+          },
+        },
+      },
+    } as never,
+    { clientIdentity: "derived" },
+  );
+  const headers = (provider as unknown as { localRunner?: { headers?: Record<string, string> } })
+    .localRunner?.headers;
+  assert.equal(headers?.["x-mswarm-client-identity"], "declared");
+});
+
+test("a malformed identity is dropped rather than sent", () => {
+  const provider = createProviderForAssignment(
+    {
+      candidate: {
+        slug: "mswarm-thing",
+        adapter: "openai-api",
+        model: "m",
+        raw: { config: { baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai/" } },
+      },
+    } as never,
+    { clientIdentity: "not a valid identity!" },
+  );
+  const headers = (provider as unknown as { localRunner?: { headers?: Record<string, string> } })
+    .localRunner?.headers;
+  assert.equal(headers?.["x-mswarm-client-identity"], undefined);
+});

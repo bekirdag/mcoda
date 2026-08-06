@@ -27,6 +27,8 @@ export interface ChatCompletionRequest {
   /** Codali-specific extras, ignored by a plain OpenAI client. */
   codali?: {
     runContext?: RunContext;
+    /** See CodaliRequest. Operator-only; never set this for a tenant request. */
+    allowOperatorConfigFallback?: boolean;
     workspaceRoot?: string;
     mode?: CodaliRequest["mode"];
     media?: CodaliRequest["media"];
@@ -94,6 +96,7 @@ export const handleChatCompletion = async (
   const result = await run({
     messages: toCodaliMessages(request.messages),
     runContext: request.codali?.runContext,
+    allowOperatorConfigFallback: request.codali?.allowOperatorConfigFallback,
     workspaceRoot: request.codali?.workspaceRoot,
     mode: request.codali?.mode,
     media: request.codali?.media,

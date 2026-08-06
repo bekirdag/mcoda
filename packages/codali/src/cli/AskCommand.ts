@@ -280,7 +280,10 @@ export const runAsk = async (
     return { tracer, exitCode: 1 };
   }
 
-  const makeProvider = deps.createProvider ?? createProviderForAssignment;
+  const clientIdentity = context.tenant?.slug ?? context.tenant?.id;
+  const baseProvider = deps.createProvider ?? createProviderForAssignment;
+  const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
+    baseProvider(assignment, { clientIdentity, ...options });
   const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
   const synthesizerProvider = synthesizer ? makeProvider(synthesizer) : undefined;
   // Either role can stand in for the other if only one resolved; the trace
