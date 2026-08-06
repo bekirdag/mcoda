@@ -19,27 +19,16 @@ was checked against running code or a live box before it was written down.
 fails with `run_context_required` and says what the host must supply. The CLI
 resolves its own context and is unaffected. Four tests cover it.
 
-`runCodali()` resolves its context as `request.runContext` →
-`deps.resolveRunContext` → `LocalConfigRunContextResolver`
-(`api/CodaliApi.ts:153`). That last fallback reads `~/.codali/config.json` and
-`~/.codali/.creds` — the operator's GitHub token, Jira token and Microsoft
-Graph refresh token.
+**What it was.** `runCodali()` resolved context as `request.runContext` →
+`deps.resolveRunContext` → `LocalConfigRunContextResolver`, and that last
+fallback reads `~/.codali/config.json` and `~/.codali/.creds` — the operator's
+GitHub, Jira and Microsoft Graph tokens. A tenant request that omitted its
+context was answered from the operator's accounts. It did not error; it
+returned a plausible answer against the wrong data, and it looked correct in
+development where the operator is the tenant.
 
-A tenant request that omits `runContext` therefore gets answered using the
-server operator's connectors. It does not error. It returns a plausible answer
-sourced from the wrong account, and it will look perfectly correct in
-development, where the operator and the tenant are the same person.
-
-The same shape exists for models: `createProviderForAssignment` falls back to
-`resolveMswarmApiKey()` (reads `~/.docdex/config.toml`) and, since 0.1.112, to
-`CODALI_AGENT_API_KEY_*` / `CODALI_API_KEY` from the server environment.
-
-**Done when:** a tenant-scoped request with no host-supplied context fails
-closed with a named error instead of silently using operator credentials, and
-local CLI use is unaffected.
-
-**Verify:** a test that calls `runCodali` with a tenant and no `runContext` and
-asserts the refusal; a second that asserts the CLI path still resolves locally.
+`runCodali` had no callers anywhere yet, so making the safe behaviour the
+default broke nothing.
 
 ---
 
@@ -68,37 +57,13 @@ reported `degraded` rather than `healthy` (`modelHealthFromNode`). The stale
 recovery either, which is what made it look dead. Worth fixing in mswarm:
 clear the recovery metadata, and find out what the node agent is reporting.
 
-The intended flow — a logmira tenant adds their mswarm API key in settings and
-gains access to the suku node's mcoda agents — cannot work today for model
-calls.
-
-mswarm authorises a self-hosted node two ways
-(`services/openai-proxy/src/server.ts:1769`, `self-hosted-nodes.ts:4805`):
-
-1. the caller's tenant, api key and owner match the node's, or
-2. the caller presents a client identity that appears in the node's
-   `client_allowlist` — a domain such as `wodo` or `heka`, an IP, or a UUID.
-
-Route 2 is how another tenant reaches someone else's node, and it is the route
-the console at `app.mswarm.org/.../mcoda-self-hosted/setup` configures. It
-requires the caller to send `x-mswarm-client-identity` (or `x-mswarm-client`,
-`x-okacam-tenant`, `x-tenant-slug`).
-
-`DocdexClient` sends that header (`docdex/DocdexClient.ts:523`).
-`LocalGatewayProvider`, which makes every model call, **sends no headers at
-all**. So a tenant can reach an allowlisted docdex repo and never an
+**What it was.** mswarm authorises a self-hosted node two ways: the caller's
+tenant, api key and owner match the node's, or the caller presents a client
+identity listed in the node's `client_allowlist`. The second route is how one
+tenant reaches another's node, and it is what the setup console configures.
+`DocdexClient` sent the identity; `LocalGatewayProvider` sent no headers at
+all, so a tenant could reach an allowlisted repository and never an
 allowlisted model.
-
-Note also `selfHostedNodeAllowsClient` returns `false` for an empty allowlist,
-so "no allowlist" means "nobody", not "no restriction". That is a safe default
-but it must be set deliberately per node.
-
-**Done when:** codali attaches the tenant's client identity to model calls, the
-identity comes from the run context rather than the environment, and a request
-carrying tenant `wodo`'s mswarm key reaches a node allowlisted to `wodo`.
-
-**Verify:** unit test on header construction; live call against the suku node
-with a client identity that is and is not on the allowlist.
 
 ---
 
