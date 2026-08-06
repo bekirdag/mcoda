@@ -48,6 +48,23 @@ have an empty `client_allowlist`, and an empty allowlist means *nobody*, not
 `app.mswarm.org/.../mcoda-self-hosted/setup`, no tenant but the owner can
 reach it however correct the headers are.
 
+**Node recovery: FIXED in mswarm `dbbcc4c`, not yet deployed.** The cause was
+not the relay outage itself — those 502s stopped at 03:15 — but that the node
+could not climb back out. It reports `recent_failure_count` with no timestamps,
+and a bare count was treated as current on every heartbeat, so a steady ten
+degraded it forever. It now degrades on failures that are *new* since the last
+heartbeat. The outage markers (`unreachable_at`, `unreachable_reason`,
+`heartbeat_timed_out_at`) are also cleared on recovery, instead of leaving a
+live node reading as dead. This changed a contract a test had pinned, so that
+test now asserts recovery. 844 mswarm tests pass and typecheck is clean.
+
+**Deployment is outstanding and I could not do it.** `scripts/deploy-production.sh`
+runs with sudo on the mswarm production host. api.mswarm.org resolves to
+Cloudflare, and the origin I can reach over the suku tunnel
+(`srv1.bdyac.com`) runs bdya containers with no mswarm service. Until this is
+deployed the suku node stays `degraded`, and every model on it is advertised
+`degraded` rather than `healthy`.
+
 Also observed while checking: the suku node reports `status: degraded` with
 `unreachable_reason: heartbeat_timeout` from 00:14, while `last_seen_at` is
 current. Heartbeats restore `online` only when the node reports healthy and has
