@@ -10,6 +10,7 @@ import { createCodaliGateway } from "../gateway/CodaliGateway.js";
 import { createLocalGatewayTaskRunner } from "../gateway/LocalGatewayTaskRunner.js";
 import { createProviderForAssignment } from "../gateway/LocalGatewayProvider.js";
 import { gatewayToolDescriptorsFromRegistry } from "../gateway/ToolDescriptorSource.js";
+import { defaultPerTaskTimeoutMs } from "../gateway/GatewayStateMachine.js";
 import { GatewayTracer } from "../gateway/GatewayTracer.js";
 import { getAgentInventory, filterLocallyDrivable } from "../agents/AgentInventory.js";
 import { resolveConfigurableRoles } from "../agents/RoleResolution.js";
@@ -370,7 +371,7 @@ export const runCodali = async (
     workerOptions: {
       maxRuntimeMs: deadlineMs,
       maxToolCalls,
-      perTaskTimeoutMs: Math.max(60_000, Math.floor(deadlineMs / 2)),
+      perTaskTimeoutMs: defaultPerTaskTimeoutMs(deadlineMs),
       maxParallelWorkers: DEFAULTS.maxParallelWorkers,
     },
   });

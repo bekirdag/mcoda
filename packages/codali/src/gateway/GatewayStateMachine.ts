@@ -198,7 +198,33 @@ interface CodaliGatewayVerifierIterationRunResult {
   errorMessage?: string;
 }
 
-const DEFAULT_PER_TASK_TIMEOUT_MS = 30_000;
+/**
+ * How long one worker task may take when the caller does not say.
+ *
+ * The old default was a flat 30 seconds, which predates local models. A
+ * self-hosted llama.cpp target averages ~46s for a single model call, and a
+ * task is allowed two of them plus its tools, so the budget expired before the
+ * work could finish: roughly 37 jobs per 4.5 hours died as
+ * `GATEWAY_WORKER_TIMEOUT` on the suku node while successful jobs were running
+ * to 260s.
+ *
+ * mswarm never set the option at all, so it ran hour-long jobs in which every
+ * task was given thirty seconds. Deriving the default from the run's own budget
+ * fixes that without every caller having to know the number.
+ *
+ * The floor fits two local model calls and their tools. The ceiling stops a
+ * task that has genuinely hung from eating a long run, and still leaves better
+ * than twice the headroom over the slowest job observed.
+ */
+const MIN_PER_TASK_TIMEOUT_MS = 180_000;
+const MAX_PER_TASK_TIMEOUT_MS = 600_000;
+const PER_TASK_RUNTIME_SHARE = 0.5;
+
+export const defaultPerTaskTimeoutMs = (maxRuntimeMs: number): number =>
+  Math.min(
+    MAX_PER_TASK_TIMEOUT_MS,
+    Math.max(MIN_PER_TASK_TIMEOUT_MS, Math.floor(maxRuntimeMs * PER_TASK_RUNTIME_SHARE)),
+  );
 
 const positiveInteger = (value: number | undefined, fallback: number): number =>
   Number.isFinite(value) && value !== undefined && value > 0
@@ -426,8 +452,10 @@ export class CodaliGatewayStateMachine {
       this.options.maxRuntimeMs,
       policyCompilation.security.limits.maxRuntimeMs,
     );
+    // A caller that names a budget still wins; the clamp keeps a task from
+    // outliving the run it belongs to.
     const perTaskTimeoutMs = Math.min(
-      positiveInteger(this.options.perTaskTimeoutMs, DEFAULT_PER_TASK_TIMEOUT_MS),
+      positiveInteger(this.options.perTaskTimeoutMs, defaultPerTaskTimeoutMs(maxRuntimeMs)),
       maxRuntimeMs,
     );
     const maxToolCalls = nonNegativeInteger(

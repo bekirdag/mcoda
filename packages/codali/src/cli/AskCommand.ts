@@ -11,6 +11,7 @@ import {
   RoleRoutingProvider,
 } from "../gateway/LocalGatewayProvider.js";
 import { gatewayToolDescriptorsFromRegistry } from "../gateway/ToolDescriptorSource.js";
+import { defaultPerTaskTimeoutMs } from "../gateway/GatewayStateMachine.js";
 import { GatewayTracer } from "../gateway/GatewayTracer.js";
 import { createRelevanceJudge } from "../gateway/RelevanceJudge.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
@@ -482,7 +483,7 @@ export const runAsk = async (
       // API and far too short for a CLI-backed agent — those routinely take a
       // minute per call, and every task times out before it can call a tool.
       // Derive it from the run deadline instead of guessing a constant.
-      perTaskTimeoutMs: Math.max(60_000, Math.floor(deadlineMs / 2)),
+      perTaskTimeoutMs: defaultPerTaskTimeoutMs(deadlineMs),
       // Independent read-only tasks run concurrently. The state machine
       // defaults to serial, which turns a four-source question into four
       // sequential model round trips.

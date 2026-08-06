@@ -8,6 +8,7 @@ import {
   type CodaliGatewayWorkerTaskRunInput,
   type CodaliGatewayWorkerTaskRunResult,
   type CodaliGatewayWorkerTaskRunner,
+  defaultPerTaskTimeoutMs,
 } from "../GatewayStateMachine.js";
 import type {
   CodaliEvidenceItem,
@@ -715,4 +716,23 @@ test("tool output cannot mutate policy or enable blocked tools", async () => {
   assert.equal(result.trace?.toolCalls[0]?.status, "blocked");
   const storedRequest = result.trace?.run.request as CodaliGatewayRequest | undefined;
   assert.deepEqual(storedRequest?.policy.allowedTools, []);
+});
+
+test("a worker task's default budget is derived from the run's, not a flat 30s", () => {
+  // The old flat default predates local models. A self-hosted llama.cpp target
+  // averages ~46s per model call and a task may make two plus its tools, so
+  // thirty seconds expired before the work could finish — about 37 jobs per
+  // 4.5 hours on the suku node, while successful jobs ran to 260s.
+  assert.equal(defaultPerTaskTimeoutMs(3_600_000), 600_000);
+  assert.equal(defaultPerTaskTimeoutMs(600_000), 300_000);
+});
+
+test("the floor fits two local model calls and their tools", () => {
+  // Even a short run must not hand a task less than the work it is allowed.
+  assert.equal(defaultPerTaskTimeoutMs(60_000), 180_000);
+  assert.equal(defaultPerTaskTimeoutMs(1_000), 180_000);
+});
+
+test("a hung task cannot eat an hour-long run", () => {
+  assert.equal(defaultPerTaskTimeoutMs(86_400_000), 600_000);
 });
