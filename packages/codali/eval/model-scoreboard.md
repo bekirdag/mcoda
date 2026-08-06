@@ -25,17 +25,28 @@ its inventory record, which turned out to be wrong in both directions.
 | `sukunahikona-qwen3-1-7b-instruct` | yes | yes | 1.2s |
 | `sukunahikona-qwen3-4b-instruct-2507` | yes | yes | 1.3s |
 | `sukunahikona-qwen3-6-llama-cpp` | yes | yes | 3.3s |
-| all `cassandra-local-*` | **no** — 404 `Unknown self-host` | — | — |
+| all `cassandra-local-*` | — | — | ignore: not a real server |
 
-Two corrections worth keeping:
+Cassandra is not a real server. Its thirty-odd agents are inventory entries
+only; disregard them when choosing a model.
 
-- The whole cassandra node is registered in the mcoda inventory but not served.
-  Thirty-odd agents there — qwen3-coder, devstral, glm-4.7-flash, the 33B coder
-  models — are listed with ratings and context windows and answer nothing.
-  Binding one silently substitutes another model, so the run *looks* fine.
-- `qwen3-4b-instruct-2507` reports `supportsTools: false` in the inventory and
-  emits tool calls perfectly well. `deepseek-coder-33b` reports the same and
-  cannot be checked, being on the dead node.
+Every suku model was then probed with a real tool-call request and its record
+corrected to match, on 2026-08-06:
+
+| model | port | tool calls | was recorded | now |
+|---|---|---|---|---|
+| `qwen3-0.6b-instruct` | 11442 | no — answers in prose | false, ctx 16384 | false, ctx 32768 |
+| `qwen3-1.7b-instruct` | 11443 | **yes** | false | **true** |
+| `qwen3-4b-instruct-2507` | 11440 | **yes** | false, ctx 16384 | **true**, ctx 32768 |
+| `qwen3.6-llama.cpp` | 11437 | yes | true | true (unchanged) |
+
+Three of the four records were wrong, and the errors were not harmless: a model
+recorded as `supportsTools: false` is silently passed over for tool work, so
+the 1.7B and 4B were never eligible as workers at all. Context windows were
+understated by half for two of them.
+
+`qwen2.5-1.5b-instruct` is registered against port 11441 with nothing serving
+it — a stale entry worth deleting.
 
 ## Scores
 

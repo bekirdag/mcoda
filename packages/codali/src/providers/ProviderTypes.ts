@@ -76,6 +76,8 @@ export interface ProviderResponse {
 
 export interface ProviderConfig {
   model: string;
+  /** Agent this provider serves, so failures can name it. */
+  agentSlug?: string;
   apiKey?: string;
   baseUrl?: string;
   timeoutMs?: number;

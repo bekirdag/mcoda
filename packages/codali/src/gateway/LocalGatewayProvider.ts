@@ -173,6 +173,29 @@ export const resolveMswarmApiKey = (): string | undefined => {
   return undefined;
 };
 
+/**
+ * The key for a self-hosted agent that is not behind the mswarm relay.
+ *
+ * mcoda stores agent secrets encrypted (`agent_auth.encrypted_secret`) and
+ * `agent list --json` reports only whether one is configured, so an agent
+ * registered with `authMode: bearer` and a direct base URL arrives here with no
+ * key at all. The provider then threw before making any request, which surfaced
+ * as a worker failing in 0ms on every call while the run still reported
+ * success — the finalizer answered without evidence rather than the run
+ * stopping on a configuration error.
+ *
+ * Codali therefore takes the key from the operator's own environment, matching
+ * how the mswarm key is read from local trusted config. The per-agent form wins
+ * so several self-hosted models can be used at once.
+ */
+export const localAgentApiKeyEnvVar = (slug: string): string =>
+  `CODALI_AGENT_API_KEY_${slug.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+
+const resolveLocalAgentApiKey = (slug: string | undefined): string | undefined => {
+  const perAgent = slug ? process.env[localAgentApiKeyEnvVar(slug)]?.trim() : undefined;
+  return perAgent || process.env.CODALI_API_KEY?.trim() || undefined;
+};
+
 const isMswarmEndpoint = (baseUrl: string | undefined): boolean =>
   Boolean(baseUrl && /(^|\/\/)([^/]*\.)?mswarm\.org/i.test(baseUrl));
 
@@ -200,10 +223,13 @@ export const createProviderForAssignment = (
     options.apiKey ??
     readString(nested, ["apiKey", "api_key"]) ??
     readString(raw, ["apiKey", "api_key"]) ??
-    (isMswarmEndpoint(baseUrl) ? resolveMswarmApiKey() : undefined);
+    (isMswarmEndpoint(baseUrl)
+      ? resolveMswarmApiKey()
+      : resolveLocalAgentApiKey(assignment.candidate.slug));
 
   const config: ProviderConfig = {
     model: assignment.candidate.model ?? readString(raw, ["defaultModel", "model"]) ?? "",
+    agentSlug: assignment.candidate.slug,
     baseUrl,
     apiKey,
     timeoutMs: options.timeoutMs ?? LOCAL_MODEL_TIMEOUT_MS,

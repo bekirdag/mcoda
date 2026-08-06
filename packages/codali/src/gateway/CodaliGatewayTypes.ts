@@ -395,6 +395,16 @@ export interface CodaliGatewayTraceModelCall {
   promptTokens?: number;
   completionTokens?: number;
   errorCode?: string;
+  /**
+   * Why the call failed, verbatim from the provider.
+   *
+   * The store keeps this and the trace used to drop it, so every failure
+   * reached the operator as a bare `GATEWAY_WORKER_MODEL_FAILED`. A worker
+   * misconfigured for auth reported exactly the same code as a model that
+   * timed out or refused, and the run still said "succeeded" because the
+   * finalizer answered without evidence.
+   */
+  errorMessage?: string;
 }
 
 export interface CodaliGatewayTrace {

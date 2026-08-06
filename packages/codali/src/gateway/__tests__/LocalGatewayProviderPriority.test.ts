@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CODALI_MSWARM_PRIORITY, createProviderForAssignment } from "../LocalGatewayProvider.js";
+import { CODALI_MSWARM_PRIORITY, createProviderForAssignment,
+  localAgentApiKeyEnvVar } from "../LocalGatewayProvider.js";
 import type { CodaliGatewayAgentAssignment } from "../AgentTierResolver.js";
 
 const assignment = (
@@ -73,4 +74,53 @@ test("a non-mswarm endpoint is left alone", () => {
   // noise at best.
   const provider = createProviderForAssignment(assignment("http://127.0.0.1:11434"));
   assert.equal(extraBody(provider)?.scheduling, undefined);
+});
+
+test("a self-hosted agent takes its key from the operator's environment", () => {
+  // mcoda stores agent secrets encrypted and never discloses them, so an agent
+  // registered with bearer auth and a direct base URL arrives with no key. The
+  // provider then threw before making any request: a worker that failed in 0ms
+  // on every call while the run still reported success.
+  const previous = process.env.CODALI_AGENT_API_KEY_QWEN_9B;
+  process.env.CODALI_AGENT_API_KEY_QWEN_9B = "local-secret";
+  try {
+    const provider = createProviderForAssignment({
+      candidate: {
+        slug: "qwen-9b",
+        adapter: "openai-api",
+        model: "qwen-9b",
+        supportsTools: true,
+        raw: { config: { baseUrl: "http://127.0.0.1:11441/v1", authMode: "bearer" } },
+      },
+    } as never);
+    assert.equal((provider as unknown as { config: { apiKey?: string } }).config.apiKey, "local-secret");
+  } finally {
+    if (previous === undefined) delete process.env.CODALI_AGENT_API_KEY_QWEN_9B;
+    else process.env.CODALI_AGENT_API_KEY_QWEN_9B = previous;
+  }
+});
+
+test("the per-agent variable name is derived from the slug", () => {
+  assert.equal(localAgentApiKeyEnvVar("qwen3.5-9b-suku"), "CODALI_AGENT_API_KEY_QWEN3_5_9B_SUKU");
+  assert.equal(localAgentApiKeyEnvVar("local-qwen3b"), "CODALI_AGENT_API_KEY_LOCAL_QWEN3B");
+});
+
+test("an mswarm-relayed agent is unaffected by the local key lookup", () => {
+  const previous = process.env.CODALI_API_KEY;
+  process.env.CODALI_API_KEY = "should-not-be-used-for-relay";
+  try {
+    const provider = createProviderForAssignment({
+      candidate: {
+        slug: "mswarm-self-hosted-thing",
+        adapter: "openai-api",
+        model: "thing",
+        raw: { config: { baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai/" } },
+      },
+    } as never);
+    const key = (provider as unknown as { config: { apiKey?: string } }).config.apiKey;
+    assert.notEqual(key, "should-not-be-used-for-relay");
+  } finally {
+    if (previous === undefined) delete process.env.CODALI_API_KEY;
+    else process.env.CODALI_API_KEY = previous;
+  }
 });

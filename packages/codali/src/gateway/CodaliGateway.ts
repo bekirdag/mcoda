@@ -608,6 +608,7 @@ const mapModelCallTrace = (
     provider: call.provider,
     model: call.model,
     status: call.status === "failed" ? "failed" : "success",
+    errorMessage: call.errorMessage,
     latencyMs: call.latencyMs,
     promptTokens:
       isRecord(call.metadata?.usage) && typeof call.metadata.usage.inputTokens === "number"

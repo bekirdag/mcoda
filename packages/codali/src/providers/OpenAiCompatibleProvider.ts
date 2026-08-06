@@ -410,7 +410,18 @@ export class OpenAiCompatibleProvider implements Provider {
       };
     }
     if (!this.config.apiKey) {
-      throw new Error("AUTH_REQUIRED: OpenAI-compatible provider API key missing; set CODALI_API_KEY.");
+      // Name the agent and the variable that fixes it. The old message named a
+      // single global key, which is wrong once more than one self-hosted model
+      // is registered, and gave no clue which agent had failed.
+      const slug = this.config.agentSlug;
+      const perAgent = slug
+        ? ` Set ${`CODALI_AGENT_API_KEY_${slug.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`}, or`
+        : "";
+      throw new Error(
+        `AUTH_REQUIRED: no API key for ${slug ?? "this OpenAI-compatible agent"} ` +
+          `(auth mode "bearer", base URL ${this.config.baseUrl ?? "unset"}).` +
+          `${perAgent} set CODALI_API_KEY, or register the agent with auth mode "none".`,
+      );
     }
     return { mode: "bearer", authorization: `Bearer ${this.config.apiKey}` };
   }
