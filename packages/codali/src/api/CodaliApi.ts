@@ -241,6 +241,8 @@ export const runCodali = async (
   }
   const toolsExecutable = providerSupportsToolCalls(worker);
 
+  const min = (a: number, b?: number) => (b === undefined ? a : Math.min(a, b));
+
   // ---- Tools ------------------------------------------------------------
   const registry =
     deps.buildRegistry?.(workspaceRoot, context) ?? buildDefaultRegistry(workspaceRoot, context);
@@ -274,9 +276,26 @@ export const runCodali = async (
     ...http.registered,
     ...(request.media ? ["media_generate_image"] : []),
   ];
-  const allowedTools = toolsExecutable
+  // A run with no tool budget is a run without tools. Offering them anyway
+  // produced tasks that could not execute, and a failed job where the honest
+  // outcome was an answer given without them.
+  const toolBudget = min(
+    request.budgets?.maxToolCalls ?? DEFAULTS.maxToolCalls,
+    context.limits?.maxToolCalls,
+  );
+  const allowedTools = toolsExecutable && toolBudget > 0
     ? (context.allowedTools ?? defaultAllowed).filter((tool) => registered.includes(tool))
     : [];
+  // Losing every tool because the worker model cannot emit tool calls is the
+  // most consequential thing that can happen to a run, and it used to happen in
+  // silence: connectors registered, compiled, reported visible, and never
+  // called, with a successful run and an empty source list as the only symptom.
+  // Say it, and name what was lost.
+  if (!toolsExecutable && registered.length > 0) {
+    tracer.addWarning(
+      `tools_disabled_worker_cannot_call_tools:${worker.name}:${registered.length}_tools_dropped`,
+    );
+  }
 
   // Every allowed tool must be declared to the capability compiler, which
   // otherwise discards it as `not_declared` — including docdex tools outside
@@ -286,12 +305,8 @@ export const runCodali = async (
   const connectorTools = allowedTools;
 
   // ---- Budgets ----------------------------------------------------------
-  const min = (a: number, b?: number) => (b === undefined ? a : Math.min(a, b));
   const maxRounds = min(request.budgets?.maxRounds ?? DEFAULTS.maxRounds, context.limits?.maxRounds);
-  const maxToolCalls = min(
-    request.budgets?.maxToolCalls ?? DEFAULTS.maxToolCalls,
-    context.limits?.maxToolCalls,
-  );
+  const maxToolCalls = toolBudget;
   const deadlineMs = min(
     request.budgets?.deadlineMs ?? DEFAULTS.deadlineMs,
     context.limits?.deadlineMs,

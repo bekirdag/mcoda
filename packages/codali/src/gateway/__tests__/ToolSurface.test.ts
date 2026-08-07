@@ -55,3 +55,31 @@ test("a dropped tool always carries a reason", () => {
     assert.ok(entry.reason.length > 0, `${entry.tool} was dropped without a reason`);
   }
 });
+
+test("a worker that cannot call tools loses all of them, and the report says so", () => {
+  // The report used to say "visible, nothing dropped" about a run that would
+  // call nothing, because it modelled declaration and not capability. That is
+  // how a correctly-declared HTTP connector was reported healthy and never hit.
+  const report = inspectToolSurface(
+    { tenant: { slug: "wodo" }, warnings: [] } as never,
+    registryWith("docdex_search", "http:records:search"),
+    { workerCanCallTools: false },
+  );
+
+  assert.deepEqual(report.visible, []);
+  assert.equal(report.dropped.length, 2);
+  for (const entry of report.dropped) {
+    assert.equal(entry.reason, "worker_cannot_call_tools");
+  }
+  assert.match(report.warnings[0] ?? "", /cannot emit tool calls/);
+});
+
+test("an http connector tool is visible when the worker can call tools", () => {
+  const report = inspectToolSurface(
+    { tenant: { slug: "wodo" }, warnings: [] } as never,
+    registryWith("http:records:search"),
+    { workerCanCallTools: true },
+  );
+  assert.ok(report.visible.includes("http:records:search"));
+  assert.deepEqual(report.dropped, []);
+});

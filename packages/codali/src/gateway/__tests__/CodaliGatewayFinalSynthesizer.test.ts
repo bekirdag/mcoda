@@ -537,3 +537,16 @@ test("unverified model observations are separated from decision facts", () => {
   assert.equal(payload.unverifiedObservations.length, 1);
   assert.equal(payload.unverifiedObservations[0].evidenceId, "ev-made-up");
 });
+
+test("the synthesizer is told not to narrate its own role", () => {
+  // A run shipped "as the synthesizer stage, I must provide a final, coherent
+  // response" to a user. Forbidding talk of the machinery did not stop the
+  // model describing its own part in it.
+  const messages = buildCodaliGatewayFinalSynthesizerMessages(
+    { query: "anything", policy: {} } as never,
+    { decisionFacts: [], selectedExcerpts: [], contradictions: [], missingInformation: [], toolSummary: [] } as never,
+  );
+  const system = String(messages[0]?.content ?? "");
+  assert.match(system, /[Nn]ever mention your role/);
+  assert.match(system, /begin with the answer itself/);
+});

@@ -23,6 +23,20 @@ export interface ToolSurfaceEntry {
   reason: string;
 }
 
+export interface ToolSurfaceOptions {
+  /**
+   * Whether the model that will run the tasks can emit tool calls.
+   *
+   * A run whose worker cannot call tools is given an empty allowed list, so
+   * every tool is lost no matter how correctly it was declared. Reporting the
+   * compiled surface without this said "visible, nothing dropped" about a run
+   * that would call nothing — the exact false confidence this check exists to
+   * prevent. Defaults to true so a caller only asking about declaration still
+   * gets a useful answer.
+   */
+  workerCanCallTools?: boolean;
+}
+
 export interface ToolSurfaceReport {
   /** Tools registered from the context — MCP servers, HTTP connectors, docdex. */
   registered: string[];
@@ -44,8 +58,24 @@ export interface ToolSurfaceReport {
 export const inspectToolSurface = (
   context: RunContext,
   registry: ToolRegistry,
+  options: ToolSurfaceOptions = {},
 ): ToolSurfaceReport => {
   const registered = registry.catalog().map((tool) => tool.name).sort();
+
+  if (options.workerCanCallTools === false) {
+    return {
+      registered,
+      visible: [],
+      dropped: registered.map((tool) => ({
+        tool,
+        reason: "worker_cannot_call_tools",
+      })),
+      warnings: [
+        "The worker model cannot emit tool calls, so this run is given no tools " +
+          "at all. Nothing below is a declaration problem.",
+      ],
+    };
+  }
 
   const compilation = compileCodaliGatewayPolicy({
     request: {
