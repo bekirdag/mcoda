@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/integrations",
-  "version": "0.1.116",
+  "version": "0.1.117",
   "description": "External integrations for mcoda (vcs, QA, telemetry).",
   "type": "module",
   "main": "dist/index.js",
