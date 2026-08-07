@@ -2068,6 +2068,74 @@ function isModelExposed(
   return config.exposeAllModels;
 }
 
+/**
+ * Whether this agent is served by infrastructure this node owns.
+ *
+ * A node advertises the hardware it has. Exposure was gated on health and the
+ * operator's allowlist alone, so an inventory full of hosted models was
+ * published as though the box served them: 159 of one node's 181 agents were
+ * OpenRouter, offered to callers who then paid a round trip to someone else's
+ * public API through a node contributing nothing to it.
+ *
+ * The test is the endpoint, and the question it answers is "could the caller
+ * have reached this themselves". Adapter names cannot answer it — `openai-api`
+ * is equally an OpenRouter endpoint and a llama.cpp server on 127.0.0.1 — and
+ * loopback alone is too narrow, because a private host on the operator's own
+ * network is still theirs to serve and no one else's to reach.
+ *
+ * So: no endpoint means a CLI adapter running here by construction; an endpoint
+ * must be one only this node can resolve. A publicly routable name is somebody
+ * else's service and is not this node's to advertise.
+ */
+export function isPrivateEndpointHost(host: string): boolean {
+  const value = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!value) return false;
+  if (
+    value === "localhost" ||
+    value === "::1" ||
+    value === "0.0.0.0" ||
+    /^127\./.test(value)
+  ) {
+    return true;
+  }
+  // RFC1918, carrier-grade NAT, link-local, and IPv6 unique-local.
+  if (
+    /^10\./.test(value) ||
+    /^192\.168\./.test(value) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(value) ||
+    /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(value) ||
+    /^169\.254\./.test(value) ||
+    /^f[cd][0-9a-f]{2}:/.test(value) ||
+    /^fe80:/.test(value)
+  ) {
+    return true;
+  }
+  // A single label is only resolvable on the local network.
+  if (!value.includes(".")) return true;
+  return /\.(local|internal|lan|home|intranet|test|localhost)$/.test(value);
+}
+
+export function agentRunsOnThisNode(agent: McodaAgentListEntry): boolean {
+  const config = isRecord(agent.config) ? agent.config : {};
+  const localRunner = isRecord(config.localRunner) ? config.localRunner : {};
+  const declaredBaseUrl = readConfigString({ ...localRunner, ...config }, [
+    "baseUrl",
+    "base_url",
+    "endpoint",
+    "apiBaseUrl",
+    "api_base_url"
+  ]);
+  if (!declaredBaseUrl) {
+    return true;
+  }
+  try {
+    return isPrivateEndpointHost(new URL(declaredBaseUrl).hostname);
+  } catch {
+    // An endpoint we cannot parse is one we cannot vouch for.
+    return false;
+  }
+}
+
 function isAgentExposed(
   agentSlug: string,
   defaultModel: string | null,
@@ -3233,6 +3301,7 @@ export function mapMcodaAgentToSelfHostedModel(
     openai_compatible: openaiCompatible,
     exposed:
       healthStatus !== "blocked" &&
+      agentRunsOnThisNode(agent) &&
       isAgentExposed(slug, defaultModel, bestUsage, config),
     best_usage: bestUsage,
     capabilities,

@@ -114,6 +114,68 @@ export const toRepoRelativePath = (
   return candidate || undefined;
 };
 
+/**
+ * Stops paying for a quota that is already spent.
+ *
+ * Web discovery is metered upstream. When the provider answers 402 — or 401,
+ * 403, 429 — the answer will not change for the next caller, but nothing
+ * remembered that: every question kept asking, and each question asks more than
+ * once, because a search that finds nothing locally falls through to the web
+ * and a cache hit with no content is retried uncached. Measured upstream at
+ * roughly 366 attempts in two hours, about 4,400 a day, which empties a monthly
+ * allowance of 5,000 in a little over a day.
+ *
+ * So the first refusal opens the circuit for everyone until it is due to close.
+ * `Retry-After` decides when, since the provider knows and we are guessing;
+ * the fallback is deliberately short, because staying closed too long is a
+ * self-inflicted outage and reopening early costs one wasted call.
+ */
+const WEB_QUOTA_STATUSES = new Set([401, 402, 403, 429]);
+const DEFAULT_WEB_BACKOFF_MS = 15 * 60_000;
+const MAX_WEB_BACKOFF_MS = 60 * 60_000;
+
+let webUnavailableUntilMs = 0;
+let webUnavailableReason = "";
+
+/** Test seam: forget any open circuit. */
+export const resetWebResearchBackoff = (): void => {
+  webUnavailableUntilMs = 0;
+  webUnavailableReason = "";
+};
+
+const retryAfterMsFrom = (error: unknown): number | undefined => {
+  const details = isRecord(error) && isRecord(error.details) ? error.details : undefined;
+  const raw =
+    details?.retry_after_ms ??
+    details?.retryAfterMs ??
+    details?.["retry-after"] ??
+    details?.retryAfter;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    // Seconds or milliseconds, depending on who wrote it.
+    return raw < 10_000 ? raw * 1000 : raw;
+  }
+  if (typeof raw === "string") {
+    const seconds = Number(raw.trim());
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  }
+  return undefined;
+};
+
+const isWebQuotaRefusal = (error: unknown): boolean => {
+  const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+  return status !== undefined && WEB_QUOTA_STATUSES.has(status);
+};
+
+const noteWebRefusal = (error: unknown): void => {
+  const backoff = Math.min(retryAfterMsFrom(error) ?? DEFAULT_WEB_BACKOFF_MS, MAX_WEB_BACKOFF_MS);
+  webUnavailableUntilMs = Date.now() + backoff;
+  const status = isRecord(error) && typeof error.status === "number" ? error.status : "unknown";
+  webUnavailableReason = `provider returned ${status}; not retrying for ${Math.round(backoff / 60_000)}m`;
+};
+
+const webResearchBlocked = (): string | undefined =>
+  Date.now() < webUnavailableUntilMs ? webUnavailableReason : undefined;
+
 /** Pages to keep from a web research call, and how much of each. */
 const MAX_WEB_PAGES = 6;
 const MAX_WEB_PAGE_CHARS = 6_000;
@@ -323,15 +385,18 @@ const docdexToolDefinitions = (
         }
       }
 
-      if (!localAnswers) {
+      if (!localAnswers && !webResearchBlocked()) {
         try {
           const web = await client.search(query, { limit, forceWeb: true });
           if (hasWebFindings(web)) {
             return toOutput(web);
           }
-        } catch {
+        } catch (error) {
           // Web discovery being unavailable must not fail a local search that
-          // simply found nothing. Return the local (empty) result instead.
+          // simply found nothing. Return the local (empty) result instead — and
+          // remember a refusal, because every search would otherwise pay to
+          // rediscover it.
+          if (isWebQuotaRefusal(error)) noteWebRefusal(error);
         }
       }
 
@@ -629,12 +694,27 @@ const docdexToolDefinitions = (
       // a central bank's interest rate came back sourced to this repository's
       // own documentation. Anything genuinely local is what `docdex_search` is
       // for; a caller can still ask for the mixed behaviour explicitly.
-      let result = await client.webResearch(query, {
-        forceWeb: forceWeb ?? true,
-        skipLocalSearch,
-        webLimit,
-        noCache,
-      });
+      const blocked = webResearchBlocked();
+      if (blocked) {
+        // Answering "the web is unavailable" costs nothing; asking again costs
+        // a request from an allowance that is already spent.
+        return toOutput({ query, pages: [], unavailable: blocked });
+      }
+      let result;
+      try {
+        result = await client.webResearch(query, {
+          forceWeb: forceWeb ?? true,
+          skipLocalSearch,
+          webLimit,
+          noCache,
+        });
+      } catch (error) {
+        if (isWebQuotaRefusal(error)) {
+          noteWebRefusal(error);
+          return toOutput({ query, pages: [], unavailable: webResearchBlocked() });
+        }
+        throw error;
+      }
 
       // A cache hit returns discovery metadata with no page content at all —
       // no web_context, no hits — so the run sees that a search happened and
@@ -651,8 +731,11 @@ const docdexToolDefinitions = (
           if (hasWebContent(fresh)) {
             result = fresh;
           }
-        } catch {
-          // Keep the cached response rather than failing a search that worked.
+        } catch (error) {
+          // Keep the cached response rather than failing a search that worked —
+          // but a refusal is worth remembering, so the next question does not
+          // spend another request discovering the same thing.
+          if (isWebQuotaRefusal(error)) noteWebRefusal(error);
         }
       }
 
