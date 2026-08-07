@@ -472,6 +472,49 @@ const validateClassifierOutput = (
   };
 };
 
+/**
+ * Matches a tool name the planner wrote against the tools that actually exist.
+ *
+ * Registered names are namespaced — `http:logmira_tenant_records:daily_logs`,
+ * `mcp:github:list_issues` — and a model asked to repeat one routinely writes
+ * the last segment instead, or drops the transport prefix. Compared exactly,
+ * that name matches nothing, and a task whose tools do not resolve is rejected
+ * whole: the run then calls no tools at all, returns no sources, and reports
+ * that the context pack was empty.
+ *
+ * It reached production. A declared HTTP connector was registered, visible and
+ * undropped, while the planner in the same run happily called `docdex_search`
+ * — a name short enough to reproduce exactly. The connector was never called
+ * once.
+ *
+ * Only unambiguous matches are accepted. Two tools ending in the same segment
+ * resolve to neither, because guessing between them would call the wrong
+ * system, and that is worse than reporting the tool as unavailable.
+ */
+export const resolveToolNameAgainst = (
+  candidate: string,
+  available: readonly string[],
+): string | undefined => {
+  const wanted = candidate.trim();
+  if (!wanted) return undefined;
+  if (available.includes(wanted)) return wanted;
+
+  const lower = wanted.toLowerCase();
+  const caseless = available.filter((tool) => tool.toLowerCase() === lower);
+  if (caseless.length === 1) return caseless[0];
+
+  const lastSegment = (value: string): string => {
+    const parts = value.split(":");
+    return (parts[parts.length - 1] ?? value).toLowerCase();
+  };
+  const bySegment = available.filter((tool) => lastSegment(tool) === lastSegment(wanted));
+  if (bySegment.length === 1) return bySegment[0];
+
+  // `logmira_tenant_records:daily_logs` for `http:logmira_tenant_records:daily_logs`.
+  const bySuffix = available.filter((tool) => tool.toLowerCase().endsWith(`:${lower}`));
+  return bySuffix.length === 1 ? bySuffix[0] : undefined;
+};
+
 const allowedToolNames = (compilation: GatewayPolicyCompilation): string[] =>
   [...compilation.effectiveAllowedTools].sort();
 
@@ -893,7 +936,7 @@ const normalizePlannerOutput = (
   return normalized;
 };
 
-const sanitizePlannerOutput = (
+export const sanitizePlannerOutput = (
   planner: CodaliGatewayPlannerOutput,
   input: GatewayPlannerInput,
 ): { planner: CodaliGatewayPlannerOutput; warnings: string[] } => {
@@ -907,8 +950,28 @@ const sanitizePlannerOutput = (
       warnings.push(`planner_task_removed_image_worker_disabled:${task.id}`);
       continue;
     }
-    const filteredTools = task.toolsAllowed.filter((tool) => allowed.has(tool));
-    const removed = task.toolsAllowed.filter((tool) => !allowed.has(tool));
+    const allowedList = [...allowed];
+    const resolved = task.toolsAllowed.map((tool) => ({
+      requested: tool,
+      canonical: resolveToolNameAgainst(tool, allowedList),
+    }));
+    const filteredTools = [
+      ...new Set(
+        resolved
+          .map((entry) => entry.canonical)
+          .filter((tool): tool is string => Boolean(tool)),
+      ),
+    ];
+    const repaired = resolved.filter(
+      (entry) => entry.canonical && entry.canonical !== entry.requested,
+    );
+    if (repaired.length > 0) {
+      warnings.push(
+        `planner_task_tools_resolved:${task.id}:` +
+          repaired.map((entry) => `${entry.requested}->${entry.canonical}`).join(","),
+      );
+    }
+    const removed = resolved.filter((entry) => !entry.canonical).map((entry) => entry.requested);
     if (removed.length > 0) {
       warnings.push(`planner_task_tools_removed:${task.id}:${removed.join(",")}`);
     }
