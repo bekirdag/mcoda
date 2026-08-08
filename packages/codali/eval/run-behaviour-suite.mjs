@@ -34,7 +34,11 @@ const onlyIds = flag("ids", "")
   .map((entry) => entry.trim())
   .filter(Boolean);
 const concurrency = Number(flag("concurrency", "3"));
-const timeoutMs = Number(flag("timeout", "420000"));
+// Comfortably above Codali's own ceiling. A worker task may now run for up to
+// 600s (GatewayStateMachine's derived budget), so a 420s harness cap clipped
+// slow-but-legitimate runs and recorded them as failures of the product rather
+// than of the measurement.
+const timeoutMs = Number(flag("timeout", "900000"));
 const outPath = flag("out", path.join(HERE, "results", `run-${Date.now()}.json`));
 
 /**
