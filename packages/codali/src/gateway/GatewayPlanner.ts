@@ -19,6 +19,7 @@ import {
   type GatewayPolicyCompilation,
 } from "./GatewayPolicyCompiler.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
+import { requestTouchesOwnData } from "./GroundingMode.js";
 import { renderCapabilityLines, renderToolLines } from "./ToolExposure.js";
 import { buildTemporalContext, renderTemporalContext } from "./TemporalContext.js";
 
@@ -515,6 +516,14 @@ export const resolveToolNameAgainst = (
   return bySuffix.length === 1 ? bySuffix[0] : undefined;
 };
 
+/**
+ * Whether a tool name belongs to a connector into someone's account, as opposed
+ * to a repository search or the public web. Namespaced transports are the
+ * connectors: `mcp:github:list_issues`, `http:jira:search_issues`.
+ */
+const isOwnedSystemConnector = (tool: string): boolean =>
+  tool.startsWith("mcp:") || tool.startsWith("http:");
+
 const allowedToolNames = (compilation: GatewayPolicyCompilation): string[] =>
   [...compilation.effectiveAllowedTools].sort();
 
@@ -626,7 +635,16 @@ export const buildCodaliGatewayPlannerMessages = (
   classifier: CodaliGatewayClassifierOutput,
 ): ProviderMessage[] => {
   const policy = input.policyCompilation ?? compileCodaliGatewayPolicy({ request: input.request });
-  const tools = allowedToolNames(policy);
+  // A connector reaches into the user's own account, so it is only worth
+  // showing when the request is about their data. Left in view for every
+  // question, the planner picked by surface resemblance — a question about a
+  // company's chief executive went to a GitHub user search, and one about a
+  // language's newest release went to `get_latest_release`. Withholding them
+  // is a narrowing, not a denial: an explicitly allowed tool is still allowed,
+  // this only stops it being suggested for work it cannot do.
+  const tools = requestTouchesOwnData(input.request.query, classifier)
+    ? allowedToolNames(policy)
+    : allowedToolNames(policy).filter((tool) => !isOwnedSystemConnector(tool));
   // Stage 2 of two-level exposure: expand full schemas, but only for the
   // capabilities the classifier selected.
   const exposure = renderToolLines(tools, input.toolDescriptions, classifier.capabilities);

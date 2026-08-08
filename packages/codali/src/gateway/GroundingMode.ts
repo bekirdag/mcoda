@@ -124,3 +124,33 @@ export const decideGroundingMode = (
 
   return { mode: "grounded", reason: "default" };
 };
+
+/**
+ * Systems a request has to name before a connector to them is worth offering.
+ *
+ * A product connector reaches into somebody's account. Offering every one of
+ * them to every question invited the planner to pick by surface resemblance:
+ * asked who currently runs Microsoft it called `mcp:github:search_users`, and
+ * asked for the newest Node.js release it called `get_latest_release`. Both are
+ * public facts about a company, and neither is in anyone's account.
+ */
+const OWNED_SYSTEM_NOUNS =
+  /\b(?:github|gitlab|bitbucket|jira|confluence|outlook|teams|calendar|inbox|mailbox|repository|repositories|repo|commit|commits|branch|branches|pull request|merge request|issue|issues|ticket|tickets|workspace|tenant)\b/i;
+
+/**
+ * Whether the request is about data the user owns, and so whether the
+ * connectors that reach their accounts should be offered at all.
+ *
+ * Deliberately generous: a wrong "yes" offers a tool the planner may ignore,
+ * while a wrong "no" hides the only tool that could have answered. So the
+ * classifier's own judgement is honoured first, and either naming the system or
+ * claiming the data is enough.
+ */
+export const requestTouchesOwnData = (
+  query: string,
+  classifier: Pick<GroundingDecisionInput["classifier"], "needsPrivateData" | "needsAppTools">,
+): boolean =>
+  classifier.needsPrivateData === true ||
+  classifier.needsAppTools === true ||
+  POSSESSIVE.test(query ?? "") ||
+  OWNED_SYSTEM_NOUNS.test(query ?? "");
