@@ -193,7 +193,29 @@ all media services active, restart counter back to zero.
 
 ## F. Tenant onboarding automation
 
-**Status: DESIGNED, not built.** See `logmira_tenant_provisioning_design.md`.
+**Status: BUILT (saas_be `3534b08`), not yet configured or deployed.**
+
+`MswarmProvisioningService` hangs off the existing `tenant.created` outbox
+branch beside IAM provisioning. It issues one AI-labelled key, stores it
+encrypted with `PiiService` (recoverable, because Codali replays it every run,
+unlike the api-keys module which hashes what it only ever verifies), grants the
+tenant's domain on the shared node via the integration credential, and records
+`ai.provisioning_state`. Idempotent on the stored key id; an identity already on
+the node counts as success; a failure records the reason rather than leaving the
+key silently absent. 5 new tests, 649 saas_be unit tests green.
+
+**Before it can run**, three environment values are needed:
+`MSWARM_BASE_URL`, `MSWARM_NODE_ID` (suku's `shn_e35f763823d1416ebddce1b5b20524bf`)
+and `MSWARM_NODE_INTEGRATION_API_KEY` — the per-node credential from
+`client_integrations`, not the node owner's key. Without them the key is still
+issued and the allowlist grant is skipped with a warning.
+
+**Unverified:** the grant endpoint path is written as
+`POST /v1/swarm/self-hosted/nodes/:node_id/clients`, inferred rather than
+confirmed against the shipped `client_integrations` route. Worth checking with
+the mswarm developer before first use.
+
+Original design: `logmira_tenant_provisioning_design.md`.
 
 The seam already exists: `TenantsService.createTenant()` emits `tenant.created`
 through the outbox, and `outbox.processor.ts` dispatches it to
