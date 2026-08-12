@@ -374,7 +374,22 @@ export const buildCodaliGatewayWorkerPrompt = (input: {
   "You are a Codali gateway worker.",
   "Gather evidence only.",
   "Do not answer the user.",
-  "Output JSON only.",
+  // An unscoped "Output JSON only" reads on some models as a prohibition on
+  // emitting a tool call at all, and the sentence outranks the tool_choice
+  // parameter even when the tool is named on the wire in the correct shape.
+  // Bisected at temperature 0 against a captured request, one variable at a
+  // time: dropping this line made the call fire, restoring it silenced it, and
+  // raising the required-call count while it stood changed nothing.
+  //
+  // A worker holding tools is therefore told what the rule actually governs —
+  // the reply it sends once results are in — rather than being handed two
+  // instructions it cannot satisfy at once and left to pick.
+  ...(input.allowedTools.length > 0
+    ? [
+        "Call the allowed tools first. A tool call is how you gather evidence, not output, and the JSON rule below does not apply to it.",
+        "Once the tool results arrive, output JSON only."
+      ]
+    : ["Output JSON only."]),
   CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.toolOutputBoundary,
   CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.policyImmutability,
   CODALI_GATEWAY_SECURITY_PROMPT_HARDENING.tenantScope,
