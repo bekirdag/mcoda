@@ -245,7 +245,14 @@ export class OpenAiCompatibleProvider implements Provider {
           parameters: tool.inputSchema ?? {},
         },
       })),
-      tool_choice: request.toolChoice,
+      // `{ name }` is our shape; the wire wants
+      // `{"type":"function","function":{"name":…}}`. Passing ours through meant
+      // naming a tool was silently ignored, so the option existed and did
+      // nothing.
+      tool_choice:
+        request.toolChoice && typeof request.toolChoice === "object"
+          ? { type: "function", function: { name: request.toolChoice.name } }
+          : request.toolChoice,
       max_tokens: request.maxTokens,
       temperature: request.temperature,
       response_format: toResponseFormat(request.responseFormat, this.responseFormatStrategy),

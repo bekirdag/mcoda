@@ -159,6 +159,32 @@ const claimsToolExecution = (output: string): boolean => {
   return FABRICATED_TOOL_RESULT_MARKERS.filter((marker) => marker.test(output)).length >= 2;
 };
 
+/**
+ * Whether to name the tool rather than leave the choice open.
+ *
+ * Emission is intermittent at the model. Measured downstream on one prompt,
+ * one model and one schema: a real tool call on one run, then four runs that
+ * narrated instead — the last of them inventing rows. The planner had already
+ * decided which tool this task needs, so leaving the model to decide *whether*
+ * to call it adds a coin flip to a question already answered.
+ *
+ * Only when exactly one tool is allocated, because naming a tool means naming
+ * it; with several, the choice is genuinely the model's. And only for a task
+ * that exists to retrieve — a worker that may legitimately answer from its own
+ * knowledge must stay free not to call anything.
+ */
+const RETRIEVAL_WORKER_ROLES = new Set(["tool_worker", "rag_worker", "extractor"]);
+
+const forcedToolChoice = (
+  workerRole: string | undefined,
+  toolDefinitions: readonly ProviderToolDefinition[],
+): { name: string } | undefined => {
+  if (toolDefinitions.length !== 1) return undefined;
+  if (!RETRIEVAL_WORKER_ROLES.has((workerRole ?? "").toLowerCase())) return undefined;
+  const only = toolDefinitions[0];
+  return only ? { name: only.name } : undefined;
+};
+
 const buildTaskMessages = (
   input: CodaliGatewayWorkerTaskRunInput,
   hasTools: boolean,
@@ -257,13 +283,32 @@ export class LocalGatewayTaskRunner implements CodaliGatewayWorkerTaskRunner {
     let selection;
     const selectionStartedMs = Date.now();
     try {
-      selection = await this.options.provider.generate({
+      const forced =
+        toolDefinitions.length > 0
+          ? forcedToolChoice(input.task.workerRole, toolDefinitions)
+          : undefined;
+      const request = {
         messages,
         tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
-        toolChoice: toolDefinitions.length > 0 ? "auto" : "none",
         maxTokens: positiveInteger(this.options.maxTokens, DEFAULT_MAX_TOKENS),
         temperature: this.options.temperature ?? DEFAULT_TEMPERATURE,
-      });
+      };
+      const openChoice = toolDefinitions.length > 0 ? ("auto" as const) : ("none" as const);
+      try {
+        selection = await this.options.provider.generate({
+          ...request,
+          toolChoice: forced ?? openChoice,
+        });
+      } catch (error) {
+        // Not every endpoint accepts a named tool, and a run must not die
+        // because we asked for one. Falling back costs a second call on a
+        // narrow path and keeps the task working where forcing is unsupported.
+        if (!forced) throw error;
+        selection = await this.options.provider.generate({
+          ...request,
+          toolChoice: openChoice,
+        });
+      }
     } catch (error) {
       modelCalls.push({
         role: "worker",
