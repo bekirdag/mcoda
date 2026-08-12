@@ -46,6 +46,7 @@ import {
   SelfHostedNodeRuntime,
   MswarmSelfHostedNodeClient,
   pollRetryDelayMs,
+  resolveJobExecutionClass,
   REVOKED_RECHECK_INTERVAL_MS
 } from "../runtime.js";
 import { verifySelfHostedInvocationToken } from "../invocation-token.js";
@@ -7984,4 +7985,120 @@ describe("self-hosted node runtime", () => {
     expect(REVOKED_RECHECK_INTERVAL_MS).toBe(15 * 60 * 1000);
   });
 
+});
+
+describe("execution class resolution", () => {
+  it("echoes the scheduler's label rather than re-deriving it", () => {
+    // The runtime says codali, which would derive "agentic". The scheduler says
+    // chat, and the scheduler wins: it is the side that made the placement
+    // decision this capacity report is meant to inform.
+    const resolved = resolveJobExecutionClass({
+      policy: { execution_class: "chat" },
+      execution_runtime: "codali"
+    });
+    expect(resolved.executionClass).toBe("chat");
+    expect(resolved.unrecognisedLabel).toBe(null);
+  });
+
+  it("derives the class from the runtime when no label is sent", () => {
+    // Older gateways send no label at all, and a node that refused to account
+    // for their jobs would report itself idle while fully occupied.
+    expect(resolveJobExecutionClass({ execution_runtime: "codali" }).executionClass).toBe("agentic");
+    expect(resolveJobExecutionClass({ execution_runtime: "raw" }).executionClass).toBe("chat");
+    expect(resolveJobExecutionClass({}).executionClass).toBe("chat");
+  });
+
+  it("surfaces a label it does not recognise instead of coercing it", () => {
+    // The failure this guards against: a scheduler class the node has never
+    // heard of, silently filed under chat, leaving both sides scheduling
+    // confidently against different meanings of the same number.
+    const resolved = resolveJobExecutionClass({
+      policy: { execution_class: "batch_inference" },
+      execution_runtime: "codali"
+    });
+    expect(resolved.executionClass).toBe("agentic");
+    expect(resolved.unrecognisedLabel).toBe("batch_inference");
+  });
+
+  it("accepts a label whatever case it arrives in", () => {
+    expect(resolveJobExecutionClass({ policy: { execution_class: "AGENTIC" } })).toMatchObject({
+      executionClass: "agentic",
+      unrecognisedLabel: null
+    });
+  });
+});
+
+describe("shared LLM pool capacity", () => {
+  it("splits active jobs by class while free slots stay pool-wide", async () => {
+    // The reason this matters: a long agentic run and a short chat call were
+    // both counted into one bucket and then reported twice under two names, so
+    // a scheduler reading `agentic` saw chat's load and vice versa. Splitting
+    // the counts is only half of it — the two classes still share the GPUs, so
+    // an idle-looking `chat` must not advertise slots the agentic job is in.
+    const statePath = tempStatePath();
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+
+    let markStarted: () => void = () => {};
+    let release: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        runtimeToken: "msn_pool",
+        maxConcurrentJobs: 4,
+        maxConcurrentLlmJobs: 2,
+        genericJobMaxConcurrency: 3,
+        loadReportingEnabled: true
+      }),
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "phi3-reviewer" })]),
+        codaliExecutor: new StubCodaliExecutor(async (input) => {
+          markStarted();
+          await released;
+          return successfulCodaliInvocation(input);
+        }),
+        capabilityRunner: capabilityProbeRunner({})
+      }
+    );
+
+    const running = runtime.executeJob({
+      job_id: "job-pool-agentic",
+      request_id: "req-pool-agentic",
+      node_id: "shn_service",
+      agent_slug: "phi3-reviewer",
+      execution_runtime: "codali",
+      policy: { execution_class: "agentic" },
+      openai_request: {
+        model: "phi3.5:latest",
+        messages: [{ role: "user", content: "Review this." }]
+      }
+    });
+    await started;
+    await runtime.runOnce();
+    release();
+    await running;
+
+    const capacity = heartbeatBodies[0].capacity as Record<string, unknown>;
+    const byClass = capacity.execution_class_capacity as Record<string, Record<string, unknown>>;
+
+    expect(byClass.agentic).toMatchObject({ pool: "llm", active_jobs: 1, free_slots: 1 });
+    // The class is idle and the pool is not. Both facts are reported, and the
+    // `pool` marker is what stops the two free_slots being added together.
+    expect(byClass.chat).toMatchObject({ pool: "llm", active_jobs: 0, free_slots: 1 });
+    expect(byClass.generic_job).toMatchObject({ pool: "generic", active_jobs: 0 });
+  });
 });

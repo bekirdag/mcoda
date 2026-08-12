@@ -544,6 +544,14 @@ export interface SelfHostedNodeInvocationJob {
   };
   scheduling?: MswarmJobScheduling;
   policy?: {
+    /**
+     * The scheduler's own name for this job's class, echoed back in capacity
+     * telemetry rather than re-derived here. The gateway decides what a job is;
+     * a node that inferred it independently would drift from the scheduler that
+     * dispatched it, and drift between two correct-looking numbers is the
+     * failure mode this field exists to remove.
+     */
+    execution_class?: string;
     max_runtime_ms?: number;
     max_output_tokens?: number;
     allow_tools?: boolean;
@@ -679,7 +687,23 @@ export interface MswarmGenericJobExecutionResult {
 
 export type SelfHostedRuntimeExecutionClass = "chat" | "agentic" | "generic_job";
 
+export const SELF_HOSTED_RUNTIME_EXECUTION_CLASSES: readonly SelfHostedRuntimeExecutionClass[] = [
+  "chat",
+  "agentic",
+  "generic_job"
+];
+
+/**
+ * Which physical pool a class draws on. `chat` and `agentic` are distinct kinds
+ * of work sharing one set of GPUs, so their `active_jobs` differ while their
+ * `free_slots` describe the same slots — summing free slots across classes
+ * double-counts. Stated on the wire because a scheduler cannot otherwise tell a
+ * shared pool from an independent one, and guessing wrong is silent.
+ */
+export type SelfHostedRuntimeExecutionPool = "llm" | "generic";
+
 export interface SelfHostedRuntimeExecutionClassCapacity {
+  pool: SelfHostedRuntimeExecutionPool;
   max_concurrency: number;
   active_jobs: number;
   queued_jobs: number;
@@ -1923,19 +1947,65 @@ function buildCatalogFingerprint(models: SelfHostedModelInput[]): string {
 }
 
 function executionClassCapacity(input: {
+  pool: SelfHostedRuntimeExecutionPool;
   maxConcurrency: number;
   activeJobs: number;
+  /**
+   * Everything running in the pool, which is not `activeJobs` when classes
+   * share one. Free slots have to be counted against the pool: a chat slot is
+   * occupied by an agentic job just as surely as by another chat job, and
+   * subtracting only this class's own jobs would advertise room that a
+   * long-running job of the other class is already sitting in.
+   */
+  poolActiveJobs?: number;
   queuedJobs: number;
   drainMode: boolean;
 }): SelfHostedRuntimeExecutionClassCapacity {
   const maxConcurrency = Math.max(1, Math.floor(input.maxConcurrency));
   const activeJobs = nonNegativeTelemetryInteger(input.activeJobs);
+  const poolActiveJobs = nonNegativeTelemetryInteger(input.poolActiveJobs ?? input.activeJobs);
   const queuedJobs = nonNegativeTelemetryInteger(input.queuedJobs);
   return {
+    pool: input.pool,
     max_concurrency: maxConcurrency,
     active_jobs: activeJobs,
     queued_jobs: queuedJobs,
-    free_slots: input.drainMode ? 0 : Math.max(0, maxConcurrency - activeJobs - queuedJobs)
+    free_slots: input.drainMode ? 0 : Math.max(0, maxConcurrency - poolActiveJobs - queuedJobs)
+  };
+}
+
+function parseRuntimeExecutionClass(value: unknown): SelfHostedRuntimeExecutionClass | null {
+  const text = (optionalText(value) || "").toLowerCase();
+  return (SELF_HOSTED_RUNTIME_EXECUTION_CLASSES as readonly string[]).includes(text)
+    ? (text as SelfHostedRuntimeExecutionClass)
+    : null;
+}
+
+/**
+ * Names the class a job should be accounted against.
+ *
+ * The scheduler's `policy.execution_class` wins whenever it is a class this
+ * node knows. Only when it is absent does the node fall back to reading the
+ * runtime it was asked to use, and that fallback exists for older gateways
+ * rather than as a second opinion.
+ *
+ * An unrecognised label is deliberately not coerced into the nearest match: a
+ * class this node cannot account for is a real disagreement about the
+ * vocabulary, and quietly filing it under `chat` would let the two sides
+ * schedule against different meanings while every number still looked sane.
+ * The caller reports it and uses the derived class meanwhile.
+ */
+export function resolveJobExecutionClass(job: {
+  policy?: { execution_class?: string };
+  execution_runtime?: string;
+}): { executionClass: SelfHostedRuntimeExecutionClass; unrecognisedLabel: string | null } {
+  const declared = optionalText(job.policy?.execution_class);
+  const labelled = parseRuntimeExecutionClass(declared);
+  if (labelled) return { executionClass: labelled, unrecognisedLabel: null };
+  const runtime = (optionalText(job.execution_runtime) || "").toLowerCase();
+  return {
+    executionClass: runtime === "codali" ? "agentic" : "chat",
+    unrecognisedLabel: declared ? declared.slice(0, 64) : null
   };
 }
 
@@ -6211,7 +6281,8 @@ export class SelfHostedNodeRuntime {
   private readonly genericRunners: Map<string, MswarmGenericJobRunner>;
   private readonly artifactStore: MswarmGenericJobArtifactStore;
   private readonly capabilityRunner: CommandRunner;
-  private activeLlmJobs = 0;
+  private activeChatJobs = 0;
+  private activeAgenticJobs = 0;
   private activeGenericJobs = 0;
   private queuedLlmJobs = 0;
   private queuedGenericJobs = 0;
@@ -6307,24 +6378,45 @@ export class SelfHostedNodeRuntime {
     }
   }
 
-  private beginExecutionTelemetry(executionClass: "llm" | "generic_job"): void {
+  private beginExecutionTelemetry(executionClass: SelfHostedRuntimeExecutionClass): void {
     if (executionClass === "generic_job") {
       this.activeGenericJobs += 1;
       return;
     }
-    this.activeLlmJobs += 1;
+    if (executionClass === "agentic") {
+      this.activeAgenticJobs += 1;
+      return;
+    }
+    this.activeChatJobs += 1;
+  }
+
+  /**
+   * Reported as a failure rather than a log line because an unknown class means
+   * this node and the scheduler disagree about the vocabulary, which is a fault
+   * in the pair rather than in either job. `recent_failures` is where the
+   * scheduler already looks, so it surfaces without a new field to notice.
+   */
+  private reportUnrecognisedExecutionClass(label: string): void {
+    this.recentFailures.unshift({
+      execution_class: "chat",
+      code: `unknown_execution_class:${label}`,
+      at: new Date().toISOString()
+    });
+    this.recentFailures.splice(MAX_TELEMETRY_FAILURES);
   }
 
   private finishExecutionTelemetry(input: {
-    executionClass: "llm" | "generic_job";
+    executionClass: SelfHostedRuntimeExecutionClass;
     startedAt: number;
     ok: boolean;
     code?: string | null;
   }): void {
     if (input.executionClass === "generic_job") {
       this.activeGenericJobs = Math.max(0, this.activeGenericJobs - 1);
+    } else if (input.executionClass === "agentic") {
+      this.activeAgenticJobs = Math.max(0, this.activeAgenticJobs - 1);
     } else {
-      this.activeLlmJobs = Math.max(0, this.activeLlmJobs - 1);
+      this.activeChatJobs = Math.max(0, this.activeChatJobs - 1);
     }
     this.latencySamplesMs.push(Math.max(0, Date.now() - input.startedAt));
     while (this.latencySamplesMs.length > MAX_TELEMETRY_LATENCY_SAMPLES) {
@@ -6332,7 +6424,7 @@ export class SelfHostedNodeRuntime {
     }
     if (!input.ok) {
       this.recentFailures.unshift({
-        execution_class: input.executionClass === "generic_job" ? "generic_job" : "agentic",
+        execution_class: input.executionClass,
         code: optionalText(input.code) || "upstream_error",
         at: new Date().toISOString()
       });
@@ -6422,17 +6514,33 @@ export class SelfHostedNodeRuntime {
       llmMaxConcurrency,
       this.config.genericJobsEnabled ? genericMaxConcurrency : 1
     );
-    const activeLlmJobs = nonNegativeTelemetryInteger(this.activeLlmJobs);
+    const activeChatJobs = nonNegativeTelemetryInteger(this.activeChatJobs);
+    const activeAgenticJobs = nonNegativeTelemetryInteger(this.activeAgenticJobs);
+    const activeLlmJobs = activeChatJobs + activeAgenticJobs;
     const activeGenericJobs = nonNegativeTelemetryInteger(this.activeGenericJobs);
     const queuedLlmJobs = nonNegativeTelemetryInteger(this.queuedLlmJobs);
     const queuedGenericJobs = nonNegativeTelemetryInteger(this.queuedGenericJobs);
-    const llmCapacity = executionClassCapacity({
+    // `chat` and `agentic` split the same GPUs, so only `active_jobs` differs
+    // between them: the limit, the queue and the free slots all describe the one
+    // pool. Reporting them per class would invite a scheduler to add two halves
+    // of the same capacity together, which `pool` is there to prevent.
+    const llmPoolCapacity = {
+      pool: "llm" as const,
       maxConcurrency: llmMaxConcurrency,
-      activeJobs: activeLlmJobs,
+      poolActiveJobs: activeLlmJobs,
       queuedJobs: queuedLlmJobs,
       drainMode
+    };
+    const chatCapacity = executionClassCapacity({
+      ...llmPoolCapacity,
+      activeJobs: activeChatJobs
+    });
+    const agenticCapacity = executionClassCapacity({
+      ...llmPoolCapacity,
+      activeJobs: activeAgenticJobs
     });
     const genericCapacity = executionClassCapacity({
+      pool: "generic",
       maxConcurrency: genericMaxConcurrency,
       activeJobs: activeGenericJobs,
       queuedJobs: queuedGenericJobs,
@@ -6456,8 +6564,8 @@ export class SelfHostedNodeRuntime {
       free_slots: freeSlots,
       drain_mode: drainMode,
       execution_class_capacity: {
-        chat: llmCapacity,
-        agentic: llmCapacity,
+        chat: chatCapacity,
+        agentic: agenticCapacity,
         generic_job: genericCapacity
       },
       avg_latency_ms: this.averageLatencyMs(input.discoveryLatencyMs ?? null),
@@ -7663,7 +7771,12 @@ export class SelfHostedNodeRuntime {
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
-    this.beginExecutionTelemetry("llm");
+    // Resolved once, before any work: the slot is taken from the moment the job
+    // is accepted, and a class settled later would leave the count attributed to
+    // the wrong pool for exactly as long as the job runs.
+    const { executionClass, unrecognisedLabel } = resolveJobExecutionClass(job);
+    if (unrecognisedLabel) this.reportUnrecognisedExecutionClass(unrecognisedLabel);
+    this.beginExecutionTelemetry(executionClass);
     let selectedAgent: MswarmGenerativeAgent | undefined;
     let operation: SelfHostedGenerativeOperationName = "chat.completions";
     let jobStarted = false;
@@ -7703,7 +7816,7 @@ export class SelfHostedNodeRuntime {
         error: { code: "validation_failed", message: "job node_id does not match this node" }
       };
       this.finishExecutionTelemetry({
-        executionClass: "llm",
+        executionClass,
         startedAt,
         ok: false,
         code: "validation_failed"
@@ -7786,7 +7899,7 @@ export class SelfHostedNodeRuntime {
           timing: { local_latency_ms: Date.now() - startedAt }
         };
         this.finishExecutionTelemetry({
-          executionClass: "llm",
+          executionClass,
           startedAt,
           ok: true
         });
@@ -7812,7 +7925,7 @@ export class SelfHostedNodeRuntime {
           local_model: optionalText(agent.model) || job.openai_request.model
         });
         const passthrough = await this.executeOpenAiGenerativePassthrough(prepared, operation);
-        this.finishExecutionTelemetry({ executionClass: "llm", startedAt, ok: true });
+        this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
         return {
           job_id: job.job_id,
           request_id: job.request_id,
@@ -7851,7 +7964,7 @@ export class SelfHostedNodeRuntime {
       // itself and would never surface them to the caller.
       if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0) {
         const passthrough = await this.executeOpenAiToolPassthrough(job, agent);
-        this.finishExecutionTelemetry({ executionClass: "llm", startedAt, ok: true });
+        this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
         const passthroughResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
           request_id: job.request_id,
@@ -7994,7 +8107,7 @@ export class SelfHostedNodeRuntime {
         timing: { local_latency_ms: Date.now() - startedAt }
       };
       this.finishExecutionTelemetry({
-        executionClass: "llm",
+        executionClass,
         startedAt,
         ok: true
       });
@@ -8029,7 +8142,7 @@ export class SelfHostedNodeRuntime {
         timing: { local_latency_ms: Date.now() - startedAt }
       };
       this.finishExecutionTelemetry({
-        executionClass: "llm",
+        executionClass,
         startedAt,
         ok: false,
         code
