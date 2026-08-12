@@ -228,11 +228,27 @@ export const httpToolToDefinition = (
   return {
     name: qualified,
     description: declaration.description,
+    // A tool declared without a schema used to arrive as `properties: {}`,
+    // which a model reads as "this takes no arguments" — and then declines to
+    // call it rather than calling with none. Observed verbatim: "the tool does
+    // not accept parameters for specifying a time range", against a connector
+    // that would have accepted any query string. An under-declared tool does
+    // not fail loudly; it produces a worker that talks itself out of the call.
+    // Saying so in the description costs nothing and removes the false
+    // conclusion.
     inputSchema: declaration.inputSchema ?? {
       type: "object",
       properties: {},
       additionalProperties: true,
     },
+    ...(declaration.inputSchema
+      ? {}
+      : {
+          description:
+            `${declaration.description} ` +
+            "Takes no declared parameters; any query parameters you pass are forwarded as-is, " +
+            "and calling it with no arguments is valid.",
+        }),
     // GET/HEAD only, enforced above.
     readOnly: true,
     capability: connector.name,

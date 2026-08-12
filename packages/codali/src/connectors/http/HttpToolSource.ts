@@ -44,6 +44,13 @@ export const attachHttpTools = (options: HttpAttachOptions): HttpAttachResult =>
       try {
         options.toolRegistry.register(definition);
         registered.push(definition.name);
+        // The host can only fix this if it hears about it. A tool with no
+        // declared arguments still works, but a worker asked for something the
+        // schema does not mention will conclude the tool cannot do the job.
+        const declaredProperties = Object.keys(definition.inputSchema?.properties ?? {}).length;
+        if (declaredProperties === 0) {
+          warnings.push(`http_tool_has_no_declared_arguments:${definition.name}`);
+        }
       } catch (error) {
         warnings.push(
           `http_tool_registration_failed:${definition.name}:${

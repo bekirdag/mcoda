@@ -824,8 +824,17 @@ export class CodaliGateway {
         : planning;
 
     const workers = await this.executePlannedWorkerTasks(request, effectivePlanning);
+    // A worker that invented tool results has its own output discarded, and
+    // that is the whole remedy — the run still holds whatever other workers
+    // genuinely retrieved. Treating it as a required-worker failure threw that
+    // away too: a run with a real connector hit and three real sources was
+    // failed wholesale because a second worker narrated. Discarding a liar is
+    // not a reason to discard the witnesses.
     const failedRequiredWorker = workers.workers.taskResults.find(
-      (task) => task.required && task.status === "failed",
+      (task) =>
+        task.required &&
+        task.status === "failed" &&
+        task.errorCode !== "GATEWAY_WORKER_FABRICATED_TOOL_RESULT",
     );
     const result = failedRequiredWorker
       ? await this.buildFinalPolicyBlockedResult(

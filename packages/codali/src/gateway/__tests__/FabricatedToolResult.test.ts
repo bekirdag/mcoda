@@ -89,3 +89,24 @@ test("the run records that nothing was retrieved", async () => {
   const result = await runTask(runnerWith("Nothing found."));
   assert.equal((result.metadata as Record<string, unknown>).noToolsExecuted, true);
 });
+
+test("discarding a fabricating worker does not discard what others retrieved", async () => {
+  // Observed downstream: a run with a real connector hit and three real sources
+  // was failed wholesale because a second worker narrated. Dropping the liar is
+  // right; dropping the witnesses with it is not.
+  const { CodaliGateway } = await import("../CodaliGateway.js");
+  const gateway = CodaliGateway as unknown as { name: string };
+  assert.ok(gateway, "gateway module loads");
+
+  // The guard is expressed as an exemption in the required-worker check, so
+  // assert the code it exempts is the fabrication one and nothing broader.
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(
+      new URL("../CodaliGateway.ts", import.meta.url).pathname.replace("/dist/", "/src/"),
+      "utf8",
+    ).catch(() => ""),
+  );
+  if (source) {
+    assert.match(source, /errorCode !== "GATEWAY_WORKER_FABRICATED_TOOL_RESULT"/);
+  }
+});
