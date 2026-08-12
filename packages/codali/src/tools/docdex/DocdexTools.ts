@@ -201,6 +201,28 @@ const noteWebRefusal = (error: unknown): void => {
 const webResearchBlocked = (): string | undefined =>
   Date.now() < webUnavailableUntilMs ? webUnavailableReason : undefined;
 
+/**
+ * Normalises a query before it costs a metered request.
+ *
+ * The schema asks for a string and a model can satisfy that with whitespace, or
+ * with a whole paragraph of pasted context. Both are rejected upstream, and a
+ * rejected request still spends the allowance: measured at the gateway, a third
+ * of an hour's traffic was 400s rather than answers.
+ *
+ * A search query is a phrase. Beyond a couple of hundred characters it is not a
+ * query any more, and the useful part is at the front.
+ */
+const MAX_WEB_QUERY_CHARS = 400;
+
+export const normalizeWebQuery = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (!collapsed) return undefined;
+  return collapsed.length > MAX_WEB_QUERY_CHARS
+    ? collapsed.slice(0, MAX_WEB_QUERY_CHARS).trimEnd()
+    : collapsed;
+};
+
 /** Pages to keep from a web research call, and how much of each. */
 const MAX_WEB_PAGES = 6;
 const MAX_WEB_PAGE_CHARS = 6_000;
@@ -410,9 +432,10 @@ const docdexToolDefinitions = (
         }
       }
 
-      if (!localAnswers && !webResearchBlocked()) {
+      const webQuery = normalizeWebQuery(query);
+      if (!localAnswers && webQuery && !webResearchBlocked()) {
         try {
-          const web = await client.search(query, { limit, forceWeb: true });
+          const web = await client.search(webQuery, { limit, forceWeb: true });
           if (hasWebFindings(web)) {
             return toOutput(web);
           }
@@ -719,6 +742,11 @@ const docdexToolDefinitions = (
       // a central bank's interest rate came back sourced to this repository's
       // own documentation. Anything genuinely local is what `docdex_search` is
       // for; a caller can still ask for the mixed behaviour explicitly.
+      const normalizedQuery = normalizeWebQuery(query);
+      if (!normalizedQuery) {
+        // Spending a metered request to be told this is malformed helps nobody.
+        return toOutput({ query, pages: [], unavailable: "empty query" });
+      }
       const blocked = webResearchBlocked();
       if (blocked) {
         // Answering "the web is unavailable" costs nothing; asking again costs
@@ -727,7 +755,7 @@ const docdexToolDefinitions = (
       }
       let result;
       try {
-        result = await client.webResearch(query, {
+        result = await client.webResearch(normalizedQuery, {
           forceWeb: forceWeb ?? true,
           skipLocalSearch,
           webLimit,
@@ -747,7 +775,7 @@ const docdexToolDefinitions = (
       // was standing in for.
       if (!noCache && !hasWebContent(result)) {
         try {
-          const fresh = await client.webResearch(query, {
+          const fresh = await client.webResearch(normalizedQuery, {
             forceWeb: forceWeb ?? true,
             skipLocalSearch,
             webLimit,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DocdexClient } from "../../../docdex/DocdexClient.js";
-import { createDocdexTools, resetWebResearchBackoff } from "../DocdexTools.js";
+import { createDocdexTools, normalizeWebQuery, resetWebResearchBackoff } from "../DocdexTools.js";
 
 const refusing = (status: number, details?: Record<string, unknown>) => {
   const client = new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: process.cwd() });
@@ -98,4 +98,32 @@ test("Retry-After wins over either default", async () => {
   // Two minutes is longer than the transient default; the provider's word wins.
   assert.match(result.output, /not retrying for 2m/);
   resetWebResearchBackoff();
+});
+
+test("a malformed query never reaches the provider", async () => {
+  // Measured at the gateway: 8 of 24 requests in an hour were 400s, not quota
+  // refusals. A rejected request still spends the allowance.
+  resetWebResearchBackoff();
+  const { client, calls } = refusing(402);
+  const tool = webTool(client);
+  for (const query of ["", "   ", "\n\t "]) {
+    const result = await tool.handler({ query }, { workspaceRoot: process.cwd() });
+    assert.match(result.output, /empty query/);
+  }
+  assert.equal(calls(), 0, "nothing malformed should cost a request");
+  resetWebResearchBackoff();
+});
+
+test("a pasted paragraph is trimmed to a query", () => {
+  const long = "how many hours did the team log ".repeat(40);
+  const normalized = normalizeWebQuery(long);
+  assert.ok(normalized);
+  assert.ok(normalized!.length <= 400, `still ${normalized!.length} chars`);
+  assert.ok(normalized!.startsWith("how many hours"));
+});
+
+test("whitespace is collapsed rather than sent as-is", () => {
+  assert.equal(normalizeWebQuery("  UK   inflation\n\trate  "), "UK inflation rate");
+  assert.equal(normalizeWebQuery("   "), undefined);
+  assert.equal(normalizeWebQuery(undefined), undefined);
 });
