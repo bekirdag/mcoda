@@ -130,6 +130,35 @@ const toolDefinitionsFor = (
     inputSchema: descriptor.inputSchema as Record<string, unknown> | undefined,
   }));
 
+/**
+ * Markers of a model describing tool activity that never happened.
+ *
+ * A worker offered tools and asked for evidence will sometimes write what a
+ * successful transcript looks like instead of calling anything — tool names,
+ * call ids, `"status": "success"`, and rows of data underneath. Observed in a
+ * timesheet product: employee ids and hours that exist nowhere, carrying a
+ * `tool_call_id` and labelled successful, against a connector that received no
+ * request at all.
+ *
+ * Prose is not the problem. A worker may legitimately answer "the results do
+ * not cover this" without calling anything. What must never pass is a claim of
+ * execution, because the evidence normalizer reads structures like
+ * `evidence_items` and would take invented rows for retrieved ones.
+ */
+const FABRICATED_TOOL_RESULT_MARKERS = [
+  /"?tool_call_id"?\s*[:=]/i,
+  /"?evidence_items"?\s*[:=]/i,
+  /"?raw_data_excerpt"?\s*[:=]/i,
+  /"?tool_name"?\s*[:=]/i,
+  /"?status"?\s*[:=]\s*"?success"?/i,
+];
+
+const claimsToolExecution = (output: string): boolean => {
+  if (!output) return false;
+  // Two independent markers, so a passing mention of a tool name is not enough.
+  return FABRICATED_TOOL_RESULT_MARKERS.filter((marker) => marker.test(output)).length >= 2;
+};
+
 const buildTaskMessages = (
   input: CodaliGatewayWorkerTaskRunInput,
   hasTools: boolean,
@@ -147,6 +176,10 @@ const buildTaskMessages = (
           // seven more calls unspent.
           "One search is rarely enough. In the same batch, add the tools that cover what a search cannot: listing a directory's files, reading a named file, or looking up a symbol's definition.",
           "Prefer several complementary calls over one broad one — unused calls cost nothing, a missing one costs the answer.",
+          // A worker asked for evidence has been observed writing what a
+          // successful transcript looks like — call ids, statuses and rows of
+          // invented data — instead of calling anything.
+          "Never describe a tool result you did not receive. If you call nothing, say what you could not determine; do not write out call ids, statuses, or example rows as though a tool had returned them.",
         ].join("\n")
       : "No tools are available. Answer from the task description alone or state what is missing.",
     "Report only what the tool results actually support. Never invent file paths, identifiers, figures, or quotations.",
@@ -267,6 +300,25 @@ export class LocalGatewayTaskRunner implements CodaliGatewayWorkerTaskRunner {
     // and we return rather than looping to look for more work.
     if (requested.length === 0) {
       const output = selection.message.content.trim();
+      // A worker that was given tools, called none, and then described tool
+      // results has invented them. Passing that on as a successful task makes
+      // fabricated rows indistinguishable from retrieved ones by the time the
+      // normalizer sees them, so it fails here instead.
+      if (toolDefinitions.length > 0 && claimsToolExecution(output)) {
+        return finish({
+          status: "failed",
+          errorCode: "GATEWAY_WORKER_FABRICATED_TOOL_RESULT",
+          errorMessage:
+            "The worker reported tool results without calling any tool. Its output has been " +
+            "discarded rather than treated as evidence.",
+          metadata: {
+            pass: "direct",
+            modelCallCount: modelCalls.length,
+            toolCallCount: 0,
+            fabricatedToolResult: true,
+          },
+        });
+      }
       return finish({
         status: "succeeded",
         output,
@@ -274,6 +326,9 @@ export class LocalGatewayTaskRunner implements CodaliGatewayWorkerTaskRunner {
           pass: "direct",
           modelCallCount: modelCalls.length,
           toolCallCount: 0,
+          // Nothing was retrieved, so nothing downstream may treat this as
+          // having been.
+          ...(toolDefinitions.length > 0 ? { noToolsExecuted: true } : {}),
           ...(droppedForBudget > 0 ? { droppedToolCalls: droppedForBudget } : {}),
         },
       });
