@@ -6722,8 +6722,48 @@ export class SelfHostedNodeRuntime {
     return projectMswarmPublicCapabilities(await this.probeCapabilities());
   }
 
+  /**
+   * The capability snapshot a heartbeat carries, without making the heartbeat
+   * wait for it.
+   *
+   * Probing shells out to nvidia-smi, docker, blender and ffmpeg. Each is
+   * bounded, but the bound is two seconds and they sit in front of every beat,
+   * so on a machine where one of them is wedged — a docker daemon that accepts
+   * the connection and never answers is the common one — the node pays that
+   * before it can say it is alive. With a short heartbeat interval it is
+   * permanently late, and if the probe ever outlasts the gateway's heartbeat
+   * timeout the node reads as unreachable while being perfectly healthy. That
+   * is the same false-unreachable this daemon exists to avoid.
+   *
+   * Liveness does not depend on knowing whether blender is installed. The
+   * snapshot is probed once and then refreshed alongside the beat instead of in
+   * front of it, so only the first beat of a process ever waits.
+   */
+  private cachedCapabilitySnapshot: MswarmNodeCapabilitySnapshot | null = null;
+  private capabilityRefreshInFlight: Promise<void> | null = null;
+
+  private refreshCapabilitySnapshot(): void {
+    if (this.capabilityRefreshInFlight) return;
+    this.capabilityRefreshInFlight = this.probeCapabilities()
+      .then((snapshot) => {
+        this.cachedCapabilitySnapshot = snapshot;
+      })
+      .catch(() => {
+        // A probe that fails leaves the previous answer in place; it is better
+        // to report a slightly stale capability than to stop heartbeating.
+      })
+      .finally(() => {
+        this.capabilityRefreshInFlight = null;
+      });
+  }
+
   async buildCapabilityHeartbeatPayload(runtimeToken: string): Promise<MswarmSignedCapabilityPayload> {
-    const snapshot = await this.probeCapabilities();
+    const cached = this.cachedCapabilitySnapshot;
+    if (cached) {
+      // Refresh alongside the beat rather than in front of it.
+      this.refreshCapabilitySnapshot();
+    }
+    const snapshot = cached ?? (this.cachedCapabilitySnapshot = await this.probeCapabilities());
     const privateCatalogEntry = buildMswarmPrivateCapabilityCatalogEntry(snapshot);
     return signCapabilityPayload({ privateCatalogEntry, runtimeToken });
   }

@@ -7955,6 +7955,13 @@ describe("self-hosted node runtime", () => {
     };
     const runtime = new SelfHostedNodeRuntime(config, {
       fetchImpl,
+      // What this test is about is the 410 backoff, not what software is
+      // installed. Left to the real runner it shells out to nvidia-smi, docker,
+      // blender and ffmpeg before the first beat, and a docker daemon that
+      // accepts the connection without answering makes the first heartbeat
+      // arrive after the window below — a failure of the developer's machine
+      // rather than of the daemon.
+      capabilityRunner: async () => ({ stdout: "", stderr: "", code: 1 }),
       gateway: new MswarmSelfHostedNodeClient({
         gatewayBaseUrl: config.gatewayBaseUrl,
         fetchImpl,
