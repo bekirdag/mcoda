@@ -130,8 +130,23 @@ export const toRepoRelativePath = (
  * the fallback is deliberately short, because staying closed too long is a
  * self-inflicted outage and reopening early costs one wasted call.
  */
-const WEB_QUOTA_STATUSES = new Set([401, 402, 403, 429]);
+/**
+ * Two kinds of refusal, and they deserve different patience.
+ *
+ * A spent quota or a rejected credential will still be spent and still be
+ * rejected in a minute, so the sensible default is long. A rate limit or a
+ * service restarting is over in seconds, and blocking for a quarter of an hour
+ * because a container was recreated would turn a blip into an outage of our
+ * own making.
+ *
+ * `Retry-After` overrides both, because the provider knows and we are guessing.
+ * The upstream gateway now answers a cold start with 503 and a `Retry-After`
+ * rather than a bodyless 502, which is precisely the case this handles.
+ */
+const WEB_EXHAUSTED_STATUSES = new Set([401, 402, 403]);
+const WEB_TRANSIENT_STATUSES = new Set([429, 503]);
 const DEFAULT_WEB_BACKOFF_MS = 15 * 60_000;
+const TRANSIENT_WEB_BACKOFF_MS = 30_000;
 const MAX_WEB_BACKOFF_MS = 60 * 60_000;
 
 let webUnavailableUntilMs = 0;
@@ -161,16 +176,26 @@ const retryAfterMsFrom = (error: unknown): number | undefined => {
   return undefined;
 };
 
-const isWebQuotaRefusal = (error: unknown): boolean => {
+const webRefusalStatus = (error: unknown): number | undefined => {
   const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
-  return status !== undefined && WEB_QUOTA_STATUSES.has(status);
+  if (status === undefined) return undefined;
+  return WEB_EXHAUSTED_STATUSES.has(status) || WEB_TRANSIENT_STATUSES.has(status)
+    ? status
+    : undefined;
 };
 
+const isWebQuotaRefusal = (error: unknown): boolean => webRefusalStatus(error) !== undefined;
+
 const noteWebRefusal = (error: unknown): void => {
-  const backoff = Math.min(retryAfterMsFrom(error) ?? DEFAULT_WEB_BACKOFF_MS, MAX_WEB_BACKOFF_MS);
+  const status = webRefusalStatus(error);
+  const fallback = status !== undefined && WEB_TRANSIENT_STATUSES.has(status)
+    ? TRANSIENT_WEB_BACKOFF_MS
+    : DEFAULT_WEB_BACKOFF_MS;
+  const backoff = Math.min(retryAfterMsFrom(error) ?? fallback, MAX_WEB_BACKOFF_MS);
   webUnavailableUntilMs = Date.now() + backoff;
-  const status = isRecord(error) && typeof error.status === "number" ? error.status : "unknown";
-  webUnavailableReason = `provider returned ${status}; not retrying for ${Math.round(backoff / 60_000)}m`;
+  webUnavailableReason =
+    `provider returned ${status ?? "unknown"}; not retrying for ` +
+    (backoff < 60_000 ? `${Math.round(backoff / 1000)}s` : `${Math.round(backoff / 60_000)}m`);
 };
 
 const webResearchBlocked = (): string | undefined =>

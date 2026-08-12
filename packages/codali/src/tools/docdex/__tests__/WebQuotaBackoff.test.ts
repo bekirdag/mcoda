@@ -68,3 +68,34 @@ test("Retry-After decides when to try again, not a fixed hour", async () => {
   assert.match(result.output, /unavailable/);
   resetWebResearchBackoff();
 });
+
+test("a restarting service is waited out in seconds, not a quarter hour", async () => {
+  // The upstream gateway answers a cold start with 503 and a Retry-After now,
+  // instead of a bodyless 502. Treating that like a spent quota would turn a
+  // container recreate into fifteen minutes of self-inflicted outage.
+  resetWebResearchBackoff();
+  const { client } = refusing(503);
+  const tool = webTool(client);
+  const result = await tool.handler({ query: "a" }, { workspaceRoot: process.cwd() });
+  assert.match(result.output, /not retrying for \d+s/);
+  resetWebResearchBackoff();
+});
+
+test("a spent quota is still waited out in minutes", async () => {
+  resetWebResearchBackoff();
+  const { client } = refusing(402);
+  const tool = webTool(client);
+  const result = await tool.handler({ query: "a" }, { workspaceRoot: process.cwd() });
+  assert.match(result.output, /not retrying for \d+m/);
+  resetWebResearchBackoff();
+});
+
+test("Retry-After wins over either default", async () => {
+  resetWebResearchBackoff();
+  const { client } = refusing(503, { retry_after_ms: 120_000 });
+  const tool = webTool(client);
+  const result = await tool.handler({ query: "a" }, { workspaceRoot: process.cwd() });
+  // Two minutes is longer than the transient default; the provider's word wins.
+  assert.match(result.output, /not retrying for 2m/);
+  resetWebResearchBackoff();
+});
