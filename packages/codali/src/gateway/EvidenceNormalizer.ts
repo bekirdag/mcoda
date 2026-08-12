@@ -73,6 +73,19 @@ interface CollectionContext {
   metadata?: Record<string, unknown>;
   depth: number;
   rootStringMode?: boolean;
+  /**
+   * Read this value as words, never as data.
+   *
+   * A worker's own text is JSON-parsed and descended into, which is right when
+   * it is relaying what a tool returned and wrong when it is not. A worker that
+   * called nothing wrote `{"evidence_items":[{"source":"…daily_logs_search",
+   * "data":[{"employee":"Alice Johnson","hours":8.5}]}]}` and those rows were
+   * mined into citable evidence; the verifier then named the invented people
+   * back. No pattern match is a defence here, because the shape is whatever the
+   * model chose that run. The defence is structural: with nothing retrieved,
+   * there is nothing to parse.
+   */
+  textOnly?: boolean;
   allowGenericPayload?: boolean;
 }
 
@@ -473,6 +486,24 @@ const collectCandidates = (
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return [];
+    if (context.textOnly) {
+      // Still worth reporting that it was malformed; just never descend into it.
+      if (parseMaybeJson(trimmed).malformed) {
+        warnings.push("malformed_worker_json");
+      }
+      return [{
+        claim: trimmed,
+        rawExcerpt: truncate(trimmed),
+        sourceType: "model_observation",
+        confidence: 0.2,
+        relevance: 0.4,
+        usedTool: context.usedTool,
+        tenantScoped: context.tenantScoped,
+        metadata: context.metadata,
+        value,
+        unprovenanced: true,
+      }];
+    }
     const parsed = parseMaybeJson(trimmed);
     if (parsed.parsed !== undefined) {
       return collectCandidates(parsed.parsed, { ...context, depth: context.depth + 1 }, warnings);
@@ -654,6 +685,10 @@ export const normalizeCodaliEvidence = (
       tenantScoped: input.defaultTenantScoped,
       depth: 0,
       rootStringMode: true,
+      // Nothing was retrieved, so nothing the worker wrote is data. Marking the
+      // candidates unprovenanced afterwards was not enough — invented rows were
+      // still parsed out and cited individually.
+      textOnly: !retrievedSomething,
     }, warnings));
   }
 
