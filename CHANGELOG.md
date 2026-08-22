@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Verify every release candidate before and after it reaches the registry: the
+  packed manifest is asserted portable before the version is burned, and the
+  published version is installed into an empty project before the publish is
+  considered done. @mcoda/codali@0.1.128 reached the registry with
+  `workspace:*` dependency ranges and could not be installed at all.
+
 ## 0.1.108 - 2026-08-02
 
 - Add an optional, additive high-priority relay reservation with raw-priority
