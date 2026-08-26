@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decideGroundingMode } from "../GroundingMode.js";
+import { decideGroundingMode, retrievalCanResolveAmbiguity } from "../GroundingMode.js";
 
 const classifier = (overrides: Record<string, boolean> = {}) => ({
   needsPrivateData: false,
@@ -87,4 +87,70 @@ test("a rolling window in a generation request is not a freshness signal", () =>
 test("recency has to be asked about, not merely mentioned", () => {
   assert.equal(modeOf("When did the central bank last change its rate?"), "grounded");
   assert.equal(modeOf("What is the newest release?"), "grounded");
+});
+
+const requestFor = (
+  overrides: {
+    tenant?: { id?: string; slug?: string };
+    allowedTools?: string[];
+    appVirtualTools?: string[];
+  } = {},
+) => ({
+  tenant: overrides.tenant,
+  policy: {
+    allowedTools: overrides.allowedTools ?? [],
+    appVirtualTools: overrides.appVirtualTools,
+    maxIterations: 3,
+    maxRuntimeMs: 60_000,
+    maxToolCalls: 20,
+    maxModelCalls: 12,
+    maxEvidenceItems: 40,
+    maxContextPackTokens: 16_000,
+    allowWrites: false as const,
+    allowShell: false as const,
+    allowDestructiveOperations: false as const,
+    allowOutsideWorkspace: false as const,
+    requireFinalLargeModel: false,
+  },
+});
+
+test("a tenant run holding product connectors resolves its own ambiguity", () => {
+  assert.equal(
+    retrievalCanResolveAmbiguity(
+      requestFor({
+        tenant: { slug: "acme" },
+        allowedTools: ["docdex_search", "http:logmira_tenant_records:employees"],
+      }),
+    ),
+    true,
+  );
+});
+
+test("a run with only the code index still has to ask", () => {
+  // Docdex searches the workspace, not the tenant's records: it cannot tell one
+  // person of a given name from another, so stopping to ask is the honest outcome.
+  assert.equal(
+    retrievalCanResolveAmbiguity(
+      requestFor({ tenant: { slug: "acme" }, allowedTools: ["docdex_search", "docdex_open"] }),
+    ),
+    false,
+  );
+});
+
+test("a run with no tenant has to ask", () => {
+  assert.equal(
+    retrievalCanResolveAmbiguity(
+      requestFor({ allowedTools: ["http:logmira_tenant_records:employees"] }),
+    ),
+    false,
+  );
+});
+
+test("virtual app tools count as something to retrieve with", () => {
+  assert.equal(
+    retrievalCanResolveAmbiguity(
+      requestFor({ tenant: { id: "t-1" }, appVirtualTools: ["daily_logs"] }),
+    ),
+    true,
+  );
 });

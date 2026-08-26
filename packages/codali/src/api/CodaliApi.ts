@@ -23,6 +23,7 @@ import type {
   CodaliArtifactRef,
   CodaliGatewayMode,
   CodaliGatewayRequest,
+  CodaliGatewayResult,
   CodaliGatewaySource,
   CodaliGatewayStatus,
 } from "../gateway/CodaliGatewayTypes.js";
@@ -85,6 +86,23 @@ export interface CodaliRequest {
 
 export interface CodaliSourceRef extends CodaliGatewaySource {}
 
+/**
+ * One tool call the run made, as the tracer recorded it.
+ *
+ * Arguments are deliberately not carried: they are model-generated and often
+ * contain the user's own text, and a host that logs the result should not have
+ * to sanitise it again. The name, the outcome and the latency are what answer
+ * "did this question actually retrieve anything?", which is the question a host
+ * run log has to be able to answer.
+ */
+export interface CodaliToolCallRecord {
+  taskId: string;
+  tool: string;
+  ok?: boolean;
+  latencyMs?: number;
+  errorCode?: string;
+}
+
 export interface CodaliResult {
   status: CodaliGatewayStatus;
   /** Text answer, or the clarifying question when status is needs_clarification. */
@@ -95,6 +113,17 @@ export interface CodaliResult {
   artifacts: CodaliArtifactRef[];
   warnings: string[];
   traceId: string;
+  /**
+   * Whether the answer was required to rest on retrieved evidence.
+   *
+   * `open` means there was nothing to retrieve - a request to write a function,
+   * an arithmetic question - so an empty `sources` list is the correct outcome
+   * and not a failed search. A host that suppresses uncited answers must read
+   * this before deciding; absent means assume `grounded`.
+   */
+  groundingMode?: CodaliGatewayResult["groundingMode"];
+  /** Every tool call the run made, in order. Empty when it called none. */
+  toolCalls: CodaliToolCallRecord[];
 }
 
 const DEFAULTS = {
@@ -131,6 +160,16 @@ export const messagesToQuery = (messages: readonly CodaliMessage[]): string => {
     : lastUser.content;
 };
 
+/** The tracer's tool-call log, minus the model-generated arguments. */
+const toolCallRecords = (tracer: GatewayTracer): CodaliToolCallRecord[] =>
+  tracer.snapshot().toolCalls.map((call) => ({
+    taskId: call.taskId,
+    tool: call.tool,
+    ok: call.ok,
+    latencyMs: call.latencyMs,
+    errorCode: call.errorCode,
+  }));
+
 export interface CodaliRunDependencies {
   loadInventory?: typeof getAgentInventory;
   resolveRunContext?: (workspaceRoot: string) => Promise<RunContext>;
@@ -161,6 +200,7 @@ export const runCodali = async (
       artifacts: [],
       warnings: ["empty_request"],
       traceId: request.requestId ?? randomUUID(),
+      toolCalls: [],
     };
   }
 
@@ -188,6 +228,7 @@ export const runCodali = async (
       artifacts: [],
       warnings: ["run_context_required"],
       traceId: request.requestId ?? randomUUID(),
+      toolCalls: [],
     };
   }
   const context = resolvedContext;
@@ -213,6 +254,7 @@ export const runCodali = async (
       artifacts: [],
       warnings: [...tracer.snapshot().warnings, "no_agents_resolved"],
       traceId: request.requestId ?? randomUUID(),
+      toolCalls: [],
     };
   }
 
@@ -403,6 +445,14 @@ export const runCodali = async (
       artifacts: artifacts.length > 0 ? artifacts : result.artifacts,
       warnings: [...tracer.snapshot().warnings, ...result.warnings],
       traceId: result.runId,
+      groundingMode: result.groundingMode,
+      /**
+       * What the run actually called, so a host run log can answer "did this
+       * question retrieve anything?" without reading a proxy access log. Every
+       * okacam run recorded `toolCallCount: 0` for months because this was not
+       * on the result to report.
+       */
+      toolCalls: toolCallRecords(tracer),
     };
   } catch (error) {
     return {
@@ -415,6 +465,7 @@ export const runCodali = async (
       artifacts,
       warnings: tracer.snapshot().warnings,
       traceId: runId,
+      toolCalls: toolCallRecords(tracer),
     };
   } finally {
     await mcp.registry?.close();

@@ -1,4 +1,7 @@
-import type { CodaliGatewayClassifierOutput } from "./CodaliGatewayTypes.js";
+import type {
+  CodaliGatewayClassifierOutput,
+  CodaliGatewayRequest,
+} from "./CodaliGatewayTypes.js";
 
 /**
  * Whether an answer must come from retrieved evidence, or may come from the
@@ -123,6 +126,41 @@ export const decideGroundingMode = (
   }
 
   return { mode: "grounded", reason: "default" };
+};
+
+/**
+ * Whether looking something up could settle the ambiguity the classifier found.
+ *
+ * The classifier decides `needsClarification` before a single tool has run, and
+ * it is the smallest model in the run. On one host's production measurement
+ * that judgement returned a question instead of an answer on five of fifteen
+ * queries — "which project management system hosts the X tasks?", "could you
+ * clarify which person you are referring to?" — while other queries minutes
+ * later retrieved exactly that data without difficulty. The information was
+ * there; nothing had gone looking for it.
+ *
+ * So a run that can retrieve does. The clarifying question is not discarded: it
+ * is carried to the synthesizer, which has the evidence in front of it and can
+ * tell a genuinely ambiguous referent from one the data resolves. A run with
+ * nothing to search — no tenant, or no tools beyond the code index — still
+ * stops and asks, because for it the question really is unanswerable.
+ */
+export const retrievalCanResolveAmbiguity = (
+  request: Pick<CodaliGatewayRequest, "tenant" | "policy">,
+): boolean => {
+  const tenantScoped = Boolean(
+    request.tenant?.id || request.tenant?.slug || request.tenant?.realm,
+  );
+  if (!tenantScoped) return false;
+  if (request.policy?.appToolGateway) return true;
+  const tools = [
+    ...(request.policy?.allowedTools ?? []),
+    ...(request.policy?.appVirtualTools ?? []),
+    ...Object.keys(request.policy?.appToolContracts ?? {}),
+  ];
+  // Docdex searches the workspace, not the tenant's records, so it cannot tell
+  // one person of a given name from another. An app connector can.
+  return tools.some((tool) => typeof tool === "string" && !tool.startsWith("docdex_"));
 };
 
 /**

@@ -633,3 +633,63 @@ test("a clarification that adds information is kept", async () => {
 
   assert.match(result.classifier.needsClarification ?? "", /three in the directory/);
 });
+
+test("a tenant run that can look it up plans instead of stopping to ask", async () => {
+  // Measured on a host's 2026-08-26 production run: five of fifteen questions
+  // came back as "which system hosts the X tasks?" having called no tool, while
+  // other questions retrieved that same data minutes later. The classifier is
+  // the smallest model in the run and it was holding the final say.
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "general",
+      needsPrivateData: true,
+      needsFreshData: false,
+      needsDocdex: false,
+      needsAppTools: true,
+      needsImageWorker: false,
+      needsClarification: "Which Bekir do you mean, there are three in the directory?",
+    }),
+    jsonResponse({ queryType: "general", subquestions: [], workerTasks: [] }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({
+      query: "How is Bekir doing?",
+      tenant: { slug: "acme" },
+      policy: basePolicy({ allowedTools: ["http:logmira_tenant_records:employees"] }),
+    }),
+  });
+
+  assert.equal(provider.requests.length, 2, "the planner stage ran");
+  assert.ok(
+    result.warnings.includes("clarification_deferred_to_retrieval"),
+    "the deferred question is named in the trace",
+  );
+  assert.match(result.classifier.needsClarification ?? "", /three in the directory/);
+});
+
+test("a run with nothing to search still stops and asks", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "general",
+      needsPrivateData: true,
+      needsFreshData: false,
+      needsDocdex: true,
+      needsAppTools: false,
+      needsImageWorker: false,
+      needsClarification: "Which Bekir do you mean, there are three in the directory?",
+    }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({
+      query: "How is Bekir doing?",
+      tenant: { slug: "acme" },
+      docdex: { enabled: true, repoRoot: "/tmp/codali-test-repo" },
+      policy: basePolicy({ allowedTools: ["docdex_search"] }),
+    }),
+  });
+
+  assert.equal(provider.requests.length, 1, "the planner stage was skipped");
+  assert.ok(result.warnings.includes("planner_skipped:needs_clarification"));
+});

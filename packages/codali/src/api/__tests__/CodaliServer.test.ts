@@ -11,6 +11,7 @@ const okResult = (): CodaliResult => ({
   artifacts: [],
   warnings: [],
   traceId: "trace-1",
+  toolCalls: [],
 });
 
 const principals: Record<string, CodaliServerPrincipal> = {

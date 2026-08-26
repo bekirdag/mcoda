@@ -1,3 +1,6 @@
+// Type-only, and erased at compile time, so the pair does not form a runtime
+// cycle even though GroundingMode imports the classifier type from here.
+import type { CodaliGroundingMode } from "./GroundingMode.js";
 import type {
   CodaliRuntimeAppToolContracts,
   CodaliRuntimeAppToolGatewayContract,
@@ -290,6 +293,18 @@ export interface CodaliGatewayResult {
   trace: CodaliGatewayTrace;
   telemetry: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  /**
+   * Whether this answer was required to rest on retrieved evidence.
+   *
+   * An `open` run deliberately carries no sources: there was nothing to
+   * retrieve, so an empty `sources` list is the correct outcome rather than a
+   * failed search. Without this on the result a host cannot tell the two apart.
+   * A host that suppresses any answer citing nothing - a reasonable defence
+   * against a model answering about a tenant from memory - was measured
+   * refusing to return code it had itself been asked to write. Absent means the
+   * caller should assume `grounded`, which is the safe reading.
+   */
+  groundingMode?: CodaliGroundingMode;
 }
 
 export interface CodaliGatewaySubquestion {

@@ -19,7 +19,7 @@ import {
   type GatewayPolicyCompilation,
 } from "./GatewayPolicyCompiler.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
-import { requestTouchesOwnData } from "./GroundingMode.js";
+import { requestTouchesOwnData, retrievalCanResolveAmbiguity } from "./GroundingMode.js";
 import { renderCapabilityLines, renderToolLines } from "./ToolExposure.js";
 import { buildTemporalContext, renderTemporalContext } from "./TemporalContext.js";
 
@@ -1101,7 +1101,17 @@ export class CodaliGatewayPlanner {
     // A request the classifier could not disambiguate has nothing to plan.
     // Skipping the planner stage saves a model call and, more importantly,
     // avoids producing a plan built on a guessed identity.
-    if (classifierResult.classifier.needsClarification?.trim()) {
+    //
+    // Unless the run can look the answer up. A tenant-scoped run holding the
+    // product's own connectors resolves "which person of that name" by reading
+    // the tenant's records, and stopping to ask first returns a question where
+    // an answer was available - five of fifteen queries on one host's measured
+    // production run. The question survives as a warning and is put to the
+    // synthesizer once the evidence is in. See `retrievalCanResolveAmbiguity`.
+    if (
+      classifierResult.classifier.needsClarification?.trim() &&
+      !retrievalCanResolveAmbiguity(input.request)
+    ) {
       return {
         policyCompilation,
         classifier: classifierResult.classifier,
@@ -1149,7 +1159,15 @@ export class CodaliGatewayPlanner {
       policyCompilation,
       classifier: classifierResult.classifier,
       planner: sanitized.planner,
-      warnings: [...classifierResult.warnings, ...sanitized.warnings],
+      warnings: [
+        ...classifierResult.warnings,
+        ...sanitized.warnings,
+        // Named, so a run that answered a question the classifier wanted to ask
+        // back can be found in the trace rather than inferred from its absence.
+        ...(classifierResult.classifier.needsClarification?.trim()
+          ? ["clarification_deferred_to_retrieval"]
+          : []),
+      ],
       classifierRepairAttempts: classifierResult.repairAttempts,
       plannerRepairAttempts: plannerResult.repairAttempts,
       classifierRawContent: classifierResult.rawContent,

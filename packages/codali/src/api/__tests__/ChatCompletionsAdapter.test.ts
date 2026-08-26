@@ -12,6 +12,7 @@ const result = (overrides: Partial<CodaliResult> = {}): CodaliResult => ({
   artifacts: [],
   warnings: [],
   traceId: "trace-9",
+  toolCalls: [],
   ...overrides,
 });
 

@@ -1122,6 +1122,7 @@ export type {
   CodaliResult,
   CodaliRunDependencies,
   CodaliSourceRef,
+  CodaliToolCallRecord,
 } from "./api/CodaliApi.js";
 
 export { handleChatCompletion, toCodaliMessages } from "./api/ChatCompletionsAdapter.js";

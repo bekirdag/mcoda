@@ -72,7 +72,11 @@ import {
   type CodaliGatewayWorkerTaskRunner,
 } from "./GatewayStateMachine.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
-import { decideGroundingMode, type CodaliGroundingMode } from "./GroundingMode.js";
+import {
+  decideGroundingMode,
+  retrievalCanResolveAmbiguity,
+  type CodaliGroundingMode,
+} from "./GroundingMode.js";
 import { buildTemporalContext } from "./TemporalContext.js";
 import {
   collectGatewayDatasetResultNonBlocking,
@@ -155,6 +159,13 @@ export interface CodaliGatewayFinalSynthesisInput {
   workers?: CodaliGatewayWorkerExecutionResult;
   contextPack?: CodaliContextPack;
   agentResolution?: AgentTierResolution;
+  /**
+   * A clarifying question the classifier asked for and the run declined to stop
+   * on, because it had tools that could resolve the ambiguity itself. The
+   * synthesizer is told about it so it can answer for the best-supported match
+   * and only ask when the evidence genuinely fails to settle it.
+   */
+  deferredClarification?: string;
 }
 
 interface FinalAgentResolution {
@@ -393,6 +404,7 @@ export const buildCodaliGatewayFinalSynthesizerMessages = (
   request: CodaliGatewayRequest,
   contextPack: CodaliContextPack,
   grounding: CodaliGroundingMode = "grounded",
+  options: { deferredClarification?: string } = {},
 ): ProviderMessage[] => {
   // An open question has nothing retrieved behind it. Handing the model the
   // grounded rules there tells it to answer only from evidence it does not
@@ -454,6 +466,16 @@ export const buildCodaliGatewayFinalSynthesizerMessages = (
         "`unverifiedObservations` are a worker's own notes with no tool result behind them. They are not evidence about the world: never state them as fact, never cite them, and never let a note about incomplete retrieval cast doubt on what the decision facts do establish.",
         "Only say the information could not be verified when the decision facts genuinely do not answer the question. If they answer part of it, give that part.",
         "Do not cite disabled or denied integrations, tools, or source surfaces.",
+        // The run was told the question was ambiguous and went and looked
+        // anyway. Usually the evidence settles it, and asking after retrieving
+        // is the same useless non-answer as asking before.
+        ...(options.deferredClarification
+          ? [
+              `Before retrieval this request looked ambiguous: "${options.deferredClarification}". The evidence below was gathered to settle it.`,
+              "If the evidence identifies one clear match, answer for it, say which one you took it to mean, and name the alternatives you set aside.",
+              "Ask that question back only if the evidence genuinely supports several answers and nothing distinguishes them — and then say what you did find.",
+            ]
+          : []),
       ].join("\n"),
     },
     {
@@ -811,8 +833,17 @@ export class CodaliGateway {
     // run to learn nothing.
     const clarification =
       grounding.mode === "open" ? undefined : planning.classifier.needsClarification?.trim();
-    if (clarification) {
-      return this.buildClarificationResult(request, planning, clarification);
+    // And a run holding the tenant's own connectors does not have to ask which
+    // person of that name was meant: it can go and find out. The question is
+    // kept and handed to the synthesizer, which decides with the evidence in
+    // front of it. See `retrievalCanResolveAmbiguity`.
+    const deferredClarification =
+      clarification && retrievalCanResolveAmbiguity(request) ? clarification : undefined;
+    if (clarification && !deferredClarification) {
+      return this.withGroundingMode(
+        await this.buildClarificationResult(request, planning, clarification),
+        grounding.mode,
+      );
     }
 
     const effectivePlanning: CodaliGatewayPlanResult =
@@ -853,7 +884,9 @@ export class CodaliGateway {
           request,
           planning,
           workers: workers.workers,
+          deferredClarification,
         });
+    this.withGroundingMode(result, grounding.mode);
     const datasetCollection = this.collectDatasetResult(request, result);
     if (datasetCollection) {
       result.metadata = {
@@ -861,6 +894,22 @@ export class CodaliGateway {
         datasetCollection,
       };
     }
+    return result;
+  }
+
+  /**
+   * Stamps the run's grounding mode onto whatever result it produced.
+   *
+   * Done in one place rather than in each of the six result builders, because a
+   * builder that forgot would leave the host unable to tell an open answer from
+   * a failed search — and the host's safe reading of a missing value is
+   * "grounded", so the omission would be silent.
+   */
+  private withGroundingMode(
+    result: CodaliGatewayResult,
+    mode: CodaliGroundingMode,
+  ): CodaliGatewayResult {
+    result.groundingMode = mode;
     return result;
   }
 
@@ -897,6 +946,7 @@ export class CodaliGateway {
       input.request,
       contextPack,
       grounding,
+      { deferredClarification: input.deferredClarification },
     );
     const traceBeforeFinal = await this.store.readRunTrace(input.runId);
     const artifacts = artifactRefsFromStored(traceBeforeFinal?.artifacts ?? []);

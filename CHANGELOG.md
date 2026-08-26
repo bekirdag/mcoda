@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Codali: surface the grounding mode and the tool calls a run made on its
+  result, and let a run with connectors resolve an ambiguous request by
+  retrieving instead of stopping to ask. See packages/codali/CHANGELOG.md.
 - Verify every release candidate before and after it reaches the registry: the
   packed manifest is asserted portable before the version is burned, and the
   published version is installed into an empty project before the publish is
