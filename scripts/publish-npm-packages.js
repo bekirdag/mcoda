@@ -92,9 +92,15 @@ export function assertPackedManifestPublishable(dir, { root = process.cwd(), pac
 // Installs the published version into an empty project. A manifest that npm
 // refuses to resolve (workspace protocols, unpublished internal pins) fails
 // here rather than in a consumer's install.
+//
+// A just-published version is not visible immediately - npm says so on publish,
+// and @mcoda/shared@0.1.129 took about a minute. The retry budget has to outlast
+// that, and every attempt has to ask the registry again: npm caches the packument
+// for five minutes, so without --prefer-online the retries only re-read the same
+// cached copy that did not have the version yet.
 export function verifyPublishedInstall(name, version, {
-  attempts = 5,
-  retryDelayMs = 5000,
+  attempts = 12,
+  retryDelayMs = 15000,
   spawn = spawnSync,
   wait = sleep
 } = {}) {
@@ -109,7 +115,7 @@ export function verifyPublishedInstall(name, version, {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const result = spawn(
         'npm',
-        ['install', `${name}@${version}`, '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'],
+        ['install', `${name}@${version}`, '--ignore-scripts', '--prefer-online', '--no-audit', '--no-fund', '--loglevel=error'],
         { cwd: projectDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
       );
       if (result.error) {

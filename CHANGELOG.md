@@ -10,6 +10,10 @@
   published version is installed into an empty project before the publish is
   considered done. @mcoda/codali@0.1.128 reached the registry with
   `workspace:*` dependency ranges and could not be installed at all.
+- Give that install check long enough to be true: a just-published version is
+  not visible at once, and npm caches the packument for five minutes, so a
+  short retry loop kept re-reading a copy that predated the publish and failed
+  a release that had in fact succeeded.
 
 ## 0.1.108 - 2026-08-02
 

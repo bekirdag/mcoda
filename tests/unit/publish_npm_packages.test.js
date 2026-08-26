@@ -61,6 +61,9 @@ test('a published version that installs into an empty project passes', () => {
   assert.equal(calls[0].args[0], 'install');
   assert.equal(calls[0].args[1], '@mcoda/codali@0.1.129');
   assert.ok(calls[0].args.includes('--ignore-scripts'));
+  // Without this every retry re-reads npm's five-minute packument cache, which
+  // is the copy that did not have the just-published version in it.
+  assert.ok(calls[0].args.includes('--prefer-online'));
 });
 
 test('an unresolvable dependency spec fails the release', () => {
