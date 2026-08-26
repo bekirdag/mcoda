@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/shared",
-  "version": "0.1.128",
+  "version": "0.1.129",
   "description": "Shared utilities and schemas for mcoda.",
   "type": "module",
   "main": "dist/index.js",
