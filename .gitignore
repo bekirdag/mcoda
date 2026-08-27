@@ -25,3 +25,6 @@ packages/**/*.tgz
 __pycache__/
 .creds
 *.creds
+
+# pigeonpost: holds this repo's mailbox token
+.mcp.json
