@@ -258,7 +258,12 @@ test("Codex CLI runner caps efforts above high for gpt-5.1", { concurrency: fals
   }
 });
 
-test("Codex CLI runner reports an unsupported reasoning effort instead of dropping it", { concurrency: false }, async () => {
+// Captures both the argv and anything the runner wrote to stderr, so a test can
+// check that the warning names the effort the run actually ends up using.
+const captureCodexArgsAndWarnings = async (
+  model: string,
+  reasoningEffort: string,
+): Promise<{ args: string[]; warnings: string[] }> => {
   const warnings: string[] = [];
   const originalWrite = process.stderr.write.bind(process.stderr);
   // @ts-ignore capture stderr
@@ -266,17 +271,36 @@ test("Codex CLI runner reports an unsupported reasoning effort instead of droppi
     warnings.push(String(chunk));
     return true;
   };
-  let args: string[];
   try {
-    args = await captureCodexArgs("gpt-5.6-sol", "turbo");
+    return { args: await captureCodexArgs(model, reasoningEffort), warnings };
   } finally {
     process.stderr.write = originalWrite;
   }
+};
+
+test("Codex CLI runner reports an unsupported reasoning effort instead of dropping it", { concurrency: false }, async () => {
+  const { args, warnings } = await captureCodexArgsAndWarnings("gpt-5.6-sol", "turbo");
 
   assert.ok(!args.some((arg) => arg.startsWith("model_reasoning_effort=")));
   const warning = warnings.find((entry) => entry.includes("turbo"));
   assert.ok(warning, `expected a warning naming the rejected value, got ${JSON.stringify(warnings)}`);
   assert.match(warning, /ultra/);
+  assert.match(warning, /using the model default instead/);
+});
+
+// On gpt-5.1 a rejected effort does not fall back to the model default -- the
+// cap below supplies `high` -- so the warning has to say `high`.
+test("Codex CLI runner names the gpt-5.1 fallback when an effort is unsupported", { concurrency: false }, async () => {
+  const { args, warnings } = await captureCodexArgsAndWarnings("gpt-5.1-codex-max", "warp");
+
+  assert.ok(
+    args.includes("model_reasoning_effort=high"),
+    `expected the gpt-5.1 cap to still apply, got ${JSON.stringify(args)}`,
+  );
+  const warning = warnings.find((entry) => entry.includes("warp"));
+  assert.ok(warning, `expected a warning naming the rejected value, got ${JSON.stringify(warnings)}`);
+  assert.match(warning, /using "high" instead/);
+  assert.doesNotMatch(warning, /model default/);
 });
 
 test("Codex CLI runner returns final output when codex stalls after completion", { concurrency: false }, async () => {

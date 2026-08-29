@@ -574,37 +574,44 @@ const createStreamFormatter = (model) => {
     return { handleLine, end };
 };
 // An effort codex does not accept used to be dropped without a trace: the run
-// silently fell back to the model default while `mcoda agent details` still
-// showed the configured value. Say so instead, once per distinct value so a
-// long-running process does not repeat itself.
+// silently fell back to whatever the model would have used anyway while
+// `mcoda agent details` still showed the configured value. Say so instead, and
+// name the effort actually used, which is not always the model default -- on
+// gpt-5.1 the fallback below is `high`. Deduped per distinct (value, fallback)
+// pair so a long-running process does not repeat itself.
 const warnedReasoningEfforts = new Set();
-const warnUnsupportedReasoningEffort = (raw) => {
-    if (warnedReasoningEfforts.has(raw))
+const warnUnsupportedReasoningEffort = (raw, fallback) => {
+    const key = `${raw}\u0000${fallback ?? ""}`;
+    if (warnedReasoningEfforts.has(key))
         return;
-    warnedReasoningEfforts.add(raw);
+    warnedReasoningEfforts.add(key);
+    const used = fallback ? `${JSON.stringify(fallback)}` : "the model default";
     process.stderr.write(`[mcoda] codex reasoning effort ${JSON.stringify(raw)} is not one of ` +
-        `${CODEX_REASONING_EFFORTS.join(", ")}; using the model default instead.\n`);
+        `${CODEX_REASONING_EFFORTS.join(", ")}; using ${used} instead.\n`);
 };
+// Returns the recognised effort, or the raw text under `rejected` so the caller
+// can report it once it knows which fallback the model will actually get.
 const normalizeReasoningEffort = (raw) => {
     if (!raw)
-        return undefined;
+        return {};
     const trimmed = raw.trim();
     if (!trimmed)
-        return undefined;
+        return {};
     const normalized = normalizeCodexReasoningEffort(trimmed);
-    if (!normalized) {
-        warnUnsupportedReasoningEffort(trimmed);
-        return undefined;
-    }
-    return normalized;
+    if (!normalized)
+        return { rejected: trimmed };
+    return { effort: normalized };
 };
 // gpt-5.1 tops out at `high`; anything stronger is rejected upstream, so cap it
 // rather than fail the run.
 const GPT_51_MAX_REASONING_EFFORT = "high";
 const resolveReasoningEffort = (model, effort) => {
-    const configured = normalizeReasoningEffort(effort ?? process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK]);
+    const { effort: configured, rejected } = normalizeReasoningEffort(effort ?? process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK]);
     const normalizedModel = (model ?? "").toLowerCase();
     const isGpt51 = normalizedModel.includes("gpt-5.1");
+    if (rejected) {
+        warnUnsupportedReasoningEffort(rejected, isGpt51 ? GPT_51_MAX_REASONING_EFFORT : undefined);
+    }
     if (configured) {
         if (isGpt51 &&
             codexReasoningEffortRank(configured) > codexReasoningEffortRank(GPT_51_MAX_REASONING_EFFORT)) {

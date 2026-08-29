@@ -19,9 +19,10 @@
   either silently fell back to the model default while `mcoda agent details`
   still reported the configured value. The allowlist now matches codex
   (`minimal|low|medium|high|xhigh|max|ultra`), an effort codex does not accept
-  says so on stderr rather than disappearing, and `mcoda agent add/update`
-  gained `--config-reasoning-effort` so the value can be set without editing
-  the agent record by hand.
+  says so on stderr rather than disappearing -- naming the effort the run
+  actually uses, which on gpt-5.1 is the `high` cap rather than the model
+  default -- and `mcoda agent add/update` gained `--config-reasoning-effort` so
+  the value can be set without editing the agent record by hand.
 
 ## 0.1.108 - 2026-08-02
 
