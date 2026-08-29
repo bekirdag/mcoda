@@ -1,9 +1,11 @@
 import { AgentsApi, AgentResponse, AgentUsageLimitResponse, WorkspaceResolver } from "@mcoda/core";
 import {
+  CODEX_REASONING_EFFORTS,
   defaultLocalRunnerKindForAdapter,
   isLocalOpenAiCompatibleAdapter,
   isReservedLocalRunnerExtraBodyKey,
   isSecretLocalRunnerHeaderKey,
+  normalizeCodexReasoningEffort,
   normalizeGenerativeModality,
   normalizeLocalRunnerAuthMode,
   normalizeLocalRunnerKind,
@@ -98,6 +100,7 @@ Subcommands:
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
+    --config-reasoning-effort <E> Codex reasoning effort (minimal|low|medium|high|xhigh|max|ultra)
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
     --adapter <TYPE>         Adapter slug (supports local OpenAI-compatible aliases)
     --model <MODEL>          Default model name
@@ -130,6 +133,7 @@ Subcommands:
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
+    --config-reasoning-effort <E> Codex reasoning effort (minimal|low|medium|high|xhigh|max|ultra)
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
   auth set <NAME>            Store credentials (use --api-key or interactive prompt)
@@ -234,6 +238,7 @@ const CONFIG_FLAG_NAMES = [
   "config-operation",
   "config-temperature",
   "config-thinking",
+  "config-reasoning-effort",
 ] as const;
 
 const hasConfigFlags = (flags: Record<string, any>): boolean =>
@@ -511,6 +516,21 @@ const parseConfig = (
         throw new Error("Invalid --config-thinking; expected true/false");
       }
     }
+  }
+  const reasoningEffortValue = getLastStringFlag(
+    flags["config-reasoning-effort"],
+    "--config-reasoning-effort",
+  );
+  if (reasoningEffortValue) {
+    const reasoningEffort = normalizeCodexReasoningEffort(reasoningEffortValue);
+    if (!reasoningEffort) {
+      throw new Error(
+        `Invalid --config-reasoning-effort "${reasoningEffortValue}"; expected one of ${CODEX_REASONING_EFFORTS.join(
+          "|",
+        )}`,
+      );
+    }
+    config.reasoningEffort = reasoningEffort;
   }
   if (options.requireBaseUrl && !config.baseUrl && !config.endpoint && !config.apiBaseUrl) {
     throw new Error("CONFIG_REQUIRED: --config-base-url is required for local OpenAI-compatible adapters");

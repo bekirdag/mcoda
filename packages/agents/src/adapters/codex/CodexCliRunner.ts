@@ -2,6 +2,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  CODEX_REASONING_EFFORTS,
+  codexReasoningEffortRank,
+  normalizeCodexReasoningEffort,
+  type CodexReasoningEffort,
+} from "@mcoda/shared";
 
 const CODEX_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const CODEX_REASONING_ENV = "MCODA_CODEX_REASONING_EFFORT";
@@ -581,13 +587,36 @@ const createStreamFormatter = (model?: string) => {
   return { handleLine, end };
 };
 
-const normalizeReasoningEffort = (raw: string | undefined): string | undefined => {
+// An effort codex does not accept used to be dropped without a trace: the run
+// silently fell back to the model default while `mcoda agent details` still
+// showed the configured value. Say so instead, once per distinct value so a
+// long-running process does not repeat itself.
+const warnedReasoningEfforts = new Set<string>();
+
+const warnUnsupportedReasoningEffort = (raw: string): void => {
+  if (warnedReasoningEfforts.has(raw)) return;
+  warnedReasoningEfforts.add(raw);
+  process.stderr.write(
+    `[mcoda] codex reasoning effort ${JSON.stringify(raw)} is not one of ` +
+      `${CODEX_REASONING_EFFORTS.join(", ")}; using the model default instead.\n`,
+  );
+};
+
+const normalizeReasoningEffort = (raw: string | undefined): CodexReasoningEffort | undefined => {
   if (!raw) return undefined;
-  const normalized = raw.trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (!["low", "medium", "high", "xhigh"].includes(normalized)) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const normalized = normalizeCodexReasoningEffort(trimmed);
+  if (!normalized) {
+    warnUnsupportedReasoningEffort(trimmed);
+    return undefined;
+  }
   return normalized;
 };
+
+// gpt-5.1 tops out at `high`; anything stronger is rejected upstream, so cap it
+// rather than fail the run.
+const GPT_51_MAX_REASONING_EFFORT: CodexReasoningEffort = "high";
 
 const resolveReasoningEffort = (model?: string, effort?: string): string | undefined => {
   const configured = normalizeReasoningEffort(
@@ -596,10 +625,15 @@ const resolveReasoningEffort = (model?: string, effort?: string): string | undef
   const normalizedModel = (model ?? "").toLowerCase();
   const isGpt51 = normalizedModel.includes("gpt-5.1");
   if (configured) {
-    if (configured === "xhigh" && isGpt51) return "high";
+    if (
+      isGpt51 &&
+      codexReasoningEffortRank(configured) > codexReasoningEffortRank(GPT_51_MAX_REASONING_EFFORT)
+    ) {
+      return GPT_51_MAX_REASONING_EFFORT;
+    }
     return configured;
   }
-  if (isGpt51) return "high";
+  if (isGpt51) return GPT_51_MAX_REASONING_EFFORT;
   return undefined;
 };
 

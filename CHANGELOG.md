@@ -14,6 +14,14 @@
   not visible at once, and npm caches the packument for five minutes, so a
   short retry loop kept re-reading a copy that predated the publish and failed
   a release that had in fact succeeded.
+- Stop dropping the strongest codex reasoning efforts. `max` and `ultra` are in
+  codex-cli's own enum but not in mcoda's allowlist, so a run configured for
+  either silently fell back to the model default while `mcoda agent details`
+  still reported the configured value. The allowlist now matches codex
+  (`minimal|low|medium|high|xhigh|max|ultra`), an effort codex does not accept
+  says so on stderr rather than disappearing, and `mcoda agent add/update`
+  gained `--config-reasoning-effort` so the value can be set without editing
+  the agent record by hand.
 
 ## 0.1.108 - 2026-08-02
 

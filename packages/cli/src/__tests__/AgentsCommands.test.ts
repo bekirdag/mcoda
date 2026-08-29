@@ -75,6 +75,7 @@ test("agent --help prints usage", { concurrency: false }, async () => {
   assert.match(output, /--config-input-modality <M>/);
   assert.match(output, /--config-output-modality <M>/);
   assert.match(output, /--config-operation <NAME\|JSON>/);
+  assert.match(output, /--config-reasoning-effort <E>/);
   assert.match(output, /update <NAME>[\s\S]*--adapter <TYPE>/);
   assert.match(output, /update <NAME>[\s\S]*--config-runner-kind <K>/);
   assert.match(output, /update <NAME>[\s\S]*--config-extra-body-json <JSON>/);
@@ -358,6 +359,41 @@ test("agent add stores config for ollama-remote", { concurrency: false }, async 
     const agent = await repo.getAgentBySlug("suku-ollama");
     assert.ok(agent);
     assert.equal((agent.config as any)?.baseUrl, "http://192.168.1.115:11434");
+    await repo.close();
+  });
+});
+
+test("agent add stores a codex reasoning effort", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "gpt-5-6-sol-ultra",
+      "--adapter",
+      "codex-cli",
+      "--model",
+      "gpt-5.6-sol",
+      "--config-reasoning-effort",
+      "ultra",
+    ]);
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("gpt-5-6-sol-ultra");
+    assert.ok(agent);
+    assert.equal((agent.config as any)?.reasoningEffort, "ultra");
+    await repo.close();
+  });
+});
+
+test("agent update rejects an unsupported codex reasoning effort", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "gpt-5-6-sol-effort", "--adapter", "codex-cli", "--model", "gpt-5.6-sol"]);
+    await assert.rejects(
+      () => AgentsCommands.run(["update", "gpt-5-6-sol-effort", "--config-reasoning-effort", "turbo"]),
+      /Invalid --config-reasoning-effort "turbo"/,
+    );
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("gpt-5-6-sol-effort");
+    assert.ok(agent);
+    assert.equal((agent.config as any)?.reasoningEffort, undefined);
     await repo.close();
   });
 });

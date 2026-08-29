@@ -26,6 +26,50 @@ const writeFakeCodexScript = async (tempDir: string, scriptSource: string): Prom
   return scriptPath;
 };
 
+const ECHO_ARGS_SCRIPT = `
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const args = process.argv.slice(2);
+  process.stdout.write(JSON.stringify({
+    type: "response.output_text.done",
+    text: JSON.stringify({ args }),
+  }) + "\\n");
+});
+process.stdin.on("error", () => {});
+`;
+
+// Runs the fake codex with a clean reasoning environment and returns the argv it
+// was spawned with, so a test can assert on the -c overrides mcoda builds.
+const captureCodexArgs = async (model?: string, reasoningEffort?: string): Promise<string[]> => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-runner-args-"));
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
+  const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  const originalTimeout = process.env[CODEX_TIMEOUT_ENV];
+  const originalReasoning = process.env[CODEX_REASONING_ENV];
+  const originalFallbackReasoning = process.env[CODEX_REASONING_ENV_FALLBACK];
+  try {
+    const scriptPath = await writeFakeCodexScript(tempDir, ECHO_ARGS_SCRIPT);
+    process.env.MCODA_SKIP_CLI_CHECKS = "1";
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
+    process.env[CODEX_TIMEOUT_ENV] = "5000";
+    delete process.env[CODEX_REASONING_ENV];
+    delete process.env[CODEX_REASONING_ENV_FALLBACK];
+
+    const result = await runCodexExec("hello", model, undefined, 5000, reasoningEffort);
+    return JSON.parse(result.output).args as string[];
+  } finally {
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
+    restoreEnvVar("MCODA_SKIP_CLI_CHECKS", originalSkip);
+    restoreEnvVar(CODEX_TIMEOUT_ENV, originalTimeout);
+    restoreEnvVar(CODEX_REASONING_ENV, originalReasoning);
+    restoreEnvVar(CODEX_REASONING_ENV_FALLBACK, originalFallbackReasoning);
+    await rm(tempDir, { recursive: true, force: true });
+  }
+};
+
 test("Codex CLI runner uses stub outputs when MCODA_CLI_STUB=1", { concurrency: false }, async () => {
   const originalStub = process.env.MCODA_CLI_STUB;
   const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
@@ -164,17 +208,7 @@ test("Codex CLI runner honors explicit reasoning effort overrides", { concurrenc
   try {
     const scriptPath = await writeFakeCodexScript(
       tempDir,
-      `
-process.stdin.resume();
-process.stdin.on("end", () => {
-  const args = process.argv.slice(2);
-  process.stdout.write(JSON.stringify({
-    type: "response.output_text.done",
-    text: JSON.stringify({ args }),
-  }) + "\\n");
-});
-process.stdin.on("error", () => {});
-`,
+      ECHO_ARGS_SCRIPT,
     );
     process.env.MCODA_SKIP_CLI_CHECKS = "1";
     process.env[CODEX_COMMAND_ENV] = process.execPath;
@@ -198,6 +232,51 @@ process.stdin.on("error", () => {});
     restoreEnvVar(CODEX_REASONING_ENV_FALLBACK, originalFallbackReasoning);
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+// codex-cli accepts minimal|low|medium|high|xhigh|max|ultra. mcoda used to
+// allowlist only low|medium|high|xhigh, so `max` and `ultra` were dropped and
+// the run silently fell back to the model default.
+test("Codex CLI runner forwards every reasoning effort codex accepts", { concurrency: false }, async () => {
+  for (const effort of ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
+    const args = await captureCodexArgs("gpt-5.6-sol", effort);
+    assert.ok(
+      args.includes(`model_reasoning_effort=${effort}`),
+      `expected model_reasoning_effort=${effort} in ${JSON.stringify(args)}`,
+    );
+  }
+});
+
+test("Codex CLI runner caps efforts above high for gpt-5.1", { concurrency: false }, async () => {
+  for (const effort of ["xhigh", "max", "ultra"]) {
+    const args = await captureCodexArgs("gpt-5.1-codex-max", effort);
+    assert.ok(
+      args.includes("model_reasoning_effort=high"),
+      `expected ${effort} to be capped to high in ${JSON.stringify(args)}`,
+    );
+    assert.ok(!args.includes(`model_reasoning_effort=${effort}`));
+  }
+});
+
+test("Codex CLI runner reports an unsupported reasoning effort instead of dropping it", { concurrency: false }, async () => {
+  const warnings: string[] = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  // @ts-ignore capture stderr
+  process.stderr.write = (chunk: any) => {
+    warnings.push(String(chunk));
+    return true;
+  };
+  let args: string[];
+  try {
+    args = await captureCodexArgs("gpt-5.6-sol", "turbo");
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.ok(!args.some((arg) => arg.startsWith("model_reasoning_effort=")));
+  const warning = warnings.find((entry) => entry.includes("turbo"));
+  assert.ok(warning, `expected a warning naming the rejected value, got ${JSON.stringify(warnings)}`);
+  assert.match(warning, /ultra/);
 });
 
 test("Codex CLI runner returns final output when codex stalls after completion", { concurrency: false }, async () => {
