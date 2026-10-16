@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.132 - 2026-10-16
+
+- Fix `mcoda setup` failing with `SQLITE_READONLY` after consent acceptance by
+  removing the consent flow's dependency on a writable local agent database.
+
 ## 0.1.94 - 2026-07-16
 
 - Generate portable release-archive tarballs with rewritten mcoda workspace

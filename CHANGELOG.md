@@ -24,6 +24,13 @@
   default -- and `mcoda agent add/update` gained `--config-reasoning-effort` so
   the value can be set without editing the agent record by hand.
 
+## 0.1.132 - 2026-10-16
+
+- Fix `mcoda setup` failing with `SQLITE_READONLY` after accepting mswarm
+  consent when the local agent database is read-only. Open the agent database
+  only for catalog synchronization; consent registration and remote API calls
+  use the writable global configuration without running SQLite migrations.
+
 ## 0.1.108 - 2026-08-02
 
 - Add an optional, additive high-priority relay reservation with raw-priority

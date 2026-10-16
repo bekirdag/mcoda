@@ -2045,11 +2045,13 @@ export class MswarmApi {
   readonly agentSlugPrefix: string;
   readonly selfHostedAgentSlugPrefix: string;
   readonly workerAgentSlugPrefix: string;
+  private repoPromise?: Promise<GlobalRepository>;
 
   constructor(
-    private readonly repo: GlobalRepository,
+    repo: GlobalRepository | undefined,
     private readonly options: ResolvedMswarmApiOptions
   ) {
+    this.repoPromise = repo ? Promise.resolve(repo) : undefined;
     this.baseUrl = options.baseUrl;
     this.agentSlugPrefix = options.agentSlugPrefix;
     this.selfHostedAgentSlugPrefix = options.selfHostedAgentSlugPrefix;
@@ -2057,8 +2059,12 @@ export class MswarmApi {
   }
 
   static async create(options: MswarmApiOptions = {}): Promise<MswarmApi> {
-    const repo = await GlobalRepository.create();
-    return new MswarmApi(repo, await resolveOptions(options));
+    return new MswarmApi(undefined, await resolveOptions(options));
+  }
+
+  private getRepository(): Promise<GlobalRepository> {
+    // Consent and other HTTP-only calls do not need a writable local catalog.
+    return (this.repoPromise ??= GlobalRepository.create());
   }
 
   static async refreshManagedAgentAuth(
@@ -2088,7 +2094,10 @@ export class MswarmApi {
   }
 
   async close(): Promise<void> {
-    await this.repo.close();
+    await this.repoPromise?.then(
+      (repo) => repo.close(),
+      () => undefined
+    );
   }
 
   async refreshManagedAgentAuth(): Promise<MswarmManagedAuthRefreshSummary> {
@@ -2658,6 +2667,7 @@ export class MswarmApi {
         'pruneMissing cannot be combined with limit or advanced cloud-agent filters'
       );
     }
+    const repo = await this.getRepository();
     const agents = await this.listCloudAgents(options);
     const openAiBaseUrl =
       this.options.openAiBaseUrl ??
@@ -2673,7 +2683,7 @@ export class MswarmApi {
         this.options.agentSlugPrefix,
         agent.slug
       );
-      const existing = await this.repo.getAgentBySlug(localSlug);
+      const existing = await repo.getAgentBySlug(localSlug);
       if (
         existing &&
         (!isManagedMswarmCloudConfig(existing.config) ||
@@ -2702,22 +2712,22 @@ export class MswarmApi {
       );
       const { slug: _ignoredSlug, ...updateInput } = createInput;
       const stored = existing
-        ? await this.repo.updateAgent(
+        ? await repo.updateAgent(
             existing.id,
             updateInput as UpdateAgentInput
           )
-        : await this.repo.createAgent(createInput);
+        : await repo.createAgent(createInput);
       if (!stored) {
         throw new Error(`Failed to persist synced agent ${localSlug}`);
       }
 
-      await this.repo.setAgentModels(
+      await repo.setAgentModels(
         stored.id,
         toAgentModels(stored.id, agent)
       );
-      await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      await repo.setAgentAuth(stored.id, encryptedApiKey);
       const existingHealth = existing
-        ? await this.repo.getAgentHealth(existing.id)
+        ? await repo.getAgentHealth(existing.id)
         : undefined;
       const mappedHealth = toHealthStatus(agent.health_status);
       if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
@@ -2731,7 +2741,7 @@ export class MswarmApi {
             remoteHealthStatus: agent.health_status,
           },
         };
-        await this.repo.setAgentHealth(health);
+        await repo.setAgentHealth(health);
       }
 
       records.push(
@@ -2746,7 +2756,7 @@ export class MswarmApi {
 
     if (options.pruneMissing) {
       const remoteSlugs = new Set(agents.map((agent) => agent.slug));
-      const localAgents = await this.repo.listAgents();
+      const localAgents = await repo.listAgents();
       for (const localAgent of localAgents) {
         const managedConfig = isManagedMswarmCloudConfig(localAgent.config)
           ? localAgent.config
@@ -2759,7 +2769,7 @@ export class MswarmApi {
           continue;
         }
         if (remoteSlugs.has(managedConfig.mswarmCloud.remoteSlug)) continue;
-        await this.repo.deleteAgent(localAgent.id);
+        await repo.deleteAgent(localAgent.id);
         records.push(
           toManagedSyncRecord(
             managedConfig,
@@ -2794,6 +2804,7 @@ export class MswarmApi {
       options.clientIdentity,
       this.options.clientIdentity
     );
+    const repo = await this.getRepository();
     const agents = await this.listSelfHostedAgents({
       ...options,
       clientIdentity,
@@ -2812,7 +2823,7 @@ export class MswarmApi {
         this.options.selfHostedAgentSlugPrefix,
         agent
       );
-      const existing = await this.repo.getAgentBySlug(localSlug);
+      const existing = await repo.getAgentBySlug(localSlug);
       const remoteSlug = agent.remote_slug ?? agent.slug;
       if (
         existing &&
@@ -2843,22 +2854,22 @@ export class MswarmApi {
       );
       const { slug: _ignoredSlug, ...updateInput } = createInput;
       const stored = existing
-        ? await this.repo.updateAgent(
+        ? await repo.updateAgent(
             existing.id,
             updateInput as UpdateAgentInput
           )
-        : await this.repo.createAgent(createInput);
+        : await repo.createAgent(createInput);
       if (!stored) {
         throw new Error(`Failed to persist synced agent ${localSlug}`);
       }
 
-      await this.repo.setAgentModels(
+      await repo.setAgentModels(
         stored.id,
         toAgentModels(stored.id, agent)
       );
-      await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      await repo.setAgentAuth(stored.id, encryptedApiKey);
       const existingHealth = existing
-        ? await this.repo.getAgentHealth(existing.id)
+        ? await repo.getAgentHealth(existing.id)
         : undefined;
       const lifecycle = selfHostedLifecycleSmokeCheck(agent, syncedAt);
       const missingRoutes = lifecycle.missingRoutes ?? [];
@@ -2889,7 +2900,7 @@ export class MswarmApi {
               selfHostedRuntimePackageVersion(agent) ?? 'unknown',
           },
         };
-        await this.repo.setAgentHealth(health);
+        await repo.setAgentHealth(health);
       }
 
       records.push(
@@ -2907,7 +2918,7 @@ export class MswarmApi {
         agents.map((agent) => agent.remote_slug ?? agent.slug)
       );
       const includeLoadBalanced = options.includeLoadBalanced === true;
-      const localAgents = await this.repo.listAgents();
+      const localAgents = await repo.listAgents();
       for (const localAgent of localAgents) {
         const managedConfig = isManagedMswarmSelfHostedConfig(localAgent.config)
           ? localAgent.config
@@ -2926,7 +2937,7 @@ export class MswarmApi {
           continue;
         }
         if (remoteSlugs.has(managedConfig.mswarmSelfHosted.remoteSlug)) continue;
-        await this.repo.deleteAgent(localAgent.id);
+        await repo.deleteAgent(localAgent.id);
         records.push(
           toManagedSelfHostedSyncRecord(
             managedConfig,
@@ -2963,6 +2974,7 @@ export class MswarmApi {
         'pruneMissing cannot be combined with partial worker catalog filters'
       );
     }
+    const repo = await this.getRepository();
     const agents = await this.listAllWorkers(options);
     const syncedAt = new Date().toISOString();
     const encryptedApiKey = await CryptoHelper.encryptSecret(
@@ -2975,7 +2987,7 @@ export class MswarmApi {
         this.options.workerAgentSlugPrefix,
         agent
       );
-      const existing = await this.repo.getAgentBySlug(localSlug);
+      const existing = await repo.getAgentBySlug(localSlug);
       const remoteSlug = agent.remote_slug ?? agent.slug;
       if (
         existing &&
@@ -3002,19 +3014,19 @@ export class MswarmApi {
       };
       const { slug: _ignoredSlug, ...updateInput } = createInput;
       const stored = existing
-        ? await this.repo.updateAgent(
+        ? await repo.updateAgent(
             existing.id,
             updateInput as UpdateAgentInput
           )
-        : await this.repo.createAgent(createInput);
+        : await repo.createAgent(createInput);
       if (!stored) {
         throw new Error(`Failed to persist synced worker ${localSlug}`);
       }
 
-      await this.repo.setAgentModels(stored.id, toAgentModels(stored.id, agent));
-      await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      await repo.setAgentModels(stored.id, toAgentModels(stored.id, agent));
+      await repo.setAgentAuth(stored.id, encryptedApiKey);
       const existingHealth = existing
-        ? await this.repo.getAgentHealth(existing.id)
+        ? await repo.getAgentHealth(existing.id)
         : undefined;
       const mappedHealth = toHealthStatus(agent.health_status);
       if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
@@ -3029,7 +3041,7 @@ export class MswarmApi {
             remoteHealthStatus: agent.health_status,
           },
         };
-        await this.repo.setAgentHealth(health);
+        await repo.setAgentHealth(health);
       }
 
       records.push(
@@ -3044,7 +3056,7 @@ export class MswarmApi {
 
     if (options.pruneMissing) {
       const remoteSlugs = new Set(agents.map((agent) => agent.remote_slug ?? agent.slug));
-      const localAgents = await this.repo.listAgents();
+      const localAgents = await repo.listAgents();
       for (const localAgent of localAgents) {
         const managedConfig = isManagedMswarmWorkerConfig(localAgent.config)
           ? localAgent.config
@@ -3057,7 +3069,7 @@ export class MswarmApi {
           continue;
         }
         if (remoteSlugs.has(managedConfig.mswarmWorker.remoteSlug)) continue;
-        await this.repo.deleteAgent(localAgent.id);
+        await repo.deleteAgent(localAgent.id);
         records.push(
           toManagedWorkerSyncRecord(
             managedConfig,
