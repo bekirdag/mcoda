@@ -1976,6 +1976,7 @@ test(
             supports_tools: true,
             load_balanced: true,
             load_balanced_group_id: 'lb_group_123',
+            pool_scope: 'owner',
             selector_fingerprint: 'selector-123',
             member_count: 2,
             candidate_node_ids: ['shn_lab', 'shn_backup'],
@@ -2060,6 +2061,7 @@ test(
               assert.equal(autoConfig?.routingMode, 'auto');
               assert.equal(autoConfig?.loadBalanced, true);
               assert.equal(autoConfig?.loadBalancedGroupId, 'lb_group_123');
+              assert.equal(autoConfig?.poolScope, 'owner');
               assert.equal(autoConfig?.nodeId, undefined);
               assert.equal(autoConfig?.serverName, undefined);
               assert.equal(autoConfig?.sync?.group_id, 'lb_group_123');

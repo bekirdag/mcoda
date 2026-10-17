@@ -6904,6 +6904,47 @@ describe("self-hosted node runtime", () => {
     ]);
   });
 
+  it("reports authenticated native occupancy once per runner without exposing slots or credentials", async () => {
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const loadBodies: Record<string, unknown>[] = [];
+    let slotsCalls = 0;
+    let runnerFailed = false;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith('/slots')) {
+        slotsCalls += 1;
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer native-probe-secret');
+        return runnerFailed ? jsonResponse({}, 503) : jsonResponse([
+          { is_processing: true, prompt: 'private native prompt' }, { is_processing: false }
+        ]);
+      }
+      if (target.endsWith('/node/heartbeat')) heartbeatBodies.push(JSON.parse(String(init?.body)));
+      else if (target.endsWith('/node/load')) loadBodies.push(JSON.parse(String(init?.body)));
+      else throw new Error(`unexpected fetch ${target}`);
+      return jsonResponse({ accepted: true });
+    }) as typeof fetch;
+    const config = { baseUrl: 'http://127.0.0.1:8088/v1', runnerKind: 'llama-cpp',
+      authMode: 'bearer', publicModelId: 'qwen3.8' };
+    const runtime = new SelfHostedNodeRuntime({ ...permissiveServiceConfigFor(tempStatePath()),
+      runtimeToken: 'msn_native', discoveryMode: 'mcoda', maxConcurrentJobs: 2, maxConcurrentLlmJobs: 2 }, {
+      fetchImpl, mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({ id: 'native-main', slug: 'qwen3.8', defaultModel: 'qwen3.8', adapter: 'openai-api', config }),
+        healthyMcodaAgent({ id: 'native-alias', slug: 'legacy-qwen', defaultModel: 'qwen3.8', adapter: 'openai-api', config })
+      ]), mcodaAgentAuthResolver: async () => 'native-probe-secret', capabilityRunner: capabilityProbeRunner({})
+    });
+    const first = await runtime.runOnce();
+    expect(slotsCalls).toBe(1);
+    expect(first.capacity?.active_jobs).toBe(1);
+    expect(first.capacity?.free_slots).toBe(1);
+    runnerFailed = true;
+    await runtime.reportLoad();
+    const capacity = loadBodies[0].capacity as Record<string, unknown>;
+    expect(capacity.unavailable_model_ids).toEqual(['qwen3.8']);
+    const sent = JSON.stringify([...heartbeatBodies, ...loadBodies]);
+    expect(sent.includes('private native prompt')).toBe(false);
+    expect(sent.includes('native-probe-secret')).toBe(false);
+  });
+
   it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {
     const statePath = tempStatePath();
     const heartbeatBodies: Record<string, unknown>[] = [];

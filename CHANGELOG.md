@@ -24,6 +24,14 @@
   default -- and `mcoda agent add/update` gained `--config-reasoning-effort` so
   the value can be set without editing the agent record by hand.
 
+## 0.1.133 - 2026-10-17
+
+- Report self-hosted node load every two seconds independently from catalog
+  discovery. Reconcile running request IDs with admission leases and publish
+  sanitized native llama.cpp model capacity, including authenticated runners.
+- Preserve owner-scoped pool metadata when syncing self-hosted agents, so clients
+  can select compatible models across owned nodes registered with different keys.
+
 ## 0.1.132 - 2026-10-16
 
 - Fix `mcoda setup` failing with `SQLITE_READONLY` after accepting mswarm

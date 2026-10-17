@@ -88,6 +88,7 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
   source_agent_slug?: string;
   load_balanced?: boolean;
   load_balanced_group_id?: string;
+  pool_scope?: string;
   selector_fingerprint?: string;
   member_count?: number;
   candidate_node_ids?: string[];
@@ -273,6 +274,7 @@ export interface ManagedMswarmSelfHostedConfig {
   routingMode?: 'direct' | 'auto';
   loadBalanced?: boolean;
   loadBalancedGroupId?: string;
+  poolScope?: string;
   selectorFingerprint?: string;
   memberCount?: number;
   adapter?: string;
@@ -1520,6 +1522,7 @@ const toManagedSelfHostedConfig = (
       routingMode,
       loadBalanced,
       loadBalancedGroupId: selfHostedLoadBalancedGroupId(agent),
+      poolScope: agent.pool_scope,
       selectorFingerprint: agent.selector_fingerprint,
       memberCount: agent.member_count,
       adapter: agent.adapter,
@@ -1817,6 +1820,7 @@ const toSelfHostedAgent = (value: unknown): MswarmSelfHostedAgent => {
       ['load_balanced_group_id', 'loadBalancedGroupId'],
       resolveString
     ),
+    pool_scope: resolveFromRecordOrShape(record, ['pool_scope', 'poolScope'], resolveString),
     selector_fingerprint: resolveFromRecordOrShape(
       record,
       ['selector_fingerprint', 'selectorFingerprint'],

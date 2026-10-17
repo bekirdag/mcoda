@@ -3344,6 +3344,9 @@ export function mapMcodaAgentToSelfHostedModel(
       : inferredInputModalities);
   const outputModalities = localRunner?.outputModalities ?? inferGenerativeModalities(operations, "output");
   const publicModelId = localRunner?.publicModelId;
+  const legacyConfig = isRecord(agent.config) ? agent.config : {};
+  const legacyNativeBase = normalizeLocalRunnerKind(legacyConfig.runnerKind ?? legacyConfig.runner_kind) === "llama-cpp"
+    ? mcodaAgentLocalRunnerBaseUrl(agent) : undefined;
   return {
     name: slug,
     provider: "mcoda",
@@ -3354,9 +3357,9 @@ export function mapMcodaAgentToSelfHostedModel(
     model_id: publicModelId || model,
     public_model_id: publicModelId,
     upstream_model: model,
-    base_url: localRunner?.baseUrl,
-    runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind,
-    auth_mode: localRunner?.authMode,
+    base_url: localRunner?.baseUrl ?? legacyNativeBase ?? undefined,
+    runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind ?? (legacyNativeBase ? "llama-cpp" : undefined),
+    auth_mode: localRunner?.authMode ?? (legacyNativeBase ? normalizeLocalRunnerAuthMode(legacyConfig.authMode) : undefined),
     response_format_strategy: localRunner?.responseFormatStrategy,
     health_path: localRunner?.healthPath,
     models_path: localRunner?.modelsPath,
@@ -6150,6 +6153,14 @@ export class MswarmSelfHostedNodeClient {
     );
   }
 
+  async reportLoad(runtimeToken: string, payload: Record<string, unknown>): Promise<unknown> {
+    return fetchJson<unknown>(this.fetchImpl, `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/load`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${runtimeToken}` },
+      body: JSON.stringify(payload)
+    }, Math.min(this.timeoutMs, 5000));
+  }
+
   async uninstall(runtimeToken: string, payload: Record<string, unknown>): Promise<unknown> {
     return fetchJson<unknown>(
       this.fetchImpl,
@@ -6282,6 +6293,15 @@ export class SelfHostedNodeRuntime {
   private readonly artifactStore: MswarmGenericJobArtifactStore;
   private readonly capabilityRunner: CommandRunner;
   private activeChatJobs = 0;
+  private readonly activeRequestIds = new Set<string>();
+  private lastModels: SelfHostedModelInput[] = [];
+  private loadRuntimeToken: string | null = null;
+  private fastLoadUnsupported = false;
+  private nativeActiveJobs = 0;
+  private readonly nativeProbeKeys = new Map<string, Promise<string | undefined>>();
+  private unavailableModelIds: string[] = [];
+  private nativeModelCapacity: Record<string, { max_concurrency: number; active_jobs: number;
+    queued_jobs: number; free_slots: number; pool: string }> = {};
   private activeAgenticJobs = 0;
   private activeGenericJobs = 0;
   private queuedLlmJobs = 0;
@@ -6516,7 +6536,7 @@ export class SelfHostedNodeRuntime {
     );
     const activeChatJobs = nonNegativeTelemetryInteger(this.activeChatJobs);
     const activeAgenticJobs = nonNegativeTelemetryInteger(this.activeAgenticJobs);
-    const activeLlmJobs = activeChatJobs + activeAgenticJobs;
+    const activeLlmJobs = Math.max(activeChatJobs + activeAgenticJobs, this.nativeActiveJobs);
     const activeGenericJobs = nonNegativeTelemetryInteger(this.activeGenericJobs);
     const queuedLlmJobs = nonNegativeTelemetryInteger(this.queuedLlmJobs);
     const queuedGenericJobs = nonNegativeTelemetryInteger(this.queuedGenericJobs);
@@ -7770,6 +7790,18 @@ export class SelfHostedNodeRuntime {
     job: SelfHostedNodeInvocationJob,
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
+    this.activeRequestIds.add(job.request_id);
+    try {
+      return await this.executeTrackedJob(job, options);
+    } finally {
+      this.activeRequestIds.delete(job.request_id);
+    }
+  }
+
+  private async executeTrackedJob(
+    job: SelfHostedNodeInvocationJob,
+    options: SelfHostedJobExecutionOptions
+  ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
     // Resolved once, before any work: the slot is taken from the moment the job
     // is accepted, and a class settled later would leave the count attributed to
@@ -8151,6 +8183,75 @@ export class SelfHostedNodeRuntime {
     }
   }
 
+  private async refreshNativeLoad(): Promise<void> {
+    const runners = new Map<string, SelfHostedModelInput[]>();
+    for (const model of this.lastModels) {
+      if (model.exposed === false || !model.base_url ||
+        (model.runner_kind !== "llama-cpp" && model.adapter !== "llama-cpp-local")) continue;
+      try {
+        const url = new URL(model.base_url);
+        if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) continue;
+        const endpoint = new URL("/slots", url).toString();
+        const models = runners.get(endpoint) || [];
+        models.push(model);
+        runners.set(endpoint, models);
+      } catch { /* A malformed endpoint is handled by normal discovery health. */ }
+    }
+    let active = 0;
+    const modelCapacity: typeof this.nativeModelCapacity = {};
+    const unavailable: string[] = [];
+    await Promise.all([...runners].map(async ([endpoint, models]) => {
+      try {
+        const authenticated = models.find((model) => model.auth_mode === "bearer" && model.source_agent_id);
+        let apiKey: string | undefined;
+        if (authenticated?.source_agent_id) {
+          let pending = this.nativeProbeKeys.get(authenticated.source_agent_id);
+          if (!pending) {
+            pending = this.mcodaAgentAuthResolver({ id: authenticated.source_agent_id,
+              slug: authenticated.source_agent_slug || authenticated.name }).catch(() => undefined);
+            this.nativeProbeKeys.set(authenticated.source_agent_id, pending);
+          }
+          apiKey = await pending;
+        }
+        const response = await this.fetchImpl(endpoint, { signal: AbortSignal.timeout(1500),
+          ...(apiKey ? { headers: { authorization: `Bearer ${apiKey}` } } : {}) });
+        // Slot introspection is optional and may require different local credentials.
+        if ([401, 403, 404].includes(response.status)) return;
+        if (!response.ok) throw new Error("runner_load_unavailable");
+        const slots = await response.json() as unknown;
+        if (!Array.isArray(slots)) return;
+        const processing = slots.filter((slot) => isRecord(slot) && slot.is_processing === true).length;
+        active += processing;
+        if (slots.length > 0) {
+          const capacity = { max_concurrency: slots.length, active_jobs: processing, queued_jobs: 0,
+            free_slots: slots.length - processing, pool: `runner:${createHash("sha256").update(endpoint).digest("hex").slice(0, 16)}` };
+          for (const model of models) modelCapacity[model.model_id || model.model || model.name] = capacity;
+        }
+      } catch {
+        unavailable.push(...models.map((model) => model.model_id || model.model || model.name));
+      }
+    }));
+    this.nativeActiveJobs = active;
+    this.nativeModelCapacity = modelCapacity;
+    this.unavailableModelIds = [...new Set(unavailable)];
+  }
+
+  async reportLoad(): Promise<void> {
+    if (this.config.loadReportingEnabled === false || this.fastLoadUnsupported || !this.loadRuntimeToken) return;
+    await this.refreshNativeLoad();
+    const telemetry = this.buildLoadTelemetry({ models: this.lastModels });
+    try {
+      await this.gateway.reportLoad(this.loadRuntimeToken, {
+        node_id: this.config.nodeId,
+        capacity: { ...telemetry, active_request_ids: [...this.activeRequestIds],
+          unavailable_model_ids: this.unavailableModelIds, model_capacity: this.nativeModelCapacity }
+      });
+    } catch (error) {
+      if (isHttpStatusError(error, 404)) this.fastLoadUnsupported = true;
+      else throw error;
+    }
+  }
+
   async runOnce(): Promise<SelfHostedNodeHeartbeatResult> {
     const enrollment = await this.ensureEnrolled();
     let status: "online" | "degraded" = "online";
@@ -8180,6 +8281,9 @@ export class SelfHostedNodeRuntime {
       this.lifecyclePollingDisabled = true;
     }
     const discoveryLatencyMs = Date.now() - startedAt;
+    if (models.length || status === "online") this.lastModels = models;
+    this.nativeProbeKeys.clear();
+    await this.refreshNativeLoad();
     const capabilityPayload = await this.buildCapabilityHeartbeatPayload(enrollment.runtimeToken);
     const loadTelemetry = this.buildLoadTelemetry({
       models,
@@ -8200,6 +8304,9 @@ export class SelfHostedNodeRuntime {
           max_concurrent_llm_jobs: loadTelemetry.max_concurrent_llm_jobs,
           max_concurrent_generic_jobs: loadTelemetry.max_concurrent_generic_jobs,
           active_jobs: loadTelemetry.active_jobs,
+          active_request_ids: [...this.activeRequestIds],
+          unavailable_model_ids: this.unavailableModelIds,
+          model_capacity: this.nativeModelCapacity,
           queued_jobs: loadTelemetry.queued_jobs,
           free_slots: loadTelemetry.free_slots,
           drain_mode: loadTelemetry.drain_mode,
@@ -8272,6 +8379,7 @@ export class SelfHostedNodeRuntime {
       ...(loadTelemetry.hardware_pressure ? { hardware_pressure: loadTelemetry.hardware_pressure } : {})
     };
     const heartbeatResponse = await this.gateway.heartbeat(enrollment.runtimeToken, heartbeatPayload);
+    this.loadRuntimeToken = enrollment.runtimeToken;
     return {
       enrolled: enrollment.enrolled,
       status,
@@ -8539,6 +8647,8 @@ export class SelfHostedNodeRuntime {
   startDaemon(): SelfHostedNodeDaemonHandle {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let loadTimer: ReturnType<typeof setInterval> | null = null;
+    let loadReporting = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimerDueAt = 0;
     let polling = false;
@@ -8570,6 +8680,7 @@ export class SelfHostedNodeRuntime {
 
     const halt = () => {
       stopped = true;
+      if (loadTimer) { clearInterval(loadTimer); loadTimer = null; }
       if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -8745,6 +8856,13 @@ export class SelfHostedNodeRuntime {
         revoked ? REVOKED_RECHECK_INTERVAL_MS : this.config.heartbeatIntervalSeconds * 1000
       );
     };
+
+    loadTimer = setInterval(() => {
+      if (stopped || revoked || loadReporting) return;
+      loadReporting = true;
+      void this.reportLoad().catch((error) => { noteRevoked(error); }).finally(() => { loadReporting = false; });
+    }, 2000);
+    loadTimer.unref?.();
 
     void this.runOnce()
       .then(noteAlive)
