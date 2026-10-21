@@ -16,7 +16,7 @@ env:
 jobs:
   package:
     name: Package (${{ matrix.archive }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'ubuntu-') && !endsWith(matrix.os, '-arm') && fromJSON('["self-hosted","Linux","X64","wodo-ci"]') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
