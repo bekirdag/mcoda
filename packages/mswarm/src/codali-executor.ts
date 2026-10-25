@@ -162,6 +162,7 @@ export interface CodaliRuntimePolicy {
   appVirtualTools?: string[];
   appToolGateway?: Record<string, unknown>;
   maxSteps: number;
+  finalStepWithoutTools?: boolean;
   maxToolCalls: number;
   maxTokens?: number;
   timeoutMs: number;
@@ -2123,6 +2124,7 @@ function createGatewayTaskRunner(input: {
           allowedTools,
           maxToolCalls: Math.max(0, remainingToolCalls),
           maxSteps: Math.min(maxSteps, input.runtimeInput.policy.maxSteps),
+          finalStepWithoutTools: true,
           mode: requiredProtocolProvider
             ? "protocol_loop"
             : input.runtimeInput.policy.mode,

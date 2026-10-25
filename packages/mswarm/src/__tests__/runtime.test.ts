@@ -7000,6 +7000,48 @@ describe("self-hosted node runtime", () => {
     expect(sent.includes("strata-probe-secret")).toBe(false);
   });
 
+  it("publishes the freed Strata slot before returning a job and after an older busy report", async () => {
+    const loads: Array<Record<string, any>> = [];
+    let inFlight = 1;
+    let releaseBusy!: () => void;
+    let busyPosted!: () => void;
+    const busyGate = new Promise<void>((resolve) => { releaseBusy = resolve; });
+    const busyStarted = new Promise<void>((resolve) => { busyPosted = resolve; });
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/v1/status")) return jsonResponse({ loaded: true, concurrency: { serving: 1 }, activity: { in_flight: inFlight } });
+      if (target.endsWith("/node/heartbeat")) return jsonResponse({ accepted: true });
+      if (target.endsWith("/node/load")) {
+        loads.push(JSON.parse(String(init?.body)));
+        if (loads.length === 1) { busyPosted(); await busyGate; }
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime({ ...permissiveServiceConfigFor(tempStatePath()), runtimeToken: "msn_strata", discoveryMode: "mcoda" }, {
+      fetchImpl, capabilityRunner: capabilityProbeRunner({}),
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "flash", adapter: "strata-local", defaultModel: "flash", config: { baseUrl: "http://127.0.0.1:11452/v1", authMode: "none" } })]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => { inFlight = 0; return successfulCodaliInvocation(input); }),
+    });
+    await runtime.runOnce();
+    const oldReport = runtime.reportLoad();
+    await busyStarted;
+    let returned = false;
+    const execution = runtime.executeJob({
+      job_id: "job-flash-capacity", request_id: "req-flash-capacity", node_id: "shn_service", provider: "mcoda",
+      agent_slug: "flash", source_agent_slug: "flash", model: "flash",
+      openai_request: { model: "flash", messages: [{ role: "user", content: "Return OK." }] },
+    }).then((result) => { returned = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(returned).toBe(false);
+    releaseBusy();
+    await oldReport;
+    expect((await execution).status).toBe("success");
+    expect(loads[0].capacity.model_capacity.flash.free_slots).toBe(0);
+    expect(loads.at(-1)?.capacity.model_capacity.flash.free_slots).toBe(1);
+    expect(loads.at(-1)?.capacity.active_request_ids).toEqual([]);
+  });
+
   it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {
     const statePath = tempStatePath();
     const heartbeatBodies: Record<string, unknown>[] = [];

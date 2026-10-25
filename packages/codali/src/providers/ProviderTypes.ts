@@ -46,6 +46,8 @@ export interface ProviderMessage {
   content: string;
   name?: string;
   toolCallId?: string;
+  /** Assistant calls retained alongside the matching tool result messages. */
+  toolCalls?: ProviderToolCall[];
 }
 
 export interface ProviderUsage {

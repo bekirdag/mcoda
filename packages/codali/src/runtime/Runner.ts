@@ -18,6 +18,8 @@ export interface RunnerOptions {
   context: ToolContext;
   maxSteps: number;
   maxToolCalls: number;
+  /** Reserve the last bounded worker step for summarizing gathered evidence. */
+  finalStepWithoutTools?: boolean;
   maxTokens?: number;
   temperature?: number;
   responseFormat?: ProviderResponseFormat;
@@ -92,6 +94,7 @@ export class Runner {
   private context: ToolContext;
   private maxSteps: number;
   private maxToolCalls: number;
+  private finalStepWithoutTools: boolean;
   private maxTokens?: number;
   private temperature?: number;
   private responseFormat?: ProviderResponseFormat;
@@ -109,6 +112,7 @@ export class Runner {
     this.context = options.context;
     this.maxSteps = options.maxSteps;
     this.maxToolCalls = options.maxToolCalls;
+    this.finalStepWithoutTools = options.finalStepWithoutTools === true;
     this.maxTokens = options.maxTokens;
     this.temperature = options.temperature;
     this.responseFormat = options.responseFormat;
@@ -205,7 +209,8 @@ export class Runner {
         description: tool.description,
         inputSchema: tool.inputSchema,
       }));
-      const allowTools = toolSpecs.length > 0 && this.toolChoice !== "none";
+      const finalSummaryStep = this.finalStepWithoutTools && step > 0 && step === this.maxSteps - 1;
+      const allowTools = toolSpecs.length > 0 && this.toolChoice !== "none" && !finalSummaryStep;
       emitStatus("thinking");
       if (this.logger) {
         await this.logger.log("provider_request", {
@@ -223,7 +228,7 @@ export class Runner {
         this.provider.generate({
           messages,
           tools: allowTools ? toolSpecs : undefined,
-          toolChoice: allowTools ? this.toolChoice ?? "auto" : undefined,
+          toolChoice: allowTools ? this.toolChoice ?? "auto" : finalSummaryStep ? "none" : undefined,
           maxTokens: this.maxTokens,
           temperature: this.temperature,
           responseFormat: this.responseFormat,
@@ -236,7 +241,10 @@ export class Runner {
       );
 
       recordUsage(response.usage);
-      messages.push(response.message);
+      messages.push({
+        ...response.message,
+        ...(response.toolCalls?.length ? { toolCalls: response.toolCalls } : {}),
+      });
       if (this.logger) {
         await this.logger.log("provider_response", {
           message: response.message,

@@ -6299,6 +6299,7 @@ export class SelfHostedNodeRuntime {
   private readonly activeRequestIds = new Set<string>();
   private lastModels: SelfHostedModelInput[] = [];
   private loadRuntimeToken: string | null = null;
+  private loadReportQueue: Promise<void> = Promise.resolve();
   private fastLoadUnsupported = false;
   private nativeActiveJobs = 0;
   private readonly nativeProbeKeys = new Map<string, Promise<string | undefined>>();
@@ -7798,6 +7799,9 @@ export class SelfHostedNodeRuntime {
       return await this.executeTrackedJob(job, options);
     } finally {
       this.activeRequestIds.delete(job.request_id);
+      // A product often starts its next stage immediately after this result.
+      // Publish the newly free native slot before the gateway delivers it.
+      await this.reportLoad().catch(() => undefined);
     }
   }
 
@@ -8257,7 +8261,15 @@ export class SelfHostedNodeRuntime {
     this.unavailableModelIds = [...new Set(unavailable)];
   }
 
-  async reportLoad(): Promise<void> {
+  reportLoad(): Promise<void> {
+    // Serialize probes and writes so an older busy snapshot cannot overwrite
+    // the completion snapshot when the periodic reporter is already running.
+    const pending = this.loadReportQueue.then(() => this.reportLoadSnapshot());
+    this.loadReportQueue = pending.catch(() => undefined);
+    return pending;
+  }
+
+  private async reportLoadSnapshot(): Promise<void> {
     if (this.config.loadReportingEnabled === false || this.fastLoadUnsupported || !this.loadRuntimeToken) return;
     await this.refreshNativeLoad();
     const telemetry = this.buildLoadTelemetry({ models: this.lastModels });
