@@ -163,6 +163,7 @@ export interface CodaliRuntimePolicy {
   appToolGateway?: Record<string, unknown>;
   maxSteps: number;
   finalStepWithoutTools?: boolean;
+  maxToolResultChars?: number;
   maxToolCalls: number;
   maxTokens?: number;
   timeoutMs: number;
@@ -2125,6 +2126,9 @@ function createGatewayTaskRunner(input: {
           maxToolCalls: Math.max(0, remainingToolCalls),
           maxSteps: Math.min(maxSteps, input.runtimeInput.policy.maxSteps),
           finalStepWithoutTools: true,
+          // Keep retrieved evidence inside a local model's context, preserving
+          // whole result items and explicit incomplete-coverage notices.
+          maxToolResultChars: 24_000,
           mode: requiredProtocolProvider
             ? "protocol_loop"
             : input.runtimeInput.policy.mode,

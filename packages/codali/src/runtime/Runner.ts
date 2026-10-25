@@ -11,6 +11,7 @@ import type {
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolContext } from "../tools/ToolTypes.js";
 import type { RunLogger } from "./RunLogger.js";
+import { truncateToolResult } from "../tools/TruncateResult.js";
 
 export interface RunnerOptions {
   provider: Provider;
@@ -20,6 +21,8 @@ export interface RunnerOptions {
   maxToolCalls: number;
   /** Reserve the last bounded worker step for summarizing gathered evidence. */
   finalStepWithoutTools?: boolean;
+  /** Combined tool-result character budget per model turn, when bounded. */
+  maxToolResultChars?: number;
   maxTokens?: number;
   temperature?: number;
   responseFormat?: ProviderResponseFormat;
@@ -95,6 +98,7 @@ export class Runner {
   private maxSteps: number;
   private maxToolCalls: number;
   private finalStepWithoutTools: boolean;
+  private maxToolResultChars?: number;
   private maxTokens?: number;
   private temperature?: number;
   private responseFormat?: ProviderResponseFormat;
@@ -113,6 +117,7 @@ export class Runner {
     this.maxSteps = options.maxSteps;
     this.maxToolCalls = options.maxToolCalls;
     this.finalStepWithoutTools = options.finalStepWithoutTools === true;
+    this.maxToolResultChars = options.maxToolResultChars;
     this.maxTokens = options.maxTokens;
     this.temperature = options.temperature;
     this.responseFormat = options.responseFormat;
@@ -274,9 +279,17 @@ export class Runner {
           "tool",
         );
         const toolError = result.error;
-        const content = result.ok
+        let content = result.ok
           ? result.output
           : `ERROR[${toolError?.code ?? "tool_execution_failed"}]: ${toolError?.message ?? "tool failed"}`;
+        if (result.ok && this.maxToolResultChars && this.maxToolResultChars > 0) {
+          const limit = Math.max(1, Math.floor(this.maxToolResultChars / response.toolCalls.length));
+          let structured = result.data;
+          if (structured === undefined) {
+            try { structured = JSON.parse(content); } catch { /* Plain-text tool output. */ }
+          }
+          content = truncateToolResult(structured, content, limit).text;
+        }
         messages.push(buildToolMessage(call, content));
         this.onEvent?.({
           type: "tool_result",

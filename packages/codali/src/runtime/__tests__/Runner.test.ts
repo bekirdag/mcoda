@@ -249,6 +249,31 @@ test("Runner reserves a bounded worker's final step for summary without more too
   assert.equal(result.toolCallsExecuted, 1);
 });
 
+test("Runner bounds combined tool results while keeping whole items and coverage notices", { concurrency: false }, async () => {
+  const tools = new ToolRegistry();
+  const rows = Array.from({ length: 100 }, (_, index) => ({ id: index, evidence: "evidence ".repeat(100) }));
+  tools.register({ name: "search", description: "Search evidence", handler: async () => ({ output: JSON.stringify({ hits: rows }) }) });
+  let calls = 0;
+  const provider: Provider = { name: "bounded-evidence", async generate(request) {
+    if (++calls === 1) return { message: { role: "assistant", content: "" }, toolCalls: [
+      { id: "a", name: "search", args: {} }, { id: "b", name: "search", args: {} },
+    ] };
+    const results = request.messages.filter((message) => message.role === "tool");
+    assert.equal(results.length, 2);
+    for (const result of results) {
+      assert.match(result.content, /TRUNCATED.*INCOMPLETE/);
+      const retained = JSON.parse(result.content.split("\n\n[TRUNCATED:")[0]);
+      assert.ok(retained.hits.length > 0 && retained.hits.length < rows.length);
+      assert.deepEqual(retained.hits[0], rows[0]);
+    }
+    assert.ok(results.reduce((sum, result) => sum + result.content.length, 0) < 5_000);
+    return { message: { role: "assistant", content: "Partial evidence was retained." } };
+  } };
+  const runner = new Runner({ provider, tools, context: { workspaceRoot: process.cwd() }, maxSteps: 2, maxToolCalls: 2, maxToolResultChars: 4_000, finalStepWithoutTools: true });
+  await runner.run([{ role: "user", content: "Search both sources." }]);
+  assert.equal(rows.length, 100);
+});
+
 test("Runner aggregates usage", { concurrency: false }, async () => {
   const tools = new ToolRegistry();
   tools.register({
