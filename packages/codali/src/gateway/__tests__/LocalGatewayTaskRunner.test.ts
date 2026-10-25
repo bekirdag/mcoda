@@ -89,6 +89,25 @@ const baseOptions = (provider: Provider, registry: ToolRegistry) => ({
   toolContext: { workspaceRoot: "/tmp" },
 });
 
+test("worker summary bounds a multilingual result batch while retaining audit evidence", async () => {
+  const names = Array.from({ length: MAX_TOOL_CALLS_PER_TASK }, (_, index) => `tool_${index}`);
+  const output = "租户资料🙂".repeat(6000);
+  const provider = new StubProvider([
+    toolCallResponse(names.map((name) => ({ name, args: {} }))),
+    textResponse("The tool results are incomplete."),
+  ]);
+  const registry = registryWith(Object.fromEntries(names.map((name) => [name, async () => ({ output })])));
+  const runner = createLocalGatewayTaskRunner(baseOptions(provider, registry));
+  const result = await runner.run(taskInput({ allowedTools: names }));
+  assert.equal(result.status, "succeeded");
+  const summary = provider.requests[1].messages.at(-1)!.content;
+  assert.ok(Buffer.byteLength(summary, "utf8") < 21_000);
+  for (const name of names) assert.ok(summary.includes(`--- ${name} ---`));
+  assert.match(summary, /TRUNCATED/);
+  assert.equal(result.toolCalls?.length, names.length);
+  assert.ok(result.toolCalls?.every((call) => call.result === output));
+});
+
 test("a task never exceeds two model calls, even when tools are used", async () => {
   const provider = new StubProvider([
     toolCallResponse([{ name: "alpha", args: {} }]),

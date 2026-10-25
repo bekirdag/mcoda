@@ -63,6 +63,8 @@ const DEFAULT_TEMPERATURE = 0;
  * summarized only the commits that survived — accurately, but incompletely.
  */
 const MAX_TOOL_OUTPUT_CHARS = 24_000;
+// Several individually bounded connector results must also fit together.
+const MAX_TOOL_BATCH_BYTES = 20_000;
 
 export interface LocalGatewayTaskRunnerOptions {
   provider: Provider;
@@ -516,8 +518,17 @@ export class LocalGatewayTaskRunner implements CodaliGatewayWorkerTaskRunner {
         role: "user",
         content: [
           "Tool results:",
-          ...executions.map((execution) =>
-            `--- ${execution.call.name} ---\n${execution.output}`),
+          ...executions.map((execution) => {
+            const byteBudget = Math.floor(MAX_TOOL_BATCH_BYTES / executions.length);
+            let limit = Math.min(MAX_TOOL_OUTPUT_CHARS, byteBudget);
+            let excerpt = truncateToolResult(execution.record.result, execution.output, limit).text;
+            // Character counts underestimate multilingual UTF-8 results.
+            while (Buffer.byteLength(excerpt, "utf8") > byteBudget && limit > 128) {
+              limit = Math.max(128, Math.floor(limit * 0.7));
+              excerpt = truncateToolResult(execution.record.result, execution.output, limit).text;
+            }
+            return `--- ${execution.call.name} ---\n${excerpt}`;
+          }),
           "",
           "Summarize what these results establish for this sub-task.",
           "If any result is marked TRUNCATED, state that the data is incomplete and roughly what is missing. Never present a truncated list as complete.",

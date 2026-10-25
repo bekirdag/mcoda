@@ -61,6 +61,51 @@ test("OpenAiCompatibleProvider returns message content", { concurrency: false },
   );
 });
 
+test("OpenAiCompatibleProvider reports HTTP 200 error envelopes without leaking credentials", { concurrency: false }, async () => {
+  const apiKey = "test-private-api-key";
+  for (const error of [
+    { code: `upstream_${apiKey}`, message: `failure ${apiKey} ${"x".repeat(800)}` },
+    `failure ${apiKey}`,
+  ]) {
+    await withStubbedFetch(() => ({ error }), async () => {
+      const provider = new OpenAiCompatibleProvider({ model: "test", apiKey });
+      await assert.rejects(provider.generate({ messages: [{ role: "user", content: "test" }] }),
+        (failure: unknown) => {
+          assert.ok(failure instanceof Error);
+          assert.match(failure.message, /^OpenAI-compatible error/);
+          assert.match(failure.message, /\[redacted\]/);
+          assert.ok(!failure.message.includes(apiKey));
+          assert.ok(failure.message.length <= 600);
+          return true;
+        });
+    });
+  }
+});
+
+test("OpenAiCompatibleProvider diagnoses an empty successful envelope", { concurrency: false }, async () => {
+  await withStubbedFetch(() => ({}), async () => {
+    const provider = new OpenAiCompatibleProvider({ model: "test" });
+    await assert.rejects(provider.generate({ messages: [] }), /response missing choices/);
+  });
+});
+
+test("OpenAiCompatibleProvider preserves the initial system policy for prompt-only schemas", { concurrency: false }, async () => {
+  const messages: ProviderRequest["messages"] = [
+    { role: "system", content: "Read-only tenant policy." },
+    { role: "user", content: "Return status." },
+  ];
+  await withStubbedFetch((_url, body) => {
+    const sent = JSON.parse(body);
+    assert.deepEqual(sent.messages.map((message: { role: string }) => message.role), ["system", "user"]);
+    assert.match(sent.messages[0].content, /^Read-only tenant policy\.\n\nOutput format constraint:/);
+    return { choices: [{ message: { role: "assistant", content: "{}" } }] };
+  }, async () => {
+    const provider = new OpenAiCompatibleProvider({ model: "test", responseFormatStrategy: "prompt-only" });
+    await provider.generate({ messages, responseFormat: { type: "json" } });
+  });
+  assert.equal(messages[0].content, "Read-only tenant policy.");
+});
+
 test("OpenAiCompatibleProvider parses tool calls", { concurrency: false }, async () => {
   await withStubbedFetch(
     () => ({

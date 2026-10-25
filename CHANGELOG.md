@@ -24,6 +24,16 @@
   default -- and `mcoda agent add/update` gained `--config-reasoning-effort` so
   the value can be set without editing the agent record by hand.
 
+## 0.1.134 - 2026-10-25
+
+- Add the `strata-local` adapter, native readiness and capacity reporting, and
+  scheduler handoff while Codali waits for model inference.
+- Preserve tool-call history and forward final synthesis schemas to local
+  providers. Bound remote worker evidence to fit the model context.
+- Keep prompt-only constraints in the initial system message, report gateway
+  errors returned after HTTP keepalives, and share a UTF-8 byte budget across
+  local worker tool results. These replace Logmira's deployment patches.
+
 ## 0.1.133 - 2026-10-17
 
 - Report self-hosted node load every two seconds independently from catalog

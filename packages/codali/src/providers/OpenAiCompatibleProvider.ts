@@ -25,7 +25,8 @@ interface OpenAiToolCall {
 }
 
 interface OpenAiResponse {
-  choices: Array<{
+  error?: unknown;
+  choices?: Array<{
     message: {
       role: string;
       content?: string | null;
@@ -249,7 +250,15 @@ export class OpenAiCompatibleProvider implements Provider {
       })),
     }));
     if (promptOnlyInstruction) {
-      messages.unshift({ role: "system", content: promptOnlyInstruction });
+      // Local chat templates may accept only one initial system message.
+      if (messages[0]?.role === "system") {
+        messages[0] = {
+          ...messages[0],
+          content: `${messages[0].content}\n\n${promptOnlyInstruction}`,
+        };
+      } else {
+        messages.unshift({ role: "system", content: promptOnlyInstruction });
+      }
     }
 
     const body: Record<string, unknown> = {
@@ -393,7 +402,22 @@ export class OpenAiCompatibleProvider implements Provider {
       }
 
       const raw = (await response.json()) as OpenAiResponse;
-      const choice = raw.choices[0]?.message;
+      // A relay can send HTTP 200 keepalives before inference fails. Inspect
+      // the final envelope instead of treating those headers as success.
+      if (raw?.error) {
+        const error = raw.error;
+        const record = typeof error === "object" && error !== null
+          ? error as Record<string, unknown>
+          : {};
+        const detail = typeof error === "string" ? error
+          : typeof record.message === "string" ? record.message : "Model gateway failed";
+        const code = typeof record.code === "string" ? record.code : "upstream_error";
+        const message = `OpenAI-compatible error ${code}: ${detail}`;
+        const redacted = this.config.apiKey
+          ? message.split(this.config.apiKey).join("[redacted]") : message;
+        throw new Error(redacted.slice(0, 600));
+      }
+      const choice = raw?.choices?.[0]?.message;
       if (!choice) {
         throw new Error("OpenAI-compatible response missing choices");
       }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.134 - 2026-10-25
+
+- Forward final synthesis schemas and preserve OpenAI tool-call history.
+- Merge prompt-only format constraints into the initial system message.
+- Surface JSON error envelopes after HTTP 200 keepalives with bounded,
+  credential-redacted diagnostics.
+- Bound combined local worker tool results by UTF-8 bytes while preserving
+  their audit records and truncation notices.
+
+## Earlier changes
+
 - Report the run's grounding mode on `CodaliResult`. An `open` run answers from
   the model and deliberately carries no sources, which a host could not tell
   apart from a search that found nothing: okacam's chat suppresses any answer
