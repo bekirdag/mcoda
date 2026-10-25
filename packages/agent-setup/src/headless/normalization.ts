@@ -16,6 +16,7 @@ import type {
 
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
   "openai-compatible-local",
+  "strata-local",
   "vllm-local",
   "llama-cpp-local",
   "llamacpp-local",
@@ -246,6 +247,7 @@ const clientAllowlistFromRecords = (
 const defaultRunnerKindForAdapter = (adapter: string | null): string | null => {
   const normalized = adapter ? lookupKey(adapter) : "";
   if (normalized === "vllm-local") return "vllm";
+  if (normalized === "strata-local") return "strata";
   if (normalized === "llama-cpp-local" || normalized === "llamacpp-local") {
     return "llama-cpp";
   }

@@ -19,6 +19,7 @@ describe("LocalRunnerConfig", () => {
       LOCAL_OPENAI_COMPATIBLE_ADAPTER,
     );
     assert.equal(normalizeLocalOpenAiCompatibleAdapter("vllm-local"), LOCAL_OPENAI_COMPATIBLE_ADAPTER);
+    assert.equal(normalizeLocalOpenAiCompatibleAdapter(" STRATA-LOCAL "), LOCAL_OPENAI_COMPATIBLE_ADAPTER);
     assert.equal(
       normalizeLocalOpenAiCompatibleAdapter("llama-cpp-local"),
       LOCAL_OPENAI_COMPATIBLE_ADAPTER,
@@ -33,6 +34,8 @@ describe("LocalRunnerConfig", () => {
 
   it("normalizes runner kind and auth spelling aliases", () => {
     assert.equal(defaultLocalRunnerKindForAdapter("vllm-local"), "vllm");
+    assert.equal(defaultLocalRunnerKindForAdapter("strata-local"), "strata");
+    assert.equal(normalizeLocalRunnerKind(" Strata "), "strata");
     assert.equal(defaultLocalRunnerKindForAdapter(" VLLM-LOCAL "), "vllm");
     assert.equal(defaultLocalRunnerKindForAdapter("llamacpp-local"), "llama-cpp");
     assert.equal(normalizeLocalRunnerKind("llama.cpp"), "llama-cpp");

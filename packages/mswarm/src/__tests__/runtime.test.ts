@@ -3101,6 +3101,7 @@ describe("self-hosted node runtime", () => {
   it("routes local OpenAI-compatible mcoda agents to Codali with runner metadata", async () => {
     const cases = [
       { adapter: "vllm-local", runnerKind: "vllm" },
+      { adapter: "strata-local", runnerKind: "strata" },
       { adapter: "llama-cpp-local", runnerKind: "llama-cpp" },
       { adapter: "llamacpp-local", runnerKind: "llama-cpp" }
     ];
@@ -6943,6 +6944,60 @@ describe("self-hosted node runtime", () => {
     const sent = JSON.stringify([...heartbeatBodies, ...loadBodies]);
     expect(sent.includes('private native prompt')).toBe(false);
     expect(sent.includes('native-probe-secret')).toBe(false);
+  });
+
+  it("reports Strata occupancy once per runner and excludes unloaded or malformed status", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    let calls = 0;
+    let status: unknown = { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: 3 },
+      private_detail: "private native prompt" };
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/v1/status")) {
+        calls += 1;
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer strata-probe-secret");
+        return jsonResponse(status);
+      }
+      if (target.endsWith("/node/heartbeat") || target.endsWith("/node/load")) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const config = { baseUrl: "http://127.0.0.1:11452/v1", authMode: "bearer", publicModelId: "qwen-flash" };
+    const runtime = new SelfHostedNodeRuntime({ ...permissiveServiceConfigFor(tempStatePath()),
+      runtimeToken: "msn_strata", discoveryMode: "mcoda", maxConcurrentJobs: 2, maxConcurrentLlmJobs: 2 }, {
+      fetchImpl, mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({ id: "strata-main", slug: "qwen-flash", defaultModel: "qwen-flash", adapter: "strata-local", config }),
+        healthyMcodaAgent({ id: "strata-alias", slug: "flash-alias", defaultModel: "qwen-flash", adapter: "openai-api",
+          config: { ...config, runnerKind: "strata" } })
+      ]), mcodaAgentAuthResolver: async () => "strata-probe-secret", capabilityRunner: capabilityProbeRunner({})
+    });
+    await runtime.runOnce();
+    expect(calls).toBe(1);
+    const initial = bodies[0].capacity as Record<string, unknown>;
+    expect(initial.active_jobs).toBe(1);
+    expect((initial.model_capacity as Record<string, unknown>)["qwen-flash"]).toMatchObject({
+      max_concurrency: 1, active_jobs: 1, queued_jobs: 2, free_slots: 0
+    });
+    for (const invalid of [
+      { loaded: false, concurrency: { serving: 1 }, activity: { in_flight: 0 } },
+      { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: -1 } },
+      { loaded: true, concurrency: { serving: "1" }, activity: { in_flight: 0 } },
+      {}
+    ]) {
+      status = invalid;
+      await runtime.reportLoad();
+      expect((bodies.at(-1)?.capacity as Record<string, unknown>).unavailable_model_ids).toEqual(["qwen-flash"]);
+    }
+    status = { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: 0 } };
+    await runtime.reportLoad();
+    const recovered = bodies.at(-1)?.capacity as Record<string, unknown>;
+    expect(recovered.unavailable_model_ids).toEqual([]);
+    expect((recovered.model_capacity as Record<string, unknown>)["qwen-flash"]).toMatchObject({ free_slots: 1 });
+    const sent = JSON.stringify(bodies);
+    expect(sent.includes("private native prompt")).toBe(false);
+    expect(sent.includes("strata-probe-secret")).toBe(false);
   });
 
   it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {

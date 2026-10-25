@@ -56,6 +56,26 @@ test("OpenAiAdapter local healthCheck uses model listing without authorization",
   assert.equal((health.details as any)?.modelListing?.modelFound, true);
 });
 
+test("Strata health requires a loaded engine and preserves bearer authentication", async () => {
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "strata-local" }, adapter: "strata-local", capabilities: ["chat"],
+    model: "qwen-latest-flash-next", baseUrl: "http://127.0.0.1:11452/v1", apiKey: "local-strata-secret",
+    authMode: "bearer",
+  });
+  for (const [payload, expected] of [[{ loaded: true }, "healthy"], [{ loaded: false }, "unreachable"],
+    [{ status: "ok" }, "unreachable"], [null, "unreachable"]] as const) {
+    global.fetch = async (input: any, init?: any) => {
+      assert.equal(String(input), "http://127.0.0.1:11452/v1/status");
+      assert.equal(init?.headers.Authorization, "Bearer local-strata-secret");
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const health = await adapter.healthCheck();
+    assert.equal(health.status, expected);
+    assert.equal(health.details?.source, "strata_status");
+    assert.equal(JSON.stringify(health).includes("local-strata-secret"), false);
+  }
+});
+
 test("OpenAiAdapter local healthCheck degrades when configured model is not listed", async () => {
   let calls = 0;
   global.fetch = async (input: any, init?: any) => {

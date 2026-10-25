@@ -217,6 +217,10 @@ The legacy aliases `mswarm install <MSWARM_API_KEY>`, `mswarm start`, `mswarm do
 
 Self-hosted jobs for local `mcoda` agents run through the vendored Codali runtime shipped with `@mcoda/mswarm`. The node resolves the requested `source_agent_slug` or model from local `mcoda agent list --json --refresh-health` inventory, maps the selected local adapter and model into Codali, and enforces the job policy before running tools.
 
+Strata servers use the `strata-local` adapter with `runnerKind: "strata"` and an OpenAI-compatible base URL such as `http://127.0.0.1:11452/v1`. Agent health checks require `loaded: true` from `/v1/status`. The node reads that endpoint's serving concurrency and in-flight request count to report active jobs, queued jobs, and free slots, counting aliases of the same endpoint once. Unloaded or invalid status makes the model unavailable to the scheduler. Native status probes are restricted to loopback addresses and use the agent's stored bearer credential when configured.
+
+Register a running server with `mcoda agent add qwen-latest-flash-next --adapter strata-local --model qwen-latest-flash-next --config-base-url http://127.0.0.1:11452/v1 --config-auth-mode none --config-public-model-id qwen-latest-flash-next`. Use bearer authentication and `mcoda agent auth` when the server requires it. Keep the public agent name stable when replacing its underlying model. Strata's JSON-schema support uses prompt-and-validate generation; it does not imply constrained decoding or GBNF support. Declare structured-output and tool capabilities only after testing the installed model.
+
 Direct-mode `stream: true` jobs are returned as OpenAI-compatible Server-Sent Events:
 
 ```text

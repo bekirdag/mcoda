@@ -291,7 +291,7 @@ test("local adapter is used when specified", async () => {
 });
 
 test("local OpenAI-compatible adapters invoke without stored api keys", async () => {
-  const adapters = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local"];
+  const adapters = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local", "strata-local"];
   for (const adapterName of adapters) {
     let sawAuthorization: string | undefined;
     global.fetch = async (input: any, init?: any) => {
@@ -327,6 +327,7 @@ test("local OpenAI-compatible adapters invoke without stored api keys", async ()
 test("local OpenAI-compatible aliases expose default runner kind in health", async () => {
   const cases = [
     { adapter: "vllm-local", runnerKind: "vllm" },
+    { adapter: "strata-local", runnerKind: "strata" },
     { adapter: "llama-cpp-local", runnerKind: "llama-cpp" },
     { adapter: "llamacpp-local", runnerKind: "llama-cpp" },
   ];
@@ -334,9 +335,9 @@ test("local OpenAI-compatible aliases expose default runner kind in health", asy
   for (const entry of cases) {
     global.fetch = async (input: any, init?: any) => {
       const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
-      assert.equal(url, "http://127.0.0.1:8000/v1/models");
+      assert.equal(url, `http://127.0.0.1:8000/v1/${entry.runnerKind === "strata" ? "status" : "models"}`);
       assert.equal(init?.method, "GET");
-      return new Response(JSON.stringify({ data: [{ id: "local-model" }] }), {
+      return new Response(JSON.stringify(entry.runnerKind === "strata" ? { loaded: true } : { data: [{ id: "local-model" }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });

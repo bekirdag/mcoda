@@ -2,6 +2,7 @@ export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
 export type LocalRunnerKind =
   | "vllm"
+  | "strata"
   | "llama-cpp"
   | "llama-cpp-python"
   | "stable-diffusion-cpp"
@@ -42,6 +43,7 @@ export interface LocalOpenAiCompatibleRunnerConfig {
 
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
   "openai-compatible-local",
+  "strata-local",
   "vllm-local",
   "llama-cpp-local",
   "llamacpp-local"

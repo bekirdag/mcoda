@@ -8,12 +8,14 @@ import {
 export const LOCAL_OPENAI_COMPATIBLE_ADAPTER = "openai-compatible-local" as const;
 export const VLLM_LOCAL_ADAPTER = "vllm-local" as const;
 export const LLAMA_CPP_LOCAL_ADAPTER = "llama-cpp-local" as const;
+export const STRATA_LOCAL_ADAPTER = "strata-local" as const;
 export const LEGACY_LLAMACPP_LOCAL_ADAPTER = "llamacpp-local" as const;
 
 export const LOCAL_OPENAI_COMPATIBLE_ADAPTER_ALIASES = [
   LOCAL_OPENAI_COMPATIBLE_ADAPTER,
   VLLM_LOCAL_ADAPTER,
   LLAMA_CPP_LOCAL_ADAPTER,
+  STRATA_LOCAL_ADAPTER,
   LEGACY_LLAMACPP_LOCAL_ADAPTER,
 ] as const;
 
@@ -21,6 +23,7 @@ export type LocalOpenAiCompatibleAdapter = (typeof LOCAL_OPENAI_COMPATIBLE_ADAPT
 
 export type LocalRunnerKind =
   | "vllm"
+  | "strata"
   | "llama-cpp"
   | "llama-cpp-python"
   | "stable-diffusion-cpp"
@@ -124,6 +127,7 @@ const RESERVED_EXTRA_BODY_KEY_SET = new Set<string>(LOCAL_RUNNER_RESERVED_EXTRA_
 
 const RUNNER_KIND_ALIASES: Record<string, LocalRunnerKind> = {
   vllm: "vllm",
+  strata: "strata",
   "llama-cpp": "llama-cpp",
   "llama.cpp": "llama-cpp",
   llamacpp: "llama-cpp",
@@ -219,6 +223,7 @@ export function defaultLocalRunnerKindForAdapter(adapter: unknown): LocalRunnerK
   if (!normalized) return undefined;
   const lookupKey = normalizeLookupKey(normalized);
   if (lookupKey === VLLM_LOCAL_ADAPTER) return "vllm";
+  if (lookupKey === STRATA_LOCAL_ADAPTER) return "strata";
   if (lookupKey === LLAMA_CPP_LOCAL_ADAPTER || lookupKey === LEGACY_LLAMACPP_LOCAL_ADAPTER) {
     return "llama-cpp";
   }

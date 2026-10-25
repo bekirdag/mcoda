@@ -69,7 +69,7 @@ Subcommands:
   limits                     Show tracked usage-limit windows/reset times
     --agent <NAME>           Filter by agent slug/id
   add <NAME>                 Create a global agent
-    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote|openai-compatible-local|vllm-local|llama-cpp-local|llamacpp-local)
+    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote|openai-compatible-local|vllm-local|llama-cpp-local|llamacpp-local|strata-local)
     --model <MODEL>          Default model name
     --rating <N>             Relative capability rating (higher is stronger)
     --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
@@ -84,7 +84,7 @@ Subcommands:
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote adapters (e.g., http://host:11434 for ollama-remote)
-    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
+    --config-runner-kind <K> Local runner kind (vllm|strata|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
     --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
     --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
     --config-header <K=V>    Repeatable non-secret local runner header
@@ -117,7 +117,7 @@ Subcommands:
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote/local runner adapters
-    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
+    --config-runner-kind <K> Local runner kind (vllm|strata|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
     --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
     --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
     --config-header <K=V>    Repeatable non-secret local runner header
