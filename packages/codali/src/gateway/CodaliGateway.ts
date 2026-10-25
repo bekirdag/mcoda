@@ -1025,9 +1025,11 @@ export class CodaliGateway {
         temperature: this.options.finalSynthesizerOptions?.temperature ??
           DEFAULT_FINAL_TEMPERATURE,
         responseFormat:
-          input.request.response?.format === "json"
-            ? { type: "json" }
-            : { type: "text" },
+          input.request.response?.schema
+            ? { type: "json_schema", schema: input.request.response.schema }
+            : input.request.response?.format === "json"
+              ? { type: "json" }
+              : { type: "text" },
       };
       try {
         const response = await this.options.provider.generate(request);

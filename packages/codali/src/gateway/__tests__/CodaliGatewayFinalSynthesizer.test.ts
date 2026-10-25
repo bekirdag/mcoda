@@ -435,6 +435,29 @@ test("final synthesizer retries one retryable provider failure and records telem
   assert.ok(result.trace.warnings.some((warning) => warning.includes("final_synthesizer_retry")));
 });
 
+test("final synthesis sends the caller schema to the provider on initial and repair attempts", async () => {
+  const schema = {
+    type: "object",
+    properties: { summary: { type: "string" }, missing: { type: "array", items: { type: "string" } } },
+    required: ["summary", "missing"],
+    additionalProperties: false,
+  };
+  const request = baseRequest({ id: "schema-final-run", response: { format: "json", schema } });
+  const store = await seedRun(request, [evidence("ev-schema", { runId: request.id })]);
+  const provider = new StubProvider([
+    jsonResponse({ summary: "Evidence reviewed.", missing: [{ reason: "Proof" }] }),
+    jsonResponse({ summary: "Evidence reviewed.", missing: ["Proof"] }),
+  ]);
+  const result = await createCodaliGateway({ provider, store, agentInventory: [largeAgent()] })
+    .synthesizeFinalAnswer({ runId: "schema-final-run", request });
+  assert.equal(result.status, "succeeded");
+  assert.equal(provider.requests.length, 2);
+  for (const call of provider.requests) {
+    assert.deepEqual(call.responseFormat, { type: "json_schema", schema });
+  }
+  assert.ok(result.trace.warnings.includes("final_response_schema_repair:1"));
+});
+
 test("final model failure returns operational failure unless degraded fallback is allowed", async () => {
   const strictRequest = baseRequest({ id: "strict-final-failure-run" });
   const strictStore = await seedRun(strictRequest, [
