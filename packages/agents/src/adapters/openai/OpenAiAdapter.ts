@@ -776,6 +776,16 @@ export class OpenAiAdapter implements AgentAdapter {
     startedAt: number;
   }): Promise<AgentHealth> {
     const { model, auth, url, startedAt } = params;
+    if (this.runnerKind === "strata") {
+      const result = await this.fetchHealthPath(url, auth, "/v1/status");
+      const loaded = result.ok && result.data !== null && typeof result.data === "object" &&
+        (result.data as Record<string, unknown>).loaded === true;
+      return this.buildHealthResult(loaded ? "healthy" : "unreachable", Date.now(), startedAt, {
+        source: "strata_status", model, baseUrl: url, loaded,
+        ...(loaded ? {} : { reason: result.ok ? "model_not_loaded" : "health_path_failed" }),
+        httpStatus: result.status,
+      });
+    }
     if (this.healthPath) {
       const result = await this.fetchHealthPath(url, auth, this.healthPath);
       const checkedAtMs = Date.now();

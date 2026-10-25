@@ -134,6 +134,31 @@ test("OpenAiCompatibleProvider sends response_format and temperature", { concurr
   );
 });
 
+test("OpenAiCompatibleProvider wraps JSON Schemas for strict OpenAI-compatible servers", { concurrency: false }, async () => {
+  const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+  const envelope = { name: "health_check", strict: true, schema };
+  for (const input of [schema, envelope]) {
+    await withStubbedFetch(
+      (_url, body) => {
+        const format = JSON.parse(body).response_format;
+        assert.equal(format.type, "json_schema");
+        assert.deepEqual(format.json_schema.schema, schema);
+        assert.equal(format.json_schema.name, input === schema ? "codali_response" : "health_check");
+        if (input === envelope) assert.equal(format.json_schema.strict, true);
+        return { choices: [{ message: { role: "assistant", content: '{"ok":true}' } }] };
+      },
+      async () => {
+        const provider = new OpenAiCompatibleProvider({ model: "strata-test", baseUrl: "http://127.0.0.1:9999/v1/" });
+        const result = await provider.generate({
+          messages: [{ role: "user", content: "Report health." }],
+          responseFormat: { type: "json_schema", schema: input },
+        });
+        assert.deepEqual(JSON.parse(result.message.content), { ok: true });
+      },
+    );
+  }
+});
+
 test("OpenAiCompatibleProvider can downgrade json_schema to json_object for local runners", { concurrency: false }, async () => {
   let received: Record<string, unknown> | undefined;
   await withStubbedFetch(

@@ -1023,6 +1023,7 @@ function resolvePersistentNodePath(nodePath: string): string {
 const DEFAULT_EXPOSE_ALL_MODELS = true;
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
   "openai-compatible-local",
+  "strata-local",
   "vllm-local",
   "llama-cpp-local",
   "llamacpp-local"
@@ -1070,6 +1071,7 @@ const DEFAULT_VIDEO_GENERATIVE_OUTPUT_BYTES = 256 * 1024 * 1024;
 const GENERATIVE_RESPONSE_JSON_OVERHEAD_BYTES = 64 * 1024;
 const LOCAL_RUNNER_KIND_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["runnerKind"]>> = {
   vllm: "vllm",
+  strata: "strata",
   "llama-cpp": "llama-cpp",
   "llama.cpp": "llama-cpp",
   llamacpp: "llama-cpp",
@@ -1382,6 +1384,7 @@ function defaultLocalRunnerKindForAdapter(adapter: unknown): LocalOpenAiCompatib
   if (!normalized) return undefined;
   const lookupKey = normalizeLookupKey(normalized);
   if (lookupKey === "vllm-local") return "vllm";
+  if (lookupKey === "strata-local") return "strata";
   if (lookupKey === "llama-cpp-local" || lookupKey === "llamacpp-local") return "llama-cpp";
   return undefined;
 }
@@ -6296,6 +6299,7 @@ export class SelfHostedNodeRuntime {
   private readonly activeRequestIds = new Set<string>();
   private lastModels: SelfHostedModelInput[] = [];
   private loadRuntimeToken: string | null = null;
+  private loadReportQueue: Promise<void> = Promise.resolve();
   private fastLoadUnsupported = false;
   private nativeActiveJobs = 0;
   private readonly nativeProbeKeys = new Map<string, Promise<string | undefined>>();
@@ -7795,6 +7799,9 @@ export class SelfHostedNodeRuntime {
       return await this.executeTrackedJob(job, options);
     } finally {
       this.activeRequestIds.delete(job.request_id);
+      // A product often starts its next stage immediately after this result.
+      // Publish the newly free native slot before the gateway delivers it.
+      await this.reportLoad().catch(() => undefined);
     }
   }
 
@@ -8186,12 +8193,13 @@ export class SelfHostedNodeRuntime {
   private async refreshNativeLoad(): Promise<void> {
     const runners = new Map<string, SelfHostedModelInput[]>();
     for (const model of this.lastModels) {
+      const isStrata = model.runner_kind === "strata" || model.adapter === "strata-local";
       if (model.exposed === false || !model.base_url ||
-        (model.runner_kind !== "llama-cpp" && model.adapter !== "llama-cpp-local")) continue;
+        (!isStrata && model.runner_kind !== "llama-cpp" && model.adapter !== "llama-cpp-local")) continue;
       try {
         const url = new URL(model.base_url);
         if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) continue;
-        const endpoint = new URL("/slots", url).toString();
+        const endpoint = new URL(isStrata ? "/v1/status" : "/slots", url).toString();
         const models = runners.get(endpoint) || [];
         models.push(model);
         runners.set(endpoint, models);
@@ -8215,10 +8223,27 @@ export class SelfHostedNodeRuntime {
         }
         const response = await this.fetchImpl(endpoint, { signal: AbortSignal.timeout(1500),
           ...(apiKey ? { headers: { authorization: `Bearer ${apiKey}` } } : {}) });
-        // Slot introspection is optional and may require different local credentials.
-        if ([401, 403, 404].includes(response.status)) return;
+        const isStrata = new URL(endpoint).pathname === "/v1/status";
+        // llama.cpp slot introspection is optional. Strata status also proves the model is loaded.
+        if (!isStrata && [401, 403, 404].includes(response.status)) return;
         if (!response.ok) throw new Error("runner_load_unavailable");
         const slots = await response.json() as unknown;
+        if (isStrata) {
+          const concurrency = isRecord(slots) && isRecord(slots.concurrency) ? slots.concurrency.serving : undefined;
+          const inFlight = isRecord(slots) && isRecord(slots.activity) ? slots.activity.in_flight : undefined;
+          if (!isRecord(slots) || slots.loaded !== true ||
+            typeof concurrency !== "number" || !Number.isSafeInteger(concurrency) || concurrency < 1 ||
+            typeof inFlight !== "number" || !Number.isSafeInteger(inFlight) || inFlight < 0) {
+            throw new Error("runner_load_unavailable");
+          }
+          const processing = Math.min(concurrency, inFlight);
+          active += processing;
+          const capacity = { max_concurrency: concurrency, active_jobs: processing,
+            queued_jobs: Math.max(0, inFlight - concurrency), free_slots: Math.max(0, concurrency - inFlight),
+            pool: `runner:${createHash("sha256").update(endpoint).digest("hex").slice(0, 16)}` };
+          for (const model of models) modelCapacity[model.model_id || model.model || model.name] = capacity;
+          return;
+        }
         if (!Array.isArray(slots)) return;
         const processing = slots.filter((slot) => isRecord(slot) && slot.is_processing === true).length;
         active += processing;
@@ -8236,7 +8261,15 @@ export class SelfHostedNodeRuntime {
     this.unavailableModelIds = [...new Set(unavailable)];
   }
 
-  async reportLoad(): Promise<void> {
+  reportLoad(): Promise<void> {
+    // Serialize probes and writes so an older busy snapshot cannot overwrite
+    // the completion snapshot when the periodic reporter is already running.
+    const pending = this.loadReportQueue.then(() => this.reportLoadSnapshot());
+    this.loadReportQueue = pending.catch(() => undefined);
+    return pending;
+  }
+
+  private async reportLoadSnapshot(): Promise<void> {
     if (this.config.loadReportingEnabled === false || this.fastLoadUnsupported || !this.loadRuntimeToken) return;
     await this.refreshNativeLoad();
     const telemetry = this.buildLoadTelemetry({ models: this.lastModels });

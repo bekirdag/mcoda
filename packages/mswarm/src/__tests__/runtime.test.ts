@@ -3101,6 +3101,7 @@ describe("self-hosted node runtime", () => {
   it("routes local OpenAI-compatible mcoda agents to Codali with runner metadata", async () => {
     const cases = [
       { adapter: "vllm-local", runnerKind: "vllm" },
+      { adapter: "strata-local", runnerKind: "strata" },
       { adapter: "llama-cpp-local", runnerKind: "llama-cpp" },
       { adapter: "llamacpp-local", runnerKind: "llama-cpp" }
     ];
@@ -6943,6 +6944,102 @@ describe("self-hosted node runtime", () => {
     const sent = JSON.stringify([...heartbeatBodies, ...loadBodies]);
     expect(sent.includes('private native prompt')).toBe(false);
     expect(sent.includes('native-probe-secret')).toBe(false);
+  });
+
+  it("reports Strata occupancy once per runner and excludes unloaded or malformed status", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    let calls = 0;
+    let status: unknown = { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: 3 },
+      private_detail: "private native prompt" };
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/v1/status")) {
+        calls += 1;
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer strata-probe-secret");
+        return jsonResponse(status);
+      }
+      if (target.endsWith("/node/heartbeat") || target.endsWith("/node/load")) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const config = { baseUrl: "http://127.0.0.1:11452/v1", authMode: "bearer", publicModelId: "qwen-flash" };
+    const runtime = new SelfHostedNodeRuntime({ ...permissiveServiceConfigFor(tempStatePath()),
+      runtimeToken: "msn_strata", discoveryMode: "mcoda", maxConcurrentJobs: 2, maxConcurrentLlmJobs: 2 }, {
+      fetchImpl, mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({ id: "strata-main", slug: "qwen-flash", defaultModel: "qwen-flash", adapter: "strata-local", config }),
+        healthyMcodaAgent({ id: "strata-alias", slug: "flash-alias", defaultModel: "qwen-flash", adapter: "openai-api",
+          config: { ...config, runnerKind: "strata" } })
+      ]), mcodaAgentAuthResolver: async () => "strata-probe-secret", capabilityRunner: capabilityProbeRunner({})
+    });
+    await runtime.runOnce();
+    expect(calls).toBe(1);
+    const initial = bodies[0].capacity as Record<string, unknown>;
+    expect(initial.active_jobs).toBe(1);
+    expect((initial.model_capacity as Record<string, unknown>)["qwen-flash"]).toMatchObject({
+      max_concurrency: 1, active_jobs: 1, queued_jobs: 2, free_slots: 0
+    });
+    for (const invalid of [
+      { loaded: false, concurrency: { serving: 1 }, activity: { in_flight: 0 } },
+      { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: -1 } },
+      { loaded: true, concurrency: { serving: "1" }, activity: { in_flight: 0 } },
+      {}
+    ]) {
+      status = invalid;
+      await runtime.reportLoad();
+      expect((bodies.at(-1)?.capacity as Record<string, unknown>).unavailable_model_ids).toEqual(["qwen-flash"]);
+    }
+    status = { loaded: true, concurrency: { serving: 1 }, activity: { in_flight: 0 } };
+    await runtime.reportLoad();
+    const recovered = bodies.at(-1)?.capacity as Record<string, unknown>;
+    expect(recovered.unavailable_model_ids).toEqual([]);
+    expect((recovered.model_capacity as Record<string, unknown>)["qwen-flash"]).toMatchObject({ free_slots: 1 });
+    const sent = JSON.stringify(bodies);
+    expect(sent.includes("private native prompt")).toBe(false);
+    expect(sent.includes("strata-probe-secret")).toBe(false);
+  });
+
+  it("publishes the freed Strata slot before returning a job and after an older busy report", async () => {
+    const loads: Array<Record<string, any>> = [];
+    let inFlight = 1;
+    let releaseBusy!: () => void;
+    let busyPosted!: () => void;
+    const busyGate = new Promise<void>((resolve) => { releaseBusy = resolve; });
+    const busyStarted = new Promise<void>((resolve) => { busyPosted = resolve; });
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/v1/status")) return jsonResponse({ loaded: true, concurrency: { serving: 1 }, activity: { in_flight: inFlight } });
+      if (target.endsWith("/node/heartbeat")) return jsonResponse({ accepted: true });
+      if (target.endsWith("/node/load")) {
+        loads.push(JSON.parse(String(init?.body)));
+        if (loads.length === 1) { busyPosted(); await busyGate; }
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime({ ...permissiveServiceConfigFor(tempStatePath()), runtimeToken: "msn_strata", discoveryMode: "mcoda" }, {
+      fetchImpl, capabilityRunner: capabilityProbeRunner({}),
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "flash", adapter: "strata-local", defaultModel: "flash", config: { baseUrl: "http://127.0.0.1:11452/v1", authMode: "none" } })]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => { inFlight = 0; return successfulCodaliInvocation(input); }),
+    });
+    await runtime.runOnce();
+    const oldReport = runtime.reportLoad();
+    await busyStarted;
+    let returned = false;
+    const execution = runtime.executeJob({
+      job_id: "job-flash-capacity", request_id: "req-flash-capacity", node_id: "shn_service", provider: "mcoda",
+      agent_slug: "flash", source_agent_slug: "flash", model: "flash",
+      openai_request: { model: "flash", messages: [{ role: "user", content: "Return OK." }] },
+    }).then((result) => { returned = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(returned).toBe(false);
+    releaseBusy();
+    await oldReport;
+    expect((await execution).status).toBe("success");
+    expect(loads[0].capacity.model_capacity.flash.free_slots).toBe(0);
+    expect(loads.at(-1)?.capacity.model_capacity.flash.free_slots).toBe(1);
+    expect(loads.at(-1)?.capacity.active_request_ids).toEqual([]);
   });
 
   it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {

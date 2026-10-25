@@ -218,6 +218,8 @@ export interface CodaliRuntimePolicy {
   appVirtualTools?: string[];
   appToolGateway?: CodaliRuntimeAppToolGatewayContract;
   maxSteps: number;
+  finalStepWithoutTools?: boolean;
+  maxToolResultChars?: number;
   maxToolCalls: number;
   maxTokens?: number;
   timeoutMs: number;
@@ -2672,6 +2674,8 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
     tools: registry,
     context: toolContext,
     maxSteps: input.policy.maxSteps,
+    finalStepWithoutTools: input.policy.finalStepWithoutTools,
+    maxToolResultChars: input.policy.maxToolResultChars,
     maxToolCalls: input.policy.maxToolCalls,
     maxTokens: input.policy.maxTokens,
     timeoutMs: input.policy.timeoutMs,

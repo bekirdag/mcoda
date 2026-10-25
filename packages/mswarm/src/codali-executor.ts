@@ -2,6 +2,7 @@ export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
 export type LocalRunnerKind =
   | "vllm"
+  | "strata"
   | "llama-cpp"
   | "llama-cpp-python"
   | "stable-diffusion-cpp"
@@ -42,6 +43,7 @@ export interface LocalOpenAiCompatibleRunnerConfig {
 
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
   "openai-compatible-local",
+  "strata-local",
   "vllm-local",
   "llama-cpp-local",
   "llamacpp-local"
@@ -160,6 +162,8 @@ export interface CodaliRuntimePolicy {
   appVirtualTools?: string[];
   appToolGateway?: Record<string, unknown>;
   maxSteps: number;
+  finalStepWithoutTools?: boolean;
+  maxToolResultChars?: number;
   maxToolCalls: number;
   maxTokens?: number;
   timeoutMs: number;
@@ -2121,6 +2125,10 @@ function createGatewayTaskRunner(input: {
           allowedTools,
           maxToolCalls: Math.max(0, remainingToolCalls),
           maxSteps: Math.min(maxSteps, input.runtimeInput.policy.maxSteps),
+          finalStepWithoutTools: true,
+          // Keep retrieved evidence inside a local model's context, preserving
+          // whole result items and explicit incomplete-coverage notices.
+          maxToolResultChars: 24_000,
           mode: requiredProtocolProvider
             ? "protocol_loop"
             : input.runtimeInput.policy.mode,

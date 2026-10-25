@@ -95,7 +95,16 @@ const toResponseFormat = (
     return { type: "json_object" };
   }
   if (format.type === "json_schema") {
-    return { type: "json_schema", json_schema: format.schema ?? {} };
+    const schema = format.schema ?? {};
+    // ProviderResponseFormat carries a JSON Schema; OpenAI-compatible servers
+    // require it inside a named json_schema envelope. Preserve callers that
+    // already supply that envelope.
+    const wrapped = typeof schema.name === "string" &&
+      schema.schema !== null && typeof schema.schema === "object";
+    return {
+      type: "json_schema",
+      json_schema: wrapped ? schema : { name: "codali_response", schema },
+    };
   }
   if (format.type === "text") {
     return { type: "text" };
@@ -224,11 +233,20 @@ export class OpenAiCompatibleProvider implements Provider {
       content: string;
       name?: string;
       tool_call_id?: string;
+      tool_calls?: OpenAiToolCall[];
     }> = request.messages.map((message) => ({
       role: message.role,
       content: message.content,
       name: message.name,
       tool_call_id: message.toolCallId,
+      tool_calls: message.toolCalls?.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: {
+          name: call.name,
+          arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}),
+        },
+      })),
     }));
     if (promptOnlyInstruction) {
       messages.unshift({ role: "system", content: promptOnlyInstruction });

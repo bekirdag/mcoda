@@ -225,7 +225,7 @@ test("CodaliAdapter maps openai-api adapters and requires api key", { concurrenc
 });
 
 test("CodaliAdapter maps local OpenAI-compatible adapters without api key", { concurrency: false }, async () => {
-  const adapterIds = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local"];
+  const adapterIds = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local", "strata-local"];
   for (const sourceAdapter of adapterIds) {
     const implicit = resolveCodaliProviderFromAdapter({ sourceAdapter });
     assert.equal(implicit.provider, "openai-compatible");
