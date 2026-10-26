@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Receipt-selection fix 4ea5d61 passes 50 focused and 1567 full-suite tests, plus Linux/Windows and six platform jobs. Published .4 artifacts are byte-verified against qualified archives. Full CLI installation exposed a transitive Docdex npm postinstall that restarted unrelated daemons; AB live comparison was stopped and invalidated. The correction removes automatic Docdex provisioning, supports explicit native CLI resolution, and passes the expanded ten-package installation check. Global CLIs remain .134 pending a corrected release. Stable promotion and 24-hour canary have not started.",
+  "currentTask": "Preparing corrected prerelease 0.1.135-codali.5 after installer/receipt changes passed full CI and six expanded Linux/macOS install jobs at 4ebdefa. Frozen AC public workflows remain in progress at 3965227 with identical AA budgets and fixtures. Native Strata fatal-recovery patch passed 380 broad regressions and 17 focused tests on each staged host runtime; not activated while AC runs. Stable promotion and 24-hour canary have not started.",
   "tasks": [
     {
       "id": "P0.1",
@@ -548,7 +548,8 @@
         "5150c73 and40d5833 six-platform Linux/macOS package/isolated install matrices passed. Prerelease codali.1 release40364363507 was cancelled after macOS and Windows failures. edb7f75 repairs Windows 8.3 canonical paths/transcript truncation and deterministic image-handler saturation test; new cross-platform checks running. No mcoda prerelease published.",
         "Release40376949005 at436e0b1 passed six packaging jobs and six Linux/macOS Node20/22 exact-tarball clean installs. The downloaded Linux publication archive has ten SHA256-verified tarballs. Registry @mcoda/codali0.1.135-codali.2 matches qualified sha512 and installs with its dependencies in a fresh directory.",
         "bc91c761 CI40393105463 passed Linux and Windows; six-platform qualification40393106353 passed Linux x64/macOS Intel/macOS ARM on Node20/22. Version-only .4 preparation follows the cancelled immutable .3 tag.",
-        "v0.1.135-codali.4 atc275ce1 passed all six package jobs and six Linux/macOS Node20/22 clean-install qualification jobs. Independent Linux install of exact artifact tarballs passed nativeSQLite,privateDocdex,session persistence,version/help and data-preserving uninstall;10artifact manifest hashes verified."
+        "v0.1.135-codali.4 atc275ce1 passed all six package jobs and six Linux/macOS Node20/22 clean-install qualification jobs. Independent Linux install of exact artifact tarballs passed nativeSQLite,privateDocdex,session persistence,version/help and data-preserving uninstall;10artifact manifest hashes verified.",
+        "4ebdefa expands reproducible producer and clean-install consumer to all ten packages. CI40406147220 and six Linux/macOS Node20/22 jobs40406147139 passed; no automatic Docdex npm peer installed. This catches and corrects the .4 full-CLI lifecycle side effect; corrected .5 artifacts require release qualification."
       ]
     },
     {
@@ -570,7 +571,8 @@
         "Retained tag v0.1.135-codali.3 at2242111; release40386918780 cancelled before publication after unrelated Windows CI revealed shared persistence rename EPERM. Fix under validation; do not reuse the tag or claim .3 was published.",
         "Logmira .2 runtime image26aaf28ec7da passed package import and213-file byte identity; source48072c4ec is pushed as sealunit/okacam PR3. First worker shutdown was clean, but old app exited naturally after its HTTP listener closed; original app/worker restored. Node20 Express fixture with unreferenced IPC reproduced the missing keep-alive and passes after correction, including restore and natural exit. Retry awaits active GitHub sync; no new image activated.",
         "Logmira .2 activated2026-10-26T20:20:54UTC: app and worker image26aaf28ec7da, canonical source48072c4ec. Both old processes exited0 after exact idle checks; HTTP closure proved before app shutdown. MySQL container unchanged, both restart policies restored, package identity/import and health pass. Wodo/Heka live probes pending.",
-        "Logmira .2 source48072c4ec/image26aaf28ec7da deployed after worker/app idle proofs,HTTP drain and clean exits; database unchanged. Wodo/Heka postdeploy checks passed. Source draftPR sealunit/okacam3 records exact dependency-only change and189passing tests;213dist files unchanged."
+        "Logmira .2 source48072c4ec/image26aaf28ec7da deployed after worker/app idle proofs,HTTP drain and clean exits; database unchanged. Wodo/Heka postdeploy checks passed. Source draftPR sealunit/okacam3 records exact dependency-only change and189passing tests;213dist files unchanged.",
+        "Preparing prerelease .5 with automatic verification receipts and full-CLI installer isolation. Published .4 installations were staged but not activated; active global CLI remains .134. No stable promotion or canary claim."
       ]
     },
     {
@@ -1713,16 +1715,45 @@
       "focusedSkipped": 2,
       "packagingPassed": 1,
       "limitation": "Local candidate, not published. Expanded platform qualification remains pending."
+    },
+    {
+      "check": "Complete CLI package graph across platforms",
+      "status": "passed",
+      "commit": "4ebdefadbfd26b23765bd3f529cf95008571c291",
+      "ciRun": 40406147220,
+      "platformRun": 40406147139,
+      "platformJobs": 6,
+      "originalFailureRun": 40405033006,
+      "limitation": "Installer consumer expansion initially exceeded the three-package CI producer; producer now builds and packs all ten packages. All failures retained."
+    },
+    {
+      "check": "Frozen AC public long workflows",
+      "status": "running",
+      "commit": "3965227db5be38e07b8a3984b016451a62760599",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261026ac.manifest.json",
+      "comparison": "Same AA tasks, budgets and native/backend services; reused diagnostics, not fresh held-out quality."
+    },
+    {
+      "check": "Native Strata fatal recovery candidate",
+      "status": "staged_not_activated",
+      "broadRegressionTests": 380,
+      "updatedFocusedTestsPerHost": 17,
+      "hosts": [
+        "raijin",
+        "suku"
+      ],
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/strata-fatal-recovery-candidate.json",
+      "limitation": "Fake native subprocess tests establish error/reload/drain semantics. No production GPU fault injection or identified kernel/driver cause."
     }
   ],
-  "updatedAt": "2026-10-26T21:31:03.485642+00:00",
+  "updatedAt": "2026-10-26T21:54:15.238694+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
-    "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
+    "Raijin native Strata failure at 12:56:43 UTC correlates with kernel Xid31/MMU FAULT_PDE in the Strata process. Isolated reproduction proves the existing fatal classifier missed the exact illegal-memory signature. A narrow classification patch and opt-in bounded/no-replay reload passed native regressions and both staged runtime tests. Candidate is not activated; originating GPU kernel/driver/hardware cause remains unproven.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
     "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
