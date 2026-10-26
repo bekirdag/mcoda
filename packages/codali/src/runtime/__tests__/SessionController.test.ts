@@ -47,6 +47,7 @@ test("successful npm --silent test receipts verify changed code and page newest-
     }
   } };
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
   assert.equal((await controller.run("Set the exported value to two and run the existing test.")).completed, true);
   assert.equal(reviews, 1); assert.equal(step, 10);
 });
