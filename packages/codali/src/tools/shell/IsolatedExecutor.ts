@@ -24,6 +24,8 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     // realpath/lstat needs ancestor metadata, not directory contents or sibling files.
     ...[...ancestors].map(parent => `(allow file-read-metadata (literal ${quoted(parent)}))`),
     '(allow file-read* (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))',
+    // Git and other native tools open the null device read/write for discarded IO.
+    '(allow file-write-data (literal "/dev/null"))',
     // Apple's /bin/sh reads this system selector before starting npm scripts.
     // Permit only that selector, not other private /var files or directories.
     '(allow file-read* (literal "/private/var/select/sh") (literal "/var/select/sh"))',

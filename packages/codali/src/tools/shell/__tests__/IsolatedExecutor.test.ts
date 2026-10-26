@@ -38,6 +38,20 @@ console.log(JSON.stringify({scratch,home:os.homedir(),secret:process.env.MCODA_M
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(outside, { recursive: true, force: true }); }
 });
 
+test("isolated tools can discard IO through the null device while ordinary writes remain scoped", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-null-device-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, "protected.txt"), "unchanged");
+  const result = await createIsolatedExecutor({ status })("node", ["-e", `
+const fs=require('fs');const fd=fs.openSync('/dev/null','r+');
+try {fs.writeSync(fd,'discarded');} finally {fs.closeSync(fd);}
+try {fs.writeFileSync('protected.txt','changed');process.exit(9);} catch {}
+console.log('discarded safely');`], { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 });
+  assert.match(result.output, /discarded safely/);
+  assert.equal(await fs.readFile(path.join(root, "protected.txt"), "utf8"), "unchanged");
+});
+
 test("isolated commands cannot write outside task scope, through symlinks, or into Git metadata", async t => {
   const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-isolation-"));
