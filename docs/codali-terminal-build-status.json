@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Fixing Linux/macOS CI qualification (workspace canonical aliases fixed locally; macOS Node sandbox SIGABRT under diagnosis). Frozen C development evaluation complete: 9/12 passed, three failures retained. Production backend root deployment remains pending.",
+  "currentTask": "Qualifying graceful node drain and forward-ported managed Docdex; frozen Suku development D evaluation ongoing. Linux/macOS Node20/22 qualification passed. Production backend root deployment remains pending.",
   "tasks": [
     {
       "id": "P0.1",
@@ -13,7 +13,8 @@
       "evidence": [
         "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain.",
         "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing.",
-        "Fresh isolated node package passed four live Raijin Strata cases (direct, gateway, staged job, unadmitted-model rejection) with loopback route observations. Suku qualification and production activation remain pending."
+        "Fresh isolated node package passed four live Raijin Strata cases (direct, gateway, staged job, unadmitted-model rejection) with loopback route observations. Suku qualification and production activation remain pending.",
+        "Suku staged node candidate D passed direct, gateway, staged-job and unadmitted-model rejection with actual loopback Strata observations; both hosts now have isolated candidate qualification. Production activation still pending."
       ]
     },
     {
@@ -21,7 +22,8 @@
       "description": "Reindex affected source and repair/verify Docdex graph coverage. Record current tests, package exports, Node support, config precedence and public API consumers.",
       "status": "in_progress",
       "evidence": [
-        "Docdex TypeScript explicit .js imports now resolve source extensions: 39 parser tests pass; real SessionController graph resolves 33 outbound files. Configurable watcher startup (16 tests) lets private candidate serve mcoda. Global installation/complete index qualification pending."
+        "Docdex TypeScript explicit .js imports now resolve source extensions: 39 parser tests pass; real SessionController graph resolves 33 outbound files. Configurable watcher startup (16 tests) lets private candidate serve mcoda. Global installation/complete index qualification pending.",
+        "Managed Docdex changes forward-ported cleanly to upstream bbc2cb3 in a separate checkout, including newer health and web fixes. Combined qualification exposed parallel test failure-history interference; isolation fix and rerun in progress."
       ]
     },
     {
@@ -197,7 +199,9 @@
       "id": "P3.3",
       "description": "Implement and test Linux/macOS isolation adapters. Validate filesystem and network boundaries against interpreter execution, shell scripts, hooks, package managers and child processes. Do not rely on destructive-command pattern matching.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "GitHub platform qualification 40262471036 passed Linux/macOS \u00d7 Node20/22 with mandatory real sandbox and Node/pnpm discovery, boundary tests and PTY checks. Private Python/Rust toolchain coverage remains."
+      ]
     },
     {
       "id": "P3.4",
@@ -227,7 +231,9 @@
       "id": "P4.2",
       "description": "Wire the standard coding workflow to search, symbols/AST, precise reads and impact analysis, with output/context budgets. Treat index health as part of the tool result.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "prepare_edit bundles bounded read, symbols and impact via normal gated child calls with independent receipts; 6 race/budget/permission regressions and full Codali 1331-test suite passed."
+      ]
     },
     {
       "id": "P4.3",
@@ -296,8 +302,10 @@
     {
       "id": "P5.4",
       "description": "Integrate queue/admission/cancel status, cross-host routing and physical-pool concurrency, including large/small/embedding/media contention and loading peaks. Preserve interactive capacity while scheduling heavy video jobs. Fail over only after reconciling whether an invocation was already admitted; avoid duplicate renders and retry amplification.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "a9bbebd adds durable cross-process media leases that survive SIGKILL/uncertain native outcomes; 13 focused tests pass. Native recovery probes, physical admission/fairness and production activation remain."
+      ]
     },
     {
       "id": "P5.5",
@@ -430,8 +438,10 @@
     {
       "id": "P8.2",
       "description": "Fix admission, starvation, cancellation, stale leases and retry behavior demonstrated by those tests. Drain remote jobs before node upgrades and reconcile in-flight records afterward.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Graceful node-drain implementation closes admission, waits for late relay claims, direct/queued jobs and result uploads, and preserves admission closure on timeout. Runtime regressions pass; expanded queued-job/full suite in progress. Old deployed nodes need a bootstrap drain before upgrade."
+      ]
     },
     {
       "id": "P8.3",
@@ -953,6 +963,10 @@
         "unadmitted-model rejection"
       ],
       "limitation": "Private candidate executor; production node activation and Suku qualification pending."
+    },
+    {
+      "check": "Linux/macOS Node20/22 platform qualification 40262471036 and general CI 40262470948 at a9bbebd",
+      "status": "passed"
     }
   ],
   "updatedAt": "2026-10-26T02:02:00.043907+00:00",

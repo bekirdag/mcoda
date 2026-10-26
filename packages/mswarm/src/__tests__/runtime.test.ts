@@ -15,7 +15,8 @@ import {
   buildSelfHostedNodeApp,
   formatNodeUninstallSummary,
   isSelfHostedNodeDirectRun,
-  normalizeMswarmCommand
+  normalizeMswarmCommand,
+  waitForNodeShutdown
 } from "../server.js";
 import {
   MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
@@ -8291,5 +8292,136 @@ describe("shared LLM pool capacity", () => {
     // `pool` marker is what stops the two free_slots being added together.
     expect(byClass.chat).toMatchObject({ pool: "llm", active_jobs: 0, free_slots: 1 });
     expect(byClass.generic_job).toMatchObject({ pool: "generic", active_jobs: 0 });
+  });
+});
+
+describe("graceful node draining", () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const job: SelfHostedNodeInvocationJob = {
+    job_id: "job-drain", request_id: "request-drain", node_id: "shn_service",
+    agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda",
+    model: "mcoda-qwen-reviewer", openai_request: { model: "mcoda-qwen-reviewer", messages: [{ role: "user", content: "finish accepted work" }] }
+  };
+  const fakeHeartbeat = async () => ({ enrolled: false, status: "online" as const, model_count: 1,
+    discovery_source: "mcoda" as const, heartbeat_response: { accepted: true } });
+
+  it("finishes a late claim and its result upload while rejecting new admissions", async () => {
+    const pollStarted = deferred<void>(); const pollResponse = deferred<Response>();
+    const resultStarted = deferred<void>(); const resultResponse = deferred<Response>();
+    let polls = 0; let executions = 0;
+    const config = permissiveServiceConfigFor(tempStatePath());
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl: (async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/poll")) { polls++; pollStarted.resolve(); return pollResponse.promise; }
+        if (target.endsWith("/start")) return jsonResponse({ accepted: true });
+        if (target.endsWith("/result")) { resultStarted.resolve(); return resultResponse.promise; }
+        throw new Error(`unexpected ${target}`);
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async input => { executions++; return successfulCodaliInvocation(input); })
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon();
+    try {
+      await Promise.race([pollStarted.promise, delay(1000).then(() => { throw new Error("poll did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 20 }), false);
+      assert.equal(runtime.isDraining, true);
+      assert.equal((await runtime.executeJob({ ...job, job_id: "rejected" })).error?.code, "node_draining");
+      await assert.rejects(runtime.executeGenericJob(genericEchoJob()), /draining/);
+      let drained = false;
+      const waiting = daemon.drain({ timeoutMs: 2000 }).then(value => { drained = value; return value; });
+      pollResponse.resolve(jsonResponse({ job }));
+      await Promise.race([resultStarted.promise, delay(1000).then(() => { throw new Error("result upload did not start"); })]);
+      assert.equal(executions, 1); assert.equal(drained, false); assert.equal(polls, 1);
+      resultResponse.resolve(jsonResponse({ accepted: true }));
+      assert.equal(await waiting, true);
+      await delay(40); assert.equal(polls, 1);
+    } finally { pollResponse.resolve(jsonResponse({ job: null })); resultResponse.resolve(jsonResponse({ accepted: true })); daemon.stop(); }
+  });
+
+  it("waits for direct jobs and keeps timeout admission closed", async () => {
+    const started = deferred<void>(); const finished = deferred<void>();
+    const config = { ...permissiveServiceConfigFor(tempStatePath()), relayMode: "direct" as const };
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl: (async () => { throw new Error("unexpected HTTP"); }) as typeof fetch,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async input => { started.resolve(); await finished.promise; return successfulCodaliInvocation(input); })
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon();
+    const work = runtime.executeJob(job);
+    try {
+      await Promise.race([started.promise, delay(1000).then(() => { throw new Error("direct job did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 10 }), false);
+      assert.equal((await runtime.executeJob(job)).error?.code, "node_draining");
+      finished.resolve(); assert.equal((await work).status, "success");
+      assert.equal(await daemon.drain({ timeoutMs: 1000 }), true);
+      await assert.rejects(daemon.drain({ timeoutMs: -1 }), /non-negative/);
+    } finally { finished.resolve(); await work; daemon.stop(); }
+  });
+
+  it("reports drain health and rejects HTTP admission while preserving status and cancellation routes", async () => {
+    const config = { ...genericServiceConfigFor(tempStatePath()), drainMode: true };
+    const runtime = new SelfHostedNodeRuntime(config);
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon(); const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      assert.equal(await daemon.drain({ timeoutMs: 100 }), true);
+      for (const url of ["/v1/swarm/self-hosted/node/jobs", "/v1/swarm/self-hosted/node/generic-jobs",
+        "/v1/swarm/self-hosted/node/generic-job-control/jobs", "/v1/swarm/self-hosted/node/generic-job-control/jobs/job-1/retry"]) {
+        const result = await app.inject({ method: "POST", url, payload: {} });
+        assert.equal(result.statusCode, 503); assert.equal(result.json().code, "node_draining");
+      }
+      const health = await app.inject({ method: "GET", url: "/healthz" });
+      assert.equal(health.statusCode, 200); assert.equal(health.json().drain_mode, true);
+      const cancel = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/generic-jobs/job-1/cancel", payload: {} });
+      assert.notEqual(cancel.statusCode, 503); // Normal authentication still applies.
+    } finally { daemon.stop(); await app.close(); }
+  });
+
+  it("finishes accepted owner-local queued jobs during drain", async () => {
+    const config = genericServiceConfigFor(tempStatePath(), { genericJobMaxConcurrency: 1, genericJobTimeoutMs: 2000 });
+    const started = deferred<void>(); const release = deferred<void>(); const completed: string[] = [];
+    const runtime = new SelfHostedNodeRuntime(config, {
+      capabilityRunner: capabilityProbeRunner({}),
+      genericRunners: [{ id: "test.echo", async run(context) {
+        if (context.job.idempotency_key === "first") { started.resolve(); await release.promise; }
+        completed.push(context.job.idempotency_key!);
+        return { job_id: context.job.idempotency_key!, status: "succeeded", finished_at: new Date().toISOString() };
+      } }]
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon(); const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      for (const id of ["first", "second"]) {
+        const base = genericEchoJob(); const queued = { ...base, job_id: `drain-${id}`, request_id: `request-${id}`, job: { ...base.job, idempotency_key: id } };
+        const token = signGenericJobToken({ secret: config.invocationSigningSecret!, nodeId: queued.node_id, jobId: queued.job_id, requestId: queued.request_id, jobType: queued.job.job_type });
+        const response = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/generic-job-control/jobs", headers: { authorization: `Bearer ${token}` }, payload: queued });
+        assert.equal(response.statusCode, 202);
+      }
+      await Promise.race([started.promise, delay(1000).then(() => { throw new Error("generic job did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 20 }), false);
+      release.resolve();
+      assert.equal(await daemon.drain({ timeoutMs: 2000 }), true);
+      assert.deepEqual(completed, ["first", "second"]);
+    } finally { release.resolve(); daemon.stop(); await app.close(); }
+  });
+
+  it("signal shutdown waits for drain and server close, is idempotent and removes listeners", async () => {
+    const config = permissiveServiceConfigFor(tempStatePath()); const runtime = new SelfHostedNodeRuntime(config);
+    const drained = deferred<boolean>(); const closed = deferred<void>();
+    let stops = 0; let drainCalls = 0; let closeCalls = 0;
+    const before = process.listenerCount("SIGTERM");
+    const done = waitForNodeShutdown(runtime, { stop: () => { stops++; }, drain: () => { drainCalls++; return drained.promise; } }, () => { closeCalls++; return closed.promise; });
+    process.emit("SIGTERM"); process.emit("SIGTERM");
+    assert.equal(runtime.isDraining, true); assert.equal(drainCalls, 1); assert.equal(closeCalls, 1);
+    drained.resolve(true); await delay(10); assert.equal(stops, 0);
+    closed.resolve(); await done;
+    assert.equal(stops, 1); assert.equal(process.listenerCount("SIGTERM"), before);
   });
 });

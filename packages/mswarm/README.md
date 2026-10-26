@@ -94,6 +94,22 @@ mswarm node run
 
 For the default outbound mode, `node run` sends heartbeats and long-polls mswarm for self-hosted execution jobs. For direct mode, it also starts the local direct-job HTTP server. `node run` is foreground-only; use `node install` for the stable background daemon that survives closing the terminal.
 
+Foreground nodes handle `SIGTERM` and `SIGINT` by closing admission and waiting
+for accepted work, outstanding relay claims, queued owner-local jobs and result
+uploads before exiting. Linux service installations use `KillMode=mixed` and
+`TimeoutStopSec=infinity` so the service manager does not kill worker children
+or interrupt that drain. Existing installations must refresh those unit settings
+before relying on graceful upgrades. A force kill cannot provide this guarantee.
+
+On POSIX, `SIGUSR2` requests a drain without exiting. Use this signal only after
+verifying that the running version supports it. The node keeps reporting zero
+free slots and rejects new direct submissions with `503 node_draining`; status,
+artifact and cancellation routes remain available. Restart after the journal
+reports `node drained`. The SDK daemon handle exposes `drain({ timeoutMs })`;
+`false` means work is still active and must not be treated as permission to kill
+it. A timeout leaves admission closed. `stop()` only stops timers and is intended
+for cleanup after a successful drain.
+
 To bootstrap without installing the service:
 
 ```sh

@@ -750,6 +750,8 @@ export interface SelfHostedNodeHeartbeatResult {
 
 export interface SelfHostedNodeDaemonHandle {
   stop: () => void;
+  /** Close admission immediately; wait for already claimed work and result delivery. */
+  drain: (options?: { timeoutMs?: number }) => Promise<boolean>;
 }
 
 export interface SelfHostedNodeDoctorResult {
@@ -2565,6 +2567,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=${quoteSystemdValue(input.wrapperPath)}
 Restart=always
+TimeoutStopSec=infinity
+KillMode=mixed
 RestartSec=5
 StandardOutput=append:${input.logPath}
 StandardError=append:${input.errorLogPath}
@@ -6334,6 +6338,17 @@ export class SelfHostedNodeRuntime {
   private readonly latencySamplesMs: number[] = [];
   private readonly recentFailures: Array<{ execution_class: SelfHostedRuntimeExecutionClass; code: string; at: string }> = [];
   private lifecyclePollingDisabled = false;
+  private admissionClosed = false;
+  private admittedJobs = 0;
+  private manualRelayOperations = 0;
+
+  get isDraining(): boolean {
+    return this.admissionClosed || this.config.drainMode === true;
+  }
+
+  beginDrain(): void {
+    this.admissionClosed = true;
+  }
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -6550,7 +6565,7 @@ export class SelfHostedNodeRuntime {
     discoveryFailureCount?: number;
     capabilityPayload?: MswarmSignedCapabilityPayload | null;
   }): SelfHostedRuntimeLoadTelemetry {
-    const drainMode = this.config.drainMode === true;
+    const drainMode = this.isDraining;
     const llmMaxConcurrency = Math.max(1, Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1));
     const genericMaxConcurrency = Math.max(1, Math.floor(this.config.genericJobMaxConcurrency || 1));
     const maxConcurrency = Math.max(
@@ -6983,7 +6998,7 @@ export class SelfHostedNodeRuntime {
       generic_jobs_enabled: this.config.genericJobsEnabled,
       generic_job_timeout_ms: this.config.genericJobTimeoutMs,
       generic_job_max_concurrency: this.config.genericJobMaxConcurrency,
-      drain_mode: this.config.drainMode === true,
+      drain_mode: this.isDraining,
       load_reporting_enabled: this.config.loadReportingEnabled !== false,
       hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
       expose_all_models: this.config.exposeAllModels,
@@ -7679,6 +7694,27 @@ export class SelfHostedNodeRuntime {
     envelope: SelfHostedGenericNodeJob,
     options: MswarmGenericJobExecutionOptions = {}
   ): Promise<MswarmGenericJobExecutionResult> {
+    if (this.isDraining) throw new SelfHostedPreStartJobError("node_draining", "Node is draining; no new work was admitted.");
+    return this.executePreviouslyAdmittedGenericJob(envelope, options);
+  }
+
+  /** Host scheduler only: finish work accepted before admission was closed. */
+  async executePreviouslyAdmittedGenericJob(
+    envelope: SelfHostedGenericNodeJob,
+    options: MswarmGenericJobExecutionOptions = {}
+  ): Promise<MswarmGenericJobExecutionResult> {
+    this.admittedJobs += 1;
+    try {
+      return await this.executeAdmittedGenericJob(envelope, options);
+    } finally {
+      this.admittedJobs -= 1;
+    }
+  }
+
+  private async executeAdmittedGenericJob(
+    envelope: SelfHostedGenericNodeJob,
+    options: MswarmGenericJobExecutionOptions
+  ): Promise<MswarmGenericJobExecutionResult> {
     const startedAt = Date.now();
     this.beginExecutionTelemetry("generic_job");
     const events: MswarmJobEvent[] = [];
@@ -7864,6 +7900,20 @@ export class SelfHostedNodeRuntime {
     job: SelfHostedNodeInvocationJob,
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
+    if (this.isDraining) {
+      return {
+        job_id: job.job_id, request_id: job.request_id, status: "failed",
+        error: { code: "node_draining", message: "Node is draining; no new work was admitted." }
+      };
+    }
+    return this.executeAdmittedJob(job, options);
+  }
+
+  private async executeAdmittedJob(
+    job: SelfHostedNodeInvocationJob,
+    options: SelfHostedJobExecutionOptions
+  ): Promise<SelfHostedNodeInvocationResult> {
+    this.admittedJobs += 1;
     this.activeRequestIds.add(job.request_id);
     try {
       return await this.executeTrackedJob(job, options);
@@ -7872,6 +7922,7 @@ export class SelfHostedNodeRuntime {
       // A product often starts its next stage immediately after this result.
       // Publish the newly free native slot before the gateway delivers it.
       await this.reportLoad().catch(() => undefined);
+      this.admittedJobs -= 1;
     }
   }
 
@@ -8442,7 +8493,7 @@ export class SelfHostedNodeRuntime {
         relay_mode: this.config.relayMode || "outbound",
         load_reporting_enabled: loadReportingEnabled,
         hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
-        drain_mode: this.config.drainMode === true,
+        drain_mode: this.isDraining,
         ...(lifecycleProtocolDegraded
           ? {
               lifecycle: {
@@ -8627,7 +8678,9 @@ export class SelfHostedNodeRuntime {
         streamEventForwardingFailed = true;
       }
     };
-    let result = await this.executeJob(job, {
+    // A claim returned by an outstanding poll already belongs to this node,
+    // including a poll that finishes after drain began. Never discard it.
+    let result = await this.executeAdmittedJob(job, {
       attachedMswarmApiKey: claim.attachedMswarmApiKey,
       onStarted: async (event) => {
         try {
@@ -8719,11 +8772,17 @@ export class SelfHostedNodeRuntime {
   }
 
   async pollAndExecuteJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<SelfHostedRelayExecutionResult> {
-    const polled = await this.pollRelayJob(waitMs);
-    if (!polled.claim) {
-      return { executed: false, ...(polled.status ? { status: polled.status } : {}) };
+    if (this.isDraining) return { executed: false };
+    this.manualRelayOperations += 1;
+    try {
+      const polled = await this.pollRelayJob(waitMs);
+      if (!polled.claim) {
+        return { executed: false, ...(polled.status ? { status: polled.status } : {}) };
+      }
+      return await this.executeRelayJobClaim(polled.claim);
+    } finally {
+      this.manualRelayOperations -= 1;
     }
-    return this.executeRelayJobClaim(polled.claim);
   }
 
   async doctor(): Promise<SelfHostedNodeDoctorResult> {
@@ -8856,6 +8915,7 @@ export class SelfHostedNodeRuntime {
     const schedulePoll = (delayMs: number) => {
       if (
         stopped ||
+        this.isDraining ||
         polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
@@ -8880,6 +8940,7 @@ export class SelfHostedNodeRuntime {
     const poll = () => {
       if (
         stopped ||
+        this.isDraining ||
         polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
@@ -8989,6 +9050,25 @@ export class SelfHostedNodeRuntime {
         schedulePoll(0);
       });
 
-    return { stop: halt };
+    return {
+      stop: halt,
+      drain: async ({ timeoutMs } = {}) => {
+        if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0)) {
+          throw new Error("drain timeoutMs must be a finite non-negative number");
+        }
+        this.beginDrain();
+        clearPollTimer();
+        // Keep regular heartbeats alive during a drain and publish zero free
+        // slots promptly. Failure to report cannot reopen local admission.
+        void this.reportLoad().catch(() => undefined);
+        const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+        while (polling || activeRelayExecutions > 0 || this.admittedJobs > 0 || this.queuedGenericJobs > 0 || this.manualRelayOperations > 0) {
+          if (Date.now() >= deadline) return false;
+          await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+        }
+        await this.reportLoad().catch(() => undefined);
+        return true;
+      }
+    };
   }
 }
