@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "cd657cb adds safe module cwd and actionable edit recovery; full Codali1542pass/2optional skips. Frozen public Y long workflows are running on both Strata hosts with public embeddings. BackendJ/nodeL consumer probes and image/video/audio durable recovery pass; Docdex codali.4 release matrix and remaining quality/consumer rollout gates are open.",
+  "currentTask": "2a1f5a5 records embedding failure receipts and pins published Docdex codali.4. Full Codali suite: 1544 pass, 0 fail, 1 optional skip. Backend K and both Nomic batch-capacity updates are deployed; public managed memory passes on both hosts. Frozen Z long workflows are running. Remaining quality, consumer rollout and 24-hour canary gates stay open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1425,18 +1425,52 @@
       "skipped": 2,
       "artifact": "/home/wodo/.local/state/codali-shell-cwd-full.log",
       "limitation": "Deterministic regressions pass; live long-workflow improvement is being measured in frozenY, not claimed."
+    },
+    {
+      "check": "Codali embedding failure receipts, published Docdex pins and complete suite",
+      "status": "passed",
+      "source": "2a1f5a5",
+      "passed": 1544,
+      "failed": 0,
+      "skipped": 1,
+      "artifact": "/home/wodo/.local/state/codali-embedding-receipts-full.log"
+    },
+    {
+      "check": "Public managed memory through configured embeddings and published Docdex codali.4",
+      "status": "passed",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/public-managed-memory-k-raijin/result.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/public-managed-memory-k-suku/result.json"
+      ],
+      "casesPerHost": [
+        "1320-word query",
+        "memory save",
+        "long recall",
+        "restart recall"
+      ],
+      "limitation": "Targeted memory qualification; broad workload and migration coverage remains open."
+    },
+    {
+      "check": "Backend K public Strata direct, gateway and staged routes plus malformed Unicode rejection",
+      "status": "passed",
+      "source": "4c7334f6b",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/raijin-postdeploy-matrix-backend-k.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/suku-postdeploy-matrix-backend-k.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/backend-k-unicode-public.json"
+      ]
     }
   ],
-  "updatedAt": "2026-10-26T16:14:05.618696+00:00",
+  "updatedAt": "2026-10-26T16:50:07.811399+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex codali.4 at2324174 removes the newly vulnerable zstd chain with Tantivy0.27. Full1044Rust tests/3ignored, old-index migration and five platform builds pass; ARM64 build, publication, Codali native pins and fresh installation remain pending. Do not retag failed codali.3; stable latest remains0.2.99.",
-    "Public embeddings and setup discovery are now qualified on backendJ/nodeL with both compatible Nomic replicas. Managed remote-embedding runtime setup, index/memory and migration still require end-to-end qualification.",
-    "Preserve earlier E/U/V/W/X failures. X localized-export passed all four module graders but exhausted2.38Mtokens before final integration; service-adapters had repeated stale read/analysis and shell/path failures. cd657cb module-cwd/recovery guidance is under frozenY public-workflow diagnostic evaluation. These are reused contracts, not fresh holdouts.",
+    "Docdex 0.2.100-codali.4 is published from 2324174. All six native builds, release/security checks and exact npm artifact verification passed (workflow 40344916791). Codali pins verified Linux x64 and macOS x64/arm64 binaries; Linux installer and real managed-daemon memory tests passed. Fresh macOS client qualification against these pins is running.",
+    "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
+    "Preserve earlier E/U/V/W/X/Y failures. Y exposed native embedding physical-batch capacity and public model-alias mismatches and was stopped without claiming success. Both fixes are deployed. Frozen Z uses client 2a1f5a5, published Docdex codali.4, public chat/embeddings and backend K; it monitors both native hosts and backend container identities. These are reused workflow contracts, not fresh holdouts.",
     "TNL, Logmira Wodo/Heka grounded chat and BDYA persisted stage synthetic routes pass on backendJ/nodeL. Full background/business coverage remains open. Logmira still embeds Codali0.1.134 and emits the known false tool-worker-substitution warning; upgrade remains required.",
     "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
-    "Root deployment access is resolved by explicit user authorization. BackendJ drain procedure is qualified with exact-image Fastify fixtures and production accepted-invocation/HTTP-close evidence. Do not repeat the access question.",
-    "Actual configured CLI Unicode transport passes both public Strata nodes. A raw ModelServiceClient request bypassing CLI normalization still exposed a backend invalid-surrogate MySQL error; API input validation remains a separate gap."
+    "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
+    "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport."
   ]
 }
