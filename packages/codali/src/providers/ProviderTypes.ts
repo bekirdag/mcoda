@@ -57,6 +57,8 @@ export interface ProviderUsage {
 }
 
 export interface ProviderRequest {
+  /** Unique UUID for this inference attempt, retained by the caller for accounting. */
+  requestId?: string;
   signal?: AbortSignal;
   messages: ProviderMessage[];
   tools?: ProviderToolDefinition[];

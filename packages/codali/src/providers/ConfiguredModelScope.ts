@@ -37,6 +37,7 @@ export class ConfiguredModelScope {
   private readonly limits;
   private readonly stop: () => void;
   private readonly pending = new Map<string, number>();
+  private readonly invocationIds = new Set<string>();
   private toolCalls = 0;
   private readonly usage: ScopedModelUsage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false, pendingCalls: 0 };
   readonly id = randomUUID();
@@ -93,9 +94,10 @@ export class ConfiguredModelScope {
       effort: this.options.effort,
       beforeRequest: async (route, bounded) => {
         linked.signal.throwIfAborted();
+        if (this.invocationIds.has(route.id)) throw new Error("Model requestId has already been used in this scope; use a new UUID for each inference attempt");
         const reservation = Math.ceil(JSON.stringify([bounded.messages, bounded.tools]).length / 3) + (bounded.maxTokens ?? this.limits.maxOutputTokens);
         if (this.usage.modelCalls >= this.limits.maxModelCalls || this.usage.totalTokens + reservation > this.limits.maxTotalTokens) throw new Error("Shared model budget exhausted");
-        invocation = route; this.usage.modelCalls++; this.usage.totalTokens += reservation; this.pending.set(route.id, reservation);
+        invocation = route; this.invocationIds.add(route.id); this.usage.modelCalls++; this.usage.totalTokens += reservation; this.pending.set(route.id, reservation);
         await this.options.onEvent?.({ type: "intent", id: route.id, binding, configHash: this.resolved.hash, route, status: "pending", usage: this.snapshot() });
       },
     });

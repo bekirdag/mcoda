@@ -678,9 +678,9 @@ export class SessionController {
         throw new Error("Shared model/token budget exhausted; checkpoint retained");
       }
       this.usage.modelCalls += 1; this.usage.tokens += reserve; this.reservations.set(id, reserve);
-      await this.emit("model_intent", { id, binding, configHash: this.options.resolved.hash, toolNames: request.tools?.map(tool => tool.name) ?? [] });
+      await this.emit("model_intent", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, toolNames: request.tools?.map(tool => tool.name) ?? [] });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
-      const response = await configured.generate(request).catch(async error => {
+      const response = await configured.generate({ ...request, requestId: id }).catch(async error => {
         if (!ownsTurn()) throw error;
         await persistSettlement(async () => {
           if (!this.options.provider && error instanceof NativeReasoningTransportError && this.reservations.has(id)) {
@@ -688,12 +688,12 @@ export class SessionController {
             this.usage.modelCalls--;
             this.reservations.delete(id);
             await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
-            await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("usage", { usage: this.usage });
           } else {
             // A failed transport may have executed remotely. Keep its reservation
             // and distinguish an unknown outcome from a zero-cost failure.
-            await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, estimated: true });
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, estimated: true });
           }
         });
         throw error;
@@ -706,7 +706,7 @@ export class SessionController {
         if (reported) this.usage.tokens += reported.total - reserve; else this.usage.estimated = true;
         this.usage.inputTokens += reported?.input ?? 0; this.usage.outputTokens += reported?.output ?? 0;
         this.reservations.delete(id);
-        await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route,
+        await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route,
           usage: { inputTokens: reported?.input, outputTokens: reported?.output, totalTokens: reported?.total ?? reserve, estimated: !reported } });
         await this.emit("usage", { usage: this.usage });
       });

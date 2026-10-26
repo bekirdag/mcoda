@@ -187,20 +187,24 @@ export class ConfiguredProvider implements Provider {
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     request.signal?.throwIfAborted();
+    const requestId = request.requestId ?? randomUUID();
+    if (typeof requestId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestId)) {
+      throw new Error("Model requestId must be a UUID for this inference attempt");
+    }
     const { id, model, provider, actual } = await this.select("chat.completions", request.signal, !!request.tools?.length);
-    const invocation: ModelInvocation = { id: randomUUID(), binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
+    const invocation: ModelInvocation = { id: requestId, binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
     const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
     if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
     if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(model.catalogId, Object.keys(nativeReasoning), request.signal);
     const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens);
     const inputEstimate = Math.ceil(JSON.stringify([request.messages, request.tools]).length / 3);
     if (inputEstimate + maxTokens > Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow)) throw new Error("Context budget exceeded; checkpoint and compact before continuing");
-    const bounded = { ...request, maxTokens, stream: request.stream === true && model.supportsStreaming === true };
+    const bounded = { ...request, requestId, maxTokens, stream: request.stream === true && model.supportsStreaming === true };
     await this.options.beforeRequest?.(invocation, bounded);
     const adapter = new OpenAiCompatibleProvider({
       model: model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 300_000,
       supportsStreaming: model.supportsStreaming ?? true, supportsTools: model.supportsTools,
-      headers: provider.adapter === "mswarm" ? modelCallerHeaders(this.caller) : undefined, retryTransient: false,
+      headers: provider.adapter === "mswarm" ? { ...modelCallerHeaders(this.caller), "x-request-id": requestId } : undefined, retryTransient: false,
       extraBody: nativeReasoning,
     });
     const result = await adapter.generate(bounded);

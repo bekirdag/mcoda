@@ -162,8 +162,10 @@ test("model receipts separate helper and review usage and link each completed ca
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const candidate = structuredClone(config); candidate.bindings.helper = { useBinding: "lead" };
-  let step = 0; let attemptId = ""; const events: SessionEvent[] = [];
+  let step = 0; let attemptId = ""; const events: SessionEvent[] = []; const requestIds: string[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.equal(request.requestId, events.filter(event => event.type === "model_intent").at(-1)?.data.clientRequestId);
+    assert.ok(request.requestId); requestIds.push(request.requestId);
     if (request.responseFormat?.type === "json" && !request.tools?.length) {
       const payload = JSON.parse(request.messages.at(-1)!.content);
       return payload.task === "extract" ? reply('{"result":"four","sources":["provided-capsule"],"uncertainties":[]}') : reply('{"passed":true,"findings":[]}');
@@ -182,6 +184,8 @@ test("model receipts separate helper and review usage and link each completed ca
   const intents = events.filter(event => event.type === "model_intent").map(event => event.data.id);
   const receipts = events.filter(event => event.type === "model_receipt").map(event => event.data);
   assert.equal(receipts.length, 6); assert.deepEqual(receipts.map(receipt => receipt.id), intents);
+  assert.deepEqual(receipts.map(receipt => receipt.clientRequestId), requestIds);
+  assert.equal(new Set(requestIds).size, requestIds.length);
   assert.equal(receipts.filter(receipt => receipt.binding === "helper").length, 1);
   assert.equal(receipts.filter(receipt => receipt.binding === "reviewer").length, 1);
   for (const receipt of receipts) { assert.equal(receipt.status, "completed"); assert.deepEqual(receipt.usage, { inputTokens: 10, outputTokens: 10, totalTokens: 20, estimated: false }); }
@@ -193,8 +197,9 @@ for (const outcome of ["cancel_after_response", "transport_failure"] as const) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-usage-outcome-"));
     const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-usage-outcome-state-"));
     t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
-    const events: SessionEvent[] = []; let controller: SessionController;
-    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => {
+    const events: SessionEvent[] = []; let controller: SessionController; let requestId: string | undefined;
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      requestId = request.requestId;
       if (outcome === "transport_failure") throw new Error("Connection lost after dispatch");
       controller.cancel(); return reply("Response arrived after cancellation.");
     } };
@@ -202,6 +207,8 @@ for (const outcome of ["cancel_after_response", "transport_failure"] as const) {
     controller = new SessionController({ ...options, onEvent: event => { events.push(event); } });
     await assert.rejects(controller.run("Explain a small arithmetic example."), outcome === "transport_failure" ? /Connection lost/ : /Cancelled/);
     const receipt = events.find(event => event.type === "model_receipt")!.data;
+    assert.ok(requestId); assert.equal(receipt.clientRequestId, requestId);
+    assert.equal(events.find(event => event.type === "model_intent")!.data.clientRequestId, requestId);
     assert.equal(receipt.status, outcome === "transport_failure" ? "outcome_unknown" : "completed");
     assert.equal(controller.usageSnapshot().modelCalls, 1);
     if (outcome === "transport_failure") {
