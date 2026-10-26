@@ -51,7 +51,7 @@ const coding: CodingCase[] = [
     files: { "src/pool.mjs": "export const mapPool=async(items,limit,worker)=>Promise.all(items.map(worker));\n", "src/task.mjs": "export const doubleAll=async items=>items.map(x=>x*2);\n" },
     reference: { "src/pool.mjs": "export async function mapPool(items,limit,worker){if(!Number.isInteger(limit)||limit<1)throw new RangeError('limit');const out=new Array(items.length);let next=0,failed=false,first;async function lane(){while(!failed&&next<items.length){const i=next++;try{out[i]=await worker(items[i],i);}catch(e){if(!failed){failed=true;first=e;}}}}await Promise.all(Array.from({length:Math.min(limit,items.length)},lane));if(failed)throw first;return out;}\n", "src/task.mjs": "import {mapPool} from './pool.mjs';\nexport const doubleAll=(items,limit)=>mapPool(items,limit,async x=>x*2);\n" },
     smoke: "assert.deepEqual(await m.doubleAll([2,4],1),[4,8]);",
-    checks: "const {mapPool}=await import('./src/pool.mjs');let active=0,peak=0;assert.deepEqual(await mapPool(Object.freeze([1,2,3,4]),2,async(x,i)=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,2));active--;return x+i;}),[1,3,5,7]);assert.equal(peak,2);let release;const gate=new Promise(r=>release=r);const started=[];const boom=new Error('first');let settled=false;const p=mapPool([0,1,2,3],2,async x=>{started.push(x);if(x===0)throw boom;await gate;return x;}).then(()=>{settled=true;throw new Error('unexpected');},e=>{settled=true;return e;});await new Promise(r=>setTimeout(r,5));assert.equal(settled,false);assert.deepEqual(started,[0,1]);release();assert.equal(await p,boom);for(const n of [0,-1,1.5,NaN])await assert.rejects(mapPool([],n,async()=>0),RangeError);assert.deepEqual(await mapPool([],2,async()=>0),[]);",
+    checks: "const {mapPool}=await import('./src/pool.mjs');let active=0,peak=0;assert.deepEqual(await mapPool(Object.freeze([1,2,3,4]),2,async(x,i)=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,2));active--;return x+i;}),[1,3,5,7]);assert.equal(peak,2);let release;const gate=new Promise(r=>release=r);const started=[];const boom=new Error('first');let settled=false;const p=mapPool([0,1,2,3],2,async x=>{started.push(x);if(x===0)throw boom;await gate;return x;}).then(()=>{settled=true;throw new Error('unexpected');},e=>{settled=true;return e;});await new Promise(r=>setTimeout(r,5));assert.equal(settled,false);assert.deepEqual(started,[0,1]);release();assert.equal(await p,boom);for(const n of [0,-1,1.5,NaN])await assert.rejects(async()=>await mapPool([],n,async()=>0),RangeError);assert.deepEqual(await mapPool([],2,async()=>0),[]);",
   },
   {
     id: "interval-reservation",
@@ -95,7 +95,7 @@ const reports: ReportCase[] = [
     expected: { owner: "src/cache.mjs", callers: ["src/profile.mjs", "src/update.mjs"], isolation: "unsafe", cause: "tenant-omitted", remedy: "include-tenant-and-user" } },
 ];
 
-export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v1";
+export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v2";
 export function terminalWorkflowCorpus(): TerminalCorpusTask[] {
   const common = (id: string) => ({ "package.json": JSON.stringify({ name: `workflow-${id}`, private: true, type: "module", scripts: { test: "node --test test/task.test.mjs" } }, null, 2) + "\n", "USER_NOTES.txt": `User-owned ${id} notes. Preserve byte for byte.\n` });
   const tasks: TerminalCorpusTask[] = coding.map(item => ({ id: item.id, family: "multi-file", variant: 1, split: "held-out",
@@ -105,11 +105,19 @@ export function terminalWorkflowCorpus(): TerminalCorpusTask[] {
   }));
   for (const item of reports) {
     const expected = JSON.stringify(item.expected);
+    // v2 corrects unstated v1 oracle assumptions without changing task prompts.
+    // Only the unordered evidence field is normalized. Research may also cite
+    // v1 for the comparison, while v2 remains mandatory and citations sorted.
+    const normalize = item.id === "investigate-cache-expiry"
+      ? "assert.ok(Array.isArray(report.evidence));report.evidence.sort();"
+      : item.id === "research-pinned-upgrade"
+        ? "assert.ok(Array.isArray(report.citations));assert.deepEqual(report.citations,[...new Set(report.citations)].sort());assert.ok(report.citations.includes('vendor-docs/v2.md'));assert.ok(report.citations.every(p=>['vendor-docs/v1.md','vendor-docs/v2.md'].includes(p)));report.citations=['vendor-docs/v2.md'];"
+        : "";
     tasks.push({ id: item.id, family: item.id.startsWith("research") ? "pinned-document-research" : "repository-investigation", variant: 1, split: "held-out",
       prompt: `${item.question}\nOnly docs/report.json may be created or changed. Preserve every existing file, including tests and user notes, exactly. Run the existing tests; do not add tests or dependencies. This is investigation/report delivery, not implementation.`,
       files: { ...common(item.id), ...item.files, "test/task.test.mjs": `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {readFile} from 'node:fs/promises';\nconst read=async()=>JSON.parse(await readFile(new URL('../docs/report.json',import.meta.url),'utf8'));\ntest('report is an object',async()=>assert.equal(typeof await read(),'object'));\ntest('report is nonempty',async()=>assert.ok(Object.keys(await read()).length>0));\n` },
       allowedChanges: ["docs/report.json"], reference: { "docs/report.json": JSON.stringify(item.expected, null, 2) + "\n" },
-      hiddenChecks: `const {readFile}=await import('node:fs/promises');\nassert.deepEqual(JSON.parse(await readFile(new URL('./docs/report.json',import.meta.url),'utf8')),${expected});`,
+      hiddenChecks: `const {readFile}=await import('node:fs/promises');\nconst report=JSON.parse(await readFile(new URL('./docs/report.json',import.meta.url),'utf8'));${normalize}assert.deepEqual(report,${expected});`,
       grading: { entrypoint: null, testFilesToExtend: [] },
     });
   }
