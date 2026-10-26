@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Planning diagnostic Q on frozen534c72b finished on both Strata hosts: corrected grader accepts12/12 closed-world records, with one original false-negative retained in a separate correction report. Plan-mode execution controls, storage confinement and validation failure excerpts are implemented. A fresh heterogeneous coding/investigation/recovery corpus, optional-stage comparisons, long live journeys, backend/application rollout and canary gates remain open. Docdex codali.2 passed preflight and is building native artifacts.",
+  "currentTask": "Fresh workflow R is running on both hosts from frozen 3f9e8c3. Raijin invoice false completion and both-host locale test failures are retained release blockers. Four-process long-journey harness is implemented; baseline execution, review strengthening, Docdex publication, backend/application rollout and canary remain.",
   "tasks": [
     {
       "id": "P0.1",
@@ -82,7 +82,8 @@
       "description": "Turn this accepted build plan into requirement-to-task-to-evidence fixtures and choose the tracked documentation destination. Establish the long-task baseline from Section 11: goal retention, missed requirements, scope drift, architecture violations, failed handoffs, duplicate work and false completion. Include bounded planning-only evaluations before qualifying smaller planners.",
       "status": "in_progress",
       "evidence": [
-        "PlanningCorpus.ts/Runner provide six versioned constrained planning domains and mutation-tested deterministic grading. All original P/Q fixtures and failures retained; grader correction is explicit and does not rerun models or overwrite evidence. Long-task and heterogeneous corpus coverage remains incomplete."
+        "PlanningCorpus.ts/Runner provide six versioned constrained planning domains and mutation-tested deterministic grading. All original P/Q fixtures and failures retained; grader correction is explicit and does not rerun models or overwrite evidence. Long-task and heterogeneous corpus coverage remains incomplete.",
+        "3f9e8c3 adds 12 distinct workflows: 8 multi-file implementations, 3 repository investigations, 1 pinned fictional-document research task. 95 combined corpus/grader tests passed, including reference/starter and mutation checks. First-attempt R live runs are active on both hosts; no pass claim."
       ]
     },
     {
@@ -454,8 +455,10 @@
     {
       "id": "P7.7",
       "description": "Run the long-task/fault corpus from Section 11 with repeated compaction, fresh contexts, restarts, steering, failed dependencies and user edits. Verify requirement/decision continuity, evidence invalidation, no duplicate side effects, useful next-task selection and honest blocked/partial outcomes. Run selected multi-hour live journeys on both hosts.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified."
+      ]
     },
     {
       "id": "P8.1",
@@ -1196,13 +1199,14 @@
       "tokens": 2576
     }
   ],
-  "updatedAt": "2026-10-26T07:50:00Z",
+  "updatedAt": "2026-10-26T08:12:00Z",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
     "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",
     "Both production nodes run isolated candidate E with verified Strata routes. Gateway/proxy F images are now stale relative to backend 37d6a707b; fresh images and a safe backend rollout are required before live embedding and durable-media qualification.",
     "No embedding agent is registered in the active catalog yet. Metadata transport/setup tests pass but production end-to-end embeddings require registry configuration and deployed backend/node support.",
     "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open.",
-    "Held-out E exposed unrecognized npm presentation flags and a model repair stall; failures remain preserved. The next source candidate recognizes npm --silent test, retains the latest failed check across compaction/restart, and fences validation to pre-command inputs. Follow-up model qualification is required; a passing test suite is not evidence that model repair failures are solved."
+    "Held-out E exposed unrecognized npm presentation flags and a model repair stall; failures remain preserved. The next source candidate recognizes npm --silent test, retains the latest failed check across compaction/restart, and fences validation to pre-command inputs. Follow-up model qualification is required; a passing test suite is not evidence that model repair failures are solved.",
+    "Workflow R Raijin invoice-cents falsely completed with PRICE_PATTERN rejecting valid leading-zero digits (0001.2), despite passing 14 model-authored tests and separate review. Source/grader contract unambiguously allows one or more digits. Locale tasks on both hosts exhausted budget with incorrect self-authored tests; implementation passed hidden checks. Preserve original frozen runs and diagnose review/repair behavior before promotion."
   ]
 }

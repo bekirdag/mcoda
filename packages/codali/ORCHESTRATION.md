@@ -323,3 +323,20 @@ and deliberately wrong reports, test weakening and unauthorized edits validate
 the grader before live runs. Retain the frozen installed client and configuration
 with every result. First attempts are qualification observations; corrective
 reruns must be labeled diagnostic, with the original failures preserved.
+
+`eval/LongWorkflowJourney.runLongWorkflowJourney` composes four module contracts
+into one durable goal. Select `data-delivery`, `service-adapters`, `billing-audit`
+or `localized-export`, and supply `configPath` and a new `outputRoot`. Four child
+processes perform planning, execution to a verified-task checkpoint, resumed
+execution with an additional delivery requirement and concurrent user notes,
+then final recovery. Five explicit compactions are required. Each boundary
+compares the exact durable state; final grading checks the original requirements,
+architecture history, dependency ordering, protected notes and module artifacts.
+
+These journeys reuse coding contracts and measure continuity separately from
+fresh coding accuracy. They retain failed stages instead of automatically
+retrying them. `multiHourDurationReached` reports whether actual elapsed work
+reached two hours; the runner never inserts idle time. Clean checkpoint recovery
+does not replace crash/uncertain-side-effect fixtures or mixed-media tests. The
+host-owned child launcher passes declared provider credentials to the CLI process
+only; model-requested shell tools retain their separate restricted environment.
