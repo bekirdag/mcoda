@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { discoverDarwinRuntimeLibraries } from "./DarwinRuntimeLibraries.js";
 
 export interface HostRuntimeMount { readOnlyRoot: string; directory: boolean; }
 export interface HostRuntime extends HostRuntimeMount {
@@ -89,15 +90,25 @@ const languageRuntime = (name: string, executable: string, workspace: string, ho
   }
   if (name === "python" || name === "python3") {
     let standardLibrary = false;
+    const extensions: string[] = [];
     for (const lib of ["lib", "lib64"]) {
       const directory = path.join(prefix, lib); if (!existsSync(directory)) continue;
       for (const entry of readdirSync(directory)) {
         const file = path.join(directory, entry);
         if (/^python3\.\d+t?$/.test(entry) && existsSync(path.join(file, "os.py")) && existsSync(path.join(file, "encodings", "__init__.py"))) {
           add(file); standardLibrary = true;
+          const dynamic = path.join(file, "lib-dynload");
+          if (process.platform === "darwin" && existsSync(dynamic)) {
+            for (const entry of readdirSync(dynamic).filter(entry => /\.(?:so|dylib)$/.test(entry))) {
+              const extension = realpathSync(path.join(dynamic, entry));
+              if (!within(extension, prefix)) throw new Error("Python extension escapes installation");
+              extensions.push(extension);
+            }
+          }
         } else if (/^libpython3\.\d+t?(?:\.so(?:\.[\d.]+)?|(?:\.\d+)*\.dylib)$/.test(entry)) add(file);
       }
     }
+    if (standardLibrary && process.platform === "darwin") runtime.support!.push(...discoverDarwinRuntimeLibraries(executable, extensions, workspace, home));
     return standardLibrary ? runtime : undefined;
   }
   return undefined;

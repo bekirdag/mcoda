@@ -229,10 +229,12 @@ with tempfile.TemporaryDirectory() as directory:
 
 test("all media health endpoints expose shared quarantine without clearing or disclosing the lease", { skip: !available }, () => {
   const result = spawnSync("python3", ["-c", `
-import importlib.util, json, os, pathlib, sys, tempfile, threading, urllib.request, urllib.error
-from http.server import ThreadingHTTPServer
+import importlib.util, json, os, pathlib, socket, sys, tempfile, threading, urllib.request, urllib.error
 from types import SimpleNamespace
 from media_gpu_lock import media_gpu_health, media_gpu_slot
+def reject_reverse_dns(*args, **kwargs):
+    raise AssertionError('health server must not perform reverse DNS')
+socket.getfqdn=reject_reverse_dns
 with tempfile.TemporaryDirectory() as directory:
     lock=pathlib.Path(directory)/'gpu.lock'; os.environ['MCODA_MEDIA_GPU_LOCK_PATH']=str(lock)
     servers=[]; threads=[]
@@ -243,7 +245,8 @@ with tempfile.TemporaryDirectory() as directory:
             module._check_upstream_model=lambda state: None
             module._check_upstream_ready=lambda state: None
             state=SimpleNamespace(model_id=name,upstream_model_id='fixture',fatal_error=threading.Event(),backend_name='fixture',dit='fixture',decoder='fixture')
-            server=ThreadingHTTPServer(('127.0.0.1',0),module._handler_for(state)); servers.append(server)
+            server_class=getattr(module,{'image':'ImageHttpServer','audio':'AudioHttpServer','video':'VideoHttpServer'}[name])
+            server=server_class(('127.0.0.1',0),module._handler_for(state)); servers.append(server)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();threads.append(thread)
         def check(expected_status,expected_gpu):
             for server in servers:
@@ -263,5 +266,5 @@ with tempfile.TemporaryDirectory() as directory:
         for server in servers:server.shutdown();server.server_close()
         for thread in threads:thread.join(timeout=2)
 `, scripts], { encoding: "utf8", timeout: 15000 });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });

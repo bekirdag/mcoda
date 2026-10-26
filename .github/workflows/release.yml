@@ -27,7 +27,7 @@ jobs:
             archive: mcoda-linux-x64-musl
           - os: ubuntu-22.04
             archive: mcoda-linux-arm64-gnu
-          - os: macos-15
+          - os: macos-15-intel
             archive: mcoda-darwin-x64
           - os: macos-latest
             archive: mcoda-darwin-arm64

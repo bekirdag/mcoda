@@ -127,6 +127,22 @@ jobs:
           JS
       - name: Codali regression and real shell boundary
         run: node scripts/run-node-tests.js packages/codali/dist
+      - name: Homebrew Python native libraries and media bridge fixtures
+        if: runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+          import { discoverHostToolchain } from './packages/codali/dist/tools/shell/HostToolchain.js';
+          const bin = process.arch === 'arm64' ? '/opt/homebrew/bin' : '/usr/local/bin';
+          process.env.PATH = `${bin}:${process.env.PATH}`;
+          const python = discoverHostToolchain(process.cwd()).find(runtime => runtime.name === 'python3');
+          assert.ok(python?.executable.includes('/Cellar/'), 'Homebrew Python must be discovered and tested');
+          console.log({python: python.executable, support: python.support});
+          const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=Python imports', 'packages/codali/dist/tools/shell/__tests__/HostToolchain.test.js'], {stdio: 'inherit', env: process.env});
+          assert.equal(result.status, 0);
+          JS
+          node --test tests/unit/media_gpu_lock.test.js tests/unit/stable_audio_3_openai_server.test.js
       - name: Terminal input, resize and restoration
         run: python3 scripts/verify-codali-terminal-pty.py
       - uses: actions/download-artifact@v4

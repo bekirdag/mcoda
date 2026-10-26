@@ -181,8 +181,8 @@ test("Stable Audio wrapper exposes a bounded OpenAI-shaped contract", { timeout:
 });
 
 test("Stable Audio wrapper runs the canonical CLI in a fresh subprocess", { timeout: 20_000 }, async (t) => {
-  if (process.platform === "win32") {
-    t.skip("POSIX executable test");
+  if (process.platform !== "linux") {
+    t.skip("Native CUDA subprocess ownership requires Linux /proc process identity");
     return;
   }
   const python = resolvePython();
