@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "BackendJ at8219395ba deployed after qualified drain; OpenAI model discovery now honors client grants. Both public native reasoning routes preserve high/1024. NodeL/d2b7e53 is deployed on Raijin and Suku after six native checks each; all six postdeploy public direct/gateway/job paths pass. Both Nomic services are registered with identical verified artifact/preprocessing; public 768-dimensional replica vectors match exactly. Public durable-image recovery after killing the local worker passed with one invocation, checksum, export and server acknowledgement; first busy-image failure retained. Docdex codali.4 native artifacts are building. Consumer postdeploy, normal-quality audio/video, long-task/budget/busy failures, fresh holdouts, helper qualification and 24h canary remain open.",
+  "currentTask": "cd657cb adds safe module cwd and actionable edit recovery; full Codali1542pass/2optional skips. Frozen public Y long workflows are running on both Strata hosts with public embeddings. BackendJ/nodeL consumer probes and image/video/audio durable recovery pass; Docdex codali.4 release matrix and remaining quality/consumer rollout gates are open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -17,7 +17,8 @@
         "Suku staged node candidate D passed direct, gateway, staged-job and unadmitted-model rejection with actual loopback Strata observations; both hosts now have isolated candidate qualification. Production activation still pending.",
         "Both production node services now run isolated candidate E (d4e2683) with registry-pinned Strata profiles. Public mSwarm direct, gateway and staged-job requests on each host asserted node identity, strata-local adapter, profile hash and actual nonzero usage.",
         "Candidate G (90cf4a4) passed five native-reasoning node scenarios on both hosts. Both production nodes now use G; public mSwarm direct, gateway and staged-job compatibility checks passed. The old production proxy still drops native settings; public API native qualification remains pending.",
-        "2026-10-26 backendI deployed15:09UTC after internal gateway/proxy admission barriers, global accepted-invocation drain and HTTP-close proof. Six public paths across Raijin/Suku pass with Strata/node/config/accounting assertions. Production nodes remainK; new public reasoning/catalog qualification is pending."
+        "2026-10-26 backendI deployed15:09UTC after internal gateway/proxy admission barriers, global accepted-invocation drain and HTTP-close proof. Six public paths across Raijin/Suku pass with Strata/node/config/accounting assertions. Production nodes remainK; new public reasoning/catalog qualification is pending.",
+        "BackendJ/nodeL now pass both-host direct/gateway/staged and native reasoning preflight, actual ConfiguredProvider Unicode requests, TNL story smoke, BDYA three stages and both Logmira tenants. See validation records; full production coverage remains open."
       ]
     },
     {
@@ -437,7 +438,8 @@
         "Reproduced legacy SessionStore symlink escape and acceptance of schemaVersion2 metadata. New path checks refuse redirected parents, state/SQLite symlinks and hard links; readers reject unknown metadata/transcript/summary schemas and unsafe summary refs. Forty session tests and full1453/2skip pass, including partial ENOSPC, fsync ambiguity, actual read-only storage and SIGKILL lock recovery; platform qualification remains.",
         "Storage91df0c2 passed generalCI40284343301 and all six platform jobs in40284343296, including real clean-package SQLite/session persistence and sandbox boundaries.",
         "b5da1b9 general CI 40286817952 and six-platform qualification 40286817889 passed; c68bb27 and 534c72b also passed both workflows. These are regression/install checks, not production qualification.",
-        "3f9e8c3 platform run40288983970 passed; general run40288983947 exposed missing sandbox precondition in new workflow tests on the non-Bubblewrap regression runner. 663ffef applies the existing explicit-skip policy; mandatory platform sandbox availability remains unchanged and all19 local workflow tests pass without skips."
+        "3f9e8c3 platform run40288983970 passed; general run40288983947 exposed missing sandbox precondition in new workflow tests on the non-Bubblewrap regression runner. 663ffef applies the existing explicit-skip policy; mandatory platform sandbox availability remains unchanged and all19 local workflow tests pass without skips.",
+        "Public image/video/audio worker-SIGKILL recovery tests pass with original remote job IDs, one invocation, idempotent replay, conflicting409, verified artifact export and ACK expiration. Native video duration and full decode pass."
       ]
     },
     {
@@ -524,7 +526,8 @@
         "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication.",
         "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending.",
         "25570f5 general CI40294819863 and platform40294819705 passed; all six Linux/macOS x64/arm64 Node20/22 jobs installed the pinned published Docdex native runtime and checked first-install/cache canonical identity.",
-        "9ac3db8 CI40342049684 and six-job platform qualification40342049703 passed. Full Codali1538pass/2optional skips and mSwarm173pass locally; these checks do not substitute for remaining live quality gates."
+        "9ac3db8 CI40342049684 and six-job platform qualification40342049703 passed. Full Codali1538pass/2optional skips and mSwarm173pass locally; these checks do not substitute for remaining live quality gates.",
+        "cd657cb frozenY client packed and clean-installed with5662file hashes; full1542pass/2optional skip and staged Docdex gate passed. CI40356295365/platform40356295585 pending at recording."
       ]
     },
     {
@@ -1381,23 +1384,59 @@
       "artifact": "/home/wodo/.local/state/codali-postdeploy-node-k-raijin-engine-recovery.log",
       "limitation": "Recovery confirmed; engine failure root cause unresolved."
     },
-    "2026-10-26: Unicode-context regression + isolated stub CLI tests: full Codali1540tests,1538pass,0fail,2optional skips. First full run retained with live-Docdex-dependent CLI stall and two eval failures; isolated CLI12/12 and eval8/8 then full run passed."
+    "2026-10-26: Unicode-context regression + isolated stub CLI tests: full Codali1540tests,1538pass,0fail,2optional skips. First full run retained with live-Docdex-dependent CLI stall and two eval failures; isolated CLI12/12 and eval8/8 then full run passed.",
+    {
+      "check": "BackendJ/nodeL public reasoning and consumers",
+      "status": "passed",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/raijin-postdeploy-matrix-node-l.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/suku-postdeploy-matrix-node-l.json",
+        "/home/wodo/.local/state/codali-tnl-consumer-smoke-l-observed-b.log",
+        "/home/wodo/.local/state/codali-bdya-consumer-route-probe-l.log",
+        "/home/wodo/.local/state/codali-logmira-wodo-docdex-l.log",
+        "/home/wodo/.local/state/codali-logmira-heka-docdex-l.log"
+      ],
+      "limitation": "Scoped consumer smoke coverage; Logmira embedded package upgrade and broad background/business surface qualification remain."
+    },
+    {
+      "check": "Public configured embeddings and terminal setup discovery",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/embedding-replicas-node-l.json",
+      "discoveryArtifact": "/home/wodo/.local/state/codali-terminal-deployment/remote-setup-node-l.json",
+      "limitation": "Both768-dimensional Nomic outputs are identical with matching pinned artifact digest. Setup discovery sees2Strata,2embedding,3media; fresh managed runtime setup still requires testing."
+    },
+    {
+      "check": "Normal-parameter durable public media after worker loss",
+      "status": "passed",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/public-media-backend-j-image-b/result.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/public-media-backend-j-video-c/result.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/public-media-backend-j-audio-e/result.json"
+      ],
+      "limitation": "Each original job recovered with one invocation, checksum/export/ACK and conflict409. Image/video sampled visual smoke passes. Audio is valid8s44.1kHzstereo PCM with23saturated samples; auditory prompt/quality review remains pending. Video33frames16fps2.0625s fully decodes; Strata stayed loaded for383GPU samples, GPU1minimum5097MiBfree."
+    },
+    {
+      "check": "Scoped module working directory and edit recovery guidance",
+      "status": "passed",
+      "source": "cd657cb",
+      "tests": 1544,
+      "passed": 1542,
+      "failed": 0,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-shell-cwd-full.log",
+      "limitation": "Deterministic regressions pass; live long-workflow improvement is being measured in frozenY, not claimed."
+    }
   ],
-  "updatedAt": "2026-10-26T14:40:48.405384+00:00",
+  "updatedAt": "2026-10-26T16:14:05.618696+00:00",
   "openFindings": [
-    "All accepted phases and release gates are not complete. Broad fresh quality evaluation, four successful multi-hour live journeys, paired helper comparisons, production consumer qualification and the 24-hour canary remain open.",
-    "Docdex v0.2.100-codali.2 is published on GitHub and npm next; stable latest remains0.2.99. Pinned Linux/macOS runtime artifacts and private installations are qualified; global existing daemons remain unchanged.",
-    "Production end-to-end configured embeddings still require the pending backend rollout and live catalog/space-identity qualification.",
-    "Preserve earlier held-out E and workflow R false-completion failures. Deterministic checks and improved review are not evidence of general model reliability; new independent holdouts and human audit remain required.",
-    "Frozen U Raijin data-delivery passed all four independent module graders but exhausted the shared budget before completing the goal. Per-task reviews falsely demanded later DELIVERY.md and blamed sibling changes. Task-scoped review regression fixes are under qualification.",
-    "Frozen U Suku service-adapters failed with incomplete modules after four nonconsecutive premature prose responses, including unrecognized edit_file markup. The controller now resets that guard after actual owned file changes or accepted verification; unchanged writes do not reset it. Live follow-up remains required.",
-    "All four frozenV long workflows failed after exhausting their shared2.4M-token budget. Keep original evidence. Billing report source paths were underspecified relative to the hidden module-relative expectation; v2 clarifies the contract and hashes full prompts/steering without changing the grader. New runs are diagnostics, not fresh holdouts.",
-    "TNL story, Logmira Wodo/Heka grounded chat and BDYA persisted stage synthetic routes pass on current deployment. Full production surface/background/media coverage remains open.",
-    "Raijin Strata0.1.49.2 failed with CUDA illegal memory at verify layer42 on W. Native and node recovery passed; automatic unavailable-model recovery, root cause and sustained qualification remain open.",
-    "Docdex codali.2 discovers local mcoda adapters but cannot instantiate them; ff74f67 adds explicit local HTTP runner support and prepares codali.3.96 focused tests and real1.7B helper call pass; release artifacts/pins remain pending.",
-    "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified.",
-    "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed.",
-    "Native video duration patch has nine encoder duration/pixel-equivalence cases and a fresh9-frame8fps1.125s832x480 render. Normal-quality media and full CLI durable-media recovery remain open.",
-    "Docdex codali.3 release failed new RUSTSEC-2026-0403/0410 advisories. Tantivy0.27 dependency migration eliminates zstd chain and passes33 index tests/current audit; old-index migration and release matrix remain open. Do not retag failed codali.3."
+    "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
+    "Docdex codali.4 at2324174 removes the newly vulnerable zstd chain with Tantivy0.27. Full1044Rust tests/3ignored, old-index migration and five platform builds pass; ARM64 build, publication, Codali native pins and fresh installation remain pending. Do not retag failed codali.3; stable latest remains0.2.99.",
+    "Public embeddings and setup discovery are now qualified on backendJ/nodeL with both compatible Nomic replicas. Managed remote-embedding runtime setup, index/memory and migration still require end-to-end qualification.",
+    "Preserve earlier E/U/V/W/X failures. X localized-export passed all four module graders but exhausted2.38Mtokens before final integration; service-adapters had repeated stale read/analysis and shell/path failures. cd657cb module-cwd/recovery guidance is under frozenY public-workflow diagnostic evaluation. These are reused contracts, not fresh holdouts.",
+    "TNL, Logmira Wodo/Heka grounded chat and BDYA persisted stage synthetic routes pass on backendJ/nodeL. Full background/business coverage remains open. Logmira still embeds Codali0.1.134 and emits the known false tool-worker-substitution warning; upgrade remains required.",
+    "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
+    "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
+    "Root deployment access is resolved by explicit user authorization. BackendJ drain procedure is qualified with exact-image Fastify fixtures and production accepted-invocation/HTTP-close evidence. Do not repeat the access question.",
+    "Actual configured CLI Unicode transport passes both public Strata nodes. A raw ModelServiceClient request bypassing CLI normalization still exposed a backend invalid-surrogate MySQL error; API input validation remains a separate gap."
   ]
 }
