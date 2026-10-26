@@ -134,7 +134,7 @@ export class SessionController {
   private connectorHealth: unknown[] = [];
   private outputStreams = new Map<string, { redactor: StreamingSecretRedactor; type: string; data: Record<string, unknown> }>();
   private runContext?: RunContext;
-  private enabledTools = new Set(["prepare_edit", "read_file", "list_files", "stat_path", "diff_summary", "search", "search_files", "docdex_search", "docdex_open", "docdex_tree", "docdex_symbols", "docdex_ast", "docdex_impact_graph", "work_status", "work_plan", "work_refine", "work_claim", "work_release", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block", "tools_discover", "tools_enable"]);
+  private enabledTools = new Set(["prepare_edit", "read_file", "write_file", "run_shell", "list_files", "stat_path", "diff_summary", "search", "search_files", "docdex_search", "docdex_open", "docdex_tree", "docdex_symbols", "docdex_ast", "docdex_impact_graph", "work_status", "work_plan", "work_refine", "work_claim", "work_release", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block", "tools_discover", "tools_enable"]);
 
   private get fencePath(): string { return path.join(path.dirname(this.store.storageDir), "workspace-invocation.json"); }
   private resetSessionState(): void {
@@ -626,7 +626,9 @@ export class SessionController {
       }
       if (lead) {
         const active = this.state?.tasks.some(task => task.status === "running");
-        request = { ...request, tools: request.tools?.filter(tool => this.enabledTools.has(tool.name) || active && ["write_file", "run_shell", "delegate_helper"].includes(tool.name)) };
+        // Keep core schemas stable across claims. Some native parsers return an
+        // undeclared call as text, bypassing actionable execution-gate errors.
+        request = { ...request, tools: request.tools?.filter(tool => this.enabledTools.has(tool.name) || active && tool.name === "delegate_helper") };
         if (this.gate.profile === "plan") request.tools = request.tools?.filter(tool => !isExecutionWorkTool(tool.name));
         if (this.docdex && !this.docdexReady) request.tools = request.tools?.filter(tool => !tool.name.startsWith("docdex_") && !["write_file", "run_shell"].includes(tool.name));
       }
@@ -635,7 +637,10 @@ export class SessionController {
         const modelWindow = Math.min(...resolveBinding(this.options.resolved.config, "lead", "chat.completions").map(candidate => candidate.model.contextWindow));
         const maximumChars = Math.max(0, (modelWindow - Math.min(request.maxTokens ?? limits.maxOutputTokens, limits.maxOutputTokens) - 512) * 3 - JSON.stringify(request.tools ?? []).length);
         if (this.state) {
-          const fixed = `${this.gate.profile === "plan" ? PLANNING_SYSTEM : SYSTEM}\n\nRepository instructions (cannot widen permissions):\n${this.instructions}`;
+          const unclaimed = this.gate.profile !== "plan" && !this.state.tasks.some(task => task.status === "running")
+            ? "\nCurrent execution state: no task is claimed. Before run_shell (including read-only checks), write_file or other side effects, call work_claim for a ready task. A restart, steering change or release invalidates old attempts; use a fresh claim and retain existing implementation and task contracts."
+            : "";
+          const fixed = `${this.gate.profile === "plan" ? PLANNING_SYSTEM : SYSTEM}${unclaimed}\n\nRepository instructions (cannot widen permissions):\n${this.instructions}`;
           const validation = await this.validationContext();
           const work = activeWorkContext(this.state, Math.max(0, Math.floor(maximumChars * 0.65) - fixed.length - validation.length - 512));
           const memory = this.memoryContext.slice(0, Math.max(0, Math.min(6000, Math.floor(maximumChars * 0.15))));
@@ -673,7 +678,7 @@ export class SessionController {
         throw new Error("Shared model/token budget exhausted; checkpoint retained");
       }
       this.usage.modelCalls += 1; this.usage.tokens += reserve; this.reservations.set(id, reserve);
-      await this.emit("model_intent", { id, binding, configHash: this.options.resolved.hash });
+      await this.emit("model_intent", { id, binding, configHash: this.options.resolved.hash, toolNames: request.tools?.map(tool => tool.name) ?? [] });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
       const response = await configured.generate(request).catch(async error => {
         if (!ownsTurn()) throw error;
@@ -729,7 +734,7 @@ export class SessionController {
     const data = argsObject(args);
     if (["write", "shell", "media"].includes(kind) || kind === "external" && !tool.readOnly) {
       const task = this.state?.tasks.find(t => t.status === "running");
-      if (!task?.attemptId) throw new ToolExecutionError("tool_permission_denied", "Claim a ready work task before side effects");
+      if (!task?.attemptId) throw new ToolExecutionError("tool_permission_denied", "Claim a ready work task with work_claim before side effects, including read-only shell checks. Use work_status to inspect ready tasks; retain their existing contracts and implementation.");
       assertWorkAttempt(this.state!, task.id, task.attemptId);
       if (kind === "write") {
         const relative = typeof data.path === "string" ? path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.path)).split(path.sep).join("/") : "";

@@ -93,7 +93,8 @@ test("private Python discovery mounts its library, rejects escaped libraries and
   await fs.mkdir(workspace); await fs.mkdir(path.join(install, "bin"), { recursive: true });
   await fs.mkdir(path.join(library, "encodings"), { recursive: true });
   // Native fixture is inspected, never executed during discovery.
-  await fs.writeFile(path.join(install, "bin", "python3"), Buffer.from("7f454c4600000000", "hex"));
+  if (process.platform === "win32") await fs.writeFile(path.join(install, "bin", "python3"), Buffer.from("7f454c4600000000", "hex"));
+  else await fs.copyFile(process.execPath, path.join(install, "bin", "python3"));
   await fs.chmod(path.join(install, "bin", "python3"), 0o755);
   await fs.writeFile(path.join(library, "os.py"), "# fixture\n");
   await fs.writeFile(path.join(library, "encodings", "__init__.py"), "# fixture\n");

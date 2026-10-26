@@ -13,6 +13,49 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("core tool declarations survive released claims while execution remains fenced", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-handoff-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-handoff-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "notes.txt"), "four");
+  let step = 0; let oldAttempt = ""; let attemptId = "";
+  const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["report.txt"] });
+      case 1:
+        oldAttempt = JSON.parse(previous()).attemptId;
+        return call("work_release", { taskId: "T1", attemptId: oldAttempt, note: "Retain the task for a fresh claim." });
+      case 2:
+        assert.equal(JSON.parse(previous()).released, true);
+        // Providers such as Strata preserve undeclared calls as plain text. Keep
+        // the schema so a premature call reaches the authoritative claim gate.
+        assert.ok(request.tools?.some(tool => tool.name === "write_file"));
+        assert.ok(request.tools?.some(tool => tool.name === "run_shell"));
+        return call("write_file", { path: "report.txt", content: "premature" });
+      case 3:
+        assert.match(previous(), /Claim a ready work task/);
+        assert.equal(await fs.stat(path.join(root, "report.txt")).then(() => true, () => false), false);
+        return call("work_claim", { taskId: "T1" });
+      case 4:
+        attemptId = JSON.parse(previous()).attemptId; assert.notEqual(attemptId, oldAttempt);
+        return call("read_file", { path: "notes.txt" });
+      case 5: return call("write_file", { path: "report.txt", content: "four" });
+      case 6: return call("read_file", { path: "report.txt" });
+      case 7: return call("work_verify", { taskId: "T1", attemptId, invocationIds: [previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]], summary: "The report contains the note value four." });
+      case 8: return call("work_complete", {});
+      default: throw new Error("No further inference expected");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  assert.equal((await controller.run("Read notes.txt and record its value in report.txt.")).completed, true);
+  assert.equal(await fs.readFile(path.join(root, "report.txt"), "utf8"), "four");
+  const writes = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string });
+  assert.deepEqual(writes.filter(receipt => receipt.tool === "write_file").map(receipt => receipt.status), ["failed", "success"]);
+});
+
 test("module-local shell receipts retain cwd and verify the actual workspace inputs", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-module-check-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-module-state-"));
