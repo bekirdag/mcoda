@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow bounded Git diff/status inspection within the final validation budget;
+  keep edits blocked and require actual test evidence before verifying code.
 - Disable terminal echo before displaying the API-key prompt, preventing fast
   input from being echoed. Verify masked entry, backspace, cancellation, key
   rotation, logout, credential-cache refresh and bounded piped input.

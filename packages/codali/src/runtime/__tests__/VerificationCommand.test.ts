@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isVerificationCommand } from "../VerificationCommand.js";
+import { isVerificationCommand, isVerificationInspectionCommand } from "../VerificationCommand.js";
 
 test("common presentation flags and direct Node test files retain validation eligibility", () => {
   for (const [command, args] of [
@@ -27,4 +27,27 @@ test("help, skipped checks, unknown wrappers and script arguments cannot claim v
     ["pytest", ["--collect-only"]], ["pytest", ["-V"]], ["python3", ["-m", "pytest", "--help"]],
   ] as Array<[string, string[]]>) assert.equal(isVerificationCommand({ command, args }), false, `${command} ${args.join(" ")}`);
   for (const args of [null, [], { command: "npm", args: [1, "test"] }, { command: "npm", args: "test" }]) assert.equal(isVerificationCommand(args), false);
+});
+
+test("final validation permits bounded Git inspection without accepting it as test evidence", () => {
+  for (const args of [
+    ["diff"], ["diff", "--", "USER_NOTES.txt"], ["diff", "--stat", "--cached"],
+    ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--", "src/task.mjs"],
+    ["diff", "--check"], ["status"], ["status", "--short", "--branch"],
+    ["status", "--porcelain=v1", "--", "-leading-dash.txt"],
+  ]) {
+    assert.equal(isVerificationInspectionCommand({ command: "git", args }), true, args.join(" "));
+    assert.equal(isVerificationInspectionCommand({ command: "git", args, writePaths: [] }), true);
+    assert.equal(isVerificationCommand({ command: "git", args }), false, "inspection is not a test");
+  }
+  for (const args of [
+    ["add", "src/task.mjs"], ["diff", "--output=report.txt"], ["diff", "--output", "report.txt"],
+    ["diff", "--ext-diff"], ["diff", "--textconv"], ["diff", "HEAD"], ["diff", "--", ""],
+    ["-c", "alias.inspect=diff", "inspect"], ["-C", "elsewhere", "diff"],
+    ["status", "--unknown"], ["diff", 42], [],
+  ]) assert.equal(isVerificationInspectionCommand({ command: "git", args }), false, JSON.stringify(args));
+  for (const value of [null, [], { command: "git", args: "diff" }, { command: "/tmp/git", args: ["diff"] },
+    ...[null, "", ["."], 0].map(writePaths => ({ command: "git", args: ["diff"], writePaths }))]) {
+    assert.equal(isVerificationInspectionCommand(value), false);
+  }
 });

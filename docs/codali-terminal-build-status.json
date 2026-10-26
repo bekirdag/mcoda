@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "3a2a223 fixes a reproduced masked-login echo race; 13 credential tests and nine POSIX terminal checks pass, with CI40382977394 and platform40382977598 running. Prerelease codali.2 passed all twelve packaging/install jobs; its publisher is retrying after registry propagation exceeded the initial wait. AA runs on both hosts; its first Suku journey completed four modules but exhausted its budget before verified goal completion. Logmira candidate build and safe old-worker drain qualification continue.",
+  "currentTask": "Published codali.2: all ten registry tarballs match qualified 436e0b1 artifacts; latest remains .134. Login fix 3a2a223 passed CI and all six Linux/macOS platform jobs. AA first journeys on both hosts passed all module grades but exhausted 2.4M tokens before final integration; remaining journeys running. New regression reproduced and fixed git diff/status rejection in the validation reserve; 44 focused tests and the full suite (1,555 passed, two skipped) pass. Logmira .2 candidate built and passed 189 integration tests; production unchanged while safe drain and next candidate are prepared.",
   "tasks": [
     {
       "id": "P0.1",
@@ -497,7 +497,8 @@
         "FrozenV four-scenario diagnostics all exhausted2.4M tokens; no successful or multi-hour qualification. Receipt handle retention after truncation, validation-output summaries and atomic focused plan updates are fixed in7f0a61c. Long-workflows-v2 explicitly defines module-relative report source paths and includes prompts/steering in the corpus hash;35 evaluation tests passed. Original failures retained.",
         "All four frozen X direct-native diagnostics ended unsuccessfully: Raijin data-delivery HTTP400 malformed Unicode context; Raijin billing-audit HTTP429; Suku service-adapters and localized-export shared token-budget exhaustion. Original artifacts retained. Unicode code fix is tested but not yet on production nodes. No long-journey pass is claimed.",
         "Frozen Z first results: data-delivery all four module grades pass but budget exhausted before completion; service-adapters budget exhausted with an unfinished interval module; localized-export stopped after repeated plain-text Qwen tool calls, leaving required modules incomplete. No multi-hour gate passed. Original artifacts retained; billing-audit still running.",
-        "Frozen Z completed four failed journeys; billing-audit also exhausted its budget and left required work unfinished. Frozen AA at976ae76 now runs on both hosts. AA localized-export passed all four module grades but exhausted2.4M tokens before R1/final goal verification, five compactions and the fourth process. The handoff fix prevents the earlier plain-text-tool stall; no long-journey qualification is claimed."
+        "Frozen Z completed four failed journeys; billing-audit also exhausted its budget and left required work unfinished. Frozen AA at976ae76 now runs on both hosts. AA localized-export passed all four module grades but exhausted2.4M tokens before R1/final goal verification, five compactions and the fourth process. The handoff fix prevents the earlier plain-text-tool stall; no long-journey qualification is claimed.",
+        "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open."
       ]
     },
     {
@@ -550,7 +551,8 @@
         "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
         "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified.",
         "BackendJ deployed15:39UTC with rollback I images retained. NodesL activated15:43/15:44UTC after local drain and canonical no-active-job proof; source/profile/manifest hashes verified and owner admission reopened. No Strata engine restart. Consumers require postdeploy requalification.",
-        "Prerelease codali.2 publisher accepted nine packages, then failed its twelve-attempt install check because Codali was not yet visible (ETARGET). The identical registry artifact is now visible and clean-installable; reran only failed publication job to complete @mcoda/mswarm. Stable latest remains0.1.134. No tag or package bytes were replaced."
+        "Prerelease codali.2 publisher accepted nine packages, then failed its twelve-attempt install check because Codali was not yet visible (ETARGET). The identical registry artifact is now visible and clean-installable; reran only failed publication job to complete @mcoda/mswarm. Stable latest remains0.1.134. No tag or package bytes were replaced.",
+        "Release 40376949005 retry succeeded. All ten npm .2 tarballs independently downloaded and SHA256/SHA512 matched exact qualified 436e0b1 artifacts; next=.2/latest=.134. Logmira isolated .2 candidate passed build and 189 tests/16 files with networking disabled; production rollout pending."
       ]
     },
     {
@@ -1518,7 +1520,7 @@
         "/home/wodo/.local/state/codali-prerelease2-pack.log",
         "/home/wodo/.local/state/codali-terminal-deployment/prerelease2-clean-install.json"
       ],
-      "limitation": "Not yet published; tagged release will rerun package and exact-artifact installation gates."
+      "limitation": "Published after twelve platform/package jobs; independent registry byte verification is recorded separately. Quality/canary promotion gates remain open."
     },
     {
       "check": "Masked login and credential lifecycle at3a2a223",
@@ -1531,11 +1533,47 @@
         "/home/wodo/.local/state/codali-auth-pty-fixed.log"
       ],
       "limitations": [
-        "Original PTY failure retained. Cross-platform CI still running; this fix is absent from codali.2."
+        "Original PTY failure retained. CI 40382977394 and all six platform jobs 40382977598 passed; fix absent from published codali.2."
+      ]
+    },
+    {
+      "check": "codali.2 registry artifact integrity",
+      "status": "passed",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40376949005",
+      "packages": 10,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/prerelease2-registry-artifacts/verification.json"
+      ],
+      "limitation": "Prerelease only; stable latest=.134. Login and budget-inspection fixes require a later candidate."
+    },
+    {
+      "check": "Logmira isolated codali.2 candidate",
+      "status": "passed",
+      "tests": 189,
+      "testFiles": 16,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-logmira-image-build2.log",
+        "/home/wodo/.local/state/codali-logmira-candidate-tests2.log"
+      ],
+      "limitation": "Network disabled during tests. Production app and worker remain on .134; this is candidate compatibility evidence."
+    },
+    {
+      "check": "Final validation reserve inspection regression",
+      "status": "passed",
+      "focusedTests": 44,
+      "fullSuitePassed": 1555,
+      "fullSuiteSkipped": 2,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-budget-inspection-red.log",
+        "/home/wodo/.local/state/codali-budget-inspection-green.log",
+        "/home/wodo/.local/state/codali-budget-inspection-full.log"
+      ],
+      "limitations": [
+        "Original red reproduction retained. Git inspection remains ineligible as test evidence; edits and unverified completion stay fenced. Live qualification pending."
       ]
     }
   ],
-  "updatedAt": "2026-10-26T19:07:16.453574+00:00",
+  "updatedAt": "2026-10-26T19:25:02.062572+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 is published with native/release/security/npm checks passed. mcoda codali.2 passed twelve package/install jobs; nine packages were accepted before registry propagation exceeded the install-check deadline. Failed publisher is retrying against identical qualified artifacts; @mcoda/mswarm publication remains pending. The new masked-login fix3a2a223 requires the next candidate.",

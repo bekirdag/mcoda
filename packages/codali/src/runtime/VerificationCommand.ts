@@ -1,5 +1,25 @@
 import path from "node:path";
 
+/** Budget eligibility for inspection only; never substitutes for test evidence. */
+export const isVerificationInspectionCommand = (args: unknown): boolean => {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const value = args as { command?: unknown; args?: unknown; writePaths?: unknown };
+  if (value.command !== "git" || !Array.isArray(value.args) || value.args.some(arg => typeof arg !== "string")) return false;
+  if (value.writePaths !== undefined && (!Array.isArray(value.writePaths) || value.writePaths.length !== 0)) return false;
+  const argv = value.args as string[];
+  const flags = argv[0] === "diff"
+    ? ["--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--name-only", "--name-status", "--check", "--cached", "--staged"]
+    : argv[0] === "status" ? ["--short", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--branch"] : undefined;
+  if (!flags) return false;
+  let paths = false;
+  for (const arg of argv.slice(1)) {
+    if (paths) { if (!arg) return false; }
+    else if (arg === "--") paths = true;
+    else if (!flags.includes(arg)) return false;
+  }
+  return true;
+};
+
 /** Command-shape eligibility only; success, fresh input hashes and review remain mandatory. */
 export const isVerificationCommand = (args: unknown): boolean => {
   if (!args || typeof args !== "object" || Array.isArray(args)) return false;

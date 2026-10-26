@@ -536,6 +536,55 @@ test("later findings reopen verified work and fence dependent tool attempts with
   assert.equal(controller.state?.evidence.filter(e => e.kind === "review").length, 3);
 });
 
+test("the final budget reserve allows Git inspection but fences new implementation and does not complete unverified work", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-reserve-inspection-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-reserve-inspection-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const git = promisify(execFile);
+  await fs.writeFile(path.join(root, "value.mjs"), "export const value = 1;\n");
+  await git("git", ["init", "--quiet"], { cwd: root });
+  await git("git", ["add", "value.mjs"], { cwd: root });
+  const limited = structuredClone(config); limited.effort = { medium: { maxTotalTokens: 128_000 } };
+  const events: SessionEvent[] = []; let controller!: SessionController; let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => {
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["value.mjs"] });
+      case 1: return call("read_file", { path: "value.mjs" });
+      case 2: return call("write_file", { path: "value.mjs", content: "export const value = 2;\n" });
+      case 3: {
+        // The first three completed calls each report 20 tokens. This call
+        // consumes all but one token; its tools still run within the reserve.
+        const inputTokens = 128_000 - 3 * 20 - 2;
+        return { message: { role: "assistant", content: "" },
+          usage: { inputTokens, outputTokens: 1, totalTokens: inputTokens + 1 },
+          toolCalls: [
+            { id: "inspect-diff", name: "run_shell", args: { command: "git", args: ["diff", "--", "value.mjs"] } },
+            { id: "inspect-status", name: "run_shell", args: { command: "git", args: ["status", "--short"] } },
+            { id: "blocked-write", name: "write_file", args: { path: "value.mjs", content: "export const value = 3;\n" } },
+            { id: "blocked-stage", name: "run_shell", args: { command: "git", args: ["add", "value.mjs"] } },
+          ] };
+      }
+      default: throw new Error("The exhausted model budget must prevent another inference");
+    }
+  } };
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: limited, hash: orchestrationHash(limited), source: "test" },
+    provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await assert.rejects(controller.run("Set value to two, inspect the resulting diff and run a meaningful check before completion."), /Shared model\/token budget exhausted/);
+  const receipts = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string; output: string });
+  const final = receipts.slice(-4);
+  assert.deepEqual(final.map(receipt => receipt.status), ["success", "success", "failed", "failed"]);
+  assert.match(final[0].output, /-export const value = 1/); assert.match(final[0].output, /\+export const value = 2/);
+  assert.match(final[1].output, /value\.mjs/);
+  for (const receipt of final.slice(2)) assert.match(receipt.output, /reserved for verification/);
+  assert.equal(await fs.readFile(path.join(root, "value.mjs"), "utf8"), "export const value = 2;\n");
+  assert.notEqual(controller.state?.status, "completed");
+  assert.equal(controller.state?.tasks.some(task => task.status === "verified"), false);
+  assert.equal(controller.usageSnapshot().tokens, 127_999);
+});
+
 test("budget exhaustion can finalize verified work without another model call but still rejects stale evidence", async () => {
   for (const stale of [false, true]) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-final-budget-"));

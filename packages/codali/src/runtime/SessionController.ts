@@ -29,7 +29,7 @@ import { ManagedDocdex } from "../docdex/ManagedDocdex.js";
 import { ConfiguredEmbeddings } from "../providers/ConfiguredEmbeddings.js";
 import { runCodaliTask } from "./CodaliRuntime.js";
 import { WorkspaceLock } from "./WorkspaceLock.js";
-import { isVerificationCommand } from "./VerificationCommand.js";
+import { isVerificationCommand, isVerificationInspectionCommand } from "./VerificationCommand.js";
 import { assertRequestedTestEvidence } from "./RequestedTestEvidence.js";
 import { readReviewSource } from "./ReviewSource.js";
 import { taskReviewContext } from "./TaskReviewContext.js";
@@ -730,7 +730,8 @@ export class SessionController {
     if (this.persistenceError) throw this.persistenceError;
     const kind = permissionKind(tool);
     if (this.docdex && !this.docdexReady && (["write", "shell"].includes(kind) || tool.name.startsWith("docdex_"))) throw new ToolExecutionError("docdex_unavailable", "Docdex index is unavailable for this turn. Record the blocker; recover the service before code changes.", { retryable: false });
-    if ((["write", "media"].includes(kind) || tool.name === "delegate_helper" || kind === "shell" && !isVerificationCommand(args)) && this.usage.tokens + this.validationReserve() > limits.maxTotalTokens) throw new ToolExecutionError("tool_permission_denied", "Remaining budget is reserved for verification; checkpoint unfinished work or increase the effort budget");
+    const validationShell = isVerificationCommand(args) || tool.name === "run_shell" && isVerificationInspectionCommand(args);
+    if ((["write", "media"].includes(kind) || tool.name === "delegate_helper" || kind === "shell" && !validationShell) && this.usage.tokens + this.validationReserve() > limits.maxTotalTokens) throw new ToolExecutionError("tool_permission_denied", "Remaining budget is reserved for verification; checkpoint unfinished work or increase the effort budget");
     const data = argsObject(args);
     if (["write", "shell", "media"].includes(kind) || kind === "external" && !tool.readOnly) {
       const task = this.state?.tasks.find(t => t.status === "running");
