@@ -96,6 +96,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       for (const runtime of runtimes) await fs.symlink(runtime.executable, path.join(privateBin, runtime.name));
       const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network);
       return await runProcess("/usr/bin/sandbox-exec", ["-p", profile, runtimes.find(runtime => runtime.name === command)?.executable ?? command, ...args], context, {
+        ...runtimes.find(runtime => runtime.name === "cc")?.environment,
         HOME: privateHome, TMPDIR: scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
         CARGO_HOME: path.join(privateHome, "cargo"), XDG_CACHE_HOME: path.join(privateHome, "cache"),
         PYTHONPYCACHEPREFIX: path.join(privateHome, "pycache"), PYTHONUSERBASE: path.join(privateHome, "python"),

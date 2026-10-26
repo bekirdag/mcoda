@@ -64,6 +64,7 @@ the host's trusted PATH. Private Python standard libraries and the selected Rust
 toolchain libraries are exposed read-only; Cargo and Python caches use a temporary
 private home. Rustup proxies resolve to an already-installed host toolchain (the
 host's `RUSTUP_TOOLCHAIN` or default), without repository-triggered downloads.
+On macOS, the selected installed Xcode developer tools and SDK are also read-only.
 Use `doctor` to inspect selected executable paths. Dependency installation still
 requires network permission, and build outputs must fit the task's write scope.
 

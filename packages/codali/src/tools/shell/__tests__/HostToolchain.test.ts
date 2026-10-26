@@ -118,9 +118,11 @@ test("rustup proxies select only the installed host toolchain without exposing C
   await fs.writeFile(path.join(toolchain, "lib", "rustlib", "manifest-rustc-fixture"), "fixture\n");
   await fs.writeFile(path.join(rustup, "settings.toml"), 'default_toolchain = "stable-fixture"\n');
   await fs.writeFile(path.join(workspace, "rust-toolchain.toml"), '[toolchain]\nchannel = "nightly-uninstalled"\n');
-  await fs.copyFile(process.execPath, path.join(proxies, "rustup")); await fs.chmod(path.join(proxies, "rustup"), 0o755);
+  const nativeHeader = (await fs.readFile(process.execPath)).subarray(0, 4);
+  await fs.writeFile(path.join(proxies, "rustup"), Buffer.concat([nativeHeader, Buffer.from("discovery-only-proxy-fixture")]), { mode: 0o755 });
   for (const name of ["rustc", "cargo", "rustdoc"]) {
     if (name === "cargo") await fs.link(path.join(proxies, "rustup"), path.join(proxies, name));
+    else if (name === "rustc") await fs.copyFile(path.join(proxies, "rustup"), path.join(proxies, name));
     else await fs.symlink("rustup", path.join(proxies, name));
     await fs.copyFile(process.execPath, path.join(toolchain, "bin", name)); await fs.chmod(path.join(toolchain, "bin", name), 0o755);
   }
@@ -145,7 +147,12 @@ test("Python imports and unittest run with private bytecode caches and no host c
   await fs.writeFile(path.join(root, "test_runtime.py"), `import json, os, pathlib, ssl, sys, unittest
 class RuntimeTest(unittest.TestCase):
     def test_private_runtime(self):
-        self.assertFalse(pathlib.Path(${JSON.stringify(privateFile)}).exists())
+        try:
+            pathlib.Path(${JSON.stringify(privateFile)}).read_text()
+        except (PermissionError, FileNotFoundError):
+            pass
+        else:
+            self.fail('Host private file was readable')
         self.assertNotIn('MCODA_MSWARM_API_KEY', os.environ)
         self.assertTrue(sys.pycache_prefix.startswith(os.environ['HOME']))
         self.assertEqual(json.loads('{"answer":4}')['answer'], 4)

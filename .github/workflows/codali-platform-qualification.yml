@@ -36,7 +36,20 @@ jobs:
         with:
           python-version: '3.12'
       - name: Select installed Rust toolchain
-        run: rustup default stable
+        run: |
+          rustup default stable
+          rustup which rustc
+          rustup show active-toolchain
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil
+          for name in ['rustup', 'rustc', 'cargo']:
+              executable = pathlib.Path(shutil.which(name)).resolve()
+              info = executable.stat()
+              print(name, executable, info.st_ino, info.st_size, executable.read_bytes()[:4].hex())
+          settings = pathlib.Path(os.environ.get('RUSTUP_HOME', str(pathlib.Path.home()/'.rustup'))) / 'settings.toml'
+          if settings.exists():
+              print('\n'.join(line for line in settings.read_text().splitlines() if line.startswith('default_toolchain')))
+          PY
       - name: Record actual platform and toolchain
         run: |
           if [ "$(uname -s)" = Darwin ]; then sw_vers; fi

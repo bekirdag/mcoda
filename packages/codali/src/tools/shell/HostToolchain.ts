@@ -1,9 +1,14 @@
 import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 export interface HostRuntimeMount { readOnlyRoot: string; directory: boolean; }
-export interface HostRuntime extends HostRuntimeMount { name: string; executable: string; support?: HostRuntimeMount[]; }
+export interface HostRuntime extends HostRuntimeMount {
+  name: string; executable: string; support?: HostRuntimeMount[];
+  environment?: { SDKROOT: string; DEVELOPER_DIR: string };
+}
 const packages: Record<string, string[]> = { npm: ["npm"], pnpm: ["pnpm", "@pnpm/exe"], yarn: ["yarn", "@yarnpkg/cli", "@yarnpkg/cli-dist"] };
 const within = (file: string, root: string): boolean => file === root || file.startsWith(`${root}${path.sep}`);
 const systemPath = (file: string) => ["/usr", "/bin", "/sbin", "/System"].some(root => within(file, root));
@@ -12,7 +17,7 @@ const executableBinary = (file: string): boolean => {
   const fd = openSync(file, "r"); const bytes = Buffer.alloc(4);
   try { if (readSync(fd, bytes, 0, 4, 0) !== 4) return false; }
   finally { closeSync(fd); }
-  return ["7f454c46", "feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "bebafeca"].includes(bytes.toString("hex"));
+  return ["7f454c46", "feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca"].includes(bytes.toString("hex"));
 };
 
 const rustTools = new Set(["cargo", "rustc", "rustdoc"]);
@@ -25,6 +30,12 @@ const resolveRustProxy = (name: string, executable: string, home: string): strin
   if (!proxy && existsSync(path.join(path.dirname(executable), "rustup"))) {
     const actual = statSync(executable); const rustup = statSync(path.join(path.dirname(executable), "rustup"));
     proxy = actual.dev === rustup.dev && actual.ino === rustup.ino;
+    // Some installers copy proxies instead of linking them. Compare all bytes;
+    // a filename or matching binary header alone does not identify rustup.
+    if (!proxy && actual.size === rustup.size && actual.size <= 64 * 1024 * 1024) {
+      const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
+      proxy = digest(executable) === digest(path.join(path.dirname(executable), "rustup"));
+    }
   }
   if (!proxy) return executable;
   const rustup = process.env.RUSTUP_HOME ?? path.join(home, ".rustup");
@@ -75,13 +86,37 @@ const languageRuntime = (name: string, executable: string, workspace: string, ho
   return undefined;
 };
 
+/** xcrun only locates installed host tools here; it never compiles repository code.
+ * Mount the selected developer installation, not /Applications or a user's home. */
+const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] => {
+  if (process.platform !== "darwin") return [];
+  try {
+    const environment = { PATH: "/usr/bin:/bin", ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) };
+    const query = (command: string, args: string[]) => {
+      const result = spawnSync(command, args, { env: environment, cwd: os.tmpdir(), timeout: 3000, encoding: "utf8", maxBuffer: 16384 });
+      if (result.status !== 0) throw new Error("Developer tool lookup failed");
+      return realpathSync(result.stdout.trim());
+    };
+    const developer = realpathSync(process.env.DEVELOPER_DIR ?? query("/usr/bin/xcode-select", ["--print-path"]));
+    if (developer === home || developer === path.parse(developer).root || within(workspace, developer) || within(developer, workspace)) return [];
+    const sdk = query("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+    if (!within(sdk, developer) || !existsSync(path.join(sdk, "SDKSettings.plist"))) return [];
+    return ["cc", "ar"].map(name => {
+      const executable = query("/usr/bin/xcrun", ["--find", name === "cc" ? "clang" : "ar"]);
+      if (!within(executable, developer) || !executableBinary(executable)) throw new Error("Developer tool escapes selected installation");
+      return { name, executable, readOnlyRoot: developer, directory: true, environment: { SDKROOT: sdk, DEVELOPER_DIR: developer } };
+    });
+  } catch { return []; }
+};
+
 /** Discover known user-installed language tools. The workspace can neither
  * supply this PATH nor turn its own package.json into a trusted runtime mount.
  * Mounts are single binaries or matching package roots, never the user's home. */
 export const discoverHostToolchain = (workspaceRoot: string, searchPath = process.env.PATH ?? ""): HostRuntime[] => {
   const workspace = realpathSync(workspaceRoot); const home = realpathSync(os.homedir());
-  const result: HostRuntime[] = [];
+  const result: HostRuntime[] = darwinDeveloperTools(workspace, home);
   for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar"]) {
+    if (result.some(runtime => runtime.name === name)) continue;
     const candidates = name === "node" ? [process.execPath] : searchPath.split(path.delimiter).filter(Boolean).map(directory => path.resolve(directory, name));
     for (const candidate of candidates) {
       try {
