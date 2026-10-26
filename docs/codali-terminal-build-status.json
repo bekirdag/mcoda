@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "edb7f75 fixes Windows native canonical paths and crash-tail repair; Linux Codali 1547 pass, zero fail, two optional skips and media bridge four tests pass. Full Windows/Linux CI and six-platform installation checks are running. Frozen Z has three failed journeys: two exhausted their token budgets and localized-export emitted textual tool markup instead of executable calls; billing-audit remains active. Consumer package rollout, independent quality and 24-hour canary gates stay open.",
+  "currentTask": "976ae76 fixes core tool-schema availability across task handoffs; full Linux/Windows CI and all six Linux/macOS installation jobs pass. Preparing prerelease0.1.135-codali.2: full workspace build,17 packaging tests,reproducible tarballs and Linux clean install passed. Frozen AA Suku now runs the handoff fix; original Z billing-audit still active. Broad quality, consumer rollout and24-hour canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1493,9 +1493,31 @@
         "/home/wodo/.local/state/codali-long-workflow-public-z-suku-20261026/results.jsonl"
       ],
       "limitation": "Three journeys failed; billing-audit still running. No successful multi-hour journey or fresh holdout qualification."
+    },
+    {
+      "check": "Current source full Linux/Windows CI and six Linux/macOS package/isolation jobs",
+      "status": "passed",
+      "source": "976ae76",
+      "workflows": [
+        "https://github.com/bekirdag/mcoda/actions/runs/40375142593",
+        "https://github.com/bekirdag/mcoda/actions/runs/40375142619"
+      ],
+      "limitation": "Finite platform qualification; live quality and production gates remain open."
+    },
+    {
+      "check": "Prerelease codali.2 local artifact qualification",
+      "status": "passed",
+      "version": "0.1.135-codali.2",
+      "packagingTests": 17,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-prerelease2-build.log",
+        "/home/wodo/.local/state/codali-prerelease2-pack.log",
+        "/home/wodo/.local/state/codali-terminal-deployment/prerelease2-clean-install.json"
+      ],
+      "limitation": "Not yet published; tagged release will rerun package and exact-artifact installation gates."
     }
   ],
-  "updatedAt": "2026-10-26T17:59:48.788341+00:00",
+  "updatedAt": "2026-10-26T18:20:41.980655+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 is published from2324174 with all native/release/security/npm checks passed. Linux/macOS client installation matrices passed on5150c73 and40d5833; current edb7f75 matrix is running. No mcoda prerelease has been published; immutable codali.1 tag is retained after its release failed.",
@@ -1505,6 +1527,7 @@
     "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
-    "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport."
+    "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
+    "Native Strata parser replay reproduced Z localized-export plain-text tool calls: run_shell was not declared after claim release. Source976ae76 keeps core schemas visible and requires claims at execution, with a regression proving denied premature writes and successful reclaimed work. Frozen AA preserves same budgets and services to measure the change on live reused workflows; no improvement claim yet."
   ]
 }

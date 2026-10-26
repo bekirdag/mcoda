@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.1.135-codali.2 - 2026-10-26
+
+- Keep core tool definitions available across task handoffs, while requiring a
+  fresh task claim before execution. Record advertised tools for diagnosis.
+- Explain stale verification with affected tasks and changed inputs so agents
+  can revalidate existing work without replacing the plan.
+- Preserve Windows workspace identity across short-path aliases and repair
+  interrupted transcript tails. Retain mandatory file flushes on every platform.
+- Resolve macOS Python native library dependencies within the shell sandbox,
+  including Homebrew SSL libraries, without mounting broad installation roots.
+- Internal validation prerelease for the `next` channel. Quality evaluation,
+  consumer rollout and the 24-hour canary remain open promotion gates.
+
 ## 0.1.135-codali.1 - 2026-10-26
 
 - Internal terminal CLI prerelease with mSwarm authentication, configuration-driven
@@ -12,9 +25,8 @@
 - Add durable image, audio, and video jobs with artifact checksums and recovery.
 - Preserve native Strata reasoning metadata and shared orchestration budgets;
   correct false worker-substitution diagnostics for embedded consumers.
-- Broad held-out evaluation, successful multi-hour journeys, helper comparisons,
-  consumer rollout, and the 24-hour canary remain release gates. This prerelease
-  is for internal validation and is published on the `next` channel.
+- This tagged candidate was not published: platform qualification exposed
+  macOS runtime and Windows persistence issues addressed in codali.2.
 
 ## 0.1.134 - 2026-10-25
 
