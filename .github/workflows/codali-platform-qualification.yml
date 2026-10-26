@@ -3,9 +3,7 @@ name: Codali platform qualification
 on:
   pull_request:
     paths:
-      - "packages/codali/**"
-      - "packages/db/**"
-      - "packages/shared/**"
+      - "packages/**"
       - "scripts/verify-codali-terminal-pty.py"
       - "scripts/verify-codali-package-install.mjs"
       - "scripts/pack-npm-tarballs.js"
@@ -31,14 +29,13 @@ jobs:
       - name: Build the publication-platform tarballs once
         run: |
           pnpm install
-          pnpm --filter '@mcoda/codali...' run build
+          pnpm -r run build
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
           import { packTarballs } from './scripts/pack-npm-tarballs.js';
-          const packageDirs = ['packages/shared', 'packages/db', 'packages/codali'];
-          packTarballs({dest: 'artifacts/codali-terminal', packageDirs});
-          packTarballs({dest: 'artifacts/codali-repeat', packageDirs});
+          packTarballs({dest: 'artifacts/codali-terminal'});
+          packTarballs({dest: 'artifacts/codali-repeat'});
           assert.equal(readFileSync('artifacts/codali-terminal/package-artifacts.json', 'utf8'), readFileSync('artifacts/codali-repeat/package-artifacts.json', 'utf8'));
           JS
       - uses: actions/upload-artifact@v4
