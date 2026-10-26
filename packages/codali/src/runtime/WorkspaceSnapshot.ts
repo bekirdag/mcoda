@@ -13,6 +13,7 @@ export const workspaceGit = (root: string, args: string[]): Promise<string> => n
 export const workspaceHash = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 /** The same content identity is used by baselines, validation and completion. */
 export const hashWorkspacePath = async (root: string, relative: string): Promise<string> => {
+  root = await fs.realpath(root);
   const file = path.resolve(root, relative);
   if (!file.startsWith(`${root}${path.sep}`)) throw new Error("Unsafe workspace inventory path");
   try {
@@ -36,6 +37,7 @@ export const hashWorkspacePath = async (root: string, relative: string): Promise
   }
 };
 export const captureWorkspace = async (root: string): Promise<WorkspaceSnapshot> => {
+  root = await fs.realpath(root);
   const snapshot: WorkspaceSnapshot = { git: true, hashes: {}, dirtyPaths: [] };
   let files: string[];
   try {

@@ -21,6 +21,7 @@ export const isWithinScope = (file: string, scope: string[]): boolean => scope.s
 
 /** Git ignores cannot hide existing source from an explicitly writable directory. */
 export const writableInventory = async (root: string, scopes: string[], maxEntries = 20_000): Promise<Record<string, string>> => {
+  root = await fs.realpath(root);
   const hashes: Record<string, string> = {}; const visited = new Set<string>();
   const walk = async (file: string): Promise<void> => {
     if ([".git", ".mcoda"].some(dir => file === dir || file.startsWith(`${dir}/`)) || visited.has(file)) return;

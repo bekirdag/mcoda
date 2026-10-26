@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import type { ToolContext, ToolDefinition } from "../ToolTypes.js";
 
@@ -29,7 +29,7 @@ const resolveWorkspacePath = async (context: ToolContext, targetPath: string): P
 };
 
 const toRelative = (context: ToolContext, targetPath: string): string => {
-  return path.relative(context.workspaceRoot, targetPath) || ".";
+  return path.relative(realpathSync(context.workspaceRoot), targetPath) || ".";
 };
 
 const normalizeScope = (value: string): string => {

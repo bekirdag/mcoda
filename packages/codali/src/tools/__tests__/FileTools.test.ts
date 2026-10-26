@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ToolRegistry } from "../ToolRegistry.js";
@@ -13,6 +13,22 @@ const createRegistry = () => {
   }
   return registry;
 };
+
+test("workspace root aliases retain relative receipts and still reject escaped file symlinks", async t => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-root-alias-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "real"); const alias = path.join(parent, "alias");
+  await fs.mkdir(root); await fs.symlink(root, alias);
+  await fs.writeFile(path.join(parent, "private.txt"), "secret");
+  await fs.symlink(path.join(parent, "private.txt"), path.join(root, "escape.txt"));
+  const touched: string[] = []; const registry = createRegistry();
+  const context = { workspaceRoot: alias, allowedWritePaths: ["notes.txt"], recordTouchedFile: (file: string) => touched.push(file) };
+  assert.equal((await registry.execute("write_file", { path: "notes.txt", content: "ok" }, context)).ok, true);
+  assert.deepEqual(touched, ["notes.txt"]);
+  assert.equal((await registry.execute("read_file", { path: "escape.txt" }, context)).ok, false);
+  assert.equal((await registry.execute("write_file", { path: "escape.txt", content: "bad" }, { ...context, allowedWritePaths: ["."] })).ok, false);
+  assert.equal(await fs.readFile(path.join(parent, "private.txt"), "utf8"), "secret");
+});
 
 test("FileTools write and read inside workspace", { concurrency: false }, async () => {
   const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-files-"));

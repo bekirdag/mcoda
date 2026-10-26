@@ -21,7 +21,7 @@ test("host toolchain discovery rejects workspace executables and mismatched pack
     assert.equal(discoverHostToolchain(root, `${tools}/bin`).some(runtime => runtime.name === "pnpm"), false);
     await fs.writeFile(path.join(tools, "package.json"), JSON.stringify({ name: "pnpm", bin: { pnpm: "bin/pnpm.cjs" } }));
     const pnpm = discoverHostToolchain(root, `${root}/bin:${tools}/bin`).find(runtime => runtime.name === "pnpm");
-    assert.equal(pnpm?.readOnlyRoot, tools); assert.equal(pnpm?.directory, true);
+    assert.equal(pnpm?.readOnlyRoot, await fs.realpath(tools)); assert.equal(pnpm?.directory, true);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(tools, { recursive: true, force: true }); }
 });
 

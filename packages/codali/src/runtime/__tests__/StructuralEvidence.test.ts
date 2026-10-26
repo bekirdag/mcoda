@@ -4,6 +4,17 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { missingStructuralEvidence, validAnalysisResult, writableInventory } from "../StructuralEvidence.js";
+import { captureWorkspace } from "../WorkspaceSnapshot.js";
+
+test("workspace aliases produce the same baseline and writable inventory as the canonical root", async t => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-inventory-alias-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "real"); const alias = path.join(parent, "alias");
+  await fs.mkdir(root); await fs.symlink(root, alias);
+  await fs.writeFile(path.join(root, "note.txt"), "ok");
+  assert.deepEqual(await captureWorkspace(alias), await captureWorkspace(root));
+  assert.deepEqual(await writableInventory(alias, ["."]), await writableInventory(root, ["."]));
+});
 
 test("analysis receipts require both kinds for the same content and survive serialization", () => {
   const structure = { status: "success", analysis: { kind: "structure" as const, file: "src/a.ts", hash: "v1", valid: true } };

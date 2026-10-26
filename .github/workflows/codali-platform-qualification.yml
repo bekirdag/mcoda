@@ -14,15 +14,18 @@ permissions:
   contents: read
 
 jobs:
-  macos:
-    runs-on: macos-latest
+  isolated:
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-22.04, macos-latest]
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -31,15 +34,18 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Record actual platform and toolchain
         run: |
-          sw_vers
+          if [ "$(uname -s)" = Darwin ]; then sw_vers; fi
           uname -m
           node --version
           python3 --version
+      - name: Install Linux isolation backend
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Install and build
         run: |
           pnpm install
           pnpm --filter '@mcoda/codali...' run build
-      - name: Require working macOS isolation
+      - name: Require isolation backend
         run: |
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
@@ -47,9 +53,42 @@ jobs:
           const status = executorStatus();
           console.log(status);
           assert.equal(status.available, true, status.reason);
-          assert.equal(status.backend, 'sandbox-exec');
+          assert.equal(status.backend, process.platform === 'darwin' ? 'sandbox-exec' : 'bubblewrap');
+          JS
+      - name: Diagnose actual macOS command sandbox
+        if: runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'JS'
+          import { mkdtemp, rm } from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          import { createIsolatedExecutor } from './packages/codali/dist/tools/shell/IsolatedExecutor.js';
+          const root = await mkdtemp(path.join(os.tmpdir(), 'codali-platform-probe-'));
+          try {
+            const execute = createIsolatedExecutor();
+            for (const [command, args] of [['/usr/bin/true', []], ['node', ['--version']], ['node', ['-e', 'console.log(2+2)']], ['/bin/sh', ['-c', 'echo shell-ok']]]) {
+              try { console.log({command, args, result: await execute(command, args, {workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000})}); }
+              catch (error) { console.log({command, args, error: String(error)}); }
+            }
+          } finally { await rm(root, {recursive: true, force: true}); }
           JS
       - name: Codali regression and real shell boundary
         run: node scripts/run-node-tests.js packages/codali/dist
       - name: Terminal input, resize and restoration
         run: python3 scripts/verify-codali-terminal-pty.py
+      - name: macOS sandbox failure details
+        if: failure() && runner.os == 'macOS'
+        run: |
+          sudo /usr/bin/log show --last 5m --style compact --predicate '(process == "kernel" OR process == "sandboxd") AND eventMessage CONTAINS[c] "deny"' | tail -100
+          python3 - <<'PY'
+          import glob, json, os
+          for file in sorted(glob.glob(os.path.expanduser('~/Library/Logs/DiagnosticReports/node*.ips')))[-5:]:
+              print(file)
+              text = open(file).read()
+              try:
+                  data = json.loads(text[text.index('\n')+1:])
+                  print(json.dumps({key: data.get(key) for key in ['exception', 'termination', 'asi', 'asiBacktraces', 'faultingThread']}, indent=2))
+                  index = data.get('faultingThread', 0)
+                  print(json.dumps(data.get('threads', [])[index].get('frames', [])[:12], indent=2))
+              except Exception as error: print(type(error).__name__)
+          PY

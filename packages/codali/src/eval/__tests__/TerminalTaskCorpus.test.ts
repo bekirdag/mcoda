@@ -5,6 +5,12 @@ import path from "node:path";
 import os from "node:os";
 import { terminalTaskCorpus, terminalCorpusHash } from "../TerminalTaskCorpus.js";
 import { gradeTerminalTask, materializeTerminalTask } from "../TerminalCorpusRunner.js";
+import { executorStatus } from "../../tools/shell/IsolatedExecutor.js";
+
+// Dedicated platform qualification requires an available backend before this
+// suite runs. General regression runners may lack OS sandbox support.
+const isolation = executorStatus();
+const isolated = { skip: isolation.available ? false : isolation.reason ?? "Isolation unavailable" };
 
 test("versioned corpus has sixty held-out cases, twelve development cases and twelve correlated families", () => {
   const tasks = terminalTaskCorpus(); assert.equal(tasks.length, 72); assert.equal(new Set(tasks.map(task => task.id)).size, 72);
@@ -14,7 +20,7 @@ test("versioned corpus has sixty held-out cases, twelve development cases and tw
   for (const task of tasks) assert.ok(Object.values(task.files).every(text => !text.includes("hiddenChecks")));
 });
 
-test("every reference passes isolated independent grading and every starter fails", { timeout: 120000 }, async () => {
+test("every reference passes isolated independent grading and every starter fails", { ...isolated, timeout: 120000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-selfcheck-"));
   try {
     for (const task of terminalTaskCorpus()) {
@@ -29,7 +35,7 @@ test("every reference passes isolated independent grading and every starter fail
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("grading rejects preservation/scope violations even when implementation passes", async () => {
+test("grading rejects preservation/scope violations even when implementation passes", isolated, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-scope-"));
   try {
     const task = terminalTaskCorpus()[0]!; const workspace = path.join(root, task.id); await materializeTerminalTask(task, workspace);
@@ -42,7 +48,7 @@ test("grading rejects preservation/scope violations even when implementation pas
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("lower-bound grading rejects a correct linear scan and an input-mutating implementation", async () => {
+test("lower-bound grading rejects a correct linear scan and an input-mutating implementation", isolated, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-mutations-"));
   try {
     const task = terminalTaskCorpus().find(task => task.id === "lower-bound-1")!;
@@ -60,7 +66,7 @@ test("lower-bound grading rejects a correct linear scan and an input-mutating im
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("grading accepts any error class where the published contract does not specify one", async t => {
+test("grading accepts any error class where the published contract does not specify one", isolated, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-error-contract-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const id of ["ttl-lru-1", "stable-unique-1"]) {

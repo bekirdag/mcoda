@@ -13,6 +13,19 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("workspace aliases pin the same canonical session identity", async t => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-session-alias-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "workspace"); const alias = path.join(parent, "alias");
+  await fs.mkdir(root); await fs.symlink(root, alias);
+  const options = { resolved, docdex: false, storageRoot: path.join(parent, "state") };
+  const direct = new SessionController({ ...options, workspaceRoot: root });
+  const aliased = new SessionController({ ...options, workspaceRoot: alias });
+  assert.equal(aliased.workspaceRoot, await fs.realpath(root));
+  assert.equal(direct.workspaceRoot, aliased.workspaceRoot);
+  await aliased.start("Inspect the workspace");
+});
+
 test("initial scoped claim retains criteria and rejects traversal or later scope replacement atomically", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scoped-claim-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scoped-claim-state-"));

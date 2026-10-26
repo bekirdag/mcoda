@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "C development recovery evaluation (DAG and journal passed; TTL running); fresh node package native binding/live qualification; media GPU scheduler backport tested, crash recovery/capacity and root backend deployment still pending.",
+  "currentTask": "Fixing Linux/macOS CI qualification (workspace canonical aliases fixed locally; macOS Node sandbox SIGABRT under diagnosis). Frozen C development evaluation complete: 9/12 passed, three failures retained. Production backend root deployment remains pending.",
   "tasks": [
     {
       "id": "P0.1",
@@ -12,7 +12,8 @@
       "status": "in_progress",
       "evidence": [
         "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain.",
-        "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing."
+        "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing.",
+        "Fresh isolated node package passed four live Raijin Strata cases (direct, gateway, staged job, unadmitted-model rejection) with loopback route observations. Suku qualification and production activation remain pending."
       ]
     },
     {
@@ -32,8 +33,10 @@
     {
       "id": "P0.4",
       "description": "Run a small baseline corpus through current Codali. Capture success, tool validity, queue time, latency, tokens and failure modes. Record production traffic baselines for TNL/BDYA/Logmira before adding CLI load.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Frozen development clients A/B/C evaluated; B 6/12 and C 9/12 on Suku. C failures stable-unique, relative-path and budget-receipts preserved. Runs use 12 correlated task families; held-out/planning/production-baseline qualification remains."
+      ]
     },
     {
       "id": "P0.5",
@@ -50,8 +53,10 @@
     {
       "id": "P0.7",
       "description": "Refresh the read-only hardware/residency audit in Section 4.4 and extend it with controlled peak-memory measurements under text, retrieval, vision and media workloads. The selected qualification profiles are SERA-14B Q4_K_M on Suku GPU1 and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1, with SERA-8B as a Suku alternative. Preserve the measured reservations/guards and validate production coexistence; the passive baseline alone does not qualify an installation.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "2026-10-26 passive GPU1 minima: Suku 16145 MiB free, below SERA-14B 16384 MiB admission threshold; Raijin 6777 MiB free. Optional models remain disabled; peak coexistence and physical admission are unqualified."
+      ]
     },
     {
       "id": "P0.8",

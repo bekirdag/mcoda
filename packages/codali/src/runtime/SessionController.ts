@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionStore } from "../session/SessionStore.js";
@@ -172,7 +172,9 @@ export class SessionController {
 
   constructor(private readonly options: SessionControllerOptions) {
     this.options = { ...options, resolved: pinOrchestrationConfig(options.resolved) };
-    this.workspaceRoot = path.resolve(options.workspaceRoot);
+    // Pin identity before computing storage and lock paths. macOS exposes /var
+    // through /private/var; both spellings must refer to the same session.
+    this.workspaceRoot = realpathSync(options.workspaceRoot);
     const storage = options.storageRoot ?? path.join(os.homedir(), ".local", "state", "codali", "workspaces", hash(this.workspaceRoot));
     if (path.resolve(storage) === this.workspaceRoot || path.resolve(storage).startsWith(`${this.workspaceRoot}${path.sep}`)) throw new Error("Choose a repository workspace that does not contain Codali's private session storage");
     this.store = new SessionStore({ workspaceRoot: this.workspaceRoot, storageDir: path.join(storage, "sessions"), allowExternalStorage: true });
