@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Candidate J (fd2c25a) isolates native transport metadata and restores local registry tier eligibility. Both-host five-scenario native tests passed; Raijin deployed three-scenario matrix and TNL alias stability passed; Suku activation underway. Backend I images (5566c7055) passed isolated bootstrap/health/schema qualification but root rollout remains pending. Fixes for truncation-lost receipt handles, test summary review and focused plan updates pass215 runtime/session/tool tests plus13 Runner tests. All four frozen V journeys exhausted their shared2.4M token budget; preserve failures and investigate before a new run.",
+  "currentTask": "Both production nodes run J (fd2c25a), with five-scenario native qualification and three-scenario public compatibility tests per host. Real TNL requests exposed gateway worker session creation collisions. The fix gives every worker attempt an independent child session and retains parent/run/task correlation; 34 focused tests and private deployed-TNL request-builder smoke passed. Preparing candidate K for qualification and sequential rollout. Backend I images (5566c7055) remain qualified but undeployed pending protected rollout access. All four frozen V journeys exhausted2.4M token budgets; receipt-retention and focused-plan fixes are committed, with a new evaluation pending.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1336,7 +1336,7 @@
       "limitation": "Reused diagnostic workflows, not fresh holdouts; Suku results retained separately."
     }
   ],
-  "updatedAt": "2026-10-26T12:05:15.852379+00:00",
+  "updatedAt": "2026-10-26T12:29:00Z",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad fresh quality evaluation, four successful multi-hour live journeys, paired helper comparisons, production consumer qualification and the 24-hour canary remain open.",
     "Docdex v0.2.100-codali.2 is published on GitHub and npm next; stable latest remains0.2.99. Pinned Linux/macOS runtime artifacts and private installations are qualified; global existing daemons remain unchanged.",

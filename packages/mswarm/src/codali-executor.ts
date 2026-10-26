@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { nativeReasoningRequest, type NativeReasoningRequest } from "./native-reasoning.js";
 
 export type ProviderRole = "system" | "user" | "assistant" | "tool";
@@ -187,6 +188,7 @@ export interface CodaliRuntimeSubagentsInput {
 
 export interface CodaliRuntimeSessionInput {
   id?: string;
+  parentSessionId?: string;
   storageDir?: string;
   resume?: boolean;
   compactOnFinish?: boolean;
@@ -245,6 +247,9 @@ export interface CodaliRuntimeInput {
   metadata?: {
     jobId?: string;
     requestId?: string;
+    gatewayRunId?: string;
+    gatewayTaskId?: string;
+    parentSessionId?: string;
     tenantId?: string;
     ownerUserId?: string;
     apiKeyId?: string;
@@ -2155,8 +2160,15 @@ function createGatewayTaskRunner(input: {
       const maxSteps = requiredProtocolProvider
         ? Math.max(2, MAX_WORKER_TASK_STEPS)
         : MAX_WORKER_TASK_STEPS;
+      const attemptId = randomUUID();
+      const parentSessionId = input.runtimeInput.session?.id;
       const result = await input.runCodali({
         ...input.runtimeInput,
+        // Workers may overlap or retry. They share inference/tool budgets, but
+        // must never create or append to the parent's mutable session together.
+        session: input.runtimeInput.session ? { ...input.runtimeInput.session, id: attemptId, parentSessionId, resume: false } : undefined,
+        metadata: { ...input.runtimeInput.metadata, requestId: attemptId, gatewayRunId: optionalText(taskInput.runId),
+          gatewayTaskId: isRecord(taskInput.task) ? optionalText(taskInput.task.id) : undefined, parentSessionId },
         task: prompt,
         messages: [{ role: "user", content: prompt }],
         policy: {
@@ -2200,6 +2212,8 @@ function createGatewayTaskRunner(input: {
         ],
         metadata: {
           runtimeRunId: result.runId,
+          sessionId: result.session?.id,
+          parentSessionId,
           toolCallsExecuted: result.toolCallsExecuted,
           warnings: result.warnings,
         },
@@ -2378,7 +2392,9 @@ export class MswarmCodaliExecutor {
       if (gatewayResult.status === "failed") {
         const gatewayFailureCode = optionalText(gatewayResult.telemetry.failureCode) ??
           "GATEWAY_FAILED";
-        const gatewayFailureMessage = gatewayResult.trace.errors[0] ??
+        // The last trace error contains the causal final-policy failure; the
+        // first may be only "worker-id:GATEWAY_WORKER_FAILED".
+        const gatewayFailureMessage = gatewayResult.trace.errors.at(-1) ??
           gatewayResult.answer ??
           "Codali gateway failed without an error message.";
         throw Object.assign(

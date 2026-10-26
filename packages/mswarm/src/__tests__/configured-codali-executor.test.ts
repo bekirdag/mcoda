@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MswarmCodaliExecutor, type MswarmCodaliInvocationInput } from "../codali-executor.js";
+import { MswarmCodaliExecutor, type MswarmCodaliInvocationInput, type CodaliGatewayResult } from "../codali-executor.js";
 
 const fixture = async (t: { after(fn: () => Promise<void>): void }, maxModelCalls = 8) => {
   const root = await mkdtemp(join(tmpdir(), "mswarm-node-orchestration-"));
@@ -92,6 +92,38 @@ test("caller stage metadata cannot elevate an ineligible configured runner to la
   try {
     await assert.rejects(new MswarmCodaliExecutor().invoke(input), /no eligible large-model assignment/);
     assert.equal(mock.routes.length, 0);
+  } finally { mock.restore(); }
+});
+
+test("parallel gateway workers and retries get independent child sessions under one parent", async t => {
+  const input = await fixture(t);
+  // Exercise the real runtime through a deterministic gateway dispatcher.
+  // Configured routing is covered above; session ownership is shared by both.
+  delete input.agent.orchestrationConfigPath;
+  const storage = join(input.workspace!.root, "worker-state");
+  input.session = { id: "parent-conversation", storageDir: storage, resume: false, loadInstructions: false };
+  input.codaliGateway = { query: "Run evidence workers", policy: { requireFinalLargeModel: false } };
+  const children: Array<Record<string, unknown>> = [];
+  input.runCodaliGateway = async (_request, options) => {
+    const run = () => options.taskRunner!.run({ runId: "parent-run", task: { id: "same-task" }, prompt: "Answer briefly", allowedTools: [], remainingToolCalls: 0, timeoutMs: 5000 });
+    children.push(...await Promise.all([run(), run()])); children.push(await run());
+    return { runId: "parent-run", status: "succeeded", answer: "Workers complete", sources: [], confidence: "high", evidence: [],
+      trace: { runId: "parent-run", mode: "balanced", status: "succeeded", iterations: 1, toolCallCount: 0, modelCallCount: 3,
+        consideredTools: [], calledTools: [], warnings: [], errors: [], toolCalls: [], modelCalls: [], events: [] }, telemetry: {} } satisfies CodaliGatewayResult;
+  };
+  const mock = fakeRunner(["Worker one", "Worker two", "Retried worker"]);
+  try {
+    const result = await new MswarmCodaliExecutor().invoke(input); assert.equal(result.output, "Workers complete");
+    const metadata = children.map(child => child.metadata as { sessionId: string; parentSessionId: string; runtimeRunId: string });
+    assert.equal(new Set(metadata.map(child => child.sessionId)).size, 3);
+    assert.equal(new Set(metadata.map(child => child.runtimeRunId)).size, 3);
+    for (const child of metadata) {
+      assert.equal(child.parentSessionId, "parent-conversation"); assert.notEqual(child.sessionId, child.parentSessionId);
+      const saved = JSON.parse(await readFile(join(storage, child.sessionId, "metadata.json"), "utf8"));
+      assert.equal(saved.parentSessionId, child.parentSessionId); assert.deepEqual(saved.runIds, [child.runtimeRunId]);
+    }
+    await assert.rejects(readFile(join(storage, "parent-conversation", "metadata.json")), { code: "ENOENT" });
+    assert.equal(mock.routes.length, 3);
   } finally { mock.restore(); }
 });
 

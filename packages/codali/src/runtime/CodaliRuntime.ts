@@ -241,6 +241,7 @@ export interface CodaliRuntimeSubagentsInput {
 
 export interface CodaliRuntimeSessionInput {
   id?: string;
+  parentSessionId?: string;
   storageDir?: string;
   resume?: boolean;
   compactOnFinish?: boolean;
@@ -308,6 +309,9 @@ export interface CodaliRuntimeInput {
   metadata?: {
     jobId?: string;
     requestId?: string;
+    gatewayRunId?: string;
+    gatewayTaskId?: string;
+    parentSessionId?: string;
     tenantId?: string;
     ownerUserId?: string;
     apiKeyId?: string;
@@ -1810,6 +1814,7 @@ const initializeRuntimeSession = async (
   const instructionSources = instructionBlocks.map((block) => block.sourcePath);
   const metadata = await store.getOrCreateSession({
     sessionId: input.session.id,
+    parentSessionId: input.session.parentSessionId,
     repoRoot: input.workspace.root,
     task: input.task,
     instructionSources,
@@ -1826,6 +1831,9 @@ const initializeRuntimeSession = async (
     data: {
       task: input.task,
       mode: input.policy.mode,
+      gatewayRunId: input.metadata?.gatewayRunId,
+      gatewayTaskId: input.metadata?.gatewayTaskId,
+      parentSessionId: input.session.parentSessionId,
       agent: input.agent?.slug,
       model: input.provider.model,
     },
