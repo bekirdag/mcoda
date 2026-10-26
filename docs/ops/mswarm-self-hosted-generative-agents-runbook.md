@@ -834,3 +834,36 @@ job reported completed, then reconciled its matching durable receipt. Node
 admission was reopened after health checks and a fresh empty active-job check.
 These checks qualify duration and this recovery path; normal-quality media,
 longer video and full CLI job recovery still require their separate gates.
+
+### Legacy gateway and proxy admission drain
+
+`packages/mswarm/scripts/backend-http-drain.mjs` is an operator bootstrap for
+the existing Node HTTP services that lack a shutdown handler. It uses the
+container's loopback inspector and verifies the process id, server port and
+deployment nonce. It refuses ambiguous servers or alternative HTTP request
+dispatch handlers. Qualify the exact runtime and image before using it;
+`process._getActiveHandles()` is an internal Node API used only for this
+legacy deployment procedure. Keep the inspector on container loopback without
+publishing its port.
+
+The `inspect` operation leaves admission unchanged. `barrier` rejects new
+application requests with HTTP503 and Retry-After while preserving health
+checks and the gateway's authenticated node heartbeat, model inventory,
+job polling, start, events and result paths. It applies to internal callers
+and existing keep-alive connections as well as public ingress. Requests
+already executing keep their original handlers.
+
+After installing both barriers, verify the canonical active invocation index
+has no accepted jobs outstanding. Then request `close` on the proxy and gateway
+and wait for each receipt to report `closed`, without a close error. The
+controller closes idle connections only; it never force-closes an active
+response. Recheck both live receipts and the canonical queue immediately
+before replacing containers. A timestamp alone is not a quiescence proof.
+`restore` reopens an unchanged old process if deployment is abandoned; once
+containers have been replaced, the deployment's pinned image/config rollback
+owns recovery. Replacing the old process also removes its temporary inspector.
+
+Tests cover a response held open across the barrier and close, internal
+admission rejection, node callback continuity, nonce/PID mismatch, unsupported
+dispatch, and restoration. The deployment qualification additionally runs
+these tests against Fastify in both exact old container images.

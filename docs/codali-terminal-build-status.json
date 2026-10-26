@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "User authorized root deployment and the protected mSwarm Compose/nginx preflight passed. BackendI images are qualified; internal/public admission and quiescence procedure still must be completed before rollout. Suku media bridges and native WebM duration fix are deployed; fresh generation, physical bridge-owner death/reconciliation and three public paths pass. X long-workflow diagnostics continue; Raijin data-delivery exposed a lone-surrogate context transport failure, fixed with17 provider tests and full regression1538pass/2optional skips; stub CLI/eval tests now isolate live Docdex. Docdex codali.3 release was blocked by new zstd advisories; Tantivy0.27 removes that dependency, compiles and passes33 index tests and zero-vulnerability audit with the existing ring exception. Old-version repository/library index compatibility probe passed; codali.4 full Rust/release qualification remains in progress.",
+  "currentTask": "BackendI gateway/proxy deployed after qualified internal HTTP barriers and zero accepted invocations; both hosts pass public direct, gateway and staged-job compatibility. Full mSwarm tests pass173. Public feature qualification found OpenAI model discovery omits client-granted Raijin nodes, while gateway catalog and direct execution include them; fixing discovery scope before native reasoning validation. Embedding registration and durable-media live validation remain. All four X diagnostics ended unsuccessfully (Unicode transport, native HTTP429, or shared-token budget exhaustion); failures retained. Docdex codali.4 passed1044 Rust tests with3ignored and zero-vulnerability audit under the existing ring exception; tagged release40344916791 is in progress. NodeK still needs the qualified Unicode fix rollout.",
   "tasks": [
     {
       "id": "P0.1",
@@ -16,7 +16,8 @@
         "Fresh isolated node package passed four live Raijin Strata cases (direct, gateway, staged job, unadmitted-model rejection) with loopback route observations. Suku qualification and production activation remain pending.",
         "Suku staged node candidate D passed direct, gateway, staged-job and unadmitted-model rejection with actual loopback Strata observations; both hosts now have isolated candidate qualification. Production activation still pending.",
         "Both production node services now run isolated candidate E (d4e2683) with registry-pinned Strata profiles. Public mSwarm direct, gateway and staged-job requests on each host asserted node identity, strata-local adapter, profile hash and actual nonzero usage.",
-        "Candidate G (90cf4a4) passed five native-reasoning node scenarios on both hosts. Both production nodes now use G; public mSwarm direct, gateway and staged-job compatibility checks passed. The old production proxy still drops native settings; public API native qualification remains pending."
+        "Candidate G (90cf4a4) passed five native-reasoning node scenarios on both hosts. Both production nodes now use G; public mSwarm direct, gateway and staged-job compatibility checks passed. The old production proxy still drops native settings; public API native qualification remains pending.",
+        "2026-10-26 backendI deployed15:09UTC after internal gateway/proxy admission barriers, global accepted-invocation drain and HTTP-close proof. Six public paths across Raijin/Suku pass with Strata/node/config/accounting assertions. Production nodes remainK; new public reasoning/catalog qualification is pending."
       ]
     },
     {
@@ -31,7 +32,8 @@
         "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim.",
         "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved.",
         "Docdex v0.2.100-codali.2 is published on GitHub and npm next; npm latest remains 0.2.99. Release 40282809157 passed after delayed registry visibility retry. Native archive and executable hashes for Linux x64 and macOS x64/arm64 are pinned in packages/codali/config/docdex-runtime.json. Raijin private installation and clean package installation passed.",
-        "Published Docdex 0.2.100-codali.2 private install/cache reuse passed on Suku. Current 90cf4a4 CI40300790887 and six-job platform qualification40300791120 passed with the pinned native downloads."
+        "Published Docdex 0.2.100-codali.2 private install/cache reuse passed on Suku. Current 90cf4a4 CI40300790887 and six-job platform qualification40300791120 passed with the pinned native downloads.",
+        "Docdex codali.4 at2324174 upgrades Tantivy0.27, removes vulnerable zstd chain, preserves old index migration, and passes1044 Rust tests with3ignored. Tag v0.2.100-codali.4 release40344916791 is in progress; native artifact pins are not yet updated."
       ]
     },
     {
@@ -480,7 +482,8 @@
         "Frozen U from90cf4a4 started direct-endpoint diagnostic long journeys on both hosts at09:55UTC2026-10-26 with explicit native high/1024 reasoning and published Docdex. Both initial journeys passed planning and verified-task restart stages and are running steering/continued execution. These reuse known contracts and bypass mSwarm; they do not qualify API native transport or fresh held-out quality.",
         "Frozen U direct Suku service-adapters ended unsuccessfully2026-10-26T10:20:37Z after25.6min and1,998,200 accounted/estimated tokens. Stages1/2 passed; stage3 hit the lifetime unfinished-response counter, with final visible output containing undeclared edit_file markup. Original artifacts retained; no completion or multi-hour qualification claim. Inspection found the counter resets per turn but not after useful intermediate work; a targeted fix/validation is pending.",
         "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open.",
-        "FrozenV four-scenario diagnostics all exhausted2.4M tokens; no successful or multi-hour qualification. Receipt handle retention after truncation, validation-output summaries and atomic focused plan updates are fixed in7f0a61c. Long-workflows-v2 explicitly defines module-relative report source paths and includes prompts/steering in the corpus hash;35 evaluation tests passed. Original failures retained."
+        "FrozenV four-scenario diagnostics all exhausted2.4M tokens; no successful or multi-hour qualification. Receipt handle retention after truncation, validation-output summaries and atomic focused plan updates are fixed in7f0a61c. Long-workflows-v2 explicitly defines module-relative report source paths and includes prompts/steering in the corpus hash;35 evaluation tests passed. Original failures retained.",
+        "All four frozen X direct-native diagnostics ended unsuccessfully: Raijin data-delivery HTTP400 malformed Unicode context; Raijin billing-audit HTTP429; Suku service-adapters and localized-export shared token-budget exhaustion. Original artifacts retained. Unicode code fix is tested but not yet on production nodes. No long-journey pass is claimed."
       ]
     },
     {
@@ -499,7 +502,8 @@
         "G rollout confirmed SIGUSR2 drain completion for each exact process, immutable candidate hashes, and a fresh canonical invocation query before restart. Leased/started work blocks activation; gateway-owned queued work with no start may survive a node-only replacement. Observed queued Raijin invocation shi_031ced88aa764120b966efd2e56cdb1d completed successfully after replacement. No backend restart was performed.",
         "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified.",
         "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
-        "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed."
+        "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed.",
+        "Legacy backend drain controller qualified on exact production Node20/Fastify gateway and proxy images: barriers preserve node result callbacks, reject new inference, close waits for accepted HTTP responses, idle connections are reaped without force-closing active responses. Three tests pass per image; full mSwarm170 plus drain3 pass. BackendI rollout completed with live quiescence proof."
       ]
     },
     {
@@ -512,7 +516,8 @@
         "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim.",
         "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication.",
         "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending.",
-        "25570f5 general CI40294819863 and platform40294819705 passed; all six Linux/macOS x64/arm64 Node20/22 jobs installed the pinned published Docdex native runtime and checked first-install/cache canonical identity."
+        "25570f5 general CI40294819863 and platform40294819705 passed; all six Linux/macOS x64/arm64 Node20/22 jobs installed the pinned published Docdex native runtime and checked first-install/cache canonical identity.",
+        "9ac3db8 CI40342049684 and six-job platform qualification40342049703 passed. Full Codali1538pass/2optional skips and mSwarm173pass locally; these checks do not substitute for remaining live quality gates."
       ]
     },
     {

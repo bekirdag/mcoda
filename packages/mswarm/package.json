@@ -16,13 +16,15 @@
     "scripts",
     "!scripts/**/__pycache__/**",
     "!scripts/**/*.pyc",
+    "!scripts/**/*.test.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "pnpm --filter @mcoda/shared run build && pnpm --filter @mcoda/codali run build && tsc -p tsconfig.json && node ../../scripts/copy-mswarm-codali-vendor.js",
     "lint": "echo \"lint not configured\"",
-    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
+    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist && pnpm run test:backend-drain",
+    "test:backend-drain": "node --experimental-websocket --test scripts/backend-http-drain.test.mjs"
   },
   "engines": {
     "node": ">=20"
