@@ -26,7 +26,7 @@ export function resolvePackageDirs(env = process.env) {
   }
 
   if (env.MCODA_PUBLISH_CODALI === '1') {
-    packageDirs.splice(packageDirs.indexOf('packages/mswarm'), 0, 'packages/codali');
+    packageDirs.splice(packageDirs.indexOf('packages/cli'), 0, 'packages/codali');
   } else {
     console.log('Skipping @mcoda/codali publish; set MCODA_PUBLISH_CODALI=1 after npm package access is configured.');
   }

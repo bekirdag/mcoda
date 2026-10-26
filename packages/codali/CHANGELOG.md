@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.1.135-codali.1 - 2026-10-26
+
+- Internal terminal CLI prerelease with mSwarm authentication, configuration-driven
+  model roles and effort, durable goals and tasks, scoped permissions, asynchronous
+  shell execution, session recovery, and interactive or JSONL operation.
+- Add managed Docdex with verified runtime artifacts, pinned embedding identity,
+  public embedding transport, memory persistence, and success/failure usage receipts.
+- Add durable image, audio, and video jobs with artifact checksums and recovery.
+- Preserve native Strata reasoning metadata and shared orchestration budgets;
+  correct false worker-substitution diagnostics for embedded consumers.
+- Broad held-out evaluation, successful multi-hour journeys, helper comparisons,
+  consumer rollout, and the 24-hour canary remain release gates. This prerelease
+  is for internal validation and is published on the `next` channel.
+
 ## 0.1.134 - 2026-10-25
 
 - Forward final synthesis schemas and preserve OpenAI tool-call history.

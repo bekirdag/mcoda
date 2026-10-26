@@ -7,6 +7,7 @@ import {
   npmPublishArgs,
   publicationChannel,
   registryVersionState,
+  readPackage,
   resolvePackageDirs,
   verifyPublishedInstall,
 } from '../../scripts/publish-npm-packages.js';
@@ -74,6 +75,14 @@ test('opt-in packages publish after the packages they depend on', () => {
   assert.ok(dirs.indexOf('packages/shared') < dirs.indexOf('packages/db'));
   assert.ok(dirs.indexOf('packages/db') < dirs.indexOf('packages/codali'));
   assert.ok(dirs.includes('packages/agent-setup'));
+  const manifests = dirs.map(readPackage);
+  const order = new Map(manifests.map((manifest, index) => [manifest.name, index]));
+  for (const [index, manifest] of manifests.entries()) {
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (order.has(name)) assert.ok(order.get(name) < index,
+        `${name} must be installable before publishing ${manifest.name}`);
+    }
+  }
 
   const optedOut = resolvePackageDirs({});
   assert.ok(!optedOut.includes('packages/codali'));
