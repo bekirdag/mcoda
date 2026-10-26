@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Windows atomic rename fix passed real reader-lock and media persistence checks (Codali Windows: 1,376 passed/125 skipped). Overall CI 40387992103 later failed a separate Python auth-guard startup timeout. macOS Git receipts exposed an Apple launcher/Xcode sandbox issue; native Git discovery fix passes 61 local tests/one skip and awaits macOS CI. Logmira .2 consumer upgrade 48072c4ec passed 189 tests and has all 213 application artifacts byte-identical to production; runtime image building. AA remains active; no stable promotion or canary start.",
+  "currentTask": "Source bc91c761 passes CI40393105463 (Linux/Windows) and all six Linux/macOS Node20/22 platform jobs40393106353. Preparing prerelease0.1.135-codali.4 with login echo, Windows atomic state, budget inspection, native macOS Git, /dev/null and isolated Git configuration fixes. Logmira qualified .2 image and PR3 are ready; app/worker activated20:20UTC after clean shutdown proofs; Wodo/Heka postdeploy probes are running. All four AA long workflows completed with stable environments but failed at the2.4M-token budget; no stable promotion or24h canary start.",
   "tasks": [
     {
       "id": "P0.1",
@@ -234,7 +234,8 @@
       "evidence": [
         "GitHub platform qualification 40262471036 passed Linux/macOS \u00d7 Node20/22 with mandatory real sandbox and Node/pnpm discovery, boundary tests and PTY checks. Private Python/Rust toolchain coverage remains.",
         "Host Python standard libraries and concrete installed Rust toolchains now mount read-only, with private Python/Cargo caches. 18 real shell tests passed including Python unittest and offline Rust compilation; full Codali suite 1335 passed/1 optional skip. New Linux/macOS Node20/22 matrix qualification remains.",
-        "Python/Rust isolation, selected macOS SDK visibility and native rustup wrapper resolution qualified on Linux/macOS Node20/22 at a455ed3. Platform and general CI also passed bb15510 and 099fba6; private-runtime changes retain the full platform matrix."
+        "Python/Rust isolation, selected macOS SDK visibility and native rustup wrapper resolution qualified on Linux/macOS Node20/22 at a455ed3. Platform and general CI also passed bb15510 and 099fba6; private-runtime changes retain the full platform matrix.",
+        "bc91c761 passed all six Linux/macOS isolation and exact-artifact installation jobs40393106353. Native Git discovery, exact /dev/null write permission and isolated host Git configuration fix actual macOS failures without widening workspace writes; 53 focused checks passed locally."
       ]
     },
     {
@@ -498,7 +499,8 @@
         "All four frozen X direct-native diagnostics ended unsuccessfully: Raijin data-delivery HTTP400 malformed Unicode context; Raijin billing-audit HTTP429; Suku service-adapters and localized-export shared token-budget exhaustion. Original artifacts retained. Unicode code fix is tested but not yet on production nodes. No long-journey pass is claimed.",
         "Frozen Z first results: data-delivery all four module grades pass but budget exhausted before completion; service-adapters budget exhausted with an unfinished interval module; localized-export stopped after repeated plain-text Qwen tool calls, leaving required modules incomplete. No multi-hour gate passed. Original artifacts retained; billing-audit still running.",
         "Frozen Z completed four failed journeys; billing-audit also exhausted its budget and left required work unfinished. Frozen AA at976ae76 now runs on both hosts. AA localized-export passed all four module grades but exhausted2.4M tokens before R1/final goal verification, five compactions and the fourth process. The handoff fix prevents the earlier plain-text-tool stall; no long-journey qualification is claimed.",
-        "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open."
+        "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open.",
+        "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained."
       ]
     },
     {
@@ -535,7 +537,8 @@
         "9ac3db8 CI40342049684 and six-job platform qualification40342049703 passed. Full Codali1538pass/2optional skips and mSwarm173pass locally; these checks do not substitute for remaining live quality gates.",
         "cd657cb frozenY client packed and clean-installed with5662file hashes; full1542pass/2optional skip and staged Docdex gate passed. CI40356295365/platform40356295585 pending at recording.",
         "5150c73 and40d5833 six-platform Linux/macOS package/isolated install matrices passed. Prerelease codali.1 release40364363507 was cancelled after macOS and Windows failures. edb7f75 repairs Windows 8.3 canonical paths/transcript truncation and deterministic image-handler saturation test; new cross-platform checks running. No mcoda prerelease published.",
-        "Release40376949005 at436e0b1 passed six packaging jobs and six Linux/macOS Node20/22 exact-tarball clean installs. The downloaded Linux publication archive has ten SHA256-verified tarballs. Registry @mcoda/codali0.1.135-codali.2 matches qualified sha512 and installs with its dependencies in a fresh directory."
+        "Release40376949005 at436e0b1 passed six packaging jobs and six Linux/macOS Node20/22 exact-tarball clean installs. The downloaded Linux publication archive has ten SHA256-verified tarballs. Registry @mcoda/codali0.1.135-codali.2 matches qualified sha512 and installs with its dependencies in a fresh directory.",
+        "bc91c761 CI40393105463 passed Linux and Windows; six-platform qualification40393106353 passed Linux x64/macOS Intel/macOS ARM on Node20/22. Version-only .4 preparation follows the cancelled immutable .3 tag."
       ]
     },
     {
@@ -554,7 +557,9 @@
         "Prerelease codali.2 publisher accepted nine packages, then failed its twelve-attempt install check because Codali was not yet visible (ETARGET). The identical registry artifact is now visible and clean-installable; reran only failed publication job to complete @mcoda/mswarm. Stable latest remains0.1.134. No tag or package bytes were replaced.",
         "Release 40376949005 retry succeeded. All ten npm .2 tarballs independently downloaded and SHA256/SHA512 matched exact qualified 436e0b1 artifacts; next=.2/latest=.134. Logmira isolated .2 candidate passed build and 189 tests/16 files with networking disabled; production rollout pending.",
         "Preparing next prerelease 0.1.135-codali.3 for the credential prompt and validation-budget fixes. All eleven version manifests aligned; packages/testing excluded. This candidate requires the release artifact/platform gates and is not a stable promotion.",
-        "Retained tag v0.1.135-codali.3 at2242111; release40386918780 cancelled before publication after unrelated Windows CI revealed shared persistence rename EPERM. Fix under validation; do not reuse the tag or claim .3 was published."
+        "Retained tag v0.1.135-codali.3 at2242111; release40386918780 cancelled before publication after unrelated Windows CI revealed shared persistence rename EPERM. Fix under validation; do not reuse the tag or claim .3 was published.",
+        "Logmira .2 runtime image26aaf28ec7da passed package import and213-file byte identity; source48072c4ec is pushed as sealunit/okacam PR3. First worker shutdown was clean, but old app exited naturally after its HTTP listener closed; original app/worker restored. Node20 Express fixture with unreferenced IPC reproduced the missing keep-alive and passes after correction, including restore and natural exit. Retry awaits active GitHub sync; no new image activated.",
+        "Logmira .2 activated2026-10-26T20:20:54UTC: app and worker image26aaf28ec7da, canonical source48072c4ec. Both old processes exited0 after exact idle checks; HTTP closure proved before app shutdown. MySQL container unchanged, both restart policies restored, package identity/import and health pass. Wodo/Heka live probes pending."
       ]
     },
     {
@@ -1607,6 +1612,21 @@
         "/home/wodo/.local/state/codali-macos-git-focused.log"
       ],
       "limitation": "Native Git selection is confined to the existing developer root. Actual macOS CI must confirm the fix."
+    },
+    {
+      "check": "macOS Git and null-device corrections",
+      "status": "passed",
+      "source": "bc91c761142118e0c02eb37ef76bcaf399200af5",
+      "focusedPassed": 53,
+      "ciRun": 40393105463,
+      "platformRun": 40393106353,
+      "platformJobsPassed": 6,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-macos-gitconfig-tests2.log",
+        "/home/wodo/.local/state/codali-logmira-http-keepalive-red.log",
+        "/home/wodo/.local/state/codali-logmira-http-keepalive-green.log"
+      ],
+      "limitation": "Cross-platform fixture success does not establish long-workflow quality, mixed production SLOs or canary completion."
     }
   ],
   "updatedAt": "2026-10-26T19:47:22.745889+00:00",
