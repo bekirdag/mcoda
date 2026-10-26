@@ -17,6 +17,41 @@ def read_until(predicate,seconds=5):
    if not chunk:break
    captured+=chunk
  raise AssertionError('Terminal expectation failed: '+captured[-1200:].decode(errors='replace'))
+def check_masked_login(node,cancel=False):
+ key='synthetic-login-key-12'; secret_prefix=b'synthetic-login-key-1'
+ module=(pathlib.Path(__file__).resolve().parent.parent/'packages/codali/dist/cli/TerminalCredentials.js').as_uri()
+ source="import assert from 'node:assert/strict';import {readTerminalCredential} from "+json.dumps(module)+";"
+ if cancel:
+  source+="await assert.rejects(readTerminalCredential(false),/Login cancelled/);"
+ else:
+  source+="assert.equal(await readTerminalCredential(false),"+json.dumps(key)+");"
+ source+="assert.equal(process.stdin.isRaw,false);console.log('MASKED_INPUT_OK');"
+ auth_master,auth_slave=pty.openpty();auth_process=None;output=b''
+ try:
+  auth_process=subprocess.Popen([node,'--input-type=module','-e',source],stdin=auth_slave,stdout=auth_slave,stderr=auth_slave,close_fds=True)
+  os.close(auth_slave);auth_slave=None
+  def until(marker):
+   nonlocal output
+   deadline=time.monotonic()+5
+   while time.monotonic()<deadline:
+    if marker in output:return
+    if select.select([auth_master],[],[],0.05)[0]:
+     try:chunk=os.read(auth_master,65536)
+     except OSError:break
+     if not chunk:break
+     output+=chunk
+   raise AssertionError('Masked input expectation failed: '+output[-1200:].decode(errors='replace'))
+  until(b'mSwarm API key: ')
+  os.write(auth_master,secret_prefix+(b'\x03' if cancel else b'X\x7f2\r'))
+  until(b'MASKED_INPUT_OK');auth_process.wait(timeout=5)
+  assert auth_process.returncode==0
+  assert secret_prefix not in output,'Input was echoed in plain text'
+  assert b'*'*len(secret_prefix) in output,'Input was not masked'
+  if not cancel:assert b'\b \b' in output,'Backspace did not erase the mask'
+ finally:
+  if auth_process and auth_process.poll() is None:auth_process.terminate();auth_process.wait(timeout=5)
+  os.close(auth_master)
+  if auth_slave is not None:os.close(auth_slave)
 try:
  fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,90,0,0))
  p=subprocess.Popen([sys.argv[1] if len(sys.argv)>1 else 'node',str(pathlib.Path(__file__).resolve().parent.parent/'packages/codali/dist/cli.js'),'chat','--config',str(configuration),'--workspace-root',str(workspace),'--permissions','plan'],stdin=slave,stdout=slave,stderr=slave,close_fds=True)
@@ -30,7 +65,9 @@ try:
  os.write(master,b'\x15/effort high\r');read_until(lambda data:b'"requested": "high"' in data or b'"effort": "high"' in data)
  os.write(master,b'/quit\r');read_until(lambda data:b'\x1b[?2004l' in data)
  p.wait(timeout=5);assert p.returncode==0
- print(json.dumps({'passed':True,'checks':['interactive status','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','effort command','clean quit restores bracketed paste']}))
+ node=sys.argv[1] if len(sys.argv)>1 else 'node'
+ check_masked_login(node);check_masked_login(node,cancel=True)
+ print(json.dumps({'passed':True,'checks':['interactive status','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','effort command','clean quit restores bracketed paste','masked login input and backspace','login cancellation restores terminal']}))
 finally:
  if p and p.poll() is None:p.terminate();p.wait(timeout=5)
  os.close(master)

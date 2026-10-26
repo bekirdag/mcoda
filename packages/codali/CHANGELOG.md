@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Disable terminal echo before displaying the API-key prompt, preventing fast
+  input from being echoed. Verify masked entry, backspace, cancellation, key
+  rotation, logout, credential-cache refresh and bounded piped input.
+
 ## 0.1.135-codali.2 - 2026-10-26
 
 - Keep core tool definitions available across task handoffs, while requiring a

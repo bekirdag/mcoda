@@ -41,6 +41,6 @@ export const readTerminalCredential = async (fromStdin: boolean): Promise<string
         else if (character >= " " && character <= "~") { value += character; process.stderr.write("*"); if (value.length > 8192) { finish(new Error("API key is too large")); return; } }
       }
     };
-    process.stderr.write("mSwarm API key: "); process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on("data", onData);
+    process.stdin.setRawMode(true); process.stdin.on("data", onData); process.stdin.resume(); process.stderr.write("mSwarm API key: ");
   });
 };
