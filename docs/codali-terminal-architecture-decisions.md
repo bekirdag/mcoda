@@ -156,7 +156,7 @@ second render. Artifact receipts bind source job, model, configuration, format,
 size and checksum. Physical GPU admission and native-process recovery are server
 responsibilities, not claims the CLI can infer from an HTTP timeout.
 
-The packaged Docdex manifest remains empty until published artifacts qualify.
+The packaged Docdex manifest pins the qualified v0.2.100-codali.2 Linux x64 and macOS x64/arm64 artifacts; clean installs passed on Node20 and Node22.
 Backend durable-media/embedding changes and physical media scheduling still need
 production activation and mixed-tenant tests before the out-of-box promise is met.
 
