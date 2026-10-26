@@ -5,6 +5,9 @@ import { isVerificationCommand } from "../VerificationCommand.js";
 test("common presentation flags and direct Node test files retain validation eligibility", () => {
   for (const [command, args] of [
     ["npm", ["--silent", "test"]], ["npm", ["-s", "run", "typecheck"]],
+    ["npm", ["--prefix", "modules/parser", "test"]], ["npm", ["--prefix=modules/parser", "-s", "run", "typecheck"]],
+    ["pnpm", ["-C", "modules/parser", "test"]], ["pnpm", ["--dir=modules/parser", "run", "test:unit"]],
+    ["yarn", ["--cwd", "modules/parser", "test"]], ["bun", ["--cwd=modules/parser", "test"]],
     ["pnpm", ["--quiet", "run", "test:unit"]], ["yarn", ["--no-progress", "test"]], ["bun", ["test"]],
     ["node", ["--test", "test/task.test.mjs"]], ["node", ["test/task.test.mjs"]],
     ["node", ["--no-warnings", "test/task.spec.cjs"]], ["tsc", ["--noEmit"]],
@@ -15,6 +18,9 @@ test("common presentation flags and direct Node test files retain validation eli
 test("help, skipped checks, unknown wrappers and script arguments cannot claim validation", () => {
   for (const [command, args] of [
     ["npm", ["--unknown", "test"]], ["npm", ["run", "echo"]], ["npm", ["--dry-run", "test"]],
+    ["npm", ["--prefix", "test"]], ["npm", ["--prefix", "--silent", "test"]], ["npm", ["--prefix=", "test"]],
+    ["npm", ["--prefix", "modules/parser", "run", "echo"]], ["pnpm", ["--filter", "missing", "test"]],
+    ["yarn", ["--cwd", "modules/parser", "--help", "test"]],
     ["npm", ["run", "test", "--if-present"]], ["node", ["script.js", "--test"]],
     ["node", ["-e", "console.log('ok')", "--test"]], ["echo", ["npm", "test"]],
     ["tsc", ["--version"]], ["tsc", ["-v"]], ["tsc", ["--showConfig"]],

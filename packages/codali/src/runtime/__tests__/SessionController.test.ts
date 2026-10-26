@@ -77,7 +77,7 @@ test("task review isolates sibling code, preserves read dependencies, and still 
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-scope-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   await fs.writeFile(path.join(root, "value.mjs"), "export const value = 1;\n");
-  await fs.writeFile(path.join(root, "value.test.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; import {value} from './value.mjs'; test('value is two',()=>assert.equal(value,2));\n");
+  await fs.writeFile(path.join(root, "value.test.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; import {value} from './value.mjs'; console.log('diagnostic '.repeat(1500)); test('value is two',()=>assert.equal(value,2));\n");
   await fs.writeFile(path.join(root, "api.mjs"), "export const format = 'plain text';\n");
   await fs.writeFile(path.join(root, "notes.txt"), "old\n");
   const objective = "Set value to two, document its plain text format in notes.txt, and produce DELIVERY.md.";
@@ -86,6 +86,11 @@ test("task review isolates sibling code, preserves read dependencies, and still 
     if (request.responseFormat?.type === "json" && !request.tools?.length) {
       const input = JSON.parse(request.messages.at(-1)!.content); reviewed.push(input.task.id);
       assert.equal(input.task.status, "running");
+      if (input.task.id === "A") {
+        assert.match(input.receipts[0].output, /# pass 1/);
+        assert.match(input.receipts[0].output, /# fail 0/);
+        assert.ok(input.receipts[0].output.length <= 2400);
+      }
       if (input.task.id === "B") {
         assert.equal(input.reviewScope, "assigned_task"); assert.equal(input.goal, undefined);
         assert.deepEqual(input.requirements.map((value: { id: string }) => value.id), ["R3"]);
@@ -115,17 +120,18 @@ test("task review isolates sibling code, preserves read dependencies, and still 
       case 3: return call("write_file", { path: "value.mjs", content: "export const value = 2;\n" });
       case 4: return call("run_shell", { command: "node", args: ["--test", "value.test.mjs"] });
       case 5: validation = previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("work_verify", { taskId: "A", attemptId, invocationIds: [validation], summary: "Value is two and the existing test passes." });
-      case 6: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "B" });
-      case 7: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "api.mjs" });
-      case 8: return call("read_file", { path: "notes.txt" });
-      case 9: return call("write_file", { path: "notes.txt", content: "The API uses plain text.\n" });
-      case 10: return call("work_verify", { taskId: "B", attemptId, invocationIds: [], summary: "Documented the API's plain text format." });
-      case 11: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "integration" });
-      case 12: attemptId = JSON.parse(previous()).attemptId; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
-      case 13: assert.match(previous(), /stale/); return call("run_shell", { command: "node", args: ["--test", "value.test.mjs"] });
-      case 14: validation = previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
-      case 15: assert.equal(JSON.parse(previous()).verified, false); assert.match(previous(), /DELIVERY.md/); return call("work_complete", {});
-      case 16: assert.match(previous(), /work remains/); return call("work_block", { taskId: "integration", reason: "Fixture ends with a deliberately missing delivery artifact." });
+      case 6: assert.equal(JSON.parse(previous()).verified, true); return call("work_plan", { mode: "update", tasks: [{ id: "B", title: "Document format", requirementIds: ["R3"], dependsOn: ["A"], allowedPaths: ["notes.txt"] }] });
+      case 7: return call("work_claim", { taskId: "B" });
+      case 8: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "api.mjs" });
+      case 9: return call("read_file", { path: "notes.txt" });
+      case 10: return call("write_file", { path: "notes.txt", content: "The API uses plain text.\n" });
+      case 11: return call("work_verify", { taskId: "B", attemptId, invocationIds: [], summary: "Documented the API's plain text format." });
+      case 12: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "integration" });
+      case 13: attemptId = JSON.parse(previous()).attemptId; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
+      case 14: assert.match(previous(), /stale/); return call("run_shell", { command: "node", args: ["--test", "value.test.mjs"] });
+      case 15: validation = previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
+      case 16: assert.equal(JSON.parse(previous()).verified, false); assert.match(previous(), /DELIVERY.md/); return call("work_complete", {});
+      case 17: assert.match(previous(), /work remains/); return call("work_block", { taskId: "integration", reason: "Fixture ends with a deliberately missing delivery artifact." });
       default: return reply("Integration remains incomplete.");
     }
   } };

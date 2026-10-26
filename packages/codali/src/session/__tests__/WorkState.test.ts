@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeWorkContext, createWorkState, replaceWorkPlan, claimWorkTask, assertWorkAttempt, recordWorkEvidence, verifyWorkTask, completeWorkGoal, amendWorkGoal, recordDecision, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask } from "../WorkState.js";
+import { activeWorkContext, createWorkState, replaceWorkPlan, updateWorkPlan, claimWorkTask, assertWorkAttempt, recordWorkEvidence, verifyWorkTask, completeWorkGoal, amendWorkGoal, recordDecision, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask } from "../WorkState.js";
 import type { WorkState } from "../WorkTypes.js";
 
 const task = (id: string, dependsOn: string[] = []) => ({ id, title: id, requirementIds: ["R1"], dependsOn, allowedPaths: ["src"] });
@@ -26,6 +26,40 @@ test("dependency readiness and one workspace writer are enforced", () => {
   assert.throws(() => claimWorkTask(state, "T3"), /not ready/);
   claimWorkTask(state, "T1");
   assert.throws(() => claimWorkTask(state, "T2"), /already owns/);
+});
+
+test("focused plan updates retain verified work and pending deliverables with the original safety gates", () => {
+  const state = createWorkState("Deliver parser and integration evidence");
+  replaceWorkPlan(state, [{ ...task("T1"), phaseId: "build" }, task("integration", ["T1"]), { ...task("delivery"), allowedPaths: [] }],
+    [{ id: "build", title: "Implementation", dependsOn: [], exitRequirementIds: ["R1"] }]);
+  const first = claimWorkTask(state, "T1").attemptId!; evidence(state, first); verifyWorkTask(state, "T1", first, { "src/a.ts": "old" });
+  const verified = structuredClone(state.tasks[0]); const requirements = structuredClone(state.requirements);
+  updateWorkPlan(state, [{ ...task("delivery"), allowedPaths: ["DELIVERY.md"] }, task("integration", ["T1", "delivery"])], undefined, "Scope the new delivery artifact");
+  assert.deepEqual(state.tasks[0], verified); assert.deepEqual(state.requirements, requirements);
+  assert.equal(state.phases?.[0].id, "build"); assert.equal(state.tasks[1].status, "planned"); assert.equal(state.tasks[2].status, "ready");
+  assert.deepEqual(state.tasks[2].allowedPaths, ["DELIVERY.md"]); assert.equal(state.planHistory?.at(-1)?.tasks[2].allowedPaths.length, 0);
+  const before = structuredClone(state);
+  for (const apply of [
+    () => updateWorkPlan(state, [task("delivery", ["integration"])]),
+    () => updateWorkPlan(state, [{ ...task("T1"), title: "Silently replace verified behavior" }]),
+    () => updateWorkPlan(state, [task("delivery"), task("delivery")]),
+    () => updateWorkPlan(state, [], [{ id: "build", title: "Changed architecture", dependsOn: [], exitRequirementIds: ["R1"] }]),
+  ]) { assert.throws(apply); assert.deepEqual(state, before); }
+  claimWorkTask(state, "delivery");
+  assert.throws(() => updateWorkPlan(state, [task("delivery")]), /current attempt/);
+});
+
+test("focused updates cannot silently reopen unrelated blocked or retired work", () => {
+  const state = createWorkState("Keep blocked work explicit");
+  replaceWorkPlan(state, [task("T1"), task("blocked"), task("cancelled"), task("superseded")]);
+  state.tasks[1].status = "blocked"; state.tasks[1].blocker = "Waiting for an external dependency";
+  state.tasks[2].status = "cancelled"; state.tasks[3].status = "superseded";
+  const retained = structuredClone(state.tasks.slice(1));
+  updateWorkPlan(state, [{ ...task("T1"), allowedPaths: ["src/parser.ts"] }]);
+  assert.deepEqual(state.tasks.slice(1), retained);
+  const before = structuredClone(state);
+  assert.throws(() => updateWorkPlan(state, [{ ...task("T1"), requirementIds: ["unknown"] }]), /unknown/);
+  assert.deepEqual(state, before);
 });
 
 test("releasing an attempt permits replanning without certifying work or accepting late results", () => {

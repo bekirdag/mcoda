@@ -141,6 +141,8 @@ export interface ToolHandlerResult {
 export interface ToolExecutionResult extends ToolHandlerResult {
   ok: boolean;
   error?: ToolError;
+  /** Set by the host's afterTool hook; retained outside output truncation. */
+  invocationReceipt?: { id: string; reference: string };
 }
 
 export type ToolHandler = (args: unknown, context: ToolContext) => Promise<ToolHandlerResult>;

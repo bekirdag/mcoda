@@ -122,6 +122,26 @@ export const replaceWorkPlan = (state: WorkState, tasks: Array<Pick<WorkTask, "i
   state.tasks = next; state.phases = structuredClone(phases); refreshReadyTasks(state);
 };
 
+/** Update named contracts while retaining every unmentioned task and phase. */
+export const updateWorkPlan = (state: WorkState, updates: Parameters<typeof replaceWorkPlan>[1], phaseUpdates: WorkPhase[] = [], reason = "Task plan updated"): void => {
+  unique(updates.map(task => task.id), "task update");
+  unique(phaseUpdates.map(phase => phase.id), "phase update");
+  const tasks = new Map(state.tasks.map(task => [task.id, task]));
+  const phases = new Map((state.phases ?? []).map(phase => [phase.id, phase]));
+  for (const task of updates) tasks.set(task.id, { ...task, status: "planned", evidenceIds: [] });
+  for (const phase of phaseUpdates) phases.set(phase.id, phase);
+  // Reuse the same coverage, verified-contract, dependency and lease fences.
+  const candidate = structuredClone(state);
+  replaceWorkPlan(candidate, [...tasks.values()], [...phases.values()], reason);
+  const updatedIds = new Set(updates.map(task => task.id));
+  candidate.tasks = candidate.tasks.map(task => {
+    const old = state.tasks.find(previous => previous.id === task.id);
+    return old && !updatedIds.has(task.id) && ["blocked", "cancelled", "superseded"].includes(old.status) ? structuredClone(old) : task;
+  });
+  validateWorkState(candidate); refreshReadyTasks(candidate);
+  Object.assign(state, candidate);
+};
+
 export const claimWorkTask = (state: WorkState, taskId: string, leaseMs = 300_000): WorkTask => {
   assert(state.status === "active", "Goal is not active");
   refreshReadyTasks(state);

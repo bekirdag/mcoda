@@ -373,3 +373,15 @@ reached two hours; the runner never inserts idle time. Clean checkpoint recovery
 does not replace crash/uncertain-side-effect fixtures or mixed-media tests. The
 host-owned child launcher passes declared provider credentials to the CLI process
 only; model-requested shell tools retain their separate restricted environment.
+
+Focused replanning can use `work_plan` with `mode: "update"`: only the named
+contracts change, and omitted tasks and phases remain canonical. The default
+`replace` mode still requires the full plan. Both modes enforce required
+coverage, verified task/phase immutability, dependency validity and the single
+active writer rule.
+
+Host-issued tool receipt references survive model-context truncation. Shell
+receipts and independent-review excerpts preserve the beginning, a detected
+failure region, and the end of bounded output; omission markers never imply
+that an unretained full log is available. Successful test exit status remains
+separate from whether the tests prove the requested behavior.

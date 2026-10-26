@@ -54,6 +54,25 @@ test("Runner executes tool calls", { concurrency: false }, async () => {
   assert.equal(result.toolCallsExecuted, 1);
 });
 
+for (const structured of [false, true]) {
+  test(`host receipt references survive ${structured ? "structured" : "text"} output truncation`, async () => {
+    const tools = new ToolRegistry();
+    const data = structured ? { items: Array.from({ length: 20 }, (_, index) => ({ index, value: "example" })) } : undefined;
+    tools.register({ name: "inspect", description: "Inspect", handler: async () => ({ output: data ? JSON.stringify(data) : "large log\n".repeat(500), data }) });
+    let calls = 0;
+    const provider: Provider = { name: "fixture", generate: async request => {
+      if (calls++ === 0) return { message: { role: "assistant", content: "" }, toolCalls: [{ id: "provider-call", name: "inspect", args: {} }] };
+      const output = request.messages.at(-1)!.content;
+      assert.match(output, /TRUNCATED/); assert.match(output, /invocation receipt ID host-receipt; receiptRef=receipt:12345678/);
+      assert.ok(output.length < 600);
+      return { message: { role: "assistant", content: "Done" } };
+    } };
+    const runner = new Runner({ provider, tools, maxSteps: 2, maxToolCalls: 1, maxToolResultChars: 128,
+      context: { workspaceRoot: process.cwd(), afterTool: async (_tool, _args, result) => { result.invocationReceipt = { id: "host-receipt", reference: "receipt:12345678" }; } } });
+    assert.equal((await runner.run([{ role: "user", content: "Inspect" }])).finalMessage.content, "Done");
+  });
+}
+
 test("Runner emits tool events", { concurrency: false }, async () => {
   const tools = new ToolRegistry();
   tools.register({

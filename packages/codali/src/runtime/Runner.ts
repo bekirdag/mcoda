@@ -321,6 +321,9 @@ export class Runner {
           }
           content = truncateToolResult(structured, content, limit).text;
         }
+        if (result.invocationReceipt) {
+          content += `\n\n[Tool metadata: invocation receipt ID ${result.invocationReceipt.id}; receiptRef=${result.invocationReceipt.reference}]`;
+        }
         messages.push(buildToolMessage(call, content));
         await this.onMessages?.([...messages]);
         this.onEvent?.({

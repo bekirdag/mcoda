@@ -6,7 +6,7 @@ export function validationOutputExcerpt(output: string, maximum = 2400): string 
   if (output.length <= maximum) return output;
   output = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
   if (output.length <= maximum) return output;
-  const marker = "\n[... excerpt; full output remains in the receipt ...]\n";
+  const marker = "\n[... output omitted from this excerpt ...]\n";
   const strong = /^(?:\s*not ok\s+\d|\s*FAIL(?:ED)?\s|\s*=+\s*FAILURES\s*=+|\s*error\[E\d+\]|.*: error (?:TS\d+|[A-Z]\d+):?)/m;
   const fallback = /^(?:\s*(?:AssertionError|TypeError|Error):|.*panicked at)/m;
   const failure = strong.exec(output) ?? fallback.exec(output);

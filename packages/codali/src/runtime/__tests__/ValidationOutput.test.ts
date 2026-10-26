@@ -20,7 +20,7 @@ for (const failure of [
   for (const maximum of [600, 900, 2400, 8000]) {
     const excerpt = validationOutputExcerpt(output, maximum);
     assert.ok(excerpt.length <= maximum); assert.ok(excerpt.startsWith(start)); assert.ok(excerpt.endsWith(tail));
-    assert.ok(excerpt.includes(failure)); assert.match(excerpt, /full output remains in the receipt/);
+    assert.ok(excerpt.includes(failure)); assert.match(excerpt, /output omitted from this excerpt/);
   }
 });
 
