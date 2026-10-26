@@ -59,11 +59,11 @@ const families: Family[] = [
     checks: n => `const p='p${n}';const tasks=Object.freeze([{id:'a',dependsOn:Object.freeze([p])},{id:'b',dependsOn:Object.freeze([])},{id:p,dependsOn:Object.freeze([])}].map(Object.freeze));assert.deepEqual(m.orderTasks(tasks),['b',p,'a']);assert.deepEqual(m.orderTasks([]),[]);assert.throws(()=>m.orderTasks([{id:'a',dependsOn:['missing']}]));assert.throws(()=>m.orderTasks([{id:'a',dependsOn:[]},{id:'a',dependsOn:[]}]));assert.throws(()=>m.orderTasks([{id:'a',dependsOn:['b']},{id:'b',dependsOn:['a']}]));assert.throws(()=>m.orderTasks([{id:'a',dependsOn:['a']}]));`,
   },
   {
-    id: "relative-path", contract: "Export safePath(value). Accept only a nonempty POSIX relative path whose slash-separated components are nonempty and neither . nor ... Reject absolute paths, backslashes, control characters, drive prefixes and percent escapes (no decoding). Return valid paths unchanged; all invalid values throw TypeError. Unicode names and ordinary dots/hyphens within names are allowed.",
+    id: "relative-path", contract: "Export safePath(value). Accept only a nonempty POSIX relative path whose slash-separated components are nonempty and are neither the exact component '.' nor '..'. Reject absolute paths, backslashes, control characters U+0000-U+001F and U+007F-U+009F inclusive, drive prefixes and percent escapes (no decoding). Return valid paths unchanged; all invalid values throw TypeError. Unicode names and ordinary dots/hyphens within names are allowed.",
     starter: "export const safePath = value => value.replace('../','');",
-    reference: "export function safePath(value) { if(typeof value!=='string'||!value||/[\\\\%\\x00-\\x1f\\x7f]/.test(value)||/^[A-Za-z]:/.test(value)||value.split('/').some(x=>!x||x==='.'||x==='..'))throw new TypeError('unsafe path');return value; }",
+    reference: "export function safePath(value) { if(typeof value!=='string'||!value||/[\\\\%\\x00-\\x1f\\x7f-\\x9f]/.test(value)||/^[A-Za-z]:/.test(value)||value.split('/').some(x=>!x||x==='.'||x==='..'))throw new TypeError('unsafe path');return value; }",
     smoke: "assert.throws(()=>m.safePath('../secret'),TypeError);",
-    checks: n => `for(const value of ['src/file${n}.mjs','a.b/c-d','ü/文.txt'])assert.equal(m.safePath(value),value);for(const value of ['',null,42,'/etc/passwd','a//b','a/./b','a/../b','a/','C:/x','a\\\\b','%2e%2e/x','x\\u0000y','a\\nb'])assert.throws(()=>m.safePath(value),TypeError);`,
+    checks: n => `for(const value of ['src/file${n}.mjs','a.b/c-d','ü/文.txt','.hidden','..hidden','...','a\\u00a0b'])assert.equal(m.safePath(value),value);for(const value of ['',null,42,'/etc/passwd','a//b','a/./b','a/../b','a/','C:/x','a\\\\b','%2e%2e/x','x\\u0000y','x\\u001fy','x\\u007fy','x\\u0080y','x\\u009fy','a\\nb'])assert.throws(()=>m.safePath(value),TypeError);`,
   },
   {
     id: "journal-tail", contract: "Export readJournal(text). Parse newline-terminated JSON object records with contiguous positive integer seq starting at 1. Ignore any non-newline-terminated final fragment, even if valid JSON. Skip blank complete lines. Reject malformed complete JSON, arrays/null/nonobjects and missing/duplicate/gapped seq. Return records without changing their fields.",
@@ -80,7 +80,7 @@ const families: Family[] = [
     checks: n => `let at=${n};const c=m.createCache(2,()=>at);c.set('a',1,10);c.set('b',2,20);assert.equal(c.get('a'),1);c.set('c',3,30);assert.equal(c.get('b'),undefined);at+=10;assert.equal(c.get('a'),undefined);assert.equal(c.size(),1);c.set('c',4,5);at+=5;assert.equal(c.size(),0);assert.throws(()=>m.createCache(0,()=>0));for(const ttl of [0,-1,Infinity,NaN])assert.throws(()=>c.set('x',1,ttl));`,
   },
   {
-    id: "budget-receipts", contract: "Export createBudget(maxCalls,maxTokens) returning reserve(id,tokens), settle(id,tokens), snapshot(). Positive safe-integer caps required. Nonnegative safe-integer token amounts required. reserve rejects reused IDs and cap breaches without mutation. Reservations increment calls and tokens immediately. settle only once for a pending ID replaces its reservation with actual usage, even if reported usage exceeds the cap (then future admission fails). snapshot is a fresh {calls,tokens,pending} object. A lost response retains its reservation.",
+    id: "budget-receipts", contract: "Export createBudget(maxCalls,maxTokens) returning reserve(id,tokens), settle(id,tokens), snapshot(). Positive safe-integer caps required. Nonnegative safe-integer token amounts required. reserve rejects reused IDs and cap breaches without mutation. Reservations increment calls and tokens immediately. calls is cumulative and is never decremented by settlement. settle only once for a pending ID replaces its token reservation with actual token usage, even if reported usage exceeds the cap (then future admission fails). snapshot is a fresh {calls,tokens,pending} object. A lost response retains its reservation.",
     starter: "export function createBudget(){return{reserve(){},settle(){},snapshot(){return{calls:0,tokens:0,pending:0};}};}",
     reference: "export function createBudget(maxCalls,maxTokens){if(![maxCalls,maxTokens].every(x=>Number.isSafeInteger(x)&&x>0))throw new RangeError('caps');let calls=0,tokens=0;const all=new Set(),pending=new Map();const check=n=>{if(!Number.isSafeInteger(n)||n<0)throw new RangeError('tokens');};return{reserve(id,n){check(n);if(all.has(id)||calls>=maxCalls||tokens+n>maxTokens)throw new Error('admission');all.add(id);pending.set(id,n);calls++;tokens+=n;},settle(id,n){check(n);if(!pending.has(id))throw new Error('receipt');tokens+=n-pending.get(id);pending.delete(id);},snapshot(){return{calls,tokens,pending:pending.size};}};}",
     smoke: "const b=m.createBudget(1,10);b.reserve('a',5);assert.throws(()=>b.reserve('b',1));",
@@ -109,7 +109,7 @@ const families: Family[] = [
   },
 ];
 
-export const TERMINAL_CORPUS_VERSION = "terminal-coding-v2";
+export const TERMINAL_CORPUS_VERSION = "terminal-coding-v3";
 /** One development case plus five held-out seeds per family. These are correlated variants,
  * not 60 independent problem domains. Report family results and retain the long-session corpus. */
 export const terminalTaskCorpus = (): TerminalCorpusTask[] => families.flatMap(family => Array.from({ length: 6 }, (_, variant) => {

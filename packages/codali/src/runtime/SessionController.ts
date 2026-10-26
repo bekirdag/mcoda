@@ -12,6 +12,7 @@ import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGrants, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
+import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { ToolExecutionError, type ToolDefinition, type ToolDescriptor, type ToolExecutionResult } from "../tools/ToolTypes.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -552,7 +553,7 @@ export class SessionController {
     if (!receipt) return "No test/typecheck/lint receipt recorded yet.";
     const changed = Object.entries(await this.hashes()).some(([file, value]) => receipt.inputHashes[file] !== value);
     return JSON.stringify({ receiptRef: this.receiptRef(receipt), command: JSON.stringify(sanitizeArgs(receipt.args)).slice(0, 600), status: receipt.status, observedInputsChangedSinceCheck: changed,
-      output: receipt.output?.slice(0, 900), nextAction: changed ? "Run the relevant check again after finishing the current repair. Previous evidence cannot verify changed inputs."
+      output: receipt.output ? validationOutputExcerpt(receipt.output) : undefined, nextAction: changed ? "Run the relevant check again after finishing the current repair. Previous evidence cannot verify changed inputs."
         : receipt.status === "failed" ? "Resolve this recorded failure before verification. Inspect the command output and relevant source with prepare_edit before a repair; repeating unchanged checks is not a repair."
           : "Use this receipt for work_verify only if it covers the task criteria; independent review and the full freshness check still apply." });
   }

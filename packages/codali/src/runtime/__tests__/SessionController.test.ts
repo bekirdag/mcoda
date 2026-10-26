@@ -136,7 +136,7 @@ test("the latest failed check survives conversation compaction and a new control
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-check-memory-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const marker = "PERSISTED_CHECK_FAILURE_X";
-  await fs.writeFile(path.join(root, "value.test.mjs"), `import test from 'node:test'; import assert from 'node:assert/strict'; test('failure',()=>assert.fail('${marker}'));\n`);
+  await fs.writeFile(path.join(root, "value.test.mjs"), `import test from 'node:test'; import assert from 'node:assert/strict'; for(let i=0;i<18;i++)test('earlier successful validation case '+i,()=>assert.equal(1,1)); test('late failure',()=>assert.fail('${marker}'));\n`);
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test value.test.mjs" } }));
   await fs.writeFile(path.join(root, "notes.txt"), "User-owned notes\n");
   let step = 0;
