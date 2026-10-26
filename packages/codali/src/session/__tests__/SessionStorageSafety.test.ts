@@ -14,7 +14,7 @@ async function fixture() {
   return { root, workspace, outside, store, session: path.join(workspace, ".mcoda/codali/sessions/s") };
 }
 
-test("path validation retries an inode unlinked by an atomic replacement", async t => {
+test("path validation retries an inode unlinked by an atomic replacement", { skip: process.platform === "win32" ? "Windows refuses rename over an open file; this race requires POSIX replacement semantics" : false }, async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
   const file = path.join(f.workspace, "state.json"); const next = `${file}.next`;
   await fs.writeFile(file, "old"); await fs.writeFile(next, "current");
@@ -32,14 +32,17 @@ test("path validation retries an inode unlinked by an atomic replacement", async
   finally { mock.mock.restore(); await handle.close(); }
 });
 
-test("state reads reopen after an atomic replacement without reading the unlinked inode", async t => {
+test("state reads reopen after an atomic replacement without reading the unlinked inode", { skip: process.platform === "win32" ? "Windows refuses rename over an open file; this race requires POSIX replacement semantics" : false }, async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
   const file = path.join(f.workspace, "state.json"); const next = `${file}.next`;
   await fs.writeFile(file, "old"); await fs.writeFile(next, "current");
   const open = fs.open; let raced = false;
   const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
     const handle = await open(...args);
-    if (args[0] === file && !raced) { raced = true; await fs.rename(next, file); }
+    if (args[0] === file && !raced) {
+      raced = true;
+      try { await fs.rename(next, file); } catch (error) { await handle.close(); throw error; }
+    }
     return handle;
   });
   try { assert.equal(await readStateFile(file), "current"); assert.equal(mock.mock.callCount(), 2); }
