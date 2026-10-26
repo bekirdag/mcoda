@@ -18,6 +18,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 
 ## Docdex & QA
 - mcoda depends on the `docdex` CLI for doc search and context stitching.
+- Provision that CLI explicitly or set `MCODA_DOCDEX_BINARY` to its executable; mcoda installation does not install or restart shared Docdex services. `codali setup` independently prepares the terminal client's private pinned runtime.
 - Run `docdex setup` (or `docdexd browser install`) to install the headless Chromium browser used for web enrichment.
 - Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run.

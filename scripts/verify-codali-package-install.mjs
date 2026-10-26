@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadPackedTarballs, packTarballs } from './pack-npm-tarballs.js';
+import { PACKAGE_DIRS, loadPackedTarballs, packTarballs } from './pack-npm-tarballs.js';
 
 // Run after building. This installs real tarballs, including SQLite's native
 // dependency, outside the checkout and never links or installs a global CLI.
@@ -36,7 +36,9 @@ try {
   writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'codali-clean-install', version: '0.0.0', private: true, type: 'module' }));
   writeFileSync(path.join(temporary, 'npmrc'), '');
   writeFileSync(path.join(workspace, 'user-notes.txt'), 'Preserve this existing user file.\n');
-  const packageDirs = ['packages/shared', 'packages/db', 'packages/codali'];
+  // Exercise the complete CLI dependency graph: a transitive installer must not
+  // provision or restart the user's existing global/private Docdex daemons.
+  const packageDirs = PACKAGE_DIRS;
   const first = artifactsDir ? loadPackedTarballs({ root, dest: artifactsDir, packageDirs })
     : packTarballs({ root, dest: path.join(temporary, 'first'), packageDirs });
   const second = artifactsDir ? undefined : packTarballs({ root, dest: path.join(temporary, 'second'), packageDirs });
@@ -50,6 +52,8 @@ try {
   if (artifactsDir && process.env.GITHUB_SHA) report.checks.push('artifact source revision matches the CI checkout');
   const npmOptions = ['--no-audit', '--no-fund', '--userconfig', path.join(temporary, 'npmrc'), '--cache', path.join(temporary, 'npm-cache')];
   run('npm', ['install', ...first.map(item => item.tarballPath), '--ignore-scripts=false', ...npmOptions], 0, 240_000);
+  assert.ok(!existsSync(path.join(project, 'node_modules/docdex')), 'mcoda installation must not install the optional Docdex npm peer');
+  report.checks.push('full mcoda/Codali/mSwarm install without automatic Docdex npm provisioning');
   const codaliRoot = path.join(project, 'node_modules/@mcoda/codali');
   assert.ok(!realpathSync(codaliRoot).startsWith(root + path.sep), 'Installed package must not resolve to the workspace checkout');
   for (const file of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'README.md', 'ORCHESTRATION.md', 'config/orchestration.schema.json', 'config/raijin-suku.example.json', 'config/alternate-local.example.json', 'config/docdex-runtime.json']) {
@@ -62,6 +66,7 @@ try {
   assert.ok(statSync(bin).mode & 0o111, 'Installed codali bin must be executable');
   const version = first.find(item => item.manifest.name === '@mcoda/codali').manifest.version;
   assert.equal(run(bin, ['--version']).trim(), version);
+  assert.match(run(path.join(project, 'node_modules/.bin/mcoda'), ['--version']), new RegExp(version.replaceAll('.', '\\.')));
   assert.match(run(bin, ['--help']), /codali exec/);
   const missingConfig = path.join(temporary, 'absent-orchestration.json');
   const failed = JSON.parse(run(bin, ['exec', 'must not run', '--json', '--workspace-root', workspace, '--config', missingConfig], 1).trim());
@@ -112,7 +117,7 @@ try {
   report.docdexRuntime = JSON.parse(run(process.execPath, [runtimeProbe, path.join(temporary, 'private-runtimes')], 0, 180_000).trim());
   report.checks.push('published Docdex archive/binary pins, native capabilities, private installation and offline cached reuse');
   assert.equal(readFileSync(path.join(workspace, 'user-notes.txt'), 'utf8'), 'Preserve this existing user file.\n');
-  run('npm', ['uninstall', '@mcoda/codali', '@mcoda/db', '@mcoda/shared', '--ignore-scripts', ...npmOptions], 0, 60_000);
+  run('npm', ['uninstall', ...first.map(item => item.manifest.name), '--ignore-scripts', ...npmOptions], 0, 60_000);
   assert.ok(!existsSync(bin));
   assert.ok(!existsSync(codaliRoot));
   assert.equal(readFileSync(path.join(workspace, 'user-notes.txt'), 'utf8'), 'Preserve this existing user file.\n');

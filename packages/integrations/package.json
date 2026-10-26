@@ -42,7 +42,14 @@
     "access": "public"
   },
   "dependencies": {
-    "@mcoda/shared": "workspace:*",
-    "docdex": "^0.2.22"
+    "@mcoda/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "docdex": ">=0.2.22"
+  },
+  "peerDependenciesMeta": {
+    "docdex": {
+      "optional": true
+    }
   }
 }

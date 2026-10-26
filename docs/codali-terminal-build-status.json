@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Source bc91c761 passes CI40393105463 (Linux/Windows) and all six Linux/macOS Node20/22 platform jobs40393106353. Preparing prerelease0.1.135-codali.4 with login echo, Windows atomic state, budget inspection, native macOS Git, /dev/null and isolated Git configuration fixes. Logmira qualified .2 image and PR3 are ready; app/worker activated20:20UTC after clean shutdown proofs; Wodo/Heka postdeploy probes are running. All four AA long workflows completed with stable environments but failed at the2.4M-token budget; no stable promotion or24h canary start.",
+  "currentTask": "Receipt-selection fix 4ea5d61 passes 50 focused and 1567 full-suite tests, plus Linux/Windows and six platform jobs. Published .4 artifacts are byte-verified against qualified archives. Full CLI installation exposed a transitive Docdex npm postinstall that restarted unrelated daemons; AB live comparison was stopped and invalidated. The correction removes automatic Docdex provisioning, supports explicit native CLI resolution, and passes the expanded ten-package installation check. Global CLIs remain .134 pending a corrected release. Stable promotion and 24-hour canary have not started.",
   "tasks": [
     {
       "id": "P0.1",
@@ -18,7 +18,8 @@
         "Both production node services now run isolated candidate E (d4e2683) with registry-pinned Strata profiles. Public mSwarm direct, gateway and staged-job requests on each host asserted node identity, strata-local adapter, profile hash and actual nonzero usage.",
         "Candidate G (90cf4a4) passed five native-reasoning node scenarios on both hosts. Both production nodes now use G; public mSwarm direct, gateway and staged-job compatibility checks passed. The old production proxy still drops native settings; public API native qualification remains pending.",
         "2026-10-26 backendI deployed15:09UTC after internal gateway/proxy admission barriers, global accepted-invocation drain and HTTP-close proof. Six public paths across Raijin/Suku pass with Strata/node/config/accounting assertions. Production nodes remainK; new public reasoning/catalog qualification is pending.",
-        "BackendJ/nodeL now pass both-host direct/gateway/staged and native reasoning preflight, actual ConfiguredProvider Unicode requests, TNL story smoke, BDYA three stages and both Logmira tenants. See validation records; full production coverage remains open."
+        "BackendJ/nodeL now pass both-host direct/gateway/staged and native reasoning preflight, actual ConfiguredProvider Unicode requests, TNL story smoke, BDYA three stages and both Logmira tenants. See validation records; full production coverage remains open.",
+        "Logmira production app/worker now embed0.1.135-codali.2. Postdeploy Wodo/Heka each returned15scoped search hits,4module contexts,grounded answers and warnings[]/failures[]; observed direct Strata receipts across both nodes. Broader scheduled/business coverage remains open."
       ]
     },
     {
@@ -53,7 +54,8 @@
       "evidence": [
         "Frozen development clients A/B/C evaluated; B 6/12 and C 9/12 on Suku. C failures stable-unique, relative-path and budget-receipts preserved. Runs use 12 correlated task families; held-out/planning/production-baseline qualification remains.",
         "Development D completed 11/12 on Suku; budget-receipts failed its generated public tests and exited unsuccessfully. Held-out E started serially at 2026-10-26 03:56 UTC using frozen D client, 60 variants across 12 correlated families; before/after environment fingerprints stop on drift. No broad planning or throughput claim.",
-        "Held-out E completed at 2026-10-26T06:34:13Z: 52/60 passed, 10,123,759 accounted tokens; eight failures and stable captured environment. Correlated families and shared production load limit interpretation. Reused failure cases are diagnostic only."
+        "Held-out E completed at 2026-10-26T06:34:13Z: 52/60 passed, 10,123,759 accounted tokens; eight failures and stable captured environment. Correlated families and shared production load limit interpretation. Reused failure cases are diagnostic only.",
+        "AA all four journeys failed final completion at2.4Mtokens; modules passed4/4,4/4,4/4 and3/4, with25-44failed tool calls per case. Invented receipt IDs recur. AB pins4ea5d61 and repeats the same fixtures/budgets/native profiles after deterministic current-attempt receipt selection; currently running."
       ]
     },
     {
@@ -76,7 +78,8 @@
       "status": "in_progress",
       "evidence": [
         "2026-10-26 passive GPU1 minima: Suku 16145 MiB free, below SERA-14B 16384 MiB admission threshold; Raijin 6777 MiB free. Optional models remain disabled; peak coexistence and physical admission are unqualified.",
-        "2026-10-26 17:01 passive GPU1 audit: Raijin6779MiB free; Suku15921MiB free, below SERA14B16384MiB admission threshold. Pinned Qwen3-4B-Thinking-2507 Q4_K_M downloaded and SHA256 verified, not loaded or qualified. No added residency during frozen Z."
+        "2026-10-26 17:01 passive GPU1 audit: Raijin6779MiB free; Suku15921MiB free, below SERA14B16384MiB admission threshold. Pinned Qwen3-4B-Thinking-2507 Q4_K_M downloaded and SHA256 verified, not loaded or qualified. No added residency during frozen Z.",
+        "Fresh Suku GPU1 samples show15921MiB free, below16384MiB required for the12GiB SERA14B reservation plus4GiB guard. SERA14B was not loaded. Raijin Thinking4B loaded37/37layers at8K/one slot/Q8KV with peak3336MiB and min3437MiB free; stopped afterward, production PIDs unchanged."
       ]
     },
     {
@@ -212,7 +215,8 @@
         "packages/codali/src/session/__tests__/WorkState.test.ts",
         "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification.",
         "CompletionReport uses summaries from accepted receipts attached to currently verified tasks. SessionController skips unreviewed final model generation, rechecks file hashes before final delivery, and makes duplicate completed project submission idempotent. Full suite: 1494 passed, 0 failed, 2 platform skips. Semantic review false acceptance remains an independent live qualification blocker.",
-        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open."
+        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open.",
+        "work_verify can omit invocationIds to select the latest recognized test/typecheck/lint receipt in the current task attempt. It rejects newer failed checks, stale inputs and concurrent unobserved changes; explicit invalid IDs remain errors. Independent review still gates acceptance, and selected receiptRefs are returned for audit. Nine regression cases and full suite pass on4ea5d61."
       ]
     },
     {
@@ -366,13 +370,17 @@
       "id": "P5.6",
       "description": "Qualify the two primary profiles from Section 4.4 first: SERA-14B Q4_K_M on Suku GPU1 within a 12-GiB process reservation plus 4-GiB guard, and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1 within 4 GiB plus a 2-GiB guard. Start at 8K context/one slot/Q8 KV. Compare the 4B candidate against resident 4B Instruct and SERA against the configured lead/worker baseline; record TypeScript task quality, full-task latency and actual loading/prefill/generation peaks. SERA-8B on Suku is a replacement alternative, not another concurrent resident.",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "Initial frozen six-case planning screen: Thinking4B2/6, median11395.5ms; resident Instruct4B3/6,median7010ms. Thinking fits memory but shows no benefit and is rejected for promotion. This is a bounded planning screen, not TypeScript implementation or general architecture qualification. SERA14B admission failed before loading; SERA8B alternative was not evaluated."
+      ]
     },
     {
       "id": "P5.7",
       "description": "Implement shared GPU1 admission and media drain/unload/reload before enabling Suku's specialist. During rollout, install one candidate at a time using pinned verified artifacts, stable GPU UUIDs and disabled-until-qualified configuration entries; canary before promotion. Re-run compatibility, production/vision/media coexistence and configuration-only rollback tests. Reject or resize profiles whose measured peaks breach reservations; retain existing models if the new candidates do not improve the workload.",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "No additional specialist was enabled. The isolated Thinking4B candidate is stopped and its ephemeral credential removed; existing production model PIDs unchanged. SERA14B was not admitted, and no production model was evicted to make room. Shared-media specialist rollout/canary tests are conditional on a future candidate passing admission and quality."
+      ]
     },
     {
       "id": "P5.8",
@@ -500,7 +508,8 @@
         "Frozen Z first results: data-delivery all four module grades pass but budget exhausted before completion; service-adapters budget exhausted with an unfinished interval module; localized-export stopped after repeated plain-text Qwen tool calls, leaving required modules incomplete. No multi-hour gate passed. Original artifacts retained; billing-audit still running.",
         "Frozen Z completed four failed journeys; billing-audit also exhausted its budget and left required work unfinished. Frozen AA at976ae76 now runs on both hosts. AA localized-export passed all four module grades but exhausted2.4M tokens before R1/final goal verification, five compactions and the fourth process. The handoff fix prevents the earlier plain-text-tool stall; no long-journey qualification is claimed.",
         "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open.",
-        "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained."
+        "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained.",
+        "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet."
       ]
     },
     {
@@ -538,7 +547,8 @@
         "cd657cb frozenY client packed and clean-installed with5662file hashes; full1542pass/2optional skip and staged Docdex gate passed. CI40356295365/platform40356295585 pending at recording.",
         "5150c73 and40d5833 six-platform Linux/macOS package/isolated install matrices passed. Prerelease codali.1 release40364363507 was cancelled after macOS and Windows failures. edb7f75 repairs Windows 8.3 canonical paths/transcript truncation and deterministic image-handler saturation test; new cross-platform checks running. No mcoda prerelease published.",
         "Release40376949005 at436e0b1 passed six packaging jobs and six Linux/macOS Node20/22 exact-tarball clean installs. The downloaded Linux publication archive has ten SHA256-verified tarballs. Registry @mcoda/codali0.1.135-codali.2 matches qualified sha512 and installs with its dependencies in a fresh directory.",
-        "bc91c761 CI40393105463 passed Linux and Windows; six-platform qualification40393106353 passed Linux x64/macOS Intel/macOS ARM on Node20/22. Version-only .4 preparation follows the cancelled immutable .3 tag."
+        "bc91c761 CI40393105463 passed Linux and Windows; six-platform qualification40393106353 passed Linux x64/macOS Intel/macOS ARM on Node20/22. Version-only .4 preparation follows the cancelled immutable .3 tag.",
+        "v0.1.135-codali.4 atc275ce1 passed all six package jobs and six Linux/macOS Node20/22 clean-install qualification jobs. Independent Linux install of exact artifact tarballs passed nativeSQLite,privateDocdex,session persistence,version/help and data-preserving uninstall;10artifact manifest hashes verified."
       ]
     },
     {
@@ -559,7 +569,8 @@
         "Preparing next prerelease 0.1.135-codali.3 for the credential prompt and validation-budget fixes. All eleven version manifests aligned; packages/testing excluded. This candidate requires the release artifact/platform gates and is not a stable promotion.",
         "Retained tag v0.1.135-codali.3 at2242111; release40386918780 cancelled before publication after unrelated Windows CI revealed shared persistence rename EPERM. Fix under validation; do not reuse the tag or claim .3 was published.",
         "Logmira .2 runtime image26aaf28ec7da passed package import and213-file byte identity; source48072c4ec is pushed as sealunit/okacam PR3. First worker shutdown was clean, but old app exited naturally after its HTTP listener closed; original app/worker restored. Node20 Express fixture with unreferenced IPC reproduced the missing keep-alive and passes after correction, including restore and natural exit. Retry awaits active GitHub sync; no new image activated.",
-        "Logmira .2 activated2026-10-26T20:20:54UTC: app and worker image26aaf28ec7da, canonical source48072c4ec. Both old processes exited0 after exact idle checks; HTTP closure proved before app shutdown. MySQL container unchanged, both restart policies restored, package identity/import and health pass. Wodo/Heka live probes pending."
+        "Logmira .2 activated2026-10-26T20:20:54UTC: app and worker image26aaf28ec7da, canonical source48072c4ec. Both old processes exited0 after exact idle checks; HTTP closure proved before app shutdown. MySQL container unchanged, both restart policies restored, package identity/import and health pass. Wodo/Heka live probes pending.",
+        "Logmira .2 source48072c4ec/image26aaf28ec7da deployed after worker/app idle proofs,HTTP drain and clean exits; database unchanged. Wodo/Heka postdeploy checks passed. Source draftPR sealunit/okacam3 records exact dependency-only change and189passing tests;213dist files unchanged."
       ]
     },
     {
@@ -1627,19 +1638,95 @@
         "/home/wodo/.local/state/codali-logmira-http-keepalive-green.log"
       ],
       "limitation": "Cross-platform fixture success does not establish long-workflow quality, mixed production SLOs or canary completion."
+    },
+    {
+      "check": "Logmira codali.2 postdeployment",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/logmira-postdeploy2-result.json",
+      "tenants": [
+        "wodo",
+        "heka"
+      ],
+      "sourceCommit": "48072c4eca5642ac80c2653abd8b9f81400f40fe",
+      "image": "raijin-okacam:codali-20261026-0.1.135-codali.2"
+    },
+    {
+      "check": "Thinking4B initial paired planning screen",
+      "status": "rejected",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/thinking4b-qualification-20261026c",
+      "candidatePassed": 2,
+      "baselinePassed": 3,
+      "casesPerModel": 6,
+      "candidateMedianMs": 11395.5,
+      "baselineMedianMs": 7010,
+      "peakMiB": 3336,
+      "minimumFreeMiB": 3437,
+      "productionPidsUnchanged": true,
+      "promoted": false
+    },
+    {
+      "check": "SERA14B GPU1 admission",
+      "status": "not_admitted",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/sera14b-admission-20261026-2045.json",
+      "freeMiB": 15921,
+      "requiredMiB": 16384,
+      "loaded": false
+    },
+    {
+      "check": "Automatic current-attempt validation receipts",
+      "status": "passed",
+      "commit": "4ea5d61b11c586e3994a5990fa2a093a70d5a2cf",
+      "focusedPassed": 50,
+      "fullPassed": 1567,
+      "fullSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-receipt-autoselect-full-tests.log"
+    },
+    {
+      "check": "Qualified codali.4 Linux clean install",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease4-clean-install.json",
+      "revision": "c275ce170a079613d048a8536a69c997431f659f"
+    },
+    {
+      "check": "Frozen AB public long workflows",
+      "status": "invalidated",
+      "commit": "4ea5d61b11c586e3994a5990fa2a093a70d5a2cf",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261026ab.manifest.json",
+      "comparison": "Same AA fixtures, budgets, public transports and native/backend deployment; reused diagnostics, not fresh holdouts.",
+      "interferenceArtifact": "/home/wodo/.local/state/codali-terminal-deployment/workflow-ab-docdex-install-interference.json",
+      "limitation": "Transitive Docdex npm postinstall restarted managed Docdex daemons; runners were stopped with SIGTERM and partial evidence retained. Not a valid quality comparison."
+    },
+    {
+      "check": "codali.4 publication and registry byte verification",
+      "status": "passed",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40395027890",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease4-registry-artifacts/verification.json",
+      "packages": 10,
+      "limitation": "Qualified Codali installation did not cover the full mcoda dependency graph. Subsequent full CLI installation exposed a transitive lifecycle side effect."
+    },
+    {
+      "check": "Full CLI install isolation correction",
+      "status": "local_passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/install-isolation-clean-install.json",
+      "workspaceBuild": "passed",
+      "focusedPassed": 12,
+      "focusedSkipped": 2,
+      "packagingPassed": 1,
+      "limitation": "Local candidate, not published. Expanded platform qualification remains pending."
     }
   ],
-  "updatedAt": "2026-10-26T19:47:22.745889+00:00",
+  "updatedAt": "2026-10-26T21:31:03.485642+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 is published with native/release/security/npm checks passed. mcoda codali.2 passed twelve package/install jobs; nine packages were accepted before registry propagation exceeded the install-check deadline. Failed publisher is retrying against identical qualified artifacts; @mcoda/mswarm publication remains pending. The new masked-login fix3a2a223 requires the next candidate.",
+    "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
-    "Preserve earlier E/U/V/W/X/Y/Z failures. Native embedding batch capacity and public model-alias fixes are deployed. Frozen Z completed four failures. AA uses976ae76 with the same public transports, services and budgets; its first Suku case passed all module grades but failed final completion on the2.4M-token cap. Other AA journeys remain active. Reused contracts are diagnostic, not fresh holdouts; four successful multi-hour journeys remain unqualified.",
-    "TNL, Logmira Wodo/Heka grounded chat and BDYA synthetic stage routes passed on backendJ/nodeL; broad business/background coverage remains open. Logmira production still uses Codali0.1.134. Its isolated source candidate pins published codali.2 and is building; read-only current-worker audit found an active GitHub sync. No consumer replacement or admission closure has occurred; safe drain still needs qualification.",
+    "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
+    "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
     "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
     "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
-    "Native Strata parser replay reproduced Z localized-export plain-text tool calls: run_shell was not declared after claim release. Source976ae76 keeps core schemas visible and requires claims at execution, with a regression proving denied premature writes and successful reclaimed work. Frozen AA preserves same budgets and services to measure the change on live reused workflows; no improvement claim yet."
+    "Core tool schemas remain visible after claim release, with authoritative execution fencing. AA still failed final budget completion. New 4ea5d61 removes model-generated receipt IDs from the normal verification path; nine deterministic cases pass. AB was stopped for installation interference, so no measured live improvement is claimed.",
+    "No additional specialist promoted: Thinking4B fits but underperforms resident4B on the six-case initial planning screen; SERA14B fails current reservation-plus-guard admission. Both smaller planners remain unqualified for general planning; Strata retains lead ownership."
   ]
 }

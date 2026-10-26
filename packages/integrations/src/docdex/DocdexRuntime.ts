@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
+import { accessSync, constants, statSync } from "node:fs";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -62,23 +63,46 @@ const resolveDocdexPackageRoot = (): string | undefined => {
   }
 };
 
-export const resolveDocdexBinary = (): string | undefined => {
+const executable = (file: string): boolean => {
+  try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; }
+};
+
+export const resolveDocdexBinary = (env: NodeJS.ProcessEnv = process.env): string | undefined => {
+  const explicit = env.MCODA_DOCDEX_BINARY ?? env.DOCDEX_BINARY;
+  if (explicit) {
+    if (!path.isAbsolute(explicit) || !executable(explicit)) throw new Error("Docdex binary override must be an absolute executable file");
+    return explicit;
+  }
   const root = resolveDocdexPackageRoot();
-  if (!root) return undefined;
-  return path.join(root, "bin", "docdex.js");
+  if (root) {
+    const wrapper = path.join(root, "bin", "docdex.js");
+    if (executable(wrapper)) return wrapper;
+  }
+  // The optional npm peer is never installed automatically: its postinstall can
+  // restart unrelated daemons. An explicitly provisioned native CLI also works.
+  const names = process.platform === "win32" ? ["docdexd.exe", "docdex.exe"] : ["docdexd", "docdex"];
+  for (const directory of (env.PATH ?? "").split(path.delimiter).filter(path.isAbsolute)) {
+    for (const name of names) {
+      const candidate = path.join(directory, name);
+      if (executable(candidate)) return candidate;
+    }
+  }
+  return undefined;
 };
 
 export const runDocdex = async (
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ stdout: string; stderr: string }> => {
-  const binary = resolveDocdexBinary();
+  const env = buildDocdexEnv(options.env);
+  const binary = resolveDocdexBinary(env);
   if (!binary) {
-    throw new Error("Docdex npm package not found. Install docdex and retry.");
+    throw new Error("Docdex CLI not found. Install Docdex explicitly or set MCODA_DOCDEX_BINARY to its executable. Codali terminal setup manages its own private runtime.");
   }
-  const { stdout, stderr } = await execFile(process.execPath, [binary, ...args], {
+  const javascript = /\.[cm]?js$/i.test(binary);
+  const { stdout, stderr } = await execFile(javascript ? process.execPath : binary, javascript ? [binary, ...args] : args, {
     cwd: options.cwd,
-    env: buildDocdexEnv(options.env),
+    env,
   });
   return { stdout: stdout ?? "", stderr: stderr ?? "" };
 };
