@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen held-out Suku coding evaluation E is running with client/Docdex/backend fingerprints. Both nodes run d4e2683 candidate E and passed public direct/gateway/staged tests. Python/Rust isolation passes locally; platform CI next. Root backend deployment and remaining live release gates are pending.",
+  "currentTask": "Frozen held-out Suku evaluation E continues with unchanged client/Docdex/backend fingerprints. Pinned embedding setup and private Docdex installation are implemented and tested. Docdex 0.2.100-codali.0 prerelease preparation is underway; backend deployment, physical media qualification, application migrations and long-session/release gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -25,7 +25,8 @@
       "evidence": [
         "Docdex TypeScript explicit .js imports now resolve source extensions: 39 parser tests pass; real SessionController graph resolves 33 outbound files. Configurable watcher startup (16 tests) lets private candidate serve mcoda. Global installation/complete index qualification pending.",
         "Managed Docdex changes forward-ported cleanly to upstream bbc2cb3 in a separate checkout, including newer health and web fixes. Combined qualification exposed parallel test failure-history interference; isolation fix and rerun in progress.",
-        "Docdex managed-runtime changes forward-ported to bbc2cb3: 794 library and 33 integration tests passed (one ignored). PR13 at a1ef3a5 passed Linux, Windows and npm installer CI. Optimized binary 6695e8d passed the real Codali managed-Docdex integration; global rollout is pending."
+        "Docdex managed-runtime changes forward-ported to bbc2cb3: 794 library and 33 integration tests passed (one ignored). PR13 at a1ef3a5 passed Linux, Windows and npm installer CI. Optimized binary 6695e8d passed the real Codali managed-Docdex integration; global rollout is pending.",
+        "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress."
       ]
     },
     {
@@ -105,7 +106,9 @@
       "id": "P1.5",
       "description": "Specify setup's package/install behavior and backward-compatible configuration migration. Fix dev version output and stale help/README claims.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Codali 099fba6 privately installs release-pinned Docdex archives, checks archive/binary SHA256, validates runtime capabilities, and saves the native binary identity. Failed qualification leaves the profile unwritten. No artifacts are pinned yet; development setup needs an explicit qualified binary until the prerelease passes."
+      ]
     },
     {
       "id": "P1.6",
@@ -204,7 +207,8 @@
       "status": "in_progress",
       "evidence": [
         "GitHub platform qualification 40262471036 passed Linux/macOS \u00d7 Node20/22 with mandatory real sandbox and Node/pnpm discovery, boundary tests and PTY checks. Private Python/Rust toolchain coverage remains.",
-        "Host Python standard libraries and concrete installed Rust toolchains now mount read-only, with private Python/Cargo caches. 18 real shell tests passed including Python unittest and offline Rust compilation; full Codali suite 1335 passed/1 optional skip. New Linux/macOS Node20/22 matrix qualification remains."
+        "Host Python standard libraries and concrete installed Rust toolchains now mount read-only, with private Python/Cargo caches. 18 real shell tests passed including Python unittest and offline Rust compilation; full Codali suite 1335 passed/1 optional skip. New Linux/macOS Node20/22 matrix qualification remains.",
+        "Python/Rust isolation, selected macOS SDK visibility and native rustup wrapper resolution qualified on Linux/macOS Node20/22 at a455ed3. Platform and general CI also passed bb15510 and 099fba6; private-runtime changes retain the full platform matrix."
       ]
     },
     {
@@ -261,7 +265,9 @@
       "id": "P4.6",
       "description": "Integrate discovered embedding services through the supported Docdex/provider contract. Pin embedding-space identity per index, batch incrementally with cancellation, implement compatible-replica failover and rebuild/switch behavior for incompatible changes, and account for query versus background indexing usage.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Embedding registry metadata now crosses mcoda agent configuration, node heartbeat, gateway validation and catalog. Setup selects only complete pinned contracts and compatible replicas. mcoda bb15510 and backend 37d6a707b tests pass; embedding registration, backend deployment and live remote setup are pending."
+      ]
     },
     {
       "id": "P4.7",
@@ -457,8 +463,10 @@
     {
       "id": "P8.4",
       "description": "Deploy additive backend changes before clients that need them. Gate incompatible capabilities explicitly. Publish a prerelease package, then promote the tested artifact after the canary gates pass. Do not select a future version number until release time.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published."
+      ]
     },
     {
       "id": "P8.5",
@@ -479,7 +487,9 @@
       "decision": "Use runCodaliTask/Runner as the terminal execution path under one session controller; reuse existing tool registry, session persistence, providers and Docdex. Map project-attached tasks through an adapter."
     }
   ],
-  "blockers": [],
+  "blockers": [
+    "Root-owned mSwarm Compose/nginx deployment still needs the previously requested authorized root path; the pending deployment script must be refreshed for the final image and guarded by verified quiescence before execution."
+  ],
   "validation": [
     {
       "check": "Baseline repository suite via docdexd run-tests",
@@ -972,14 +982,77 @@
     {
       "check": "Linux/macOS Node20/22 platform qualification 40262471036 and general CI 40262470948 at a9bbebd",
       "status": "passed"
+    },
+    {
+      "check": "Embedding setup, node and shared full regression at bb15510",
+      "status": "passed",
+      "passed": 1561,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-embedding-full-tests.log"
+    },
+    {
+      "check": "Embedding backend gateway/core/proxy/retention/media suites at 37d6a707b",
+      "status": "passed",
+      "uniqueTests": 171,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-embedding-backend-full-tests.log",
+        "/home/wodo/.local/state/codali-embedding-backend-regression-tests.log"
+      ],
+      "typecheck": "passed"
+    },
+    {
+      "check": "Private runtime installer focused boundaries",
+      "status": "passed",
+      "passed": 12,
+      "artifact": "/home/wodo/.local/state/codali-runtime-install-tests-2.log"
+    },
+    {
+      "check": "Full Codali regression for private runtime setup",
+      "status": "passed",
+      "passed": 1340,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-runtime-install-full-tests.log"
+    },
+    {
+      "check": "Real native runtime identity and managed launch with checksum refusal",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-runtime-native-integration.log",
+      "nativeBinarySha256": "08079107e5c3104a20e675a5c59171fb7275aa6f678a986ef5b30658cf9ca3cf",
+      "limitation": "Stripped development binary at Docdex 64a210c, not a published release artifact."
+    },
+    {
+      "check": "Codali Linux/macOS Node20/22 and general CI at 099fba6",
+      "status": "passed",
+      "runs": [
+        40270467961,
+        40270467925
+      ]
+    },
+    {
+      "check": "Docdex prerelease publication contracts",
+      "status": "passed",
+      "passed": 22,
+      "artifact": "/home/wodo/.local/state/codali-docdex-prerelease-tests-2.log"
+    },
+    {
+      "check": "Docdex prerelease npm installer regression",
+      "status": "passed",
+      "passed": 227,
+      "artifact": "/home/wodo/.local/state/codali-docdex-prerelease-npm-tests.log"
+    },
+    {
+      "check": "Post-incident inference recovery for the affected API-key identity",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/bdya-helper-recovery.tsv",
+      "limitation": "Successful helper and Strata invocations after restart; BDYA application-level outcome remains unverified. Interrupted job explicitly failed and was not replayed."
     }
   ],
-  "updatedAt": "2026-10-26T02:02:00.043907+00:00",
+  "updatedAt": "2026-10-26T04:48:49.482967+00:00",
   "openFindings": [
-    "Suku outbound relay rejects streamed tool calls; nonstreaming is configured, SSE errors now surface.",
-    "Full task completion, embedded config migration, GPU admission, embedding identity, long-task evaluation and release/deploy gates are not yet complete.",
-    "Managed Docdex integration is qualified locally with source changes in /home/wodo/apps/docdex; Docdex release packaging and default installation remain pending.",
-    "mSwarm embedding gateway images built on Suku and loaded on Raijin. Root-owned Compose environment and host nginx require an authorized root deployment path; prepared script includes preflight and rollback. Node candidate is packaged and its sqlite native binding rebuilt; node activation and live gateway embedding verification remain pending.",
-    "Durable media, embeddings and bounded retention cleanup are included in prepared runtime-20261026 gateway/proxy images. Root deployment is pending; enable mediaJobsUrl only after live qualification."
+    "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
+    "Docdex managed runtime is qualified locally and has an isolated installer. The release artifact manifest is intentionally empty until the 0.2.100-codali.0 prerelease passes cross-platform/release gates; automatic installation cannot yet complete.",
+    "Both production nodes run isolated candidate E with verified Strata routes. Gateway/proxy F images are now stale relative to backend 37d6a707b; fresh images and a safe backend rollout are required before live embedding and durable-media qualification.",
+    "No embedding agent is registered in the active catalog yet. Metadata transport/setup tests pass but production end-to-end embeddings require registry configuration and deployed backend/node support.",
+    "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open."
   ]
 }
