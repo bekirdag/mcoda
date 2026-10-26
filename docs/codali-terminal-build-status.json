@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "BackendI gateway/proxy deployed after qualified internal HTTP barriers and zero accepted invocations; both hosts pass public direct, gateway and staged-job compatibility. Full mSwarm tests pass173. Public feature qualification found OpenAI model discovery omits client-granted Raijin nodes, while gateway catalog and direct execution include them; fixing discovery scope before native reasoning validation. Embedding registration and durable-media live validation remain. All four X diagnostics ended unsuccessfully (Unicode transport, native HTTP429, or shared-token budget exhaustion); failures retained. Docdex codali.4 passed1044 Rust tests with3ignored and zero-vulnerability audit under the existing ring exception; tagged release40344916791 is in progress. NodeK still needs the qualified Unicode fix rollout.",
+  "currentTask": "BackendJ at8219395ba deployed after qualified drain; OpenAI model discovery now honors client grants. Both public native reasoning routes preserve high/1024. NodeL/d2b7e53 is deployed on Raijin and Suku after six native checks each; all six postdeploy public direct/gateway/job paths pass. Both Nomic services are registered with identical verified artifact/preprocessing; public 768-dimensional replica vectors match exactly. Public durable-image recovery after killing the local worker passed with one invocation, checksum, export and server acknowledgement; first busy-image failure retained. Docdex codali.4 native artifacts are building. Consumer postdeploy, normal-quality audio/video, long-task/budget/busy failures, fresh holdouts, helper qualification and 24h canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -40,7 +40,9 @@
       "id": "P0.3",
       "description": "With a dedicated test account/workspace, probe mSwarm discovery, quotas, streaming, cancellation, idempotency and job-status behavior on both Raijin and Suku. Inventory Strata-served text models plus smaller, embedding, audio, image and video models; verify placement, entitlement, revisions, supported operations/formats/limits, native reasoning, embedding compatibility and synchronous/asynchronous behavior. Verify each actual transport/adapter rather than assume installation means Codali integration.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "BackendJ public native reasoning preflight and inference passed on both hosts with actual node/Strata/profile provenance and high/1024 metadata. NodeL source d2b7e53 adds Unicode context fix; six private native checks per host and all six public compatibility checks pass."
+      ]
     },
     {
       "id": "P0.4",
@@ -290,7 +292,8 @@
       "description": "Integrate discovered embedding services through the supported Docdex/provider contract. Pin embedding-space identity per index, batch incrementally with cancellation, implement compatible-replica failover and rebuild/switch behavior for incompatible changes, and account for query versus background indexing usage.",
       "status": "in_progress",
       "evidence": [
-        "Embedding registry metadata now crosses mcoda agent configuration, node heartbeat, gateway validation and catalog. Setup selects only complete pinned contracts and compatible replicas. mcoda bb15510 and backend 37d6a707b tests pass; embedding registration, backend deployment and live remote setup are pending."
+        "Embedding registry metadata now crosses mcoda agent configuration, node heartbeat, gateway validation and catalog. Setup selects only complete pinned contracts and compatible replicas. mcoda bb15510 and backend 37d6a707b tests pass; embedding registration, backend deployment and live remote setup are pending.",
+        "Registered embedding-only Nomic agents on both hosts with artifact d4e38889..., mean pooling/L2 normalization and explicit search_query/search_document prefixes. Public API tests return768 finite dimensions and nonzero usage; two probe vectors match exactly across hosts. Remote managed Docdex setup/migration still requires qualification."
       ]
     },
     {
@@ -303,7 +306,9 @@
       "id": "P4.8",
       "description": "Implement durable media jobs and artifact storage/download/receipt handling, with bounded payloads, tenant isolation, safe paths, checksums, expiry/retention and explicit preview/export. Exercise mixed workflows that create and integrate code plus media without a separate planner.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Live public MediaJobStore recovery passed: image worker killed while remote render running, same-id PUT returns same invocation, changed request409, fresh process retrieves original image, checksum/export/ACK verified and server result scrubbed. One invocation only. Normal512x512/24-step red-mug prompt visually matched; full image decode passed. Prior busy429 test retained."
+      ]
     },
     {
       "id": "P4.9",
@@ -470,7 +475,9 @@
       "id": "P7.6",
       "description": "Recover a render completed while the CLI was disconnected, refresh an expired artifact reference and migrate/roll back a model configuration without resubmitting active jobs. Preserve media provenance, accounting and artifact integrity across resume/export.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Public durable-image disconnected-worker recovery qualified on backendJ; normal audio/video and expired-reference/model-revision migration still pending."
+      ]
     },
     {
       "id": "P7.7",
@@ -531,7 +538,8 @@
         "Native transport negotiation is implemented: the proxy advertises per-model version1 only for pinned upgraded nodes; stale nodes reject native requests before dispatch. The CLI checks every configured native parameter before inference, with zero-accounting/refund coverage. 1687 broad client/node tests passed (2 platform skips),44 follow-up session/provider checks passed, and80 backend tests plus typecheck passed. These capability changes are not deployed yet.",
         "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified.",
         "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
-        "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified."
+        "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified.",
+        "BackendJ deployed15:39UTC with rollback I images retained. NodesL activated15:43/15:44UTC after local drain and canonical no-active-job proof; source/profile/manifest hashes verified and owner admission reopened. No Strata engine restart. Consumers require postdeploy requalification."
       ]
     },
     {
