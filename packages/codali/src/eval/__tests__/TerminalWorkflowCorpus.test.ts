@@ -6,6 +6,12 @@ import path from "node:path";
 import { materializeTerminalTask, gradeTerminalTask } from "../TerminalCorpusRunner.js";
 import { terminalWorkflowCorpus, terminalWorkflowCorpusHash } from "../TerminalWorkflowCorpus.js";
 import type { TerminalCorpusTask } from "../TerminalTaskCorpus.js";
+import { executorStatus } from "../../tools/shell/IsolatedExecutor.js";
+
+// General regression runners may lack an OS sandbox. Dedicated platform
+// qualification requires it before running this suite, as for the coding corpus.
+const isolation = executorStatus();
+const isolated = { skip: isolation.available ? false : isolation.reason ?? "Isolation unavailable" };
 
 async function reference(task: TerminalCorpusTask, workspace: string): Promise<void> {
   for (const [file, content] of Object.entries(task.reference)) {
@@ -26,7 +32,7 @@ async function fixture(task: TerminalCorpusTask, action: (workspace: string) => 
 }
 
 for (const task of terminalWorkflowCorpus()) {
-  test(`workflow harness: ${task.id} accepts reference and rejects starter`, { timeout: 30000 }, async () => {
+  test(`workflow harness: ${task.id} accepts reference and rejects starter`, { ...isolated, timeout: 30000 }, async () => {
     await fixture(task, async workspace => {
       const starter = await gradeTerminalTask(task, workspace);
       assert.equal(starter.passed, false);
@@ -46,7 +52,7 @@ test("workflow IDs and content hash are stable and distinct", () => {
 });
 
 for (const mutation of ["wrong-report", "protected-source", "weaken-tests", "extra-file", "missing-report"] as const) {
-  test(`workflow investigation rejects ${mutation}`, { timeout: 30000 }, async () => {
+  test(`workflow investigation rejects ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "investigate-tenant-key")!;
     await fixture(task, async workspace => {
       await reference(task, workspace);
@@ -63,7 +69,7 @@ for (const mutation of ["wrong-report", "protected-source", "weaken-tests", "ext
   });
 }
 
-test("workflow coding still requires extended tests", { timeout: 30000 }, async () => {
+test("workflow coding still requires extended tests", { ...isolated, timeout: 30000 }, async () => {
   const task = terminalWorkflowCorpus()[0];
   await fixture(task, async workspace => {
     await reference(task, workspace);
