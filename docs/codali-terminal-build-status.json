@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen held-out Suku evaluation E continues unchanged. Validation freshness/continuity and native media quarantine fixes pass CI. Docdex codali.1 passed release preflight and is building platform artifacts. Reproducible Codali tarballs and a clean local install passed; the expanded platform matrix and remaining backend/application/long-session/canary gates are open.",
+  "currentTask": "Held-out Suku evaluation E remains frozen and has exposed an actual false completion (budget-receipts-5). Deterministic requested-test evidence and fuller reviewer context are implemented and pass 1349 tests with two skips; fresh live qualification remains required. Package CI passed all six Linux/macOS Node20/22 jobs. Docdex codali.1 platform publication and backend/application/long-session/canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -186,11 +186,12 @@
     {
       "id": "P2.9",
       "description": "Add headless inspect/amend/checkpoint commands and the evidence completion gate using fake providers. Prove a falsely confident model cannot complete an unmet criterion. Small tasks use the same records with minimal planning ceremony.",
-      "status": "complete",
+      "status": "in_progress",
       "evidence": [
         "packages/codali/src/cli/TerminalCommand.ts",
         "packages/codali/src/runtime/__tests__/SessionController.test.ts",
-        "packages/codali/src/session/__tests__/WorkState.test.ts"
+        "packages/codali/src/session/__tests__/WorkState.test.ts",
+        "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification."
       ]
     },
     {
@@ -465,7 +466,8 @@
       "description": "Build reproducible package artifacts and install-test the tarballs on clean supported systems. Verify package files, executable permissions, version/help output, migration and uninstall behavior.",
       "status": "in_progress",
       "evidence": [
-        "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated."
+        "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated.",
+        "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked."
       ]
     },
     {
@@ -1152,6 +1154,33 @@
       "platform": "linux-x64",
       "node": "22.22.1",
       "artifact": "/home/wodo/.local/state/codali-clean-install-local-2.json"
+    },
+    {
+      "check": "Requested test-addition evidence and bounded review source",
+      "status": "passed",
+      "passed": 28,
+      "artifact": "/home/wodo/.local/state/codali-test-addition-focused-3.log"
+    },
+    {
+      "check": "Full Codali suite with explicit test-addition gate and bounded review sources",
+      "status": "passed",
+      "passed": 1349,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-test-addition-full-2.log"
+    },
+    {
+      "check": "Frozen held-out E observed false completion",
+      "status": "failed",
+      "task": "budget-receipts-5",
+      "artifact": "/home/wodo/.local/state/codali-terminal-corpus-heldout-e-suku-20261026/budget-receipts-5/budget-receipts-5.result.json",
+      "promotionBlocked": true
+    },
+    {
+      "check": "Changed reviewer diagnostic replay of budget-receipts-5",
+      "status": "rejected missing tests and settlement call-count defect",
+      "artifact": "/home/wodo/.local/state/codali-review-false-completion-replay.json",
+      "heldOutQualification": false,
+      "tokens": 2576
     }
   ],
   "updatedAt": "2026-10-26T05:19:44.726907+00:00",

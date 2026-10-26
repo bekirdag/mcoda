@@ -109,6 +109,22 @@ repository's absolute paths, independent of the daemon's working directory.
 An empty dependency graph is still incomplete dependency evidence: review imports
 and relevant callers, and verify behavior with tests.
 
+Direct English instructions to add/write/extend tests have an additional
+evidence check: the session must have changed a surviving test source relative
+to its original workspace baseline. An unchanged passing suite, deleted test,
+symlink or JSON fixture alone does not satisfy that check. This recognizes a
+bounded set of direct instruction forms; it is not a general requirement
+parser. Independent review still evaluates meaningful coverage and the full
+request, including instructions outside those forms.
+
+Review receives the actual changed-file list and scoped test source, including
+unchanged tests. Source hashes must match the checked inputs. Review text is
+bounded; large/truncated inputs are explicit and binary artifacts are represented
+by checksums and tool receipts. Review must reject unavailable evidence needed
+to decide correctness. Passing a test or obtaining reviewer approval alone does
+not establish a universal correctness guarantee; observed false completions
+remain release blockers and become regression fixtures.
+
 Terminal shell commands default to a read-only workspace. `command` contains a
 single executable and `args` contains its arguments. Optional `writePaths` names
 existing files/directories inside the claimed task scope; existing source below
