@@ -90,7 +90,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
       for (const file of writePaths) launch.push("--bind", file, file);
       launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
-      for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python" })) launch.push("--setenv", key, value);
+      for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" })) launch.push("--setenv", key, value);
       // Git hooks/config and private session state are not part of executable workspace access.
       for (const dir of [".git", ".mcoda"]) if (existsSync(path.join(root, dir))) launch.push("--ro-bind", path.join(root, dir), path.join(root, dir));
       launch.push("--", command, ...args);
@@ -108,6 +108,8 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         HOME: privateHome, TMPDIR: scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
         CARGO_HOME: path.join(privateHome, "cargo"), XDG_CACHE_HOME: path.join(privateHome, "cache"),
         PYTHONPYCACHEPREFIX: path.join(privateHome, "pycache"), PYTHONUSERBASE: path.join(privateHome, "python"),
+        // Host Git settings can invoke external helpers or read private paths.
+        GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1",
       });
     } finally { await fs.rm(scratch, { recursive: true, force: true }); }
   };
