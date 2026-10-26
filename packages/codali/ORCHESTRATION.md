@@ -69,7 +69,11 @@ Nomic service may use `search_query: `, `search_document: `, `l2`, `mean` and 76
 dimensions; confirm these against the deployed artifact before configuring it.
 Use `mcoda agent add/update --config-model-digest sha256:<artifact checksum>`
 and an `embeddings` operation with `limits.embeddingDimensions` to expose a
-qualified runner. The mSwarm catalog and response must attest the pinned digest.
+qualified runner. Declare its preprocessing with `--config-embedding-json`
+using the four explicit fields above; `none` removes that metadata. Setup selects
+healthy catalog entries only when digest, dimensions and preprocessing are all
+present, and groups identical contracts as replicas. The mSwarm catalog and
+response must attest the pinned digest.
 
 With this binding enabled, the terminal controller owns a private Docdex process.
 Repository embeddings pass through the configured provider and shared session
@@ -82,8 +86,11 @@ document receipts retain purpose, model, configuration hash and reported usage.
 The managed daemon must advertise workspace-metadata control, query/document
 embedding input types, strict repository embeddings and deterministic profile
 embeddings. An older daemon fails startup with an explicit compatibility error.
-`docdex.binary` can select an installed qualified binary; `startupTimeoutMs` bounds
-startup. It does not rewrite Git ignore files or create repository-local metadata.
+`docdex.binary` selects an installed qualified binary; `binarySha256` pins its
+bytes and is checked before every managed launch. `startupTimeoutMs` bounds
+startup. Setup uses the packaged release artifact manifest for a private install,
+or validates the explicit `--docdex-binary` path through `runtime-info`. It does
+not rewrite Git ignore files or create repository-local metadata.
 Global profile preferences use separate persistent deterministic hash storage,
 which makes no LLM call and survives repository embedding upgrades. Failed remote
 repository embeddings never substitute vectors from this hash space.

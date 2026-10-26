@@ -6,7 +6,7 @@ Codali is mcoda's terminal coding agent and embeddable tool runtime.
 
 ```sh
 codali login                 # masked mSwarm API-key entry
-codali setup                 # discover authorized Strata and media routes
+codali setup                 # discover authorized model routes and prepare private Docdex
 codali doctor
 codali chat --permissions ask --effort medium
 ```
@@ -34,6 +34,20 @@ an edited, validated profile between turns; submitted media jobs keep their
 original configuration. All optional model roles must be explicitly bound or
 disabled. Setup selects only catalog routes that identify their backend as Strata
 for large-model work; it does not choose a paid fallback.
+
+Setup enables embeddings only when the catalog declares a pinned model digest,
+dimensions, query/document prefixes, normalization and pooling. Replicas must
+match that entire contract. When embeddings are available, setup installs the
+release-pinned Docdex binary in `~/.local/state/codali/runtimes/docdex/`, verifies
+archive and binary checksums, and checks managed-client capabilities. It records
+the binary path and checksum in the profile; sessions verify the checksum before
+launching a private daemon. `doctor` checks this configured runtime.
+
+For a locally built qualified binary, use `codali setup --docdex-binary /absolute/path/docdexd`.
+Development builds without pinned release artifacts require this option. Setup
+does not initialize the global daemon or overwrite its configuration. A failed
+runtime qualification leaves the new profile unwritten; previous installed
+runtime versions remain available for existing profiles.
 
 | Command | Purpose |
 | --- | --- |

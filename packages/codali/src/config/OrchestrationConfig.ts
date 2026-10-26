@@ -69,7 +69,7 @@ export interface OrchestrationConfig {
   routing?: { strategy: "capability-and-capacity"; requiredBackends?: Record<string, string[]> };
   effort?: Partial<Record<EffortLevel, Partial<EffortBudget>>>;
   taskControl?: TaskControlConfig;
-  docdex?: { binary?: string; startupTimeoutMs?: number };
+  docdex?: { binary?: string; binarySha256?: string; startupTimeoutMs?: number };
 }
 export interface ResolvedOrchestrationConfig {
   config: OrchestrationConfig;
@@ -194,8 +194,9 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
     if (!Array.isArray(t.checkpointOn) || t.checkpointOn.some(v => !["task-transition", "before-compaction", "before-exit"].includes(String(v)))) throw new Error("Invalid checkpointOn policy");
   }
   if (root.docdex !== undefined) {
-    const d = object(root.docdex, "docdex"); fields(d, ["binary", "startupTimeoutMs"], "docdex");
+    const d = object(root.docdex, "docdex"); fields(d, ["binary", "binarySha256", "startupTimeoutMs"], "docdex");
     if (d.binary !== undefined) nonempty(d.binary, "docdex.binary");
+    if (d.binarySha256 !== undefined && (typeof d.binarySha256 !== "string" || !/^[a-f0-9]{64}$/.test(d.binarySha256) || d.binary === undefined)) throw new Error("docdex.binarySha256 requires an explicit binary and a SHA-256 digest");
     if (d.startupTimeoutMs !== undefined) positive(d.startupTimeoutMs, "docdex.startupTimeoutMs");
   }
   const config = structuredClone(root) as unknown as OrchestrationConfig;

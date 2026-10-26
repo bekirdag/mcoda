@@ -229,7 +229,7 @@ export class SessionController {
     this.managedDocdex = new ManagedDocdex({ workspaceRoot: this.workspaceRoot,
       stateRoot: this.options.storageRoot ? path.join(this.options.storageRoot, "docdex") : path.join(os.homedir(), ".local", "state", "codali", "docdex"),
       embeddings, provider: this.provider(helper && helper.enabled !== false ? "helper" : "lead", false),
-      binary: this.options.resolved.config.docdex?.binary, startupTimeoutMs: this.options.resolved.config.docdex?.startupTimeoutMs,
+      binary: this.options.resolved.config.docdex?.binary, binarySha256: this.options.resolved.config.docdex?.binarySha256, startupTimeoutMs: this.options.resolved.config.docdex?.startupTimeoutMs,
       signal: this.active?.signal, allowWeb: this.options.allowWeb,
       onStatus: message => { void this.emit("status", { message }, false).catch(() => undefined); } });
     this.attachDocdexTools(await this.managedDocdex.start(), true);

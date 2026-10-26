@@ -2,7 +2,6 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline";
-import { execFile } from "node:child_process";
 import { SessionController, type SessionEvent } from "../runtime/SessionController.js";
 import { loadOrchestrationConfig, orchestrationHash, validateOrchestrationConfig, type EffortLevel, type OrchestrationConfig, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { ConfiguredProvider, ModelServiceClient, providerCredential } from "../providers/ConfiguredProvider.js";
@@ -16,13 +15,14 @@ import { validateEmbeddingPreprocessing, type ProjectTaskAuthority } from "@mcod
 import { TerminalInput, insertTerminalPaste } from "./TerminalInput.js";
 import { ModelServiceError } from "../providers/ModelServiceError.js";
 import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
+import { ensureManagedDocdexRuntime, inspectManagedDocdexRuntime, type ManagedRuntimeIdentity } from "../docdex/ManagedRuntime.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
 const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/steer", "/continue", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/quit"];
-const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
+const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH] [--docdex-binary PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
 
-interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
+interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; docdexBinary?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
 export interface TerminalHost { projectTaskAuthority?: ProjectTaskAuthority; }
 export const parseTerminalArguments = (argv: string[]): Arguments => {
   const [command = "chat", ...input] = argv;
@@ -32,10 +32,11 @@ export const parseTerminalArguments = (argv: string[]): Arguments => {
     const flag = input[i];
     if (["--allow-web", "--allow-memory", "--allow-media", "--allow-network"].includes(flag)) { const key = { "--allow-web": "allowWeb", "--allow-memory": "allowMemory", "--allow-media": "allowMedia", "--allow-network": "allowNetwork" }[flag]!; (result as unknown as Record<string, unknown>)[key] = true; continue; }
     if (["--json", "--plain", "--stdin"].includes(flag)) { (result as unknown as Record<string, unknown>)[flag.slice(2)] = true; continue; }
-    if (["--workspace-root", "--config", "--effort", "--permissions", "--project-task"].includes(flag)) {
+    if (["--workspace-root", "--config", "--docdex-binary", "--effort", "--permissions", "--project-task"].includes(flag)) {
       const value = input[++i]; if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
       if (flag === "--workspace-root") result.workspaceRoot = path.resolve(value);
       if (flag === "--config") result.config = path.resolve(value);
+      if (flag === "--docdex-binary") { if (command !== "setup") throw new Error("--docdex-binary is a setup option"); result.docdexBinary = value.includes(path.sep) ? path.resolve(value) : value; }
       if (flag === "--project-task") result.projectTask = value;
       if (flag === "--effort") { if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Invalid effort level"); result.effort = value as EffortLevel; }
       if (flag === "--permissions") { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
@@ -44,7 +45,7 @@ export const parseTerminalArguments = (argv: string[]): Arguments => {
   result.prompt = positional.join(" "); return result;
 };
 
-export const setupTerminalConfig = async (destination: string): Promise<ResolvedOrchestrationConfig> => {
+export const setupTerminalConfig = async (destination: string, options: { prepareRuntime?: () => Promise<ManagedRuntimeIdentity> } = {}): Promise<ResolvedOrchestrationConfig> => {
   try { await fs.access(destination); throw new Error(`Configuration already exists: ${destination}`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const client = new ModelServiceClient(DEFAULT_PROVIDER);
   const catalog = await client.catalog(undefined, true);
@@ -91,6 +92,10 @@ export const setupTerminalConfig = async (destination: string): Promise<Resolved
     }
     config.bindings[binding] = entries.length ? { candidates: entries.map(entry => entry.id) } : { enabled: false };
   }
+  if (options.prepareRuntime && config.bindings.embedding.enabled !== false) {
+    const runtime = await options.prepareRuntime();
+    config.docdex = { binary: runtime.binary, binarySha256: runtime.binarySha256 };
+  }
   validateOrchestrationConfig(config); await atomicWriteJson(destination, config);
   return { config, source: destination, hash: orchestrationHash(config) };
 };
@@ -106,16 +111,22 @@ export const terminalDoctor = async (configPath?: string): Promise<Record<string
   try {
     const resolved = await loadOrchestrationConfig(configPath); report.configuration = { source: resolved.source, hash: resolved.hash, profile: resolved.config.profile };
     const routes: Record<string, unknown> = {};
-    for (const binding of ["lead", "reviewer", "helper", "image", "audio", "video"]) {
+    for (const binding of ["lead", "reviewer", "helper", "embedding", "image", "audio", "video"]) {
       if (resolved.config.bindings[binding]?.enabled === false) { routes[binding] = { enabled: false }; continue; }
-      try { const selected = await new ConfiguredProvider(resolved, binding).select(binding === "image" ? "images.generations" : binding === "audio" ? "audio.generations" : binding === "video" ? "videos.generations" : "chat.completions", undefined, binding === "lead"); routes[binding] = { model: selected.id, backend: selected.actual.backend, health: selected.actual.health }; }
+      try { const selected = await new ConfiguredProvider(resolved, binding).select(binding === "embedding" ? "embeddings" : binding === "image" ? "images.generations" : binding === "audio" ? "audio.generations" : binding === "video" ? "videos.generations" : "chat.completions", undefined, binding === "lead"); routes[binding] = { model: selected.id, backend: selected.actual.backend, health: selected.actual.health }; }
       catch (error) { routes[binding] = { error: error instanceof Error ? error.message : String(error) }; }
     }
     report.routes = routes;
     report.mediaRecovery = Object.fromEntries(Object.entries(resolved.config.providers).map(([id, provider]) => [id, { protocol: provider.mediaJobsUrl ? "mswarm-media-jobs-v1" : "synchronous", reconnect: provider.mediaJobsUrl ? "Recover by durable job id" : "Only complete local receipts can be recovered; ambiguous remote jobs require reconciliation" }]));
+    if (resolved.config.bindings.embedding?.enabled !== false && resolved.config.bindings.embedding) {
+      try { if (!resolved.config.docdex?.binary) throw new Error("Managed Docdex binary is not configured; run setup with a qualified release"); report.docdex = { mode: "managed", available: true, ...await inspectManagedDocdexRuntime(resolved.config.docdex.binary, resolved.config.docdex.binarySha256) }; }
+      catch (error) { report.docdex = { mode: "managed", available: false, error: error instanceof Error ? error.message : String(error), action: "Install a qualified runtime and update docdex.binary and binarySha256" }; }
+    }
   } catch (error) { report.configuration = { error: error instanceof Error ? error.message : String(error) }; }
-  try { const response = await fetch("http://127.0.0.1:28491/healthz", { signal: AbortSignal.timeout(3000) }); report.docdex = { available: response.ok, status: response.status }; }
-  catch { report.docdex = { available: false, action: "Install/start docdexd, then run codali setup" }; }
+  if (!report.docdex) {
+    try { const response = await fetch("http://127.0.0.1:28491/healthz", { signal: AbortSignal.timeout(3000) }); report.docdex = { mode: "external", available: response.ok, status: response.status, configuredEmbeddings: false }; }
+    catch { report.docdex = { mode: "external", available: false, action: "Configure a qualified embedding binding and managed Docdex runtime" }; }
+  }
   return report;
 };
 
@@ -144,9 +155,9 @@ export class TerminalCommand {
     if (args.command === "logout") { await setTerminalCredential(); output("Stored Codali mSwarm credential removed. Environment credentials, if set, take precedence."); return; }
     if (args.command === "auth-status") { try { await providerCredential(DEFAULT_PROVIDER); const catalog = await new ModelServiceClient(DEFAULT_PROVIDER).catalog(); output({ authenticated: true, entitledModels: catalog.length }); } catch (error) { output({ authenticated: false, error: error instanceof Error ? error.message : String(error) }); process.exitCode = 1; } return; }
     if (args.command === "setup") {
-      const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH);
-      const root = await fs.realpath(args.workspaceRoot);
-      const docdex = await new Promise<string>(resolve => execFile("docdexd", ["repo", "init", "--repo", root], { timeout: 60_000, maxBuffer: 1024 * 1024 }, error => resolve(error ? "Docdex initialization unavailable; run docdexd repo init when installed" : "Docdex repository initialized")));
+      const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH, { prepareRuntime: () => ensureManagedDocdexRuntime({ binary: args.docdexBinary }) });
+      const docdex = resolved.config.docdex ? { mode: "managed", ...resolved.config.docdex, initialization: "Private repository indexing starts with the first session" }
+        : { mode: "unavailable", reason: "No entitled embedding route advertises a pinned model and complete preprocessing contract" };
       output({ configuration: resolved.source, hash: resolved.hash, bindings: resolved.config.bindings, docdex }); return;
     }
     if (args.command === "doctor") { output(await terminalDoctor(args.config)); return; }

@@ -31,6 +31,11 @@ test("setup pins only compatible qualified embedding replicas and never treats a
   assert.equal(selected.config.models["a-selected"].revision, model.digest);
   assert.equal(selected.config.models.lead.revision, "catalog-unversioned");
   assert.equal(selected.config.models["c-different-weights"], undefined);
+  const failedPath = path.join(root, "failed-runtime.json");
+  await assert.rejects(setupTerminalConfig(failedPath, { prepareRuntime: async () => { throw new Error("unqualified runtime"); } }), /unqualified runtime/);
+  await assert.rejects(fs.stat(failedPath), /ENOENT/);
+  const prepared = await setupTerminalConfig(path.join(root, "qualified-runtime.json"), { prepareRuntime: async () => ({ binary: "/private/docdexd", binarySha256: "c".repeat(64), version: "0.0.0-test" }) });
+  assert.deepEqual(prepared.config.docdex, { binary: "/private/docdexd", binarySha256: "c".repeat(64) });
   entries = entries.filter(entry => entry.slug.startsWith("0-"));
   const unavailable = await setupTerminalConfig(path.join(root, "unavailable.json"));
   assert.deepEqual(unavailable.config.bindings.embedding, { enabled: false });

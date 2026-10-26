@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Provider, ProviderMessage } from "../providers/ProviderTypes.js";
 import { ConfiguredEmbeddings } from "../providers/ConfiguredEmbeddings.js";
 import { DocdexClient } from "./DocdexClient.js";
+import { runtimeFileHash } from "./ManagedRuntime.js";
 
 const listen = (server: Server) => new Promise<number>((resolve, reject) => {
   server.once("error", reject);
@@ -30,13 +31,14 @@ export class ManagedDocdex {
   private readonly lifetime = new AbortController();
   constructor(private readonly options: {
     workspaceRoot: string; stateRoot: string; embeddings: ConfiguredEmbeddings; provider: Provider;
-    binary?: string; signal?: AbortSignal; allowWeb?: boolean; startupTimeoutMs?: number;
+    binary?: string; binarySha256?: string; signal?: AbortSignal; allowWeb?: boolean; startupTimeoutMs?: number;
     onStatus?: (status: string) => void;
   }) {}
 
   async start(): Promise<DocdexClient> {
     this.options.signal?.throwIfAborted();
     if (this.child || this.bridge) throw new Error("Managed Docdex already started");
+    if (this.options.binarySha256 && (!this.options.binary || await runtimeFileHash(this.options.binary) !== this.options.binarySha256)) throw new Error("Managed Docdex runtime checksum mismatch; run codali doctor before continuing");
     const { embeddings } = this.options;
     const root = path.join(this.options.stateRoot, embeddings.space.id);
     await embeddings.pin(root);
