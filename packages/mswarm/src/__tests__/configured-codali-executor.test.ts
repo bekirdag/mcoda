@@ -24,24 +24,27 @@ const fixture = async (t: { after(fn: () => Promise<void>): void }, maxModelCall
 };
 
 const fakeRunner = (answers: string[]) => {
-  const original = globalThis.fetch; const routes: string[] = [];
+  const original = globalThis.fetch; const routes: string[] = []; const bodies: Array<Record<string, unknown>> = [];
   globalThis.fetch = async (url, init) => {
     assert.equal(new URL(String(url)).origin, "http://127.0.0.1:11452");
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-node-runner-secret");
     if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "strata" }] });
-    const body = JSON.parse(String(init?.body)); routes.push(body.model);
+    const body = JSON.parse(String(init?.body)); routes.push(body.model); bodies.push(body);
     assert.equal(body.model, "strata");
     return Response.json({ choices: [{ message: { role: "assistant", content: answers.shift() ?? "Answer" } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   };
-  return { routes, restore: () => { globalThis.fetch = original; } };
+  return { routes, bodies, restore: () => { globalThis.fetch = original; } };
 };
 
 test("configured node direct inference uses the admitted runner and reports shared usage", async t => {
   const input = await fixture(t); const mock = fakeRunner(["Local answer"]);
+  input.nativeReasoning = { reasoning_effort: "high", reasoning_budget_tokens: 128 };
   try {
     const result = await new MswarmCodaliExecutor().invoke(input);
     assert.equal(result.output, "Local answer"); assert.deepEqual(mock.routes, ["strata"]);
     assert.equal(result.metadata.orchestration?.usage.modelCalls, 1); assert.equal(result.usage?.totalTokens, 15);
+    assert.equal(mock.bodies[0].reasoning_effort, "high"); assert.equal(mock.bodies[0].reasoning_budget_tokens, 128);
+    assert.notEqual(result.metadata.orchestration?.configHash, result.metadata.orchestration?.sourceConfigHash);
     assert.doesNotMatch(JSON.stringify(result.metadata), /test-node-runner-secret/);
     await assert.rejects(new MswarmCodaliExecutor().invoke({ ...input, runCodali: async () => { throw new Error("bypass"); } }), /legacy runtime overrides/);
     await assert.rejects(new MswarmCodaliExecutor().invoke({ ...input, agent: { ...input.agent, model: "unadmitted" } }), /admitted model/);
@@ -51,6 +54,7 @@ test("configured node direct inference uses the admitted runner and reports shar
 
 test("configured node gateway shares planner and synthesizer accounting", async t => {
   const input = await fixture(t);
+  input.nativeReasoning = { reasoning_effort: "none", reasoning_budget_tokens: 0 };
   input.codaliGateway = { query: "Explain recursion", mode: "balanced", policy: { requireFinalLargeModel: false } };
   const mock = fakeRunner([
     JSON.stringify({ queryType: "general", needsPrivateData: false, needsFreshData: false, needsDocdex: false, needsAppTools: false, needsImageWorker: false, confidence: "high" }),
@@ -60,6 +64,7 @@ test("configured node gateway shares planner and synthesizer accounting", async 
     const result = await new MswarmCodaliExecutor().invoke(input);
     assert.equal(result.output, "Recursive answer"); assert.equal(result.gatewayResult?.status, "succeeded");
     assert.equal(mock.routes.length, 3); assert.equal(result.metadata.orchestration?.usage.modelCalls, 3); assert.equal(result.usage?.totalTokens, 45);
+    assert.ok(mock.bodies.every(body => body.reasoning_effort === "none" && body.reasoning_budget_tokens === 0));
   } finally { mock.restore(); }
 });
 

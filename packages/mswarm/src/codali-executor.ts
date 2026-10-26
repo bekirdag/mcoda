@@ -1,3 +1,5 @@
+import { nativeReasoningRequest, type NativeReasoningRequest } from "./native-reasoning.js";
+
 export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
 export type LocalRunnerKind =
@@ -560,14 +562,14 @@ export interface CodaliGatewayEvent {
   [key: string]: unknown;
 }
 
-interface NodeOrchestrationConfig { config: { providers: Record<string, unknown> }; hash: string; }
+interface NodeOrchestrationConfig { config: { providers: Record<string, unknown> }; hash: string; sourceHash?: string; }
 interface NodeModelScope {
   readonly signal: AbortSignal;
   snapshot(): { modelCalls: number; inputTokens: number; outputTokens: number; totalTokens: number; estimated: boolean; pendingCalls: number };
   close(): void;
 }
 interface CodaliModule {
-  loadNodeOrchestrationConfig?(file: string, agent: MswarmCodaliAgent): Promise<NodeOrchestrationConfig>;
+  loadNodeOrchestrationConfig?(file: string, agent: MswarmCodaliAgent, nativeReasoning?: NativeReasoningRequest): Promise<NodeOrchestrationConfig>;
   ConfiguredModelScope?: new (resolved: NodeOrchestrationConfig, options: { effort: "high"; signal?: AbortSignal; credentials?: Record<string, string> }) => NodeModelScope;
   runConfiguredGateway?(request: MswarmCodaliGateway, options: {
     orchestration: NodeOrchestrationConfig; effort: "high"; scope: NodeModelScope;
@@ -679,6 +681,7 @@ export interface MswarmCodaliInvocationInput {
   subagents?: MswarmCodaliSubagents;
   attachedMswarmApiKey?: string;
   temperature?: number;
+  nativeReasoning?: NativeReasoningRequest;
   responseFormat?: Record<string, unknown> | null;
   stream?: boolean;
   codaliGateway?: MswarmCodaliGateway;
@@ -816,7 +819,7 @@ export interface MswarmCodaliInvocationResult {
   gatewayResult?: CodaliGatewayResult;
   openAIChunks: Record<string, unknown>[];
   metadata: {
-    orchestration?: { configHash: string; effort: string; usage: ReturnType<NodeModelScope["snapshot"]> };
+    orchestration?: { configHash: string; sourceConfigHash?: string; nativeReasoning?: NativeReasoningRequest; effort: string; usage: ReturnType<NodeModelScope["snapshot"]> };
     provider: string;
     adapter: string;
     local_model: string;
@@ -2215,6 +2218,9 @@ function openAIStopChunk(input: MswarmCodaliInvocationInput): Record<string, unk
 
 export class MswarmCodaliExecutor {
   async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
+    const nativeReasoning = nativeReasoningRequest({ ...input.nativeReasoning });
+    if (Object.keys(nativeReasoning).length && providerNameForAgent(input.agent) !== "openai-compatible") throw new Error("Native reasoning requires an OpenAI-compatible runner");
+    input = { ...input, nativeReasoning };
     const codali = await loadCodaliModule();
     const file = input.agent.orchestrationConfigPath;
     if (!file) return this.invokeWithinScope(input, codali);
@@ -2222,7 +2228,7 @@ export class MswarmCodaliExecutor {
     if (!codali.loadNodeOrchestrationConfig || !codali.ConfiguredModelScope || !codali.runConfiguredGateway) {
       throw new Error("Installed Codali lacks configured node orchestration support");
     }
-    const resolved = await codali.loadNodeOrchestrationConfig(file, input.agent);
+    const resolved = await codali.loadNodeOrchestrationConfig(file, input.agent, nativeReasoning);
     const credential = input.agent.apiKey ?? (input.agent.authMode === "dummy-bearer" ? input.agent.dummyBearerToken : undefined);
     const credentials = credential ? Object.fromEntries(Object.keys(resolved.config.providers).map(id => [id, credential])) : undefined;
     const scope = new codali.ConfiguredModelScope(resolved, { effort: "high", signal: input.signal, credentials });
@@ -2230,7 +2236,7 @@ export class MswarmCodaliExecutor {
       const result = await this.invokeWithinScope(input, codali, { resolved, effort: "high", scope });
       const usage = scope.snapshot();
       return { ...result, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
-        metadata: { ...result.metadata, orchestration: { configHash: resolved.hash, effort: "high", usage } } };
+        metadata: { ...result.metadata, orchestration: { configHash: resolved.hash, sourceConfigHash: resolved.sourceHash ?? resolved.hash, nativeReasoning, effort: "high", usage } } };
     } finally { scope.close(); }
   }
 
@@ -2275,7 +2281,7 @@ export class MswarmCodaliExecutor {
         authMode: input.agent.authMode,
         dummyBearerToken: input.agent.dummyBearerToken,
         headers: input.agent.headers,
-        extraBody: input.agent.extraBody,
+        extraBody: Object.keys(input.nativeReasoning ?? {}).length ? { ...input.agent.extraBody, ...input.nativeReasoning } : input.agent.extraBody,
         responseFormatStrategy: input.agent.responseFormatStrategy,
         healthPath: input.agent.healthPath,
         modelsPath: input.agent.modelsPath,

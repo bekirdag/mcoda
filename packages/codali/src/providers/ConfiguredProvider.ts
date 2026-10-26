@@ -112,6 +112,7 @@ export class ModelServiceClient {
 
 export interface ModelInvocation {
   id: string; binding: string; configHash: string; modelId: string; catalogId: string; backend?: string; host?: string;
+  nativeReasoningRequest?: Record<string, unknown>;
 }
 export class ConfiguredProvider implements Provider {
   readonly name = "configured";
@@ -163,6 +164,8 @@ export class ConfiguredProvider implements Provider {
     request.signal?.throwIfAborted();
     const { id, model, provider, actual } = await this.select("chat.completions", request.signal, !!request.tools?.length);
     const invocation: ModelInvocation = { id: randomUUID(), binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
+    const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
+    if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
     const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens);
     const inputEstimate = Math.ceil(JSON.stringify([request.messages, request.tools]).length / 3);
     if (inputEstimate + maxTokens > Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow)) throw new Error("Context budget exceeded; checkpoint and compact before continuing");
@@ -172,7 +175,7 @@ export class ConfiguredProvider implements Provider {
       model: model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 300_000,
       supportsStreaming: model.supportsStreaming ?? true, supportsTools: model.supportsTools,
       headers: provider.adapter === "mswarm" ? modelCallerHeaders(this.caller) : undefined, retryTransient: false,
-      extraBody: this.options.effort ? model.reasoning?.[this.options.effort] : undefined,
+      extraBody: nativeReasoning,
     });
     const result = await adapter.generate(bounded);
     await this.options.afterRequest?.(invocation, result);

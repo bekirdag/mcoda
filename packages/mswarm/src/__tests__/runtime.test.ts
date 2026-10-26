@@ -7551,7 +7551,9 @@ describe("self-hosted node runtime", () => {
               function: { name: "okacam_jira_search", description: "Search Jira", parameters: { type: "object" } }
             }
           ],
-          tool_choice: "auto"
+          tool_choice: "auto",
+          reasoning_effort: "high",
+          reasoning_budget_tokens: 1024
         }
       });
 
@@ -7562,6 +7564,8 @@ describe("self-hosted node runtime", () => {
       expect(captured.url).toBe("http://runner.test/v1/chat/completions");
       expect((captured.body?.tools as unknown[])).toHaveLength(1);
       expect(captured.body?.tool_choice).toBe("auto");
+      expect(captured.body?.reasoning_effort).toBe("high");
+      expect(captured.body?.reasoning_budget_tokens).toBe(1024);
       const choices = result.openai_response?.choices as Array<{
         message?: { tool_calls?: Array<{ function?: { name?: string } }> };
       }>;

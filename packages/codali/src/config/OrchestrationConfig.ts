@@ -153,9 +153,10 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
       fields(mapping, ["low", "medium", "high", "max"], `${id}.reasoning`);
       for (const [level, settings] of Object.entries(mapping)) {
         const values = object(settings, `${id}.reasoning.${level}`);
-        fields(values, ["reasoning_effort", "reasoning_budget", "enable_thinking"], `${id}.reasoning.${level}`);
+        fields(values, ["reasoning_effort", "reasoning_budget", "reasoning_budget_tokens", "enable_thinking"], `${id}.reasoning.${level}`);
         if (values.reasoning_effort !== undefined) nonempty(values.reasoning_effort, `${id}.reasoning.${level}.reasoning_effort`);
         if (values.reasoning_budget !== undefined) positive(values.reasoning_budget, `${id}.reasoning.${level}.reasoning_budget`);
+        if (values.reasoning_budget_tokens !== undefined && (!Number.isSafeInteger(values.reasoning_budget_tokens) || Number(values.reasoning_budget_tokens) < 0 || Number(values.reasoning_budget_tokens) > 1_000_000)) throw new Error(`${id}.reasoning.${level}.reasoning_budget_tokens must be an integer from 0 through 1000000`);
         if (values.enable_thinking !== undefined && typeof values.enable_thinking !== "boolean") throw new Error(`${id}.reasoning.${level}.enable_thinking must be boolean`);
       }
     }

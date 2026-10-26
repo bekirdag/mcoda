@@ -18,6 +18,14 @@ test("node profiles cannot escape the admitted runner, model, artifact or limits
   };
   await writeFile(file, JSON.stringify(baseline));
   assert.match((await loadNodeOrchestrationConfig(file, approved)).hash, /^[0-9a-f]{64}$/);
+  const original = await loadNodeOrchestrationConfig(file, approved);
+  const requested = await loadNodeOrchestrationConfig(file, approved, { reasoning_effort: "high", reasoning_budget_tokens: 32 });
+  assert.equal(requested.sourceHash, original.hash); assert.notEqual(requested.hash, original.hash);
+  for (const level of ["low", "medium", "high", "max"] as const) assert.deepEqual(requested.config.models.lead.reasoning?.[level], { reasoning_effort: "high", reasoning_budget_tokens: 32 });
+  assert.deepEqual(requested.config.providers, original.config.providers);
+  assert.equal((await loadNodeOrchestrationConfig(file, approved)).hash, original.hash);
+  await assert.rejects(loadNodeOrchestrationConfig(file, approved, { reasoning_budget_tokens: -1 }), /Invalid/);
+  await assert.rejects(loadNodeOrchestrationConfig(file, approved, { reasoning_effort: "high", model: "other" } as never), /Unsupported/);
   await assert.rejects(loadNodeOrchestrationConfig(file, { ...approved, baseUrl: "https://api.example.test/v1" }), /loopback/);
   await assert.rejects(loadNodeOrchestrationConfig("relative.json", approved), /absolute/);
   const cases: Array<[string, (config: OrchestrationConfig) => void, RegExp]> = [

@@ -21,7 +21,24 @@
       "contextWindow": 32768,
       "maxOutputTokens": 4096,
       "supportsTools": true,
-      "supportsStreaming": false
+      "supportsStreaming": false,
+      "reasoning": {
+        "low": {
+          "reasoning_effort": "none"
+        },
+        "medium": {
+          "reasoning_effort": "low",
+          "reasoning_budget_tokens": 512
+        },
+        "high": {
+          "reasoning_effort": "high",
+          "reasoning_budget_tokens": 1024
+        },
+        "max": {
+          "reasoning_effort": "high",
+          "reasoning_budget_tokens": 1024
+        }
+      }
     },
     "sukunahikona-strata": {
       "provider": "mswarm",
@@ -35,7 +52,24 @@
       "contextWindow": 32768,
       "maxOutputTokens": 4096,
       "supportsTools": true,
-      "supportsStreaming": false
+      "supportsStreaming": false,
+      "reasoning": {
+        "low": {
+          "reasoning_effort": "none"
+        },
+        "medium": {
+          "reasoning_effort": "low",
+          "reasoning_budget_tokens": 512
+        },
+        "high": {
+          "reasoning_effort": "high",
+          "reasoning_budget_tokens": 1024
+        },
+        "max": {
+          "reasoning_effort": "high",
+          "reasoning_budget_tokens": 1024
+        }
+      }
     },
     "suku-image": {
       "provider": "mswarm",

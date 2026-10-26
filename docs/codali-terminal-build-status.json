@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Published Docdex runtime installs and cache reuse passed on Raijin/Suku and all six Linux/macOS Node20/22 jobs (25570f5). Workflow R offline grader-v2 correction preserves original evidence: Raijin 8/12, Suku 11/12. Long workflow S exposed oversized status and unchanged-operation retry loops; bounded status records and progress guidance/checkpoint guards are under validation. Semantic reviewer false acceptance, backend/application rollout and canary remain open.",
+  "currentTask": "Native reasoning transport/config fixes passed 1679 Codali/node tests (2 platform skips), 78 backend tests and backend TypeScript checking. Strata profile defaults to none; the same known invoice bug was rejected by both hosts with explicit high reasoning and 1024 thinking tokens. These are diagnostic replays; new node/backend deployment and fresh qualification are pending. All four frozen S long journeys ended unsuccessfully on budget before completing the required stages; original evidence is retained.",
   "tasks": [
     {
       "id": "P0.1",
@@ -325,7 +325,8 @@
       "description": "Implement the four effort profiles with shared counters, account caps and requested/effective reporting. Add native reasoning mapping only for empirically supported adapters.",
       "status": "in_progress",
       "evidence": [
-        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply.",
+        "Found native effort was absent in R/S configs and dropped by proxy/node paths. Added validated reasoning_effort/reasoning_budget_tokens forwarding, pinned effective node config with source hash, and explicit native mappings in raijin-suku.example.json. Known-failure direct native high/1024 diagnostics rejected the invoice bug on both hosts; no service defaults changed. Fresh mSwarm end-to-end qualification remains."
       ]
     },
     {
@@ -466,7 +467,8 @@
       "description": "Run the long-task/fault corpus from Section 11 with repeated compaction, fresh contexts, restarts, steering, failed dependencies and user edits. Verify requirement/decision continuity, evidence invalidation, no duplicate side effects, useful next-task selection and honest blocked/partial outcomes. Run selected multi-hour live journeys on both hosts.",
       "status": "in_progress",
       "evidence": [
-        "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified."
+        "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified.",
+        "Frozen S long-workflows-v1 baseline completed all four scenario attempts: none passed; budget exhaustion prevented completion of four-process/compaction criteria. Raijin status-context refusal/read loops and Suku repeated failing tests were observed. Later-stage steering/recovery checks not reached are unqualified, not evidence that an applied steering record was lost. 3aa685b status/stall fixes passed CI40296909284 and platform40296909315; corrected live journeys pending."
       ]
     },
     {

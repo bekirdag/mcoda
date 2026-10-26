@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
+import { nativeReasoningRequest } from "./native-reasoning.js";
 import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
@@ -7073,6 +7074,7 @@ export class SelfHostedNodeRuntime {
     if (job.openai_request.top_p !== undefined) body.top_p = job.openai_request.top_p;
     if (job.openai_request.max_tokens !== undefined) body.max_tokens = job.openai_request.max_tokens;
     if (job.openai_request.stop !== undefined) body.stop = job.openai_request.stop;
+    Object.assign(body, nativeReasoningRequest(job.openai_request));
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const response = await this.fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
@@ -7999,6 +8001,9 @@ export class SelfHostedNodeRuntime {
         );
       }
       if (job.provider === "ollama") {
+        if (Object.keys(nativeReasoningRequest(job.openai_request)).length) {
+          throw new SelfHostedPreStartJobError("unsupported_operation", "Native reasoning options require an OpenAI-compatible runner");
+        }
         if (operation !== "chat.completions") {
           throw new SelfHostedPreStartJobError(
             "unsupported_operation",
@@ -8167,6 +8172,7 @@ export class SelfHostedNodeRuntime {
         attachedMswarmApiKey,
         policy: buildCodaliPolicy(job),
         temperature: job.openai_request.temperature,
+        nativeReasoning: nativeReasoningRequest(job.openai_request),
         responseFormat: isRecord(job.openai_request.response_format)
           ? job.openai_request.response_format
           : null,

@@ -249,6 +249,8 @@ export class SessionController {
   status(): Record<string, unknown> {
     return { sessionId: this.sessionId, workspace: this.workspaceRoot, busy: this.busy, goal: this.state?.objective, goalStatus: this.state?.status, goalRevision: this.state?.goalRevision,
       tasks: this.state?.tasks, effort: this.effort, permissions: this.gate.inspect(), configHash: this.options.resolved.hash,
+      effortBudget: effortBudget(this.options.resolved.config, this.effort),
+      nativeReasoningRequests: Object.fromEntries(Object.entries(this.options.resolved.config.models).filter(([, model]) => model.reasoning?.[this.effort]).map(([id, model]) => [id, { ...model.reasoning![this.effort] }])),
       usage: this.usage, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
   }
   usageSnapshot(): SessionUsage { return { ...this.usage, estimated: this.usage.estimated || this.reservations.size > 0 }; }

@@ -46,10 +46,21 @@ Effort controls shared limits, not a claim about hidden model reasoning:
 | max | 128 | 144 | 256 | 640,000 | 60 min |
 
 An `effort` object may override positive integer limits by level. Provider output
-and context limits remain enforced. Native `reasoning_effort`, `reasoning_budget`
-or `enable_thinking` settings belong in that model's `reasoning` mapping only after
+and context limits remain enforced. Native `reasoning_effort`, `reasoning_budget`,
+`reasoning_budget_tokens` or `enable_thinking` settings belong in that model's `reasoning` mapping only after
 the adapter has been tested with them. Unreported usage is estimated and shown as
 such; an unknown server balance is not treated as a known zero balance.
+
+The Raijin/Suku example maps low to native `none`, medium to `low` with a
+512-token thinking cap, and high/max to `high` with a 1,024-token cap. These are
+request settings; `/status` and model-route events expose them without claiming
+that an older server applied them. Both the mSwarm proxy and node must contain
+the native-reasoning transport update before enabling this profile in service.
+Node requests retain the approved model and endpoint, preserve the source
+profile hash, and record a distinct effective hash when a request overrides
+native reasoning. The shared output/token/deadline limits still apply. A native
+thinking cap of zero means no separate thinking cap, not zero thinking tokens;
+use `reasoning_effort: "none"` to disable it on Strata.
 
 Configuration changes apply between turns using `/config reload`. Saved grants
 are revoked when reloading. Jobs already submitted retain their pinned provider,

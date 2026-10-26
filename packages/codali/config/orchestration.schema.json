@@ -364,6 +364,11 @@
                 },
                 "enable_thinking": {
                   "type": "boolean"
+                },
+                "reasoning_budget_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
                 }
               },
               "required": []
@@ -382,6 +387,11 @@
                 },
                 "enable_thinking": {
                   "type": "boolean"
+                },
+                "reasoning_budget_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
                 }
               },
               "required": []
@@ -400,6 +410,11 @@
                 },
                 "enable_thinking": {
                   "type": "boolean"
+                },
+                "reasoning_budget_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
                 }
               },
               "required": []
@@ -418,6 +433,11 @@
                 },
                 "enable_thinking": {
                   "type": "boolean"
+                },
+                "reasoning_budget_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
                 }
               },
               "required": []
