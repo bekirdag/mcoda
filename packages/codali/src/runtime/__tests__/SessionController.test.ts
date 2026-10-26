@@ -98,10 +98,11 @@ test("the latest failed check survives conversation compaction and a new control
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (step === 0) { step++; return call("work_claim", { taskId: "T1", allowedPaths: ["value.test.mjs"] }); }
     if (step === 1) { step++; return call("run_shell", { command: "npm", args: ["--silent", "test"] }); }
+    if (step === 2) assert.match([...request.messages].reverse().find(message => message.role === "tool")!.content, new RegExp(marker));
     if (step++ < 10) return call("read_file", { path: "notes.txt" });
     if (step === 11) {
       assert.ok(!request.messages.some(message => message.role === "tool" && message.content.includes(marker)), "old failed output must have left the conversation window");
-      assert.ok(request.messages.some(message => message.role === "system" && message.content.includes(marker) && message.content.includes('"status":"failed"')));
+      assert.ok(request.messages.some(message => message.role === "system" && message.content.includes(marker) && message.content.includes('"status":"failed"')), request.messages.find(message => message.role === "system")?.content.split("Latest validation receipt")[1]?.split("Retrieved memory")[0]);
       return call("work_block", { taskId: "T1", reason: "Preserve the failed check for a later diagnostic turn." });
     }
     return reply("Failed check retained.");
