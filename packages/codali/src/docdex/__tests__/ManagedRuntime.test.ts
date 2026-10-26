@@ -64,6 +64,16 @@ test("runtime installation rejects mismatches before promotion and cleans partia
   await assert.rejects(ensureManagedDocdexRuntime({ ...f, signal: aborted.signal }), { name: "AbortError" });
 });
 
+test("fresh and cached installs share a canonical identity through a trusted parent alias", async t => {
+  const f = await fixture(t);
+  const alias = path.join(f.root, "parent-alias"); await fs.symlink(f.root, alias);
+  const stateRoot = path.join(alias, "private");
+  const first = await ensureManagedDocdexRuntime({ ...f, stateRoot });
+  assert.equal(first.binary, await fs.realpath(first.binary));
+  assert.deepEqual(await ensureManagedDocdexRuntime({ ...f, stateRoot }), first);
+  assert.equal(f.downloads(), 1);
+});
+
 test("capabilities and reported version are required before a runtime becomes usable", async t => {
   const f = await fixture(t, script("0.0.0-other"));
   await assert.rejects(ensureManagedDocdexRuntime(f), /version does not match/);

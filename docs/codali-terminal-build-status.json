@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Fresh workflow R is running on both hosts from frozen 3f9e8c3. Raijin invoice false completion and both-host locale test failures are retained release blockers. Four-process long-journey harness is implemented; baseline execution, review strengthening, Docdex publication, backend/application rollout and canary remain.",
+  "currentTask": "Completion evidence delivery and idempotent project submission passed the full local suite (1494 passed, 2 platform skips). Published Docdex codali.2 runtime pins are committed; macOS canonical-path correction awaits platform CI. Workflow R finished with original grades Raijin 6/12 and Suku 9/12; separate oracle corrections and semantic review remediation remain. Four-process workflow S journeys are running on both hosts. Backend/application rollout and canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -28,7 +28,8 @@
         "Docdex managed-runtime changes forward-ported to bbc2cb3: 794 library and 33 integration tests passed (one ignored). PR13 at a1ef3a5 passed Linux, Windows and npm installer CI. Optimized binary 6695e8d passed the real Codali managed-Docdex integration; global rollout is pending.",
         "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress.",
         "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim.",
-        "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved."
+        "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved.",
+        "Docdex v0.2.100-codali.2 is published on GitHub and npm next; npm latest remains 0.2.99. Release 40282809157 passed after delayed registry visibility retry. Native archive and executable hashes for Linux x64 and macOS x64/arm64 are pinned in packages/codali/config/docdex-runtime.json. Raijin private installation and clean package installation passed."
       ]
     },
     {
@@ -198,7 +199,8 @@
         "packages/codali/src/cli/TerminalCommand.ts",
         "packages/codali/src/runtime/__tests__/SessionController.test.ts",
         "packages/codali/src/session/__tests__/WorkState.test.ts",
-        "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification."
+        "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification.",
+        "CompletionReport uses summaries from accepted receipts attached to currently verified tasks. SessionController skips unreviewed final model generation, rechecks file hashes before final delivery, and makes duplicate completed project submission idempotent. Full suite: 1494 passed, 0 failed, 2 platform skips. Semantic review false acceptance remains an independent live qualification blocker."
       ]
     },
     {
@@ -487,7 +489,8 @@
         "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated.",
         "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked.",
         "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim.",
-        "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication."
+        "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication.",
+        "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending."
       ]
     },
     {

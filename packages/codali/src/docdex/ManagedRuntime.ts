@@ -144,7 +144,7 @@ export const ensureManagedDocdexRuntime = async (options: { binary?: string; sta
       const directory = await fs.open(root, "r");
       try { await directory.sync(); } catch (error) { if (!["EINVAL", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
       finally { await directory.close(); }
-      return { ...info, binary: path.join(destination, "docdexd") };
+      return { ...info, binary: await fs.realpath(path.join(destination, "docdexd")) };
     } finally { await fs.rm(staging, { recursive: true, force: true }); }
   }, 180_000);
 };

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { promises as fs } from "node:fs";
+import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionController, type SessionEvent } from "../SessionController.js";
@@ -54,7 +54,7 @@ test("successful npm --silent test receipts verify changed code and page newest-
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
   if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
   assert.equal((await controller.run("Set the exported value to two and run the existing test.")).completed, true);
-  assert.equal(reviews, 1); assert.equal(step, 10);
+  assert.equal(reviews, 1); assert.equal(step, 9);
 });
 
 test("passing an existing test cannot bypass an explicit test-addition requirement even with an approving reviewer", async t => {
@@ -94,7 +94,7 @@ test("passing an existing test cannot bypass an explicit test-addition requireme
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
   if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
   assert.equal((await controller.run("Set the exported value to two and add meaningful public tests in test/value.test.mjs. Run the tests and preserve package.json.")).completed, true);
-  assert.equal(reviews, 1); assert.equal(step, 13);
+  assert.equal(reviews, 1); assert.equal(step, 12);
 });
 
 test("a successful check that changes source cannot certify the changed bytes", async t => {
@@ -496,14 +496,14 @@ test("premature final answers cannot complete a goal and verified state survives
   try {
     const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, onEvent: e => events.push(e) });
     const result = await controller.run("What is two plus two?");
-    assert.equal(result.completed, true); assert.equal(step, 5);
+    assert.equal(result.completed, true); assert.equal(step, 4);
     assert.equal(controller.state?.tasks[0].status, "verified");
-    assert.equal(controller.usageSnapshot().modelCalls, 6);
+    assert.equal(controller.usageSnapshot().modelCalls, 5);
     const resumed = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false });
     await resumed.resume(controller.sessionId!);
     assert.equal(resumed.state?.originalObjective, "What is two plus two?");
     assert.equal(resumed.state?.status, "completed");
-    assert.equal(resumed.usageSnapshot().modelCalls, 6);
+    assert.equal(resumed.usageSnapshot().modelCalls, 5);
     assert.equal(new Set(events.map(e => e.id)).size, events.length);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
@@ -517,6 +517,68 @@ test("repeated confident answers leave the goal open with a durable checkpoint",
     await assert.rejects(controller.run("Implement and test the requested feature"), /unmet criteria/);
     assert.equal(controller.state?.status, "active"); assert.ok(controller.state!.checkpoints.length > 0);
     assert.equal(controller.busy, false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
+});
+
+for (const conflict of [false, true]) test(`final evidence delivery checks unchanged source and fences late edits: conflict=${conflict}`, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evidence-delivery-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evidence-delivery-state-"));
+  const source = "export const expired = (entry, now) => now >= entry.expiresAt;\n";
+  let step = 0; let reviewCount = 0; let readReceipt = ""; const events: SessionEvent[] = [];
+  let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      reviewCount++;
+      const context = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(context.source["cache.mjs"], source);
+      assert.equal(context.claimedSummary, "Expiry is inclusive at expiresAt; no code change is required.");
+      return reply('{"passed":true,"findings":[]}');
+    }
+    if (++step === 1) return call("work_claim", { taskId: "T1" });
+    if (step === 2) return call("read_file", { path: "cache.mjs" });
+    if (step === 3) return call("work_verify", { taskId: "T1", attemptId: controller.state!.tasks[0].attemptId, invocationIds: [readReceipt], summary: "Expiry is inclusive at expiresAt; no code change is required." });
+    if (step === 4) return call("work_complete", {});
+    throw new Error("An unreviewed final generation could invent a different source implementation");
+  } };
+  try {
+    await fs.writeFile(path.join(root, "cache.mjs"), source);
+    controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+      onEvent: event => {
+        events.push(event); const receipt = event.data.receipt as { id: string; tool: string; status: string } | undefined;
+        if (event.type === "tool_receipt" && receipt?.tool === "read_file") readReceipt = receipt.id;
+        if (conflict && event.type === "tool_receipt" && receipt?.tool === "work_complete" && receipt.status === "success") writeFileSync(path.join(root, "cache.mjs"), "// concurrent user change after acceptance\n");
+      } });
+    if (conflict) {
+      await assert.rejects(controller.run("Investigate the expiry boundary in cache.mjs without changing code."), /Required task work remains|Unverified\/stale/);
+      assert.equal(controller.state?.status, "active"); assert.equal(step, 4);
+      assert.equal(events.some(event => event.type === "completion_report"), false);
+      return;
+    }
+    const result = await controller.run("Investigate the expiry boundary in cache.mjs without changing code.");
+    assert.equal(result.completed, true); assert.equal(step, 4); assert.equal(reviewCount, 1);
+    assert.match(result.content, /Expiry is inclusive/);
+    assert.ok(events.some(event => event.type === "completion_report" && event.data.modelCallSkipped === true));
+    assert.equal(await fs.readFile(path.join(root, "cache.mjs"), "utf8"), source);
+  } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
+});
+
+test("duplicate completion delivery cannot submit the same project handoff twice", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-completion-handoff-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-completion-handoff-state-"));
+  const project = projectAuthorityFixture(); let step = 0; let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (++step === 1) return call("work_claim", { taskId: "T1" });
+    if (step === 2) return call("work_verify", { taskId: "T1", attemptId: controller.state!.tasks[0].attemptId, invocationIds: [], summary: "Two plus two is four." });
+    if (step === 3) return { ...reply(""), toolCalls: [...call("work_complete", {}).toolCalls!, ...call("work_complete", {}).toolCalls!] };
+    throw new Error("Completion must use accepted evidence without another model call");
+  } };
+  try {
+    controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+      projectTaskAuthority: project.authority, projectTaskKey: "PROJ-1" });
+    const result = await controller.run("Complete the arithmetic task");
+    assert.equal(result.completed, true); assert.equal(project.submissions(), 1); assert.equal(step, 3);
+    assert.match(result.content, /submitted for mcoda review/);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
