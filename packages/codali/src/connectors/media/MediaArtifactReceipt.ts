@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicWriteJson } from "../../session/AtomicState.js";
+import { atomicWriteJson, syncStateDirectory } from "../../session/AtomicState.js";
 import type { MediaArtifact, MediaJob } from "./MediaJobStore.js";
 
 const hash = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
@@ -25,9 +25,7 @@ export const persistMediaArtifact = async (directory: string, job: MediaJob, byt
     await handle.writeFile(bytes); await handle.sync(); await handle.close();
     // link is atomic and fails if the destination exists; a partially written artifact is never published.
     await fs.link(temporary, artifact.path);
-    const parent = await fs.open(directory, "r");
-    try { await parent.sync(); } catch (error) { if (!["EINVAL", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
-    finally { await parent.close(); }
+    await syncStateDirectory(directory);
   } finally { await handle.close().catch(() => undefined); await fs.unlink(temporary).catch(() => undefined); }
   return artifact;
 };

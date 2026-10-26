@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { atomicWriteJson, withStateLock } from "../AtomicState.js";
+import { atomicWriteJson, syncStateDirectory, withStateLock } from "../AtomicState.js";
 import { SessionStore } from "../SessionStore.js";
 
 test("disk-full partial temporary write preserves the previous state and removes its incomplete file", async t => {
@@ -38,7 +38,39 @@ test("directory fsync failure is reported even when rename already made the new 
   assert.deepEqual(await fs.readdir(root), ["state.json"]);
 });
 
-test("read-only session directories reject updates without replacing durable work", { skip: process.getuid?.() === 0 }, async t => {
+test("directory-only Windows fsync compatibility never hides data flush, open or POSIX permission failures", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-sync-platform-"));
+  const file = path.join(root, "state.json"); await atomicWriteJson(file, { revision: 1 });
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const original = fs.open.bind(fs); let mode = "directory"; let code = "EPERM";
+  const injected = () => Object.assign(new Error("Injected filesystem error"), { code });
+  const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (mode === "open" && args[0] === root) throw injected();
+    const handle = await original(...args);
+    if (mode === "directory" && args[0] === root || mode === "file" && String(args[0]).endsWith(".tmp")) handle.sync = async () => { throw injected(); };
+    return handle;
+  });
+  try {
+    for (const target of ["linux", "darwin", "win32"]) {
+      Object.defineProperty(process, "platform", { ...platform, value: target });
+      for (code of ["EPERM", "EIO", "ENOSPC", "EACCES"]) {
+        if (target === "win32" && code === "EPERM") await syncStateDirectory(root);
+        else await assert.rejects(syncStateDirectory(root), { code });
+      }
+    }
+    code = "EPERM"; mode = "open";
+    await assert.rejects(syncStateDirectory(root), { code });
+    mode = "file";
+    await assert.rejects(atomicWriteJson(file, { revision: 2 }), { code });
+    assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { revision: 1 });
+    assert.deepEqual(await fs.readdir(root), ["state.json"]);
+  } finally {
+    Object.defineProperty(process, "platform", platform); mock.mock.restore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("read-only session directories reject updates without replacing durable work", { skip: process.platform === "win32" ? "POSIX directory modes are not Windows ACLs" : process.getuid?.() === 0 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-readonly-"));
   const store = new SessionStore({ workspaceRoot: root });
   await store.createSession({ sessionId: "s", repoRoot: root, task: "Preserve" });

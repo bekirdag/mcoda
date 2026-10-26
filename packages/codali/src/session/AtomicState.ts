@@ -4,6 +4,17 @@ import path from "node:path";
 import { Connection } from "@mcoda/db";
 import { assertRegularStateFile } from "./SessionStoragePath.js";
 
+/** Windows cannot flush a directory handle through Node's fsync. File contents
+ * are still flushed before publication; POSIX directory durability is retained. */
+export const syncStateDirectory = async (directory: string): Promise<void> => {
+  const handle = await fs.open(directory, "r");
+  try { await handle.sync(); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "";
+    if (!["EINVAL", "ENOTSUP"].includes(code) && !(process.platform === "win32" && code === "EPERM")) throw error;
+  } finally { await handle.close(); }
+};
+
 export const atomicWriteJson = async (file: string, value: unknown): Promise<void> => {
   await assertRegularStateFile(file);
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -14,9 +25,7 @@ export const atomicWriteJson = async (file: string, value: unknown): Promise<voi
     await handle.sync();
     await handle.close();
     await fs.rename(temporary, file);
-    const directory = await fs.open(path.dirname(file), "r");
-    try { await directory.sync(); } catch (error) { if (!["EINVAL", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
-    finally { await directory.close(); }
+    await syncStateDirectory(path.dirname(file));
   } finally {
     await handle.close().catch(() => undefined);
     await fs.unlink(temporary).catch(() => undefined);
