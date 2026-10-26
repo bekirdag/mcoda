@@ -23,6 +23,10 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     // realpath/lstat needs ancestor metadata, not directory contents or sibling files.
     ...[...ancestors].map(parent => `(allow file-read-metadata (literal ${quoted(parent)}))`),
     '(allow file-read* (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))',
+    // Apple's /bin/sh reads this system selector before starting npm scripts.
+    // Permit only that selector, not other private /var files or directories.
+    '(allow file-read* (literal "/private/var/select/sh") (literal "/var/select/sh"))',
+    '(allow file-read-metadata (literal "/private/var/select") (literal "/var/select"))',
     `(allow file-read* (subpath ${quoted(root)}))`,
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
     `(allow file-read* file-write* (subpath ${quoted(scratch)}))`,
