@@ -25,6 +25,7 @@ import { ManagedDocdex } from "../docdex/ManagedDocdex.js";
 import { ConfiguredEmbeddings } from "../providers/ConfiguredEmbeddings.js";
 import { runCodaliTask } from "./CodaliRuntime.js";
 import { WorkspaceLock } from "./WorkspaceLock.js";
+import { isVerificationCommand } from "./VerificationCommand.js";
 import { captureWorkspace, changedWorkspacePaths, hashWorkspacePath, workspaceGit, type WorkspaceSnapshot } from "./WorkspaceSnapshot.js";
 import { WorkspaceLedger } from "./WorkspaceLedger.js";
 import { registerSecretValue, StreamingSecretRedactor } from "./SecretRedaction.js";
@@ -71,11 +72,6 @@ interface InvocationReceipt {
 interface SessionUsage { modelCalls: number; toolCalls: number; tokens: number; inputTokens: number; outputTokens: number; estimated: boolean; embeddingCalls?: number; embeddingTokens?: number; }
 const hash = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
 const argsObject = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
-const isVerificationCommand = (args: unknown): boolean => {
-  const value = argsObject(args); const command = typeof value.command === "string" ? path.basename(value.command) : "";
-  const argv = Array.isArray(value.args) ? value.args : [];
-  return command === "node" && argv.includes("--test") || ["npm", "pnpm", "yarn", "bun"].includes(command) && (argv[0] === "test" || argv[0] === "run" && /^(test|check|typecheck|lint)(:|$)/.test(String(argv[1]))) || ["pytest", "tsc"].includes(command) || ["cargo", "go", "make"].includes(command) && argv[0] === "test" || command === "python3" && argv[0] === "-m" && ["pytest", "unittest"].includes(String(argv[1]));
-};
 const SYSTEM = `You are Codali, a repository coding agent. Preserve the original goal, constraints and architecture decisions.
 For a localized change to a few named files, keep implementation and its tests in the existing R1/T1 task: call work_claim with taskId:"T1" and allowedPaths containing those files. This records the initial scope and claims it atomically; no work_refine or work_plan is needed. Use work_refine and work_plan for larger work with distinct deliverables, explicit criteria and dependencies. Each task links to existing requirement IDs. Do not copy the original request into new criteria. Claim a ready task before edits. Use Docdex search, symbols/AST and impact evidence before code changes. Read files before writing them. Batch independent reads and analysis calls when possible. Keep changes bounded to the claimed task and preserve user edits.
 Existing source edits require fresh successful docdex_symbols (or docdex_ast) and docdex_impact_graph receipts for that content. Re-run analysis after a file changes. run_shell takes a single executable in command and separate args, e.g. {"command":"node","args":["--test"]}. Its workspace is read-only by default. Declare writePaths only when needed; all existing source files under those paths must have current reads and analysis. Prefer narrow file paths over broad directories.
@@ -770,10 +766,14 @@ export class SessionController {
       tool("tools_discover", "List additional available tool names and descriptions. Use tools_enable to load schemas for media, web research, memory and other optional capabilities. Authorization still applies when executing them.", {}, [], async () => this.registry.list().map(t => ({ name: t.name, description: t.description.slice(0, 180), capability: t.capability, enabled: this.enabledTools.has(t.name) }))),
       tool("tools_enable", "Expose schemas for named tools discovered through tools_discover. This does not grant execution permission.", { names: strings }, ["names"], async args => { const available = new Set(this.registry.list().map(t => t.name)); for (const name of args.names) { if (!available.has(name)) throw new Error(`Unknown tool: ${name}`); this.enabledTools.add(name); } return { enabled: args.names }; }),
       tool("work_refine", "Add criteria and task dependencies before implementation. Existing R1 is retained automatically; send only new criteria. Use phases with exit criteria for larger work; keep small tasks flat. Record constraints and non-goals from the request.", { requirements: { type: "array", items: { type: "object", properties: { id: str, description: str }, required: ["id", "description"], additionalProperties: false } }, constraints: strings, nonGoals: strings, tasks: taskSchema, phases: phaseSchema, reason: str }, ["requirements", "constraints", "nonGoals", "tasks"], async args => { await this.update(state => { for (const requirement of args.requirements as Array<{ id: string; description: string }>) { const existing = state.requirements.find(r => r.id === requirement.id); if (existing && existing.description !== requirement.description) throw new Error(`Cannot replace existing requirement ${requirement.id}; use a new criterion ID`); if (!existing) state.requirements.push({ ...requirement, required: true }); } state.constraints = [...new Set([...state.constraints, ...args.constraints])]; state.nonGoals = [...new Set([...state.nonGoals, ...args.nonGoals])]; replaceWorkPlan(state, args.tasks, args.phases, args.reason); }); return planReceipt(); }),
-      tool("work_status", "Inspect canonical records. Page with offset/limit or specific taskIds/requirementIds. For receipt lookup use receiptsOnly:true and optional receiptTools. Omitted records remain mandatory for completion.", { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, taskIds: strings, requirementIds: strings, receiptsOnly: { type: "boolean" }, receiptTools: strings }, [], async args => {
-        const receipts = [...this.receipts.values()].filter(r => !args.receiptTools || args.receiptTools.includes(r.tool))
-          .slice(-20).map(r => ({ id: r.id, receiptRef: this.receiptRef(r), tool: r.tool, status: r.status, output: r.output?.slice(0, 500) }));
-        if (args.receiptsOnly) return { receipts };
+      tool("work_status", "Inspect canonical records. Page with offset/limit or specific taskIds/requirementIds. Receipt lookup uses receiptsOnly:true, optional receiptTools and offset/limit, newest first; validation reports command eligibility and current file hashes. Omitted records remain mandatory for completion.", { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, taskIds: strings, requirementIds: strings, receiptsOnly: { type: "boolean" }, receiptTools: strings }, [], async args => {
+        const matching = [...this.receipts.values()].filter(r => !args.receiptTools || args.receiptTools.includes(r.tool)).reverse();
+        const receiptOffset = args.receiptsOnly ? args.offset ?? 0 : 0; const receiptLimit = args.receiptsOnly ? args.limit ?? 20 : 20;
+        const current = await this.hashes();
+        const receipts = matching.slice(receiptOffset, receiptOffset + receiptLimit).map(r => ({ id: r.id, receiptRef: this.receiptRef(r), tool: r.tool, status: r.status, args: sanitizeArgs(r.args), at: r.at,
+          ...(r.tool === "run_shell" ? { validation: { recognized: isVerificationCommand(r.args), current: Object.entries(current).every(([file, value]) => r.inputHashes[file] === value) } } : {}),
+          output: r.tool === "run_shell" ? r.output?.slice(-800) : r.output?.slice(0, 500) }));
+        if (args.receiptsOnly) return { receipts, totalReceipts: matching.length, nextReceiptOffset: receiptOffset + receipts.length < matching.length ? receiptOffset + receipts.length : null };
         const offset = args.offset ?? 0; const limit = args.limit ?? 20;
         const tasks = this.state?.tasks.filter(task => !args.taskIds || args.taskIds.includes(task.id)) ?? [];
         const page = tasks.slice(offset, offset + limit);
@@ -835,7 +835,12 @@ export class SessionController {
     const current = await this.hashes();
     const codeChanged = [...this.touched].some(file => /\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|c|cpp|h|cs|rb|php|swift|sh|json|toml|ya?ml)$/.test(file));
     const verification = receipts.find(r => r?.tool === "run_shell" && isVerificationCommand(r.args) && Object.entries(current).every(([file, value]) => r.inputHashes[file] === value));
-    if (codeChanged && !verification) throw new Error("Changed code needs a successful test/typecheck/lint command against the current files; a diff or echo is not validation");
+    if (codeChanged && !verification) {
+      const recognized = receipts.some(r => r?.tool === "run_shell" && isVerificationCommand(r.args));
+      throw new Error(recognized
+        ? "Validation receipt is stale for the current files. Rerun the check, then use its new receiptRef. Inspect work_status with receiptsOnly:true and receiptTools:[run_shell] for command and freshness."
+        : "Changed code needs a recognized successful test/typecheck/lint command against current files. Use an explicit form such as npm test, npm run typecheck, or node --test test/example.test.mjs, then use that receiptRef; a diff or echo is not validation.");
+    }
     if (verification) {
       const snapshot = await captureWorkspace(this.workspaceRoot);
       for (const [file, value] of Object.entries(verification.inputHashes)) {

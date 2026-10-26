@@ -13,6 +13,44 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("successful npm --silent test receipts verify changed code and page newest-first without another test run", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-flags-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-flags-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "src")); await fs.mkdir(path.join(root, "test"));
+  await fs.writeFile(path.join(root, "src/value.mjs"), "export const value = 1;\n");
+  await fs.writeFile(path.join(root, "test/value.test.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; import {value} from '../src/value.mjs'; test('updated value',()=>assert.equal(value,2));\n");
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test test/value.test.mjs" } }));
+  let step = 0; let attemptId = ""; let validationReceipt = ""; let reviews = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) { reviews++; assert.ok(request.messages.some(message => message.content.includes("updated value"))); return reply('{"passed":true,"findings":[]}'); }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src/value.mjs"] });
+      case 1: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "src/value.mjs" });
+      case 2: return call("write_file", { path: "src/value.mjs", content: "export const value = 2;\n" });
+      case 3: return call("run_shell", { command: "node", args: ["--version"] });
+      case 4: return call("run_shell", { command: "npm", args: ["--silent", "test"] });
+      case 5: assert.match(previous(), /# pass 1/); return call("work_status", { receiptsOnly: true, receiptTools: ["run_shell"], limit: 1 });
+      case 6: {
+        const page = JSON.parse(previous()); assert.equal(page.totalReceipts, 2); assert.equal(page.nextReceiptOffset, 1);
+        assert.equal(page.receipts.length, 1); assert.deepEqual(page.receipts[0].args, { command: "npm", args: ["--silent", "test"] });
+        assert.deepEqual(page.receipts[0].validation, { recognized: true, current: true }); validationReceipt = page.receipts[0].receiptRef;
+        return call("work_status", { receiptsOnly: true, receiptTools: ["run_shell"], offset: 1, limit: 1 });
+      }
+      case 7: {
+        const page = JSON.parse(previous()); assert.equal(page.nextReceiptOffset, null); assert.equal(page.receipts[0].validation.recognized, false);
+        return call("work_verify", { taskId: "T1", attemptId, invocationIds: [validationReceipt], summary: "Updated value to two; npm --silent test passed the actual test." });
+      }
+      case 8: return call("work_complete", {});
+      default: return reply("Updated value to two and verified its test.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  assert.equal((await controller.run("Set the exported value to two and run the existing test.")).completed, true);
+  assert.equal(reviews, 1); assert.equal(step, 10);
+});
+
 test("workspace aliases pin the same canonical session identity", async t => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-session-alias-"));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
