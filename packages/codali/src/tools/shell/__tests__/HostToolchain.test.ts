@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverHostToolchain } from "../HostToolchain.js";
+import { discoverHostToolchain, extraRuntimeMounts } from "../HostToolchain.js";
 import { createIsolatedExecutor, executorStatus } from "../IsolatedExecutor.js";
 
 test("host toolchain discovery rejects workspace executables and mismatched package manifests", async () => {
@@ -82,4 +82,99 @@ test("the installed pnpm runs a workspace Node test inside the isolation boundar
     const result = await createIsolatedExecutor({ status })("pnpm", ["test"], { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 10000 });
     assert.match(result.output, /pass 1/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("private Python discovery mounts its library, rejects escaped libraries and never mounts the installation parent", async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), "codali-python-discovery-"));
+  t.after(() => fs.rm(fixture, { recursive: true, force: true }));
+  const workspace = path.join(fixture, "workspace"); const install = path.join(fixture, "install");
+  const library = path.join(install, "lib", "python3.12");
+  await fs.mkdir(workspace); await fs.mkdir(path.join(install, "bin"), { recursive: true });
+  await fs.mkdir(path.join(library, "encodings"), { recursive: true });
+  // Native fixture is inspected, never executed during discovery.
+  await fs.copyFile(process.execPath, path.join(install, "bin", "python3"));
+  await fs.chmod(path.join(install, "bin", "python3"), 0o755);
+  await fs.writeFile(path.join(library, "os.py"), "# fixture\n");
+  await fs.writeFile(path.join(library, "encodings", "__init__.py"), "# fixture\n");
+  const selected = discoverHostToolchain(workspace, path.join(install, "bin")).filter(runtime => runtime.name === "python3");
+  assert.equal(selected.length, 1);
+  assert.deepEqual(extraRuntimeMounts(selected).map(mount => mount.readOnlyRoot), [await fs.realpath(path.join(install, "bin", "python3")), await fs.realpath(library)]);
+  const outside = path.join(fixture, "external-library"); await fs.rename(library, outside); await fs.symlink(outside, library);
+  assert.equal(discoverHostToolchain(workspace, path.join(install, "bin")).some(runtime => runtime.name === "python3"), false);
+});
+
+test("rustup proxies select only the installed host toolchain without exposing Cargo credentials or repository overrides", async t => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rust-discovery-"));
+  const oldHome = process.env.RUSTUP_HOME; const oldToolchain = process.env.RUSTUP_TOOLCHAIN;
+  t.after(async () => {
+    if (oldHome === undefined) delete process.env.RUSTUP_HOME; else process.env.RUSTUP_HOME = oldHome;
+    if (oldToolchain === undefined) delete process.env.RUSTUP_TOOLCHAIN; else process.env.RUSTUP_TOOLCHAIN = oldToolchain;
+    await fs.rm(fixture, { recursive: true, force: true });
+  });
+  const workspace = path.join(fixture, "workspace"); const proxies = path.join(fixture, "cargo", "bin");
+  const rustup = path.join(fixture, "rustup"); const toolchain = path.join(rustup, "toolchains", "stable-fixture");
+  await fs.mkdir(workspace); await fs.mkdir(proxies, { recursive: true });
+  await fs.mkdir(path.join(toolchain, "bin"), { recursive: true }); await fs.mkdir(path.join(toolchain, "lib", "rustlib"), { recursive: true });
+  await fs.writeFile(path.join(toolchain, "lib", "rustlib", "manifest-rustc-fixture"), "fixture\n");
+  await fs.writeFile(path.join(rustup, "settings.toml"), 'default_toolchain = "stable-fixture"\n');
+  await fs.writeFile(path.join(workspace, "rust-toolchain.toml"), '[toolchain]\nchannel = "nightly-uninstalled"\n');
+  await fs.copyFile(process.execPath, path.join(proxies, "rustup")); await fs.chmod(path.join(proxies, "rustup"), 0o755);
+  for (const name of ["rustc", "cargo", "rustdoc"]) {
+    if (name === "cargo") await fs.link(path.join(proxies, "rustup"), path.join(proxies, name));
+    else await fs.symlink("rustup", path.join(proxies, name));
+    await fs.copyFile(process.execPath, path.join(toolchain, "bin", name)); await fs.chmod(path.join(toolchain, "bin", name), 0o755);
+  }
+  process.env.RUSTUP_HOME = rustup; delete process.env.RUSTUP_TOOLCHAIN;
+  const selected = discoverHostToolchain(workspace, proxies).filter(runtime => ["rustc", "cargo", "rustdoc"].includes(runtime.name));
+  assert.equal(selected.length, 3);
+  for (const mount of extraRuntimeMounts(selected)) assert.ok(mount.readOnlyRoot.startsWith(`${await fs.realpath(toolchain)}/`));
+  process.env.RUSTUP_TOOLCHAIN = "../../workspace";
+  assert.equal(discoverHostToolchain(workspace, proxies).some(runtime => runtime.name === "cargo"), false);
+});
+
+test("Python imports and unittest run with private bytecode caches and no host credentials", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-python-execution-"));
+  const privateFile = `${root}-private.txt`; const oldKey = process.env.MCODA_MSWARM_API_KEY;
+  t.after(async () => {
+    if (oldKey === undefined) delete process.env.MCODA_MSWARM_API_KEY; else process.env.MCODA_MSWARM_API_KEY = oldKey;
+    await fs.rm(root, { recursive: true, force: true }); await fs.rm(privateFile, { force: true });
+  });
+  if (!discoverHostToolchain(root).some(runtime => runtime.name === "python3")) { t.skip("Python is not installed"); return; }
+  process.env.MCODA_MSWARM_API_KEY = "fixture-host-secret"; await fs.writeFile(privateFile, "private");
+  await fs.writeFile(path.join(root, "test_runtime.py"), `import json, os, pathlib, ssl, sys, unittest
+class RuntimeTest(unittest.TestCase):
+    def test_private_runtime(self):
+        self.assertFalse(pathlib.Path(${JSON.stringify(privateFile)}).exists())
+        self.assertNotIn('MCODA_MSWARM_API_KEY', os.environ)
+        self.assertTrue(sys.pycache_prefix.startswith(os.environ['HOME']))
+        self.assertEqual(json.loads('{"answer":4}')['answer'], 4)
+`);
+  const result = await createIsolatedExecutor({ status })("python3", ["-m", "unittest", "discover", "-s", "."], { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 20000 });
+  assert.match(result.output, /Ran 1 test/);
+  assert.equal((await fs.readdir(root)).includes("__pycache__"), false);
+});
+
+test("Cargo compiles and tests offline with a private home and the concrete compiler", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rust-execution-"));
+  const privateFile = `${root}-private.txt`; const oldKey = process.env.MCODA_MSWARM_API_KEY; const oldCargo = process.env.CARGO_HOME;
+  t.after(async () => {
+    if (oldKey === undefined) delete process.env.MCODA_MSWARM_API_KEY; else process.env.MCODA_MSWARM_API_KEY = oldKey;
+    if (oldCargo === undefined) delete process.env.CARGO_HOME; else process.env.CARGO_HOME = oldCargo;
+    await fs.rm(root, { recursive: true, force: true }); await fs.rm(privateFile, { force: true });
+  });
+  const runtimes = discoverHostToolchain(root);
+  if (!["cargo", "rustc", "rustdoc"].every(name => runtimes.some(runtime => runtime.name === name))) { t.skip("Rust toolchain is not installed"); return; }
+  process.env.MCODA_MSWARM_API_KEY = "fixture-host-secret"; process.env.CARGO_HOME = `${root}-host-cargo`;
+  await fs.writeFile(privateFile, "private"); await fs.mkdir(path.join(root, "src"));
+  await fs.writeFile(path.join(root, "Cargo.toml"), '[package]\nname="codali_isolation_fixture"\nversion="0.1.0"\nedition="2021"\n');
+  await fs.writeFile(path.join(root, "rust-toolchain.toml"), '[toolchain]\nchannel="uninstalled-must-not-download"\n');
+  await fs.writeFile(path.join(root, "src", "lib.rs"), `#[test] fn private_runtime() {
+    assert!(!std::path::Path::new(${JSON.stringify(privateFile)}).exists());
+    assert!(std::env::var("MCODA_MSWARM_API_KEY").is_err());
+    assert!(std::env::var("CARGO_HOME").unwrap().starts_with(&std::env::var("HOME").unwrap()));
+}\n`);
+  const result = await createIsolatedExecutor({ status })("cargo", ["test", "--offline", "--quiet"], { workspaceRoot: root, allowedWritePaths: ["."], shellTimeoutMs: 60000 });
+  assert.match(result.output, /1 passed/);
 });

@@ -59,6 +59,14 @@ are denied. Session grants match the exact tool arguments and remain subordinate
 to the current policy. Linux execution requires bubblewrap; run `doctor` to check
 the available platform executor.
 
+The executor discovers installed Node/package-manager, Python and Rust tools from
+the host's trusted PATH. Private Python standard libraries and the selected Rust
+toolchain libraries are exposed read-only; Cargo and Python caches use a temporary
+private home. Rustup proxies resolve to an already-installed host toolchain (the
+host's `RUSTUP_TOOLCHAIN` or default), without repository-triggered downloads.
+Use `doctor` to inspect selected executable paths. Dependency installation still
+requires network permission, and build outputs must fit the task's write scope.
+
 Each task is tied to the original goal and a bounded path scope. A successful tool
 call is not task completion: changed code needs recorded validation and separate
 review, and the goal gate checks requirement coverage, current file hashes and

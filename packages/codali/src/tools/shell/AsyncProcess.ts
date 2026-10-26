@@ -8,7 +8,10 @@ export const safeProcessEnvironment = (): NodeJS.ProcessEnv => Object.fromEntrie
 );
 
 /** Host executor settings, never populated from model-supplied tool arguments. */
-export interface ProcessEnvironment { HOME?: string; TMPDIR?: string; PATH?: string; }
+export interface ProcessEnvironment {
+  HOME?: string; TMPDIR?: string; PATH?: string;
+  CARGO_HOME?: string; XDG_CACHE_HOME?: string; PYTHONPYCACHEPREFIX?: string; PYTHONUSERBASE?: string;
+}
 
 export const runProcess = (command: string, args: string[], context: ToolContext, environment: ProcessEnvironment = {}): Promise<ToolHandlerResult> => {
   context.signal?.throwIfAborted();
@@ -18,7 +21,7 @@ export const runProcess = (command: string, args: string[], context: ToolContext
   return new Promise((resolve, reject) => {
     const group = process.platform !== "win32";
     const env = safeProcessEnvironment();
-    for (const key of ["HOME", "TMPDIR", "PATH"] as const) if (typeof environment[key] === "string") env[key] = environment[key];
+    for (const key of ["HOME", "TMPDIR", "PATH", "CARGO_HOME", "XDG_CACHE_HOME", "PYTHONPYCACHEPREFIX", "PYTHONUSERBASE"] as const) if (typeof environment[key] === "string") env[key] = environment[key];
     const child = spawn(command, args, { cwd: context.workspaceRoot, env, detached: group, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = ""; let stderr = ""; let captured = 0; let truncated = false; let timedOut = false;
     const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };

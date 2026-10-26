@@ -32,6 +32,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select installed Rust toolchain
+        run: rustup default stable
       - name: Record actual platform and toolchain
         run: |
           if [ "$(uname -s)" = Darwin ]; then sw_vers; fi
@@ -56,7 +61,7 @@ jobs:
           assert.equal(status.available, true, status.reason);
           assert.equal(status.backend, process.platform === 'darwin' ? 'sandbox-exec' : 'bubblewrap');
           const toolchain = discoverHostToolchain(process.cwd());
-          for (const name of ['node', 'pnpm']) assert.ok(toolchain.some(runtime => runtime.name === name), `${name} must be qualified, not skipped`);
+          for (const name of ['node', 'pnpm', 'python3', 'rustc', 'cargo', 'rustdoc', 'cc']) assert.ok(toolchain.some(runtime => runtime.name === name), `${name} must be qualified, not skipped`);
           JS
       - name: Diagnose actual macOS command sandbox
         if: runner.os == 'macOS'
