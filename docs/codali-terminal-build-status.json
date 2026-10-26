@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Tagged codali.3 at 2242111, then cancelled release 40386918780 before publication after Windows CI 40384671184 exposed an atomic rename EPERM that left a completed media job uncertain. Windows-only bounded rename retry passes 69 session/media/credential tests and seven targeted atomic tests; the new real Windows reader-lock test awaits CI. Published next remains codali.2. AA live journeys and Logmira drain qualification continue; production Logmira unchanged.",
+  "currentTask": "Windows atomic rename fix passed real reader-lock and media persistence checks (Codali Windows: 1,376 passed/125 skipped). Overall CI 40387992103 later failed a separate Python auth-guard startup timeout. macOS Git receipts exposed an Apple launcher/Xcode sandbox issue; native Git discovery fix passes 61 local tests/one skip and awaits macOS CI. Logmira .2 consumer upgrade 48072c4ec passed 189 tests and has all 213 application artifacts byte-identical to production; runtime image building. AA remains active; no stable promotion or canary start.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1587,9 +1587,29 @@
         "/home/wodo/.local/state/codali-windows-rename-fixture-check.log"
       ],
       "limitation": "Injected errors reproduce two failures on old code and pass after retry. Actual Windows reader-lock test is skipped locally and must pass Windows CI; no publication yet."
+    },
+    {
+      "check": "Windows native sharing-lock and media persistence regression at 8ef0127",
+      "status": "passed",
+      "run": "https://github.com/bekirdag/mcoda/actions/runs/40387992103",
+      "codaliPassed": 1376,
+      "codaliSkipped": 125,
+      "artifact": "/home/wodo/.local/state/codali-windows-8ef-failure.log",
+      "limitation": "The full workflow failed later when a separate Python auth-guard startup test timed out after ten seconds. This entry records only the passing Codali package evidence."
+    },
+    {
+      "check": "macOS Git native tool discovery",
+      "status": "local_passed",
+      "focusedPassed": 61,
+      "focusedSkipped": 1,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-macos-719-failure.log",
+        "/home/wodo/.local/state/codali-macos-git-focused.log"
+      ],
+      "limitation": "Native Git selection is confined to the existing developer root. Actual macOS CI must confirm the fix."
     }
   ],
-  "updatedAt": "2026-10-26T19:34:39.583559+00:00",
+  "updatedAt": "2026-10-26T19:47:22.745889+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 is published with native/release/security/npm checks passed. mcoda codali.2 passed twelve package/install jobs; nine packages were accepted before registry propagation exceeded the install-check deadline. Failed publisher is retrying against identical qualified artifacts; @mcoda/mswarm publication remains pending. The new masked-login fix3a2a223 requires the next candidate.",

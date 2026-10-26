@@ -4,6 +4,8 @@
 
 - Retry transient Windows state-file replacement conflicts without deleting the
   previous state or suppressing permanent errors. Retain file durability checks.
+- Resolve native macOS Git within the selected developer installation so sandboxed
+  repository inspection works without launching the Xcode wrapper.
 
 ## 0.1.135-codali.3 - 2026-10-26
 

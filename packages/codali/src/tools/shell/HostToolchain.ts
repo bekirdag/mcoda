@@ -129,8 +129,10 @@ const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] =>
     if (developer === home || developer === path.parse(developer).root || within(workspace, developer) || within(developer, workspace)) return [];
     const sdk = query("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
     if (!within(sdk, developer) || !existsSync(path.join(sdk, "SDKSettings.plist"))) return [];
-    return ["cc", "ar"].map(name => {
-      const executable = query("/usr/bin/xcrun", ["--find", name === "cc" ? "clang" : "ar"]);
+    // /usr/bin/git is an Apple launcher that may invoke xcodebuild and inspect
+    // files outside Developer. Select native Git within the same trusted root.
+    return ["cc", "ar", "git"].map(name => {
+      const executable = query("/usr/bin/xcrun", ["--find", name === "cc" ? "clang" : name]);
       if (!within(executable, developer) || !executableBinary(executable)) throw new Error("Developer tool escapes selected installation");
       return { name, executable, readOnlyRoot: developer, directory: true, environment: { SDKROOT: sdk, DEVELOPER_DIR: developer } };
     });
