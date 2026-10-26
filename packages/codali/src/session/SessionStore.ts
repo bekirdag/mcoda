@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { atomicWriteJson, withStateLock } from "./AtomicState.js";
 import { createWorkState, validateWorkState } from "./WorkState.js";
 import type { WorkState } from "./WorkTypes.js";
+import { readStateFile, sessionStoragePath } from "./SessionStoragePath.js";
 
 export type CodaliSessionStatus = "active" | "paused" | "completed" | "failed";
 
@@ -84,6 +85,22 @@ const safeId = (value: string): string => {
   return value;
 };
 
+const safeSummaryRef = (value: string): string => {
+  const normalized = typeof value === "string" ? value.replace(/\\/g, "/") : "";
+  if (!/^summaries\/[A-Za-z0-9._-]+\.json$/.test(normalized)) throw new Error("Unsafe session summary reference");
+  return normalized;
+};
+
+const validateMetadata = (value: CodaliSessionMetadata, sessionId: string): CodaliSessionMetadata => {
+  if (!value || value.schemaVersion !== 1) throw new Error("Unsupported session metadata schema; use a compatible client");
+  if (value.sessionId !== sessionId || typeof value.repoRoot !== "string" || typeof value.task !== "string" || !["active", "paused", "completed", "failed"].includes(value.status)) throw new Error("Invalid session metadata identity/status");
+  for (const key of ["runIds", "transcriptRefs", "summaryRefs", "contextLaneRefs", "instructionSources"] as const) {
+    if (!Array.isArray(value[key]) || value[key].some(item => typeof item !== "string")) throw new Error(`Invalid session ${key}`);
+  }
+  value.summaryRefs.forEach(safeSummaryRef);
+  return value;
+};
+
 const parseJsonLines = <T>(content: string): T[] => {
   if (!content.trim()) return [];
   const lines = content.split("\n");
@@ -99,6 +116,12 @@ const parseJsonLines = <T>(content: string): T[] => {
     }
   }
   return result;
+};
+
+const parseTranscript = (content: string, sessionId: string): CodaliSessionTranscriptEvent[] => {
+  const events = parseJsonLines<CodaliSessionTranscriptEvent>(content);
+  if (events.some(event => !event || event.schemaVersion !== 1 || event.sessionId !== sessionId)) throw new Error("Unsupported/invalid session transcript schema");
+  return events;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -170,6 +193,11 @@ export class SessionStore {
     return resolved;
   }
 
+  private checkedPath(file: string, createParents = false, directory = false): Promise<string> {
+    return sessionStoragePath({ workspaceRoot: this.workspaceRoot, storageRoot: this.rootDir(), file,
+      allowExternal: this.allowExternalStorage, createParents, directory });
+  }
+
   private sessionDir(sessionId: string): string {
     return path.join(this.rootDir(), safeId(sessionId));
   }
@@ -216,18 +244,18 @@ export class SessionStore {
       createdAt,
       updatedAt: createdAt,
     };
-    await fs.mkdir(this.sessionDir(sessionId), { recursive: true });
-    await withStateLock(this.metadataPath(sessionId), async () => {
-      try { await fs.stat(this.metadataPath(sessionId)); throw new Error("Session already exists"); }
+    const metadataPath = await this.checkedPath(this.metadataPath(sessionId), true);
+    await withStateLock(metadataPath, async () => {
+      try { await fs.stat(metadataPath); throw new Error("Session already exists"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      await atomicWriteJson(this.metadataPath(sessionId), metadata);
+      await atomicWriteJson(metadataPath, metadata);
     });
     return metadata;
   }
 
   async readSession(sessionId: string): Promise<CodaliSessionMetadata> {
-    const content = await fs.readFile(this.metadataPath(sessionId), "utf8");
-    return JSON.parse(content) as CodaliSessionMetadata;
+    const content = await readStateFile(await this.checkedPath(this.metadataPath(sessionId)));
+    return validateMetadata(JSON.parse(content) as CodaliSessionMetadata, sessionId);
   }
 
   async getOrCreateSession(input: CreateSessionInput): Promise<CodaliSessionMetadata> {
@@ -254,7 +282,8 @@ export class SessionStore {
     sessionId: string,
     mutate: (current: CodaliSessionMetadata) => CodaliSessionMetadata,
   ): Promise<CodaliSessionMetadata> {
-    return withStateLock(this.metadataPath(sessionId), async () => {
+    const metadataPath = await this.checkedPath(this.metadataPath(sessionId));
+    return withStateLock(metadataPath, async () => {
     const current = await this.readSession(sessionId);
     const patch = mutate(structuredClone(current));
     const next: CodaliSessionMetadata = {
@@ -267,7 +296,8 @@ export class SessionStore {
       instructionSources: patch.instructionSources ?? current.instructionSources,
       updatedAt: this.nextTimestampIso(current.updatedAt),
     };
-    await atomicWriteJson(this.metadataPath(sessionId), next);
+    validateMetadata(next, sessionId);
+    await atomicWriteJson(metadataPath, next);
     return next;
     });
   }
@@ -290,18 +320,22 @@ export class SessionStore {
       runId: event.runId,
       data: event.data,
     };
-    const transcriptPath = this.transcriptPath(sessionId);
-    await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
+    await this.readSession(sessionId); // Refuse future schemas before appending anything.
+    const transcriptPath = await this.checkedPath(this.transcriptPath(sessionId));
     await withStateLock(transcriptPath, async () => {
       try {
-        const contents = await fs.readFile(transcriptPath, "utf8");
+        const contents = await readStateFile(transcriptPath);
+        parseTranscript(contents, sessionId);
         if (contents && !contents.endsWith("\n")) {
           const lastNewline = contents.lastIndexOf("\n");
-          try { JSON.parse(contents.slice(lastNewline + 1)); await fs.appendFile(transcriptPath, "\n"); }
-          catch { await fs.truncate(transcriptPath, Buffer.byteLength(contents.slice(0, lastNewline + 1))); }
+          let complete = false;
+          try { JSON.parse(contents.slice(lastNewline + 1)); complete = true; } catch { /* Incomplete crash tail. */ }
+          const repair = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+          try { if (complete) await repair.writeFile("\n"); else await repair.truncate(Buffer.byteLength(contents.slice(0, lastNewline + 1))); }
+          finally { await repair.close(); }
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const handle = await fs.open(transcriptPath, "a", 0o600);
+      const handle = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
       try { await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8"); await handle.sync(); }
       finally { await handle.close(); }
     });
@@ -311,8 +345,8 @@ export class SessionStore {
 
   async readTranscript(sessionId: string): Promise<CodaliSessionTranscriptEvent[]> {
     try {
-      const content = await fs.readFile(this.transcriptPath(sessionId), "utf8");
-      return parseJsonLines<CodaliSessionTranscriptEvent>(content);
+      const content = await readStateFile(await this.checkedPath(this.transcriptPath(sessionId)));
+      return parseTranscript(content, sessionId);
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
         return [];
@@ -324,7 +358,7 @@ export class SessionStore {
   async listSessions(): Promise<CodaliSessionMetadata[]> {
     let entries: string[];
     try {
-      entries = await fs.readdir(this.rootDir());
+      entries = await fs.readdir(await this.checkedPath(this.rootDir(), false, true));
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
         return [];
@@ -354,12 +388,11 @@ export class SessionStore {
       eventCount: events.length,
       ...compacted,
     };
-    const summariesDir = this.summariesDir(sessionId);
-    await fs.mkdir(summariesDir, { recursive: true });
+    const summariesDir = await this.checkedPath(this.summariesDir(sessionId), true, true);
     const fileName = `${createdAt.replace(/[^0-9T]/g, "").slice(0, 15)}-${events.length}.json`;
     const filePath = path.join(summariesDir, fileName);
     await atomicWriteJson(filePath, summary);
-    const relativeRef = path.relative(this.sessionDir(sessionId), filePath);
+    const relativeRef = path.posix.join("summaries", fileName);
     await this.mutateSession(sessionId, current => ({ ...current, summaryRefs: [...new Set([...current.summaryRefs, relativeRef])] }));
     return summary;
   }
@@ -368,8 +401,10 @@ export class SessionStore {
     const metadata = await this.readSession(sessionId);
     const latest = metadata.summaryRefs.at(-1);
     if (!latest) return undefined;
-    const content = await fs.readFile(path.join(this.sessionDir(sessionId), latest), "utf8");
-    return JSON.parse(content) as CodaliSessionSummary;
+    const content = await readStateFile(await this.checkedPath(path.join(this.sessionDir(sessionId), safeSummaryRef(latest))));
+    const summary = JSON.parse(content) as CodaliSessionSummary;
+    if (!summary || summary.schemaVersion !== 1 || summary.sessionId !== sessionId) throw new Error("Unsupported/invalid session summary schema");
+    return summary;
   }
 
   async buildResumeBundle(
@@ -388,7 +423,7 @@ export class SessionStore {
 
   async initializeWork(sessionId: string, objective: string): Promise<WorkState> {
     await this.readSession(sessionId);
-    const file = path.join(this.sessionDir(sessionId), "work.json");
+    const file = await this.checkedPath(path.join(this.sessionDir(sessionId), "work.json"));
     return withStateLock(file, async () => {
       try { return await this.readWork(sessionId); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -399,13 +434,14 @@ export class SessionStore {
   }
 
   async readWork(sessionId: string): Promise<WorkState> {
-    const state = JSON.parse(await fs.readFile(path.join(this.sessionDir(sessionId), "work.json"), "utf8")) as WorkState;
+    const state = JSON.parse(await readStateFile(await this.checkedPath(path.join(this.sessionDir(sessionId), "work.json")))) as WorkState;
     validateWorkState(state);
     return state;
   }
 
   async updateWork(sessionId: string, expectedRevision: number, mutate: (state: WorkState) => void): Promise<WorkState> {
-    const file = path.join(this.sessionDir(sessionId), "work.json");
+    await this.readSession(sessionId);
+    const file = await this.checkedPath(path.join(this.sessionDir(sessionId), "work.json"));
     return withStateLock(file, async () => {
       const state = await this.readWork(sessionId);
       if (state.revision !== expectedRevision) throw new Error("Work revision conflict; reload before retrying");

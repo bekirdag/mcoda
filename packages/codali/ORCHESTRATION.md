@@ -265,6 +265,15 @@ for the live routing, media, long-session and canary gates in the build plan.
 
 ### Planning evaluation
 
+Session storage rejects redirected directories beneath its configured boundary,
+symlink or hard-linked state files, unsafe summary references and unknown
+metadata/transcript/summary versions. Host-selected external storage remains
+supported; repository configuration cannot enable it. Atomic replacement syncs
+the file and directory. An I/O error after rename can leave the new complete
+state visible while the caller receives an error: recovery must reread the
+durable revision instead of assuming rollback. These checks do not isolate the
+CLI from a hostile process running as the same OS user.
+
 `eval/PlanningCorpusRunner.runPlanningCorpus` runs six bounded planning probes
 through the real session controller, configured provider and `plan` permission
 profile. It accepts `configPath`, a new `outputRoot`, optional `caseIds`, `effort`

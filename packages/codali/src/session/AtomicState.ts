@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Connection } from "@mcoda/db";
+import { assertRegularStateFile } from "./SessionStoragePath.js";
 
 export const atomicWriteJson = async (file: string, value: unknown): Promise<void> => {
+  await assertRegularStateFile(file);
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   const handle = await fs.open(temporary, "wx", 0o600);
@@ -46,6 +48,7 @@ const transact = async <T>(file: string, operation: () => Promise<T>, timeoutMs:
   // Reuse mcoda's SQLite dependency for an OS-owned transaction lock. A killed
   // process releases it automatically, without PID reuse or stale recovery files.
   const databasePath = `${file}.transactions.sqlite`;
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) await assertRegularStateFile(databasePath + suffix);
   const connection = await Connection.open(databasePath);
   try {
     await fs.chmod(databasePath, 0o600);

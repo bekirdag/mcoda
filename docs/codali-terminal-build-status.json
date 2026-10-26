@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Held-out Suku evaluation E finished 52/60 across 12 correlated families, with one observed false completion. Frozen client F (runtime 4a385f4) reruns all eight failed cases as diagnostics, not new held-out evidence. Exact Linux publication tarballs passed clean installation on five platform/Node jobs; the sixth stopped at an aggregate grader timeout before installation. Splitting that grader by case preserves all assertions. Docdex prerelease, backend/application, fresh evaluation, long-session and canary gates remain open.",
+  "currentTask": "Diagnostic F finished 7/8 on reused E failures; earlier false completion passes with requested tests, but fresh qualification is still required. Planning baseline P is running on both Strata hosts and has exposed planning-mode execution attempts plus overly implicit oracle edges. Session storage symlink/schema fixes pass 1453 tests with two skips. Exact-artifact platform matrix at 54e6841 passed all six jobs. Docdex codali.2 publication, backend/application, fresh corpus, long-session and canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -27,7 +27,8 @@
         "Managed Docdex changes forward-ported cleanly to upstream bbc2cb3 in a separate checkout, including newer health and web fixes. Combined qualification exposed parallel test failure-history interference; isolation fix and rerun in progress.",
         "Docdex managed-runtime changes forward-ported to bbc2cb3: 794 library and 33 integration tests passed (one ignored). PR13 at a1ef3a5 passed Linux, Windows and npm installer CI. Optimized binary 6695e8d passed the real Codali managed-Docdex integration; global rollout is pending.",
         "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress.",
-        "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim."
+        "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim.",
+        "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved."
       ]
     },
     {
@@ -402,7 +403,8 @@
       "status": "in_progress",
       "evidence": [
         "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
-        "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass."
+        "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass.",
+        "Reproduced legacy SessionStore symlink escape and acceptance of schemaVersion2 metadata. New path checks refuse redirected parents, state/SQLite symlinks and hard links; readers reject unknown metadata/transcript/summary schemas and unsafe summary refs. Forty session tests and full1453/2skip pass, including partial ENOSPC, fsync ambiguity, actual read-only storage and SIGKILL lock recovery; platform qualification remains."
       ]
     },
     {
@@ -469,7 +471,8 @@
       "evidence": [
         "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated.",
         "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked.",
-        "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim."
+        "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim.",
+        "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication."
       ]
     },
     {
@@ -1185,7 +1188,7 @@
       "tokens": 2576
     }
   ],
-  "updatedAt": "2026-10-26T06:44:26.207272+00:00",
+  "updatedAt": "2026-10-26T07:11:38.274651+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
     "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",
