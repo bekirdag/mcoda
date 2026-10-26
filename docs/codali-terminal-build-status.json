@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing 0.1.135-codali.3 with masked-login fix 3a2a223 and validation-budget inspection fix 73fae2f. Full Codali suite: 1,555 passed/two skipped; workspace build passed. Published codali.2 registry artifacts are independently verified; stable latest remains .134. AA remaining journeys continue on frozen clients. Logmira candidate passed 189 tests; production remains unchanged while drain qualification and the next release proceed.",
+  "currentTask": "Tagged codali.3 at 2242111, then cancelled release 40386918780 before publication after Windows CI 40384671184 exposed an atomic rename EPERM that left a completed media job uncertain. Windows-only bounded rename retry passes 69 session/media/credential tests and seven targeted atomic tests; the new real Windows reader-lock test awaits CI. Published next remains codali.2. AA live journeys and Logmira drain qualification continue; production Logmira unchanged.",
   "tasks": [
     {
       "id": "P0.1",
@@ -553,7 +553,8 @@
         "BackendJ deployed15:39UTC with rollback I images retained. NodesL activated15:43/15:44UTC after local drain and canonical no-active-job proof; source/profile/manifest hashes verified and owner admission reopened. No Strata engine restart. Consumers require postdeploy requalification.",
         "Prerelease codali.2 publisher accepted nine packages, then failed its twelve-attempt install check because Codali was not yet visible (ETARGET). The identical registry artifact is now visible and clean-installable; reran only failed publication job to complete @mcoda/mswarm. Stable latest remains0.1.134. No tag or package bytes were replaced.",
         "Release 40376949005 retry succeeded. All ten npm .2 tarballs independently downloaded and SHA256/SHA512 matched exact qualified 436e0b1 artifacts; next=.2/latest=.134. Logmira isolated .2 candidate passed build and 189 tests/16 files with networking disabled; production rollout pending.",
-        "Preparing next prerelease 0.1.135-codali.3 for the credential prompt and validation-budget fixes. All eleven version manifests aligned; packages/testing excluded. This candidate requires the release artifact/platform gates and is not a stable promotion."
+        "Preparing next prerelease 0.1.135-codali.3 for the credential prompt and validation-budget fixes. All eleven version manifests aligned; packages/testing excluded. This candidate requires the release artifact/platform gates and is not a stable promotion.",
+        "Retained tag v0.1.135-codali.3 at2242111; release40386918780 cancelled before publication after unrelated Windows CI revealed shared persistence rename EPERM. Fix under validation; do not reuse the tag or claim .3 was published."
       ]
     },
     {
@@ -1572,9 +1573,23 @@
       "limitations": [
         "Original red reproduction retained. Git inspection remains ineligible as test evidence; edits and unverified completion stay fenced. Live qualification pending."
       ]
+    },
+    {
+      "check": "Windows atomic state replacement conflict recovery",
+      "status": "local_passed",
+      "focusedTests": 69,
+      "atomicTestsPassed": 7,
+      "atomicTestsSkipped": 1,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-ci-docs-7d1-failure.log",
+        "/home/wodo/.local/state/codali-windows-rename-red.log",
+        "/home/wodo/.local/state/codali-windows-rename-green.log",
+        "/home/wodo/.local/state/codali-windows-rename-fixture-check.log"
+      ],
+      "limitation": "Injected errors reproduce two failures on old code and pass after retry. Actual Windows reader-lock test is skipped locally and must pass Windows CI; no publication yet."
     }
   ],
-  "updatedAt": "2026-10-26T19:27:15.753532+00:00",
+  "updatedAt": "2026-10-26T19:34:39.583559+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 is published with native/release/security/npm checks passed. mcoda codali.2 passed twelve package/install jobs; nine packages were accepted before registry propagation exceeded the install-check deadline. Failed publisher is retrying against identical qualified artifacts; @mcoda/mswarm publication remains pending. The new masked-login fix3a2a223 requires the next candidate.",

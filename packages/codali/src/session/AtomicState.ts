@@ -24,7 +24,17 @@ export const atomicWriteJson = async (file: string, value: unknown): Promise<voi
     await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
     await handle.sync();
     await handle.close();
-    await fs.rename(temporary, file);
+    // A concurrent Windows reader or scanner can briefly deny replacement.
+    // Retry the same atomic rename; never remove the previous durable state.
+    for (let attempt = 0; ; attempt++) {
+      try { await fs.rename(temporary, file); break; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(code) || attempt >= 7) throw error;
+        await assertRegularStateFile(file);
+        await new Promise(resolve => setTimeout(resolve, Math.min(20 * 2 ** attempt, 160)));
+      }
+    }
     await syncStateDirectory(path.dirname(file));
   } finally {
     await handle.close().catch(() => undefined);

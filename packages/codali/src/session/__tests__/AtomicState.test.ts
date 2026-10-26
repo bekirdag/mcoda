@@ -7,6 +7,97 @@ import { spawn } from "node:child_process";
 import { atomicWriteJson, syncStateDirectory, withStateLock } from "../AtomicState.js";
 import { SessionStore } from "../SessionStore.js";
 
+test("transient Windows rename sharing failures retain the original state until atomic publication succeeds", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rename-sharing-"));
+  const file = path.join(root, "state.json");
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const originalRename = fs.rename.bind(fs);
+  try {
+    for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+      await atomicWriteJson(file, { revision: 1 }); let attempts = 0;
+      const injected = Object.assign(new Error("Transient sharing conflict"), { code });
+      const mock = t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+        assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { revision: 1 });
+        assert.deepEqual(JSON.parse(await fs.readFile(args[0], "utf8")), { revision: 2 });
+        if (++attempts <= 2) throw injected;
+        return originalRename(...args);
+      });
+      try {
+        Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+        await atomicWriteJson(file, { revision: 2 });
+        assert.equal(attempts, 3);
+        assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { revision: 2 });
+        assert.deepEqual(await fs.readdir(root), ["state.json"]);
+      } finally { mock.mock.restore(); Object.defineProperty(process, "platform", platform); }
+    }
+  } finally { Object.defineProperty(process, "platform", platform); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("permanent rename failures exhaust a bounded retry only on Windows and never delete the previous state", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rename-failure-"));
+  const file = path.join(root, "state.json"); await atomicWriteJson(file, { revision: 1 });
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    for (const [target, code, expectedAttempts] of [
+      ["win32", "EPERM", 8], ["win32", "EACCES", 8], ["win32", "EBUSY", 8],
+      ["win32", "EIO", 1], ["win32", "ENOSPC", 1], ["win32", "ENOENT", 1],
+      ["linux", "EPERM", 1], ["darwin", "EACCES", 1],
+    ] as const) {
+      let attempts = 0; const injected = Object.assign(new Error("Persistent rename failure"), { code });
+      const mock = t.mock.method(fs, "rename", async () => { attempts++; throw injected; });
+      try {
+        Object.defineProperty(process, "platform", { ...platform, value: target });
+        await assert.rejects(atomicWriteJson(file, { revision: 2 }), error => error === injected);
+        assert.equal(attempts, expectedAttempts, `${target}/${code}`);
+        assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { revision: 1 });
+        assert.deepEqual(await fs.readdir(root), ["state.json"]);
+      } finally { mock.mock.restore(); Object.defineProperty(process, "platform", platform); }
+    }
+  } finally { Object.defineProperty(process, "platform", platform); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("Windows replacement recovers after a real reader releases its non-delete-sharing handle", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-windows-reader-"));
+  const file = path.join(root, "state.json"); await atomicWriteJson(file, { revision: 1 });
+  const script = "$stream=[System.IO.File]::Open($env:CODALI_TEST_STATE_FILE,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read); [Console]::WriteLine('HELD'); [Console]::ReadLine() | Out-Null; $stream.Dispose()";
+  const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+    env: { ...process.env, CODALI_TEST_STATE_FILE: file }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+  });
+  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+  t.after(async () => { if (child.exitCode === null) child.kill(); await closed; await fs.rm(root, { recursive: true, force: true }); });
+  await new Promise<void>((resolve, reject) => {
+    let output = ""; let errors = "";
+    const timer = setTimeout(() => reject(new Error("Windows sharing fixture did not become ready")), 8000);
+    const fail = (error: Error) => { clearTimeout(timer); reject(error); };
+    child.once("error", fail);
+    child.stderr.on("data", data => { errors += String(data); });
+    child.stdout.on("data", data => {
+      output += String(data);
+      if (output.includes("HELD")) { clearTimeout(timer); resolve(); }
+    });
+    child.once("exit", () => fail(new Error(`Sharing fixture exited before release: ${errors}`)));
+  });
+  const original = fs.rename.bind(fs); let attempts = 0; let observedSharingFailure = false;
+  const mock = t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    attempts++;
+    try { return await original(...args); }
+    catch (error) {
+      if (attempts === 1) {
+        assert.ok(["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? ""));
+        observedSharingFailure = true;
+        child.stdin.end("release\n");
+      }
+      throw error;
+    }
+  });
+  try {
+    await atomicWriteJson(file, { revision: 2 });
+    assert.equal(observedSharingFailure, true); assert.ok(attempts >= 2 && attempts <= 8);
+    assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { revision: 2 });
+    assert.deepEqual(await fs.readdir(root), ["state.json"]);
+  } finally { mock.mock.restore(); }
+});
+
 test("disk-full partial temporary write preserves the previous state and removes its incomplete file", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-enospc-")); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, "state.json"); await atomicWriteJson(file, { revision: 1 });

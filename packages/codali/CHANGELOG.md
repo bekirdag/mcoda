@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retry transient Windows state-file replacement conflicts without deleting the
+  previous state or suppressing permanent errors. Retain file durability checks.
+
 ## 0.1.135-codali.3 - 2026-10-26
 
 - Allow bounded Git diff/status inspection within the final validation budget;
@@ -10,7 +13,8 @@
   input from being echoed. Verify masked entry, backspace, cancellation, key
   rotation, logout, credential-cache refresh and bounded piped input.
 
-- Internal `next` prerelease; quality, rollout and canary gates remain open.
+- Tagged candidate; publication was cancelled after Windows CI exposed a
+  transient state-file replacement failure addressed above.
 
 ## 0.1.135-codali.2 - 2026-10-26
 
