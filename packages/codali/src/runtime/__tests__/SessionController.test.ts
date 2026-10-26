@@ -13,6 +13,40 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("module-local shell receipts retain cwd and verify the actual workspace inputs", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-module-check-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-module-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "module"));
+  await fs.writeFile(path.join(root, "module/value.mjs"), "export const value = 1;\n");
+  await fs.writeFile(path.join(root, "module/check.test.mjs"), "import {value} from './value.mjs'; import assert from 'node:assert/strict'; assert.equal(value,2);\n");
+  let step = 0; let attemptId = ""; let reviewed = false;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(input.receipts[0].args.cwd, "module");
+      assert.equal(input.receipts[0].status, "success");
+      assert.match(input.receipts[0].output, /# pass 1/);
+      assert.match(input.source["module/value.mjs"], /value = 2/);
+      reviewed = true; return reply('{"passed":true,"findings":[]}');
+    }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["module/value.mjs"] });
+      case 1: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "module/value.mjs" });
+      case 2: return call("write_file", { path: "module/value.mjs", content: "export const value = 2;\n" });
+      case 3: return call("run_shell", { command: "node", args: ["--test", "check.test.mjs"], cwd: "module" });
+      case 4: return call("work_verify", { taskId: "T1", attemptId, invocationIds: [previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]], summary: "Value is two and the module check passes." });
+      case 5: assert.equal(JSON.parse(previous()).verified, true); return call("work_complete", {});
+      default: throw new Error("No further inference expected");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  assert.equal((await controller.run("Change the module value to two and run its existing check.")).completed, true);
+  assert.equal(reviewed, true);
+});
+
 test("model receipts separate helper and review usage and link each completed call to its intent", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-state-"));

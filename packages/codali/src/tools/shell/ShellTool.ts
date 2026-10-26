@@ -1,6 +1,7 @@
 import path from "node:path";
 import { ToolExecutionError, type ToolContext, type ToolDefinition } from "../ToolTypes.js";
 import { runProcess } from "./AsyncProcess.js";
+import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
@@ -45,7 +46,7 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
-  description: 'Run an allowlisted executable from the workspace root. command is a single executable; arguments go in args, e.g. {"command":"npm","args":["test"]}. In terminal mode the workspace is read-only unless writePaths explicitly names paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
+  description: 'Run an allowlisted executable. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
   readOnly: false,
   capability: "shell",
   inputSchema: {
@@ -54,7 +55,8 @@ export const createShellTool = (): ToolDefinition => ({
     properties: {
       command: { type: "string", description: "One executable name, without arguments or shell syntax." },
       args: { type: "array", items: { type: "string" } },
-      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: narrow existing files/directories to make writable. Default: no workspace writes. Must fit the claimed task scope." },
+      cwd: { type: "string", description: "Existing working directory inside the workspace, relative to its root. Default: workspace root. Does not change the base of writePaths." },
+      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: root-relative existing files/directories to make writable, regardless of cwd. Default: no workspace writes. Must fit the claimed task scope." },
     },
   },
   handler: async (args, context: ToolContext) => {
@@ -63,7 +65,7 @@ export const createShellTool = (): ToolDefinition => ({
         retryable: false,
       });
     }
-    const { command, args: commandArgs = [] } = args as { command: string; args?: string[] };
+    const { command, args: commandArgs = [], cwd } = args as { command: string; args?: string[]; cwd?: string };
     if (
       !context.allowDestructiveOperations
       && isDestructiveShellAction(command, commandArgs)
@@ -90,6 +92,7 @@ export const createShellTool = (): ToolDefinition => ({
       });
     }
 
-    return (context.shellExecutor ?? runProcess)(command, commandArgs, context);
+    const shellWorkingDirectory = resolveShellWorkingDirectory(context.workspaceRoot, cwd);
+    return (context.shellExecutor ?? runProcess)(command, commandArgs, { ...context, shellWorkingDirectory });
   },
 });

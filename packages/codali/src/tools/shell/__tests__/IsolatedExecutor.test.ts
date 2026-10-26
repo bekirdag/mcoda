@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createIsolatedExecutor, darwinSandboxProfile, executorStatus } from "../IsolatedExecutor.js";
+import { createShellTool } from "../ShellTool.js";
 
 test("Darwin policy confines temporary access to one owned directory and quotes hostile path syntax", () => {
   const profile = darwinSandboxProfile('/Users/test/repo"(allow default)', "/private/tmp/codali-shell-123", ["/Users/test/repo/src"], []);
@@ -65,4 +66,19 @@ test("isolated commands have no network access by default", async t => {
     const result = await execute("node", ["-e", "const s=require('net').connect({host:'1.1.1.1',port:443});s.on('connect',()=>process.exit(9));s.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),500)"], { workspaceRoot: root, shellTimeoutMs: 2000 });
     assert.equal((result.data as { exitCode: number }).exitCode, 0);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("module cwd retains root-relative sandbox write scopes", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-module-scope-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "module"));
+  await fs.writeFile(path.join(root, "module", "allowed.txt"), "original");
+  await fs.writeFile(path.join(root, "protected.txt"), "protected");
+  const tool = createShellTool();
+  const context = { workspaceRoot: root, shellAllowlist: ["node"], allowShell: true, allowedWritePaths: ["module/allowed.txt"], shellExecutor: createIsolatedExecutor({ status }), shellTimeoutMs: 5000 };
+  await tool.handler({ command: "node", cwd: "module", args: ["-e", "require('fs').writeFileSync('allowed.txt','changed')"] }, context);
+  assert.equal(await fs.readFile(path.join(root, "module", "allowed.txt"), "utf8"), "changed");
+  await assert.rejects(tool.handler({ command: "node", cwd: "module", args: ["-e", "require('fs').writeFileSync('../protected.txt','changed')"] }, context));
+  assert.equal(await fs.readFile(path.join(root, "protected.txt"), "utf8"), "protected");
 });

@@ -6,6 +6,8 @@ export interface ToolContext {
   checkPath?: (resolvedPath: string, action: "read" | "write") => Promise<void>;
   shellTimeoutMs?: number;
   shellMaxOutputBytes?: number;
+  /** Process cwd inside workspaceRoot; does not change root-relative write scopes. */
+  shellWorkingDirectory?: string;
   /** Optional trusted executor wrapper, applied after permission evaluation. */
   shellExecutor?: (command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>;
   workspaceRoot: string;

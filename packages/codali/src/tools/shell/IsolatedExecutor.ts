@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { runProcess } from "./AsyncProcess.js";
+import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 import { ToolExecutionError, type ToolContext, type ToolHandlerResult } from "../ToolTypes.js";
 import { discoverHostToolchain, extraRuntimeMounts, type HostRuntime } from "./HostToolchain.js";
 
@@ -63,6 +64,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
   return async (command, args, context) => {
     if (!status.available) throw new ToolExecutionError("tool_permission_denied", status.reason ?? "Isolation unavailable");
     const root = realpathSync(context.workspaceRoot);
+    const cwd = resolveShellWorkingDirectory(root, context.shellWorkingDirectory);
     if (root === path.parse(root).root) throw new ToolExecutionError("tool_permission_denied", "Filesystem root cannot be an isolated workspace");
     const runtimes = discoverHostToolchain(root);
     const writePaths = (context.allowedWritePaths ?? ["."]).map(file => {
@@ -85,7 +87,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       launch.push("--dir", "/tmp/codali-bin");
       for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
       for (const file of writePaths) launch.push("--bind", file, file);
-      launch.push("--chdir", root, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
+      launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
       for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python" })) launch.push("--setenv", key, value);
       // Git hooks/config and private session state are not part of executable workspace access.
       for (const dir of [".git", ".mcoda"]) if (existsSync(path.join(root, dir))) launch.push("--ro-bind", path.join(root, dir), path.join(root, dir));
