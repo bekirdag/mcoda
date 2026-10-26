@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Both production nodes now run candidate G (90cf4a4), with guarded drain/restart and successful public mSwarm direct/gateway/staged-job compatibility checks. Isolated native-reasoning qualification passed on both hosts. Backend G images from e6a8d2ba5 pass disposable-MySQL bootstrap/schema/health checks but production proxy deployment remains pending. Frozen U direct-endpoint long journeys are running; tool pass-through response_format regression is fixed (166 node tests passed). Native capability negotiation is being tightened before release.",
+  "currentTask": "Native reasoning now requires an authenticated proxy/node transport capability before inference. Broad client/node suite passed1687 tests with2 platform skips; follow-up terminal preflight reservation/refund and resume checks passed44 tests. Backend capability discovery/rejection tests passed80 and TypeScript checking passed. Production nodes remainG; capability-enabled node/backend candidates and deployment are next. Frozen U Suku service-adapters failed honestly after4 unfinished responses (including unrecognized textual edit_file markup); remaining direct diagnostic journeys continue.",
   "tasks": [
     {
       "id": "P0.1",
@@ -471,7 +471,8 @@
       "evidence": [
         "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified.",
         "Frozen S long-workflows-v1 baseline completed all four scenario attempts: none passed; budget exhaustion prevented completion of four-process/compaction criteria. Raijin status-context refusal/read loops and Suku repeated failing tests were observed. Later-stage steering/recovery checks not reached are unqualified, not evidence that an applied steering record was lost. 3aa685b status/stall fixes passed CI40296909284 and platform40296909315; corrected live journeys pending.",
-        "Frozen U from90cf4a4 started direct-endpoint diagnostic long journeys on both hosts at09:55UTC2026-10-26 with explicit native high/1024 reasoning and published Docdex. Both initial journeys passed planning and verified-task restart stages and are running steering/continued execution. These reuse known contracts and bypass mSwarm; they do not qualify API native transport or fresh held-out quality."
+        "Frozen U from90cf4a4 started direct-endpoint diagnostic long journeys on both hosts at09:55UTC2026-10-26 with explicit native high/1024 reasoning and published Docdex. Both initial journeys passed planning and verified-task restart stages and are running steering/continued execution. These reuse known contracts and bypass mSwarm; they do not qualify API native transport or fresh held-out quality.",
+        "Frozen U direct Suku service-adapters ended unsuccessfully2026-10-26T10:20:37Z after25.6min and1,998,200 accounted/estimated tokens. Stages1/2 passed; stage3 hit the lifetime unfinished-response counter, with final visible output containing undeclared edit_file markup. Original artifacts retained; no completion or multi-hour qualification claim. Inspection found the counter resets per turn but not after useful intermediate work; a targeted fix/validation is pending."
       ]
     },
     {
@@ -510,7 +511,8 @@
       "evidence": [
         "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published.",
         "Publisher now explicitly maps prerelease to next and stable to latest, validates one release version before registry work, publishes checked tarballs and verifies existing registry integrity. Codali publication refuses missing Docdex platform pins. Seventeen publisher/packer tests pass; the runtime manifest stays empty until published artifacts are verified.",
-        "Complete-source backend G images from e6a8d2ba5 passed native schema, fresh disposable MySQL bootstrap and health checks. Gateway image0c3909ab5975c76f2ee2610849be245532d81c6bf7a551c6ced84556a8d8635f; proxy1e7a89fb2bb298a1bc3649a107c6943b7100ef3eb82a6b094c8b10306aa388da. Production data was not used; rollout/quiescence and public native-reasoning tests remain open."
+        "Complete-source backend G images from e6a8d2ba5 passed native schema, fresh disposable MySQL bootstrap and health checks. Gateway image0c3909ab5975c76f2ee2610849be245532d81c6bf7a551c6ced84556a8d8635f; proxy1e7a89fb2bb298a1bc3649a107c6943b7100ef3eb82a6b094c8b10306aa388da. Production data was not used; rollout/quiescence and public native-reasoning tests remain open.",
+        "Native transport negotiation is implemented: the proxy advertises per-model version1 only for pinned upgraded nodes; stale nodes reject native requests before dispatch. The CLI checks every configured native parameter before inference, with zero-accounting/refund coverage. 1687 broad client/node tests passed (2 platform skips),44 follow-up session/provider checks passed, and80 backend tests plus typecheck passed. These capability changes are not deployed yet."
       ]
     },
     {

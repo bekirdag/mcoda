@@ -3357,6 +3357,9 @@ export function mapMcodaAgentToSelfHostedModel(
   const healthStatus = normalizeHealthStatus(agent.health?.status);
   const capabilities = normalizeCapabilities(agent.capabilities);
   const localRunner = normalizeMcodaLocalRunnerConfig(adapter, agent.config);
+  if (localRunner?.runnerKind === "strata" && !capabilities.includes("native_reasoning_passthrough_v1")) {
+    capabilities.push("native_reasoning_passthrough_v1");
+  }
   const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
   const openaiCompatible =
     localRunner !== undefined || optionalBoolean(agent.openaiCompatible, agent.openai_compatible) === true;

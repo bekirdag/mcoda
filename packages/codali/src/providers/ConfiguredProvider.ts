@@ -33,6 +33,11 @@ const modelCallerHeaders = (caller: ModelCallerContext): Record<string, string> 
 });
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 
+/** Discovery failed before inference; a caller may release its local token reservation. */
+export class NativeReasoningTransportError extends Error {
+  constructor(message: string) { super(message); this.name = "NativeReasoningTransportError"; }
+}
+
 export const providerCredential = async (provider: OrchestrationProvider): Promise<string | undefined> => {
   if (!provider.credentialRef) return undefined;
   const name = provider.credentialRef.slice(4);
@@ -108,6 +113,26 @@ export class ModelServiceClient {
     if (this.provider.adapter !== "mswarm" && !this.provider.usageUrl) return { available: false };
     return this.json(this.provider.usageUrl ?? new URL("/v1/swarm/runtime/usage-limits", this.provider.baseUrl).toString(), { signal });
   }
+
+  /** The proxy and selected node must both advertise this transport contract.
+   * A model's supports_reasoning flag alone says nothing about request forwarding. */
+  async requireNativeReasoning(modelId: string, parameters: string[], signal?: AbortSignal): Promise<void> {
+    if (this.provider.adapter !== "mswarm" || parameters.length === 0) return;
+    const endpoint = new URL(this.provider.baseUrl);
+    endpoint.pathname = endpoint.pathname.replace(/\/$/, "");
+    endpoint.pathname = ["", "/v1"].includes(endpoint.pathname)
+      ? "/v1/swarm/self-hosted/openai/models" : `${endpoint.pathname}/models`;
+    const payload = record(await this.json(endpoint.href, { signal }).catch(error => {
+      throw new NativeReasoningTransportError(`Native reasoning preflight failed before inference: ${error instanceof Error ? error.message : String(error)}`);
+    }));
+    const models = Array.isArray(payload.data) ? payload.data.map(record) : [];
+    const model = models.find(item => [item.id, item.agent_slug, item.remote_slug].includes(modelId));
+    const contract = record(model?.native_reasoning);
+    const supported = Array.isArray(contract.parameters) ? contract.parameters : [];
+    if (contract.transport_version !== 1 || parameters.some(parameter => !supported.includes(parameter))) {
+      throw new NativeReasoningTransportError(`Native reasoning transport is unavailable for ${modelId}; upgrade the mSwarm proxy and selected node, or remove unsupported native reasoning settings from the configuration`);
+    }
+  }
 }
 
 export interface ModelInvocation {
@@ -166,6 +191,7 @@ export class ConfiguredProvider implements Provider {
     const invocation: ModelInvocation = { id: randomUUID(), binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
     const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
     if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
+    if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(model.catalogId, Object.keys(nativeReasoning), request.signal);
     const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens);
     const inputEstimate = Math.ceil(JSON.stringify([request.messages, request.tools]).length / 3);
     if (inputEstimate + maxTokens > Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow)) throw new Error("Context budget exceeded; checkpoint and compact before continuing");

@@ -13,6 +13,36 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("native reasoning preflight refusal refunds the terminal reservation and survives resume", { concurrency: false }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-preflight-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-preflight-state-"));
+  const originalFetch = globalThis.fetch; const originalKey = process.env.CODALI_NATIVE_TEST_KEY;
+  process.env.CODALI_NATIVE_TEST_KEY = "fixture-native-credential";
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.CODALI_NATIVE_TEST_KEY; else process.env.CODALI_NATIVE_TEST_KEY = originalKey;
+    await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true });
+  });
+  const candidate = structuredClone(config);
+  candidate.providers.local = { adapter: "mswarm", baseUrl: "https://models.test/v1/swarm/self-hosted/openai", credentialRef: "env:CODALI_NATIVE_TEST_KEY" };
+  candidate.models.model.reasoning = { high: { reasoning_effort: "high", reasoning_budget_tokens: 1024 } };
+  const selected = { config: candidate, hash: orchestrationHash(candidate), source: "fixture" };
+  let dispatched = 0; const events: SessionEvent[] = [];
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === "POST") { dispatched++; throw new Error("Inference must not be dispatched"); }
+    return String(url).endsWith("/agents") ? Response.json({ agents: [{ slug: "test", supports_tools: true }] })
+      : Response.json({ data: [{ id: "test", supports_reasoning: true }] });
+  };
+  const options = { workspaceRoot: root, storageRoot: storage, resolved: selected, docdex: false as const, permissions: "plan" as const, effort: "high" as const };
+  const controller = new SessionController({ ...options, onEvent: event => { events.push(event); } });
+  await assert.rejects(controller.run("Plan a small source change using native reasoning."), /Native reasoning transport is unavailable/);
+  assert.equal(dispatched, 0);
+  assert.deepEqual(controller.usageSnapshot(), { modelCalls: 0, toolCalls: 0, tokens: 0, inputTokens: 0, outputTokens: 0, estimated: false });
+  assert.ok(events.some(event => event.type === "model_preflight_failed" && event.data.inferenceDispatched === false));
+  const resumed = new SessionController(options); await resumed.resume(controller.sessionId!);
+  assert.deepEqual(resumed.usageSnapshot(), controller.usageSnapshot());
+});
+
 test("successful npm --silent test receipts verify changed code and page newest-first without another test run", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-flags-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-flags-state-"));

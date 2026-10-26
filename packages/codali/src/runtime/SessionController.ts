@@ -7,7 +7,7 @@ import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
 import { activeWorkContext, amendWorkGoal, assertWorkAttempt, claimWorkTask, completeWorkGoal, recordDecision, recordWorkEvidence, refreshReadyTasks, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask, replaceWorkPlan, verifyWorkTask } from "../session/WorkState.js";
 import type { WorkState, WorkTask } from "../session/WorkTypes.js";
 import { formatInstructionBlocks, loadInstructionBlocks } from "../session/InstructionLoader.js";
-import { ConfiguredProvider, type ModelInvocation } from "../providers/ConfiguredProvider.js";
+import { ConfiguredProvider, NativeReasoningTransportError, type ModelInvocation } from "../providers/ConfiguredProvider.js";
 import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
@@ -641,7 +641,16 @@ export class SessionController {
       this.usage.modelCalls += 1; this.usage.tokens += reserve; this.reservations.set(id, reserve);
       await this.emit("model_intent", { id, binding, configHash: this.options.resolved.hash });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
-      const response = await configured.generate(request).finally(() => this.flushOutputStreams("token"));
+      const response = await configured.generate(request).catch(async error => {
+        if (!this.options.provider && error instanceof NativeReasoningTransportError && this.reservations.has(id)) {
+          this.usage.tokens -= this.reservations.get(id)!;
+          this.usage.modelCalls--;
+          this.reservations.delete(id);
+          await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
+          await this.emit("usage", { usage: this.usage });
+        }
+        throw error;
+      }).finally(() => this.flushOutputStreams("token"));
       request.signal?.throwIfAborted();
       const reported = verifiedTokenUsage(response.usage);
       if (reported) this.usage.tokens += reported.total - reserve; else this.usage.estimated = true;

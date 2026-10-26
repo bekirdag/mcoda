@@ -56,6 +56,14 @@ The Raijin/Suku example maps low to native `none`, medium to `low` with a
 request settings; `/status` and model-route events expose them without claiming
 that an older server applied them. Both the mSwarm proxy and node must contain
 the native-reasoning transport update before enabling this profile in service.
+The CLI checks the proxy's authenticated model catalog before reserving inference
+tokens. The selected model must advertise `native_reasoning.transport_version: 1`
+and every requested parameter. The proxy publishes this contract for pinned nodes
+advertising `native_reasoning_passthrough_v1`, and rejects native requests to older
+nodes before dispatch. A generic `supports_reasoning` flag is insufficient.
+Load-balanced aliases do not yet advertise this contract; configure explicit
+candidate models on each host for native-reasoning failover. Direct compatible
+providers retain their explicitly configured native parameter contract.
 Node requests retain the approved model and endpoint, preserve the source
 profile hash, and record a distinct effective hash when a request overrides
 native reasoning. The shared output/token/deadline limits still apply. A native

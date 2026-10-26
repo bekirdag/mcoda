@@ -923,6 +923,20 @@ describe("self-hosted node runtime", () => {
     expect(JSON.stringify(mapped)).not.toContain("secret-local-key");
   });
 
+  it("advertises native transport for Strata without mutating registry capabilities", () => {
+    for (const [adapter, runnerKind] of [["strata-local", "strata"], ["llama-cpp-local", "llama-cpp"], ["claude-cli", undefined]] as const) {
+      const capabilities = ["code_write"];
+      const mapped = mapMcodaAgentToSelfHostedModel({
+        slug: "native-contract", adapter, defaultModel: "fixture", capabilities,
+        health: { status: "healthy" },
+        config: runnerKind ? { baseUrl: "http://127.0.0.1:11452/v1", runnerKind, authMode: "none" } : {}
+      }, { exposeAllModels: true, modelAllowlist: [], modelBlocklist: [] });
+      assert.ok(mapped);
+      assert.equal(mapped.capabilities?.includes("native_reasoning_passthrough_v1"), runnerKind === "strata");
+      assert.deepEqual(capabilities, ["code_write"]);
+    }
+  });
+
   it("publishes configured non-text operations with safe relative paths", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {
