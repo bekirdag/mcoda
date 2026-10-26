@@ -26,10 +26,12 @@
 
 ## 0.1.135-codali.1 - 2026-10-26
 
-- Publish the Codali terminal implementation for internal validation on `next`.
+- Tag the Codali terminal implementation for internal validation.
   It includes durable goal/task control, permissions, managed Docdex embeddings,
   configurable model orchestration, media recovery, and Linux/macOS installation
   checks. See packages/codali/CHANGELOG.md for scope and outstanding release gates.
+- This candidate was not published: platform qualification found macOS and
+  Windows issues subsequently addressed in `0.1.135-codali.2`.
 - Add native reasoning capability negotiation, stable model pool identities,
   embedding operation metadata, and media ownership/recovery checks to the
   mSwarm node integration.
