@@ -4,6 +4,7 @@ import {
   type GenerativeModality,
   type SelfHostedGenerativeOperation,
 } from "./GenerativeOperation.js";
+import { validateEmbeddingPreprocessing, type EmbeddingPreprocessing } from "./EmbeddingContract.js";
 
 export const LOCAL_OPENAI_COMPATIBLE_ADAPTER = "openai-compatible-local" as const;
 export const VLLM_LOCAL_ADAPTER = "vllm-local" as const;
@@ -51,6 +52,7 @@ export interface LocalOpenAiCompatibleRunnerConfig {
   apiBaseUrl?: string;
   publicModelId?: string;
   modelDigest?: string;
+  embedding?: EmbeddingPreprocessing;
   inputModalities?: GenerativeModality[];
   outputModalities?: GenerativeModality[];
   operations?: SelfHostedGenerativeOperation[];
@@ -70,6 +72,7 @@ export interface LocalOpenAiCompatibleRunnerConfig {
 }
 
 export type LocalRunnerConfigIssueCode =
+  | "invalid_embedding"
   | "invalid_auth_mode"
   | "invalid_runner_kind"
   | "invalid_response_format_strategy"
@@ -485,12 +488,18 @@ export function normalizeLocalOpenAiCompatibleRunnerConfig(
   }
 
   const dummyBearerToken = readString(merged, ["dummyBearerToken", "dummyApiKey"]);
+  let embedding: EmbeddingPreprocessing | undefined;
+  if (merged.embedding !== undefined && merged.embedding !== null) {
+    try { embedding = validateEmbeddingPreprocessing(merged.embedding); }
+    catch (error) { pushIssue(issues, { code: "invalid_embedding", path: "embedding", message: error instanceof Error ? error.message : "Invalid embedding preprocessing" }); }
+  }
   const config: LocalOpenAiCompatibleRunnerConfig = {
     baseUrl: readString(merged, ["baseUrl", "endpoint", "apiBaseUrl"]),
     endpoint: readString(merged, ["endpoint"]),
     apiBaseUrl: readString(merged, ["apiBaseUrl"]),
     publicModelId: readString(merged, ["publicModelId", "public_model_id"]),
     modelDigest: readString(merged, ["modelDigest", "model_digest"]),
+    embedding,
     inputModalities: normalizeModalityDeclaration(
       merged.inputModalities ?? merged.input_modalities,
       ["text"],

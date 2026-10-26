@@ -6,6 +6,36 @@ import path from "node:path";
 import { setupTerminalConfig } from "../TerminalCommand.js";
 import { resolveBinding } from "../../config/OrchestrationConfig.js";
 
+test("setup pins only compatible qualified embedding replicas and never treats an update timestamp as a model revision", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-setup-embedding-"));
+  const originalFetch = globalThis.fetch; const originalKey = process.env.MCODA_MSWARM_API_KEY;
+  t.after(async () => { globalThis.fetch = originalFetch; if (originalKey === undefined) delete process.env.MCODA_MSWARM_API_KEY; else process.env.MCODA_MSWARM_API_KEY = originalKey; await fs.rm(root, { recursive: true, force: true }); });
+  process.env.MCODA_MSWARM_API_KEY = "setup-embedding-fixture";
+  const embedding = { queryPrefix: "query: ", documentPrefix: "document: ", normalization: "l2", pooling: "mean" };
+  const model = { health_status: "healthy", digest: `sha256:${"a".repeat(64)}`, embedding, operations: [{ type: "embeddings", limits: { embedding_dimensions: 768 } }] };
+  const lead = { slug: "lead", adapter: "strata-local", supports_tools: true, health_status: "healthy", updated_at: "2026-10-26", operations: [{ type: "chat.completions" }] };
+  let entries = [
+    { ...model, slug: "b-replica" }, { ...model, slug: "a-selected" },
+    { ...model, slug: "c-different-weights", digest: `sha256:${"b".repeat(64)}` },
+    { ...model, slug: "d-different-prefix", embedding: { ...embedding, queryPrefix: "different: " } },
+    { ...model, slug: "0-unhealthy", health_status: "unreachable" },
+    { ...model, slug: "0-pool", load_balanced: true },
+    { ...model, slug: "0-no-digest", digest: "latest" },
+    { ...model, slug: "0-invalid-preprocessing", embedding: { ...embedding, pooling: "" } },
+    { ...model, slug: "0-invalid-size", operations: [{ type: "embeddings", limits: { embedding_dimensions: 5000 } }] },
+  ];
+  globalThis.fetch = async input => String(input).endsWith("/v1/media/jobs") ? Response.json({}, { status: 404 }) : Response.json({ agents: [lead, ...entries] });
+  const selected = await setupTerminalConfig(path.join(root, "selected.json"));
+  assert.deepEqual(selected.config.bindings.embedding.candidates, ["a-selected", "b-replica"]);
+  assert.deepEqual(selected.config.models["a-selected"].embedding, embedding);
+  assert.equal(selected.config.models["a-selected"].revision, model.digest);
+  assert.equal(selected.config.models.lead.revision, "catalog-unversioned");
+  assert.equal(selected.config.models["c-different-weights"], undefined);
+  entries = entries.filter(entry => entry.slug.startsWith("0-"));
+  const unavailable = await setupTerminalConfig(path.join(root, "unavailable.json"));
+  assert.deepEqual(unavailable.config.bindings.embedding, { enabled: false });
+});
+
 test("setup negotiates durable media and preserves a model's multiple operations", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-setup-"));
   const originalFetch = globalThis.fetch; const originalKey = process.env.MCODA_MSWARM_API_KEY;

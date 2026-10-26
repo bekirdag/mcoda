@@ -4726,13 +4726,16 @@ describe("self-hosted node runtime", () => {
     let localRequest: Record<string, unknown> | undefined;
     let badDimensions = false;
     let calls = 0;
+    const embedding = { queryPrefix: "query: ", documentPrefix: "document: ", normalization: "l2", pooling: "mean" };
     const agent = healthyMcodaAgent({ slug: "nomic-embed", adapter: "openai-compatible-local",
       defaultModel: "nomic-embed-text", bestUsage: "embedding", supportsTools: false, capabilities: ["embedding"],
       config: { baseUrl: "http://embedding.test/v1", runnerKind: "llama-cpp", authMode: "none", modelDigest: "sha256:qualified",
+        embedding,
         operations: [{ operation: "embeddings", path: "/embeddings", limits: { embeddingDimensions: 2, maxInputItems: 2 } }] } });
     const mapped = mapMcodaAgentToSelfHostedModel(agent, config);
     assert.equal(mapped?.exposed, true);
     assert.equal(mapped?.digest, "sha256:qualified");
+    assert.deepEqual(mapped?.embedding, embedding);
     assert.deepEqual(mapped?.output_modalities, ["embedding"]);
     assert.equal(mapped?.operations?.[0].limits?.embedding_dimensions, 2);
     const runtime = new SelfHostedNodeRuntime(config, {

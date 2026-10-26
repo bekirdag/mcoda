@@ -1,3 +1,23 @@
+export interface EmbeddingPreprocessing {
+  queryPrefix: string;
+  documentPrefix: string;
+  normalization: "none" | "l2";
+  pooling: string;
+}
+
+/** Operator-declared preprocessing, carried unchanged from registry to catalog. */
+export function validateEmbeddingPreprocessing(value: unknown): EmbeddingPreprocessing {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Embedding preprocessing must be an object");
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some(key => !["queryPrefix", "documentPrefix", "normalization", "pooling"].includes(key))) throw new Error("Unknown embedding preprocessing field");
+  for (const key of ["queryPrefix", "documentPrefix"]) {
+    if (typeof body[key] !== "string" || body[key].length > 256 || /[\x00-\x1f]/.test(body[key])) throw new Error(`Invalid embedding ${key}`);
+  }
+  if (body.normalization !== "none" && body.normalization !== "l2") throw new Error("Invalid embedding normalization");
+  if (typeof body.pooling !== "string" || !body.pooling.trim() || body.pooling.length > 128 || /[\x00-\x1f]/.test(body.pooling)) throw new Error("Invalid embedding pooling");
+  return { queryPrefix: body.queryPrefix as string, documentPrefix: body.documentPrefix as string, normalization: body.normalization, pooling: body.pooling };
+}
+
 /** Bounded float-vector transport. Token-array/base64 inputs are deliberately unsupported. */
 export interface EmbeddingLimits {
   maxInputItems?: number;

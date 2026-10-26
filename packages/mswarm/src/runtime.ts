@@ -22,6 +22,8 @@ import {
   GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS,
   validateEmbeddingRequest,
   validateEmbeddingResponse,
+  validateEmbeddingPreprocessing,
+  type EmbeddingPreprocessing,
   MSWARM_CAPABILITY_SCHEMA_VERSION,
   CryptoHelper,
   assertMswarmSafeRelativePath,
@@ -123,6 +125,7 @@ export interface SelfHostedGenerativeOperationCatalogInput {
 }
 
 type McodaLocalRunnerConfig = LocalOpenAiCompatibleRunnerConfig & {
+  embedding?: EmbeddingPreprocessing;
   inputModalities?: SelfHostedGenerativeModality[];
   outputModalities?: SelfHostedGenerativeModality[];
   operations?: SelfHostedGenerativeOperationConfig[];
@@ -163,6 +166,7 @@ export interface SelfHostedModelInput {
   models_path?: string | null;
   display_name?: string | null;
   digest?: string | null;
+  embedding?: EmbeddingPreprocessing;
   exposed?: boolean;
   family?: string | null;
   parameter_size?: string | null;
@@ -1506,6 +1510,7 @@ function normalizeMcodaLocalRunnerConfig(
     inputModalities: normalizeGenerativeModalities(merged.inputModalities ?? merged.input_modalities),
     outputModalities: normalizeGenerativeModalities(merged.outputModalities ?? merged.output_modalities),
     operations: normalizeGenerativeOperations(merged.operations),
+    embedding: merged.embedding === undefined || merged.embedding === null ? undefined : validateEmbeddingPreprocessing(merged.embedding),
     publicModelId: readConfigString(merged, ["publicModelId", "public_model_id"])
   };
 }
@@ -3383,6 +3388,7 @@ export function mapMcodaAgentToSelfHostedModel(
     public_model_id: publicModelId,
     upstream_model: model,
     digest: optionalText(legacyConfig.modelDigest),
+    embedding: localRunner?.embedding,
     base_url: localRunner?.baseUrl ?? legacyNativeBase ?? undefined,
     runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind ?? (legacyNativeBase ? "llama-cpp" : undefined),
     auth_mode: localRunner?.authMode ?? (legacyNativeBase ? normalizeLocalRunnerAuthMode(legacyConfig.authMode) : undefined),

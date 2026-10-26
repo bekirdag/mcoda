@@ -12,7 +12,7 @@ import { atomicWriteJson } from "../session/AtomicState.js";
 import { readTerminalCredential, setTerminalCredential } from "./TerminalCredentials.js";
 import { redactSecretValues, sanitizeArgs } from "../gateway/GatewayTracer.js";
 import { terminalText, TerminalTextStream } from "./TerminalText.js";
-import type { ProjectTaskAuthority } from "@mcoda/shared";
+import { validateEmbeddingPreprocessing, type ProjectTaskAuthority } from "@mcoda/shared";
 import { TerminalInput, insertTerminalPaste } from "./TerminalInput.js";
 import { ModelServiceError } from "../providers/ModelServiceError.js";
 import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
@@ -56,10 +56,32 @@ export const setupTerminalConfig = async (destination: string): Promise<Resolved
   } catch (error) { if (!(error instanceof ModelServiceError) || ![404, 405].includes(error.status)) throw error; }
   const lead = catalog.filter(entry => entry.backend === "strata" && entry.supportsTools && entry.health === "healthy");
   if (!lead.length) throw new Error("No entitled healthy Strata tool route is advertised; setup cannot invent a fallback");
-  for (const entry of lead) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.revision ?? entry.raw.updated_at ?? "catalog-unversioned"), operations: ["chat.completions"], backend: "strata", contextWindow: entry.contextWindow ?? 32768, maxOutputTokens: 4096, supportsTools: true, supportsStreaming: false };
+  for (const entry of lead) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.digest ?? entry.raw.revision ?? "catalog-unversioned"), operations: ["chat.completions"], backend: "strata", contextWindow: entry.contextWindow ?? 32768, maxOutputTokens: 4096, supportsTools: true, supportsStreaming: false };
   config.bindings.lead = { candidates: lead.map(entry => entry.id) };
   for (const role of ["architect", "worker", "reviewer", "planner", "compactor", "router", "adjudicator", "synthesizer", "verifier", "repair"]) config.bindings[role] = { useBinding: "lead" };
   config.bindings.helper = { enabled: false }; config.bindings.embedding = { enabled: false };
+  // Only explicit operator contracts can initialize an index. Incompatible
+  // embedding spaces never become replicas merely because dimensions match.
+  let embeddingIdentity: string | undefined;
+  for (const entry of [...catalog].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (entry.health !== "healthy" || !entry.operations.includes("embeddings") || entry.raw.load_balanced === true) continue;
+    const digest = entry.raw.digest;
+    const descriptor = Array.isArray(entry.raw.operations) ? entry.raw.operations.find(item => item && typeof item === "object" && (item as Record<string, unknown>).type === "embeddings") as { limits?: { embedding_dimensions?: number } } | undefined : undefined;
+    const dimensions = descriptor?.limits?.embedding_dimensions;
+    if (typeof digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(digest) || !Number.isSafeInteger(dimensions) || dimensions! < 1 || dimensions! > 4096) continue;
+    let embedding;
+    try { embedding = validateEmbeddingPreprocessing(entry.raw.embedding); } catch { continue; }
+    const identity = JSON.stringify({ digest, dimensions, ...embedding });
+    if (embeddingIdentity !== undefined && embeddingIdentity !== identity) continue;
+    embeddingIdentity = identity;
+    const previous = config.models[entry.id];
+    config.models[entry.id] = { ...previous, provider: "mswarm", catalogId: entry.id, revision: digest,
+      operations: [...new Set([...(previous?.operations ?? []), "embeddings" as const])],
+      contextWindow: previous?.contextWindow ?? entry.contextWindow ?? 8192, maxOutputTokens: previous?.maxOutputTokens ?? 1,
+      embeddingDimensions: dimensions, embedding };
+    const candidates = config.bindings.embedding.candidates ?? [];
+    config.bindings.embedding = { candidates: [...candidates, entry.id], embeddingSpace: "catalog-pinned-v1" };
+  }
   for (const [binding, operation] of [["image", "images.generations"], ["audio", "audio.generations"], ["video", "videos.generations"]] as const) {
     const entries = catalog.filter(entry => entry.health === "healthy" && entry.operations.includes(operation));
     for (const entry of entries) {

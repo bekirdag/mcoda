@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateEmbeddingRequest, validateEmbeddingResponse } from "../EmbeddingContract.js";
+import { validateEmbeddingPreprocessing, validateEmbeddingRequest, validateEmbeddingResponse } from "../EmbeddingContract.js";
+
+test("embedding preprocessing requires an explicit, bounded contract without guessed defaults", () => {
+  const base = { queryPrefix: "", documentPrefix: "", normalization: "none", pooling: "mean" };
+  for (const normalization of ["none", "l2"]) {
+    const input = { ...base, normalization };
+    assert.deepEqual(validateEmbeddingPreprocessing(input), input);
+    assert.notEqual(validateEmbeddingPreprocessing(input), input);
+  }
+  assert.doesNotThrow(() => validateEmbeddingPreprocessing({ ...base, queryPrefix: "q".repeat(256), documentPrefix: "d".repeat(256), pooling: "p".repeat(128) }));
+  for (const value of [undefined, null, [], "text", 7, {}, { ...base, extra: true }]) {
+    assert.throws(() => validateEmbeddingPreprocessing(value));
+  }
+  for (const key of Object.keys(base)) assert.throws(() => validateEmbeddingPreprocessing({ ...base, [key]: undefined }));
+  for (const patch of [
+    { queryPrefix: "q".repeat(257) }, { documentPrefix: "d".repeat(257) },
+    { queryPrefix: "q\u0000" }, { documentPrefix: "d\n" }, { pooling: "p\u001f" },
+    { pooling: "" }, { pooling: "  " }, { pooling: "p".repeat(129) },
+    { normalization: "auto" }, { normalization: 1 },
+  ]) assert.throws(() => validateEmbeddingPreprocessing({ ...base, ...patch }));
+});
 
 test("embedding requests preserve text and bound inputs and dimensions", () => {
   assert.deepEqual(validateEmbeddingRequest({ input: " search_query: hello " }, "nomic"), {

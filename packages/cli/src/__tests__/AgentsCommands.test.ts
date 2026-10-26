@@ -534,18 +534,25 @@ test("agent add declares the existing sd-server image model for mswarm publicati
 test("agent add pins an embedding artifact and dimensions for managed orchestration", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const digest = `sha256:${"a".repeat(64)}`;
+    const embedding = { queryPrefix: "query: ", documentPrefix: "document: ", normalization: "l2", pooling: "mean" };
     await AgentsCommands.run(["add", "embedding-fixture", "--adapter", "llama-cpp-local", "--model", "nomic-embed-text",
       "--config-base-url", "http://127.0.0.1:11438/v1", "--config-auth-mode", "none",
       "--config-model-digest", digest, "--config-input-modality", "text", "--config-output-modality", "embedding",
+      "--config-embedding-json", JSON.stringify(embedding),
       "--config-operation", JSON.stringify({ operation: "embeddings", path: "/v1/embeddings", limits: { embeddingDimensions: 768 } })]);
     const repo = await GlobalRepository.create();
     try {
       const agent = await repo.getAgentBySlug("embedding-fixture");
       assert.equal(agent?.config?.modelDigest, digest);
+      assert.deepEqual(agent?.config?.embedding, embedding);
       assert.deepEqual(agent?.config?.outputModalities, ["embedding"]);
       assert.equal((agent?.config?.operations as Array<{ limits: { embeddingDimensions: number } }>)[0].limits.embeddingDimensions, 768);
       await assert.rejects(AgentsCommands.run(["update", "embedding-fixture", "--config-model-digest", "latest"]), /64 lowercase hex/);
       assert.equal((await repo.getAgentBySlug("embedding-fixture"))?.config?.modelDigest, digest);
+      await assert.rejects(AgentsCommands.run(["update", "embedding-fixture", "--config-embedding-json", JSON.stringify({ ...embedding, normalization: "guess" })]), /normalization/);
+      assert.deepEqual((await repo.getAgentBySlug("embedding-fixture"))?.config?.embedding, embedding);
+      await AgentsCommands.run(["update", "embedding-fixture", "--config-embedding-json", "none"]);
+      assert.equal((await repo.getAgentBySlug("embedding-fixture"))?.config?.embedding, null);
     } finally { await repo.close(); }
   });
 });

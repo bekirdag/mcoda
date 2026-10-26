@@ -11,6 +11,7 @@ import {
   normalizeLocalRunnerKind,
   normalizeLocalRunnerResponseFormatStrategy,
   normalizeSelfHostedGenerativeOperation,
+  validateEmbeddingPreprocessing,
   type SelfHostedGenerativeOperation,
 } from "@mcoda/shared";
 import readline from "node:readline";
@@ -97,6 +98,7 @@ Subcommands:
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
     --config-model-digest <SHA> Pinned model artifact digest (sha256:<64 hex digits>)
+    --config-embedding-json <JSON> Query/document prefixes, normalization and pooling; none clears
     --config-orchestration-path <PATH|none> Absolute node model profile path, or disable it
     --config-input-modality <M> Repeatable input modality (text|image|audio|video|embedding)
     --config-output-modality <M> Repeatable output modality (text|image|audio|video|embedding)
@@ -132,6 +134,7 @@ Subcommands:
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
     --config-model-digest <SHA> Pinned model artifact digest (sha256:<64 hex digits>)
+    --config-embedding-json <JSON> Query/document prefixes, normalization and pooling; none clears
     --config-orchestration-path <PATH|none> Absolute node model profile path, or disable it
     --config-input-modality <M> Repeatable input modality (text|image|audio|video|embedding)
     --config-output-modality <M> Repeatable output modality (text|image|audio|video|embedding)
@@ -239,6 +242,7 @@ const CONFIG_FLAG_NAMES = [
   "config-models-path",
   "config-public-model-id",
   "config-model-digest",
+  "config-embedding-json",
   "config-orchestration-path",
   "config-input-modality",
   "config-output-modality",
@@ -495,6 +499,11 @@ const parseConfig = (
   if (modelDigest) {
     if (!/^sha256:[a-f0-9]{64}$/.test(modelDigest)) throw new Error("Invalid --config-model-digest; expected sha256:<64 lowercase hex digits>");
     config.modelDigest = modelDigest;
+  }
+  const embedding = getLastStringFlag(flags["config-embedding-json"], "--config-embedding-json");
+  if (embedding) {
+    if (embedding.length > 2048) throw new Error("--config-embedding-json exceeds its byte limit");
+    config.embedding = embedding === "none" ? null : validateEmbeddingPreprocessing(JSON.parse(embedding));
   }
 
   const inputModalities = parseConfigModalities(
