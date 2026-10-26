@@ -211,3 +211,29 @@ temporary directory for each command, points HOME/TMPDIR there, and removes it
 after process cleanup. It grants no general read/write access to other users'
 temporary files. Linux uses a private temporary filesystem and pins TMPDIR to
 that filesystem.
+
+Release qualification uses `scripts/verify-codali-package-install.mjs` after
+the package build. It packs twice, compares archive hashes, installs the
+Codali/shared/database tarballs into an empty project, and exercises the
+installed executable, public API, native SQLite and session persistence.
+Configuration failures must emit valid JSON without modifying user files;
+local uninstall must preserve workspace data. The platform workflow covers
+Linux x64 and macOS Intel/ARM on Node 20/22. Its recorded results, rather than
+the matrix definition, determine which builds are qualified. The Intel runner
+uses GitHub's explicit `macos-15-intel` label; see the
+[runner architecture table](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
+The packer canonicalizes the packed JSON manifest because pnpm can insert
+rewritten workspace dependencies in a different order between packs. Other
+archive entries remain unchanged. The publisher checks all manifests and
+versions before registry writes, publishes those exact tarballs, and explicitly
+uses `next` for prereleases and `latest` for stable versions. An existing
+version must have identical registry integrity; rerunning a release does not
+move its dist-tags. Registry errors other than an explicit missing version
+stop publication.
+
+Codali publication also requires checksum-pinned Docdex archives for Linux
+x64 GNU, macOS Intel and macOS ARM. An empty development runtime manifest is
+valid for local work with an explicit qualified binary, but cannot be
+published through the release script. Clean installation does not substitute
+for the live routing, media, long-session and canary gates in the build plan.

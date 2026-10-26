@@ -7,6 +7,8 @@ on:
       - "packages/db/**"
       - "packages/shared/**"
       - "scripts/verify-codali-terminal-pty.py"
+      - "scripts/verify-codali-package-install.mjs"
+      - "scripts/pack-npm-tarballs.js"
       - ".github/workflows/codali-platform-qualification.yml"
   workflow_dispatch:
 
@@ -20,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest]
+        os: [ubuntu-22.04, macos-15-intel, macos-latest]
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
@@ -97,6 +99,14 @@ jobs:
         run: node scripts/run-node-tests.js packages/codali/dist
       - name: Terminal input, resize and restoration
         run: python3 scripts/verify-codali-terminal-pty.py
+      - name: Reproducible tarballs and clean terminal installation
+        run: node scripts/verify-codali-package-install.mjs --output artifacts/codali-clean-install.json
+      - name: Upload package qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codali-clean-install-${{ matrix.os }}-node${{ matrix.node }}
+          path: artifacts/codali-clean-install.json
       - name: macOS sandbox failure details
         if: failure() && runner.os == 'macOS'
         run: |

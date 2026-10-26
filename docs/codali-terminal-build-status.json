@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen held-out Suku evaluation E continues unchanged. Validation command recognition, receipt discovery, pre-command input hashing and failed-check continuity are implemented and locally tested. Docdex codali.0 publication failed preflight; codali.1 has patched dependencies and Python setup and is under native requalification. Backend deployment, media admission, application migrations and remaining long-session/release gates stay open.",
+  "currentTask": "Frozen held-out Suku evaluation E continues unchanged. Validation freshness/continuity and native media quarantine fixes pass CI. Docdex codali.1 passed release preflight and is building platform artifacts. Reproducible Codali tarballs and a clean local install passed; the expanded platform matrix and remaining backend/application/long-session/canary gates are open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -26,7 +26,8 @@
         "Docdex TypeScript explicit .js imports now resolve source extensions: 39 parser tests pass; real SessionController graph resolves 33 outbound files. Configurable watcher startup (16 tests) lets private candidate serve mcoda. Global installation/complete index qualification pending.",
         "Managed Docdex changes forward-ported cleanly to upstream bbc2cb3 in a separate checkout, including newer health and web fixes. Combined qualification exposed parallel test failure-history interference; isolation fix and rerun in progress.",
         "Docdex managed-runtime changes forward-ported to bbc2cb3: 794 library and 33 integration tests passed (one ignored). PR13 at a1ef3a5 passed Linux, Windows and npm installer CI. Optimized binary 6695e8d passed the real Codali managed-Docdex integration; global rollout is pending.",
-        "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress."
+        "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress.",
+        "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim."
       ]
     },
     {
@@ -317,7 +318,8 @@
       "description": "Integrate queue/admission/cancel status, cross-host routing and physical-pool concurrency, including large/small/embedding/media contention and loading peaks. Preserve interactive capacity while scheduling heavy video jobs. Fail over only after reconciling whether an invocation was already admitted; avoid duplicate renders and retry amplification.",
       "status": "in_progress",
       "evidence": [
-        "a9bbebd adds durable cross-process media leases that survive SIGKILL/uncertain native outcomes; 13 focused tests pass. Native recovery probes, physical admission/fairness and production activation remain."
+        "a9bbebd adds durable cross-process media leases that survive SIGKILL/uncertain native outcomes; 13 focused tests pass. Native recovery probes, physical admission/fairness and production activation remain.",
+        "0473b10 preserves uncertain native audio process-group ownership, treats video 404 as unknown, and exposes shared recovery quarantine through all three media health endpoints. Fifteen focused tests and CI/platform runs 40275476520/40275476554 passed. These bridge changes are not deployed; physical admission/fairness and automatic native recovery remain open."
       ]
     },
     {
@@ -461,15 +463,18 @@
     {
       "id": "P8.3",
       "description": "Build reproducible package artifacts and install-test the tarballs on clean supported systems. Verify package files, executable permissions, version/help output, migration and uninstall behavior.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated."
+      ]
     },
     {
       "id": "P8.4",
       "description": "Deploy additive backend changes before clients that need them. Gate incompatible capabilities explicitly. Publish a prerelease package, then promote the tested artifact after the canary gates pass. Do not select a future version number until release time.",
       "status": "in_progress",
       "evidence": [
-        "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published."
+        "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published.",
+        "Publisher now explicitly maps prerelease to next and stable to latest, validates one release version before registry work, publishes checked tarballs and verifies existing registry integrity. Codali publication refuses missing Docdex platform pins. Seventeen publisher/packer tests pass; the runtime manifest stays empty until published artifacts are verified."
       ]
     },
     {
@@ -1117,6 +1122,36 @@
       "nonignoredVulnerabilities": 0,
       "artifact": "/home/wodo/.local/state/codali-docdex-security-audit-final.json",
       "limitation": "Existing ring exception and non-gating dependency warnings remain; this is not a zero-advisory claim."
+    },
+    {
+      "check": "macOS system shell selector access and full platform regression",
+      "status": "passed",
+      "commit": "7cd3f9a",
+      "runs": [
+        40274697989,
+        40274697935
+      ]
+    },
+    {
+      "check": "Native media ownership, exact video completion, quarantine health",
+      "status": "passed",
+      "tests": 15,
+      "commit": "0473b10",
+      "artifact": "/home/wodo/.local/state/codali-native-media-health-tests-2.log",
+      "deployed": false
+    },
+    {
+      "check": "Release channel, registry integrity, runtime pin and reproducible manifest guards",
+      "status": "passed",
+      "tests": 17,
+      "artifact": "/home/wodo/.local/state/codali-release-publication-tests-3.log"
+    },
+    {
+      "check": "Clean tarball install, native SQLite, session persistence and uninstall",
+      "status": "passed",
+      "platform": "linux-x64",
+      "node": "22.22.1",
+      "artifact": "/home/wodo/.local/state/codali-clean-install-local-2.json"
     }
   ],
   "updatedAt": "2026-10-26T05:19:44.726907+00:00",

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 export const PACKAGE_DIRS = [
   'packages/shared',
@@ -64,6 +64,55 @@ export function resolvePnpmCommand({
 export function packageTarballFilename(manifest) {
   const normalizedName = manifest.name.replace(/^@/, '').replaceAll('/', '-');
   return `${normalizedName}-${manifest.version}.tgz`;
+}
+
+export function canonicalJson(value) {
+  const sort = item => {
+    if (Array.isArray(item)) return item.map(sort);
+    if (item === null || typeof item !== 'object') return item;
+    // fromEntries preserves an own __proto__ key without changing prototypes.
+    return Object.fromEntries(Object.keys(item).sort().map(key => [key, sort(item[key])]));
+  };
+  return `${JSON.stringify(sort(value), null, 2)}\n`;
+}
+
+/** Normalize pnpm's concurrently rewritten dependency-key order, preserving
+ * every other tar entry byte. Only our newly generated package is rewritten. */
+export function normalizePackedManifestArchive(compressed) {
+  const archive = gunzipSync(compressed);
+  const chunks = [];
+  let offset = 0;
+  let found = false;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every(byte => byte === 0)) break;
+    const name = readTarString(header, 0, 100);
+    const prefix = readTarString(header, 345, 155);
+    const entryPath = prefix ? `${prefix}/${name}` : name;
+    const sizeText = readTarString(header, 124, 12).trim();
+    if (!/^[0-7]+$/.test(sizeText)) throw new Error(`Invalid packed tar size for ${entryPath}`);
+    const size = Number.parseInt(sizeText, 8);
+    const end = offset + 512 + Math.ceil(size / 512) * 512;
+    if (!Number.isSafeInteger(end) || end > archive.length) throw new Error(`Truncated packed tar entry: ${entryPath}`);
+    if (entryPath === 'package/package.json' || entryPath === 'package.json') {
+      if (found || ![0, 48].includes(header[156])) throw new Error('Packed manifest must be one regular file');
+      found = true;
+      const value = JSON.parse(archive.subarray(offset + 512, offset + 512 + size).toString('utf8'));
+      const content = Buffer.from(canonicalJson(value));
+      const nextHeader = Buffer.from(header);
+      nextHeader.write(`${content.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+      nextHeader.fill(32, 148, 156);
+      const checksum = nextHeader.reduce((sum, byte) => sum + byte, 0);
+      nextHeader.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+      chunks.push(nextHeader, content, Buffer.alloc((512 - content.length % 512) % 512));
+    } else {
+      chunks.push(archive.subarray(offset, end));
+    }
+    offset = end;
+  }
+  if (!found) throw new Error('Packed archive has no package.json');
+  chunks.push(archive.subarray(offset));
+  return gzipSync(Buffer.concat(chunks), { level: 9 });
 }
 
 export function findWorkspaceProtocolPaths(value, currentPath = []) {
@@ -140,6 +189,11 @@ export function assertPackedManifestPortable({
 }
 
 export function readPackedPackageJson(tarballPath) {
+  return readPackedJsonFile(tarballPath, ['package/package.json', 'package.json']);
+}
+
+export function readPackedJsonFile(tarballPath, memberPath) {
+  const memberPaths = Array.isArray(memberPath) ? memberPath : [memberPath];
   const archive = gunzipSync(readFileSync(tarballPath));
   let offset = 0;
 
@@ -160,7 +214,8 @@ export function readPackedPackageJson(tarballPath) {
 
     const contentStart = offset + 512;
     const contentEnd = contentStart + size;
-    if (entryPath === 'package/package.json' || entryPath === 'package.json') {
+    if (contentEnd > archive.length) throw new Error(`${tarballPath} contains a truncated tar entry`);
+    if (memberPaths.includes(entryPath)) {
       return JSON.parse(
         archive.subarray(contentStart, contentEnd).toString('utf8')
       );
@@ -169,7 +224,7 @@ export function readPackedPackageJson(tarballPath) {
     offset = contentStart + Math.ceil(size / 512) * 512;
   }
 
-  throw new Error(`${tarballPath} does not contain package/package.json`);
+  throw new Error(`${tarballPath} does not contain ${memberPath}`);
 }
 
 export function packTarballs({
@@ -223,6 +278,7 @@ export function packTarballs({
         `pnpm pack did not create the expected tarball: ${tarballPath}`
       );
     }
+    writeFileSync(tarballPath, normalizePackedManifestArchive(readFileSync(tarballPath)));
     const packedManifest = readPackedPackageJson(tarballPath);
     assertPackedManifestPortable({
       sourceManifest: manifest,
