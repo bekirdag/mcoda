@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "2a1f5a5 records embedding failure receipts and pins published Docdex codali.4. Full Codali suite: 1544 pass, 0 fail, 1 optional skip. Backend K and both Nomic batch-capacity updates are deployed; public managed memory passes on both hosts. Frozen Z long workflows are running. Remaining quality, consumer rollout and 24-hour canary gates stay open.",
+  "currentTask": "edb7f75 fixes Windows native canonical paths and crash-tail repair; Linux Codali 1547 pass, zero fail, two optional skips and media bridge four tests pass. Full Windows/Linux CI and six-platform installation checks are running. Frozen Z has three failed journeys: two exhausted their token budgets and localized-export emitted textual tool markup instead of executable calls; billing-audit remains active. Consumer package rollout, independent quality and 24-hour canary gates stay open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -34,7 +34,8 @@
         "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved.",
         "Docdex v0.2.100-codali.2 is published on GitHub and npm next; npm latest remains 0.2.99. Release 40282809157 passed after delayed registry visibility retry. Native archive and executable hashes for Linux x64 and macOS x64/arm64 are pinned in packages/codali/config/docdex-runtime.json. Raijin private installation and clean package installation passed.",
         "Published Docdex 0.2.100-codali.2 private install/cache reuse passed on Suku. Current 90cf4a4 CI40300790887 and six-job platform qualification40300791120 passed with the pinned native downloads.",
-        "Docdex codali.4 at2324174 upgrades Tantivy0.27, removes vulnerable zstd chain, preserves old index migration, and passes1044 Rust tests with3ignored. Tag v0.2.100-codali.4 release40344916791 is in progress; native artifact pins are not yet updated."
+        "Docdex codali.4 at2324174 upgrades Tantivy0.27, removes vulnerable zstd chain, preserves old index migration, and passes1044 Rust tests with3ignored. Tag v0.2.100-codali.4 release40344916791 is in progress; native artifact pins are not yet updated.",
+        "Published Docdex codali.4 release40344916791 and native pins are complete; six Linux/macOS isolation and clean-install jobs passed on5150c73 and40d5833, including Homebrew Python SSL."
       ]
     },
     {
@@ -74,7 +75,8 @@
       "description": "Refresh the read-only hardware/residency audit in Section 4.4 and extend it with controlled peak-memory measurements under text, retrieval, vision and media workloads. The selected qualification profiles are SERA-14B Q4_K_M on Suku GPU1 and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1, with SERA-8B as a Suku alternative. Preserve the measured reservations/guards and validate production coexistence; the passive baseline alone does not qualify an installation.",
       "status": "in_progress",
       "evidence": [
-        "2026-10-26 passive GPU1 minima: Suku 16145 MiB free, below SERA-14B 16384 MiB admission threshold; Raijin 6777 MiB free. Optional models remain disabled; peak coexistence and physical admission are unqualified."
+        "2026-10-26 passive GPU1 minima: Suku 16145 MiB free, below SERA-14B 16384 MiB admission threshold; Raijin 6777 MiB free. Optional models remain disabled; peak coexistence and physical admission are unqualified.",
+        "2026-10-26 17:01 passive GPU1 audit: Raijin6779MiB free; Suku15921MiB free, below SERA14B16384MiB admission threshold. Pinned Qwen3-4B-Thinking-2507 Q4_K_M downloaded and SHA256 verified, not loaded or qualified. No added residency during frozen Z."
       ]
     },
     {
@@ -492,7 +494,8 @@
         "Frozen U direct Suku service-adapters ended unsuccessfully2026-10-26T10:20:37Z after25.6min and1,998,200 accounted/estimated tokens. Stages1/2 passed; stage3 hit the lifetime unfinished-response counter, with final visible output containing undeclared edit_file markup. Original artifacts retained; no completion or multi-hour qualification claim. Inspection found the counter resets per turn but not after useful intermediate work; a targeted fix/validation is pending.",
         "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open.",
         "FrozenV four-scenario diagnostics all exhausted2.4M tokens; no successful or multi-hour qualification. Receipt handle retention after truncation, validation-output summaries and atomic focused plan updates are fixed in7f0a61c. Long-workflows-v2 explicitly defines module-relative report source paths and includes prompts/steering in the corpus hash;35 evaluation tests passed. Original failures retained.",
-        "All four frozen X direct-native diagnostics ended unsuccessfully: Raijin data-delivery HTTP400 malformed Unicode context; Raijin billing-audit HTTP429; Suku service-adapters and localized-export shared token-budget exhaustion. Original artifacts retained. Unicode code fix is tested but not yet on production nodes. No long-journey pass is claimed."
+        "All four frozen X direct-native diagnostics ended unsuccessfully: Raijin data-delivery HTTP400 malformed Unicode context; Raijin billing-audit HTTP429; Suku service-adapters and localized-export shared token-budget exhaustion. Original artifacts retained. Unicode code fix is tested but not yet on production nodes. No long-journey pass is claimed.",
+        "Frozen Z first results: data-delivery all four module grades pass but budget exhausted before completion; service-adapters budget exhausted with an unfinished interval module; localized-export stopped after repeated plain-text Qwen tool calls, leaving required modules incomplete. No multi-hour gate passed. Original artifacts retained; billing-audit still running."
       ]
     },
     {
@@ -527,7 +530,8 @@
         "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending.",
         "25570f5 general CI40294819863 and platform40294819705 passed; all six Linux/macOS x64/arm64 Node20/22 jobs installed the pinned published Docdex native runtime and checked first-install/cache canonical identity.",
         "9ac3db8 CI40342049684 and six-job platform qualification40342049703 passed. Full Codali1538pass/2optional skips and mSwarm173pass locally; these checks do not substitute for remaining live quality gates.",
-        "cd657cb frozenY client packed and clean-installed with5662file hashes; full1542pass/2optional skip and staged Docdex gate passed. CI40356295365/platform40356295585 pending at recording."
+        "cd657cb frozenY client packed and clean-installed with5662file hashes; full1542pass/2optional skip and staged Docdex gate passed. CI40356295365/platform40356295585 pending at recording.",
+        "5150c73 and40d5833 six-platform Linux/macOS package/isolated install matrices passed. Prerelease codali.1 release40364363507 was cancelled after macOS and Windows failures. edb7f75 repairs Windows 8.3 canonical paths/transcript truncation and deterministic image-handler saturation test; new cross-platform checks running. No mcoda prerelease published."
       ]
     },
     {
@@ -1459,14 +1463,44 @@
         "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/suku-postdeploy-matrix-backend-k.json",
         "/home/wodo/.local/state/codali-terminal-deployment/backend-k-unicode-public.json"
       ]
+    },
+    {
+      "check": "Linux/macOS package and isolation qualification including Homebrew Python SSL",
+      "status": "passed",
+      "source": "40d5833",
+      "workflow": "https://github.com/bekirdag/mcoda/actions/runs/40370724867",
+      "jobs": 6,
+      "limitation": "Windows package regressions failed separately; current source requires its own CI."
+    },
+    {
+      "check": "Task completion recovery and Windows compatibility fixes, local regression",
+      "status": "passed",
+      "source": "edb7f75",
+      "passed": 1547,
+      "failed": 0,
+      "skipped": 2,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-windows-canonical-full.log",
+        "/home/wodo/.local/state/codali-media-handler-focused.log"
+      ],
+      "limitation": "Windows and macOS CI still running; no live journey improvement claimed."
+    },
+    {
+      "check": "Frozen Z long workflows",
+      "status": "in_progress",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-long-workflow-public-z-raijin-20261026/results.jsonl",
+        "/home/wodo/.local/state/codali-long-workflow-public-z-suku-20261026/results.jsonl"
+      ],
+      "limitation": "Three journeys failed; billing-audit still running. No successful multi-hour journey or fresh holdout qualification."
     }
   ],
-  "updatedAt": "2026-10-26T16:50:07.811399+00:00",
+  "updatedAt": "2026-10-26T17:59:48.788341+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex 0.2.100-codali.4 is published from 2324174. All six native builds, release/security checks and exact npm artifact verification passed (workflow 40344916791). Codali pins verified Linux x64 and macOS x64/arm64 binaries; Linux installer and real managed-daemon memory tests passed. Fresh macOS client qualification against these pins is running.",
+    "Docdex 0.2.100-codali.4 is published from2324174 with all native/release/security/npm checks passed. Linux/macOS client installation matrices passed on5150c73 and40d5833; current edb7f75 matrix is running. No mcoda prerelease has been published; immutable codali.1 tag is retained after its release failed.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
-    "Preserve earlier E/U/V/W/X/Y failures. Y exposed native embedding physical-batch capacity and public model-alias mismatches and was stopped without claiming success. Both fixes are deployed. Frozen Z uses client 2a1f5a5, published Docdex codali.4, public chat/embeddings and backend K; it monitors both native hosts and backend container identities. These are reused workflow contracts, not fresh holdouts.",
+    "Preserve earlier E/U/V/W/X/Y failures. Y exposed native embedding physical-batch capacity and public model-alias mismatches and was stopped without claiming success. Both fixes are deployed. Frozen Z uses client 2a1f5a5, published Docdex codali.4, public chat/embeddings and backend K; it monitors both native hosts and backend container identities. These are reused workflow contracts, not fresh holdouts. Z data-delivery and service-adapters exhausted2.4M-token budgets; localized-export stopped on repeated XML tool calls returned as text, not executable tool_calls. Billing-audit is still running. Completion recovery guidance is now more specific but does not relax evidence freshness.",
     "TNL, Logmira Wodo/Heka grounded chat and BDYA persisted stage synthetic routes pass on backendJ/nodeL. Full background/business coverage remains open. Logmira still embeds Codali0.1.134 and emits the known false tool-worker-substitution warning; upgrade remains required.",
     "Raijin Strata0.1.49.2 previously failed with CUDA illegal memory at verify layer42. Native and node recovery passed; root cause, automatic unavailable-model recovery and sustained qualification remain open.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
