@@ -12,7 +12,7 @@ const inScope = (file: string, scopes: string[]): boolean => scopes.some(scope =
 /** Private original contents separate the agent's diff from a dirty checkout. */
 export class WorkspaceLedger {
   constructor(readonly root: string, readonly workspaceRoot: string) {
-    this.workspaceRoot = realpathSync(workspaceRoot);
+    this.workspaceRoot = realpathSync.native(workspaceRoot);
   }
   private get manifest(): string { return path.join(this.root, "ownership.json"); }
   private async read(): Promise<OwnershipRecord> {

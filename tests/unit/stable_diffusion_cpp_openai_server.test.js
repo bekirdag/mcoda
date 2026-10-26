@@ -249,6 +249,87 @@ server.server_close()
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
 });
 
+test("stable-diffusion.cpp image bridge bounds handler admission and releases slots", (t) => {
+  const python = resolvePython();
+  if (!python) { t.skip("Python with POSIX file locking is unavailable"); return; }
+  const probe = spawnSync(python, ["-c", `import importlib.util, json, sys, threading
+from http.client import HTTPConnection
+spec = importlib.util.spec_from_file_location("sd_image_server", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+entered = [threading.Event(), threading.Event()]
+release = threading.Event()
+returned = {}
+class Handler(module.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/hold/"):
+            entered[int(self.path.rsplit("/", 1)[1])].set()
+            assert release.wait(3), "held handler was not released"
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *args):
+        pass
+class ObservedServer(module.ImageHttpServer):
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            event = returned.get(client_address[1])
+            if event is not None:
+                event.set()
+server = ObservedServer(("127.0.0.1", 0), Handler, client_read_timeout_seconds=3, max_handler_threads=2)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+connections = []
+def connect():
+    client = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+    connections.append(client)
+    client.connect()
+    return client
+try:
+    held = []
+    completed = []
+    for index in range(2):
+        client = connect()
+        event = threading.Event()
+        returned[client.sock.getsockname()[1]] = event
+        completed.append(event)
+        client.request("GET", f"/hold/{index}")
+        held.append(client)
+    assert all(event.wait(3) for event in entered), "both handlers must enter before saturation"
+    overloaded = connect()
+    overloaded.request("GET", "/overflow")
+    response = overloaded.getresponse()
+    assert response.status == 503, response.status
+    assert json.loads(response.read())["error"]["code"] == "server_busy"
+    overloaded.close()
+    release.set()
+    for client in held:
+        response = client.getresponse()
+        assert response.status == 200
+        assert response.read() == b"ok"
+        client.close()
+    assert all(event.wait(3) for event in completed), "handler slots must be released before recovery"
+    recovered = connect()
+    recovered.request("GET", "/after")
+    response = recovered.getresponse()
+    assert response.status == 200
+    assert response.read() == b"ok"
+finally:
+    release.set()
+    for client in connections:
+        client.close()
+    server.shutdown()
+    server.server_close()
+    thread.join(3)
+assert not thread.is_alive()
+`, serverScript], { cwd: repoRoot, encoding: "utf8", timeout: 10_000 });
+  assert.equal(probe.status, 0, probe.error?.message || probe.stderr || probe.stdout);
+});
+
 test("stable-diffusion.cpp image bridge rejects non-loopback configuration", () => {
   const python = resolvePython();
   if (!python) return;
@@ -637,22 +718,11 @@ test(
     holdRelease();
     assert.equal((await heldRequest).status, 200);
 
-    const slowClientA = await openSlowBodyRequest(baseUrl);
-    const slowClientB = await openSlowBodyRequest(baseUrl);
-    t.after(() => slowClientA.socket.destroy());
-    t.after(() => slowClientB.socket.destroy());
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const overloaded = await post(minimal("handler pool saturation"));
-    assert.equal(overloaded.status, 503);
-    assert.equal((await overloaded.json()).error.code, "server_busy");
-    const slowResponses = await Promise.all([
-      slowClientA.finished,
-      slowClientB.finished,
-    ]);
-    for (const slowResponse of slowResponses) {
-      assert.match(slowResponse, /^HTTP\/1\.0 408 Request Timeout/m);
-      assert.match(slowResponse, /"code":"request_timeout"/);
-    }
+    const slowClient = await openSlowBodyRequest(baseUrl);
+    t.after(() => slowClient.socket.destroy());
+    const slowResponse = await slowClient.finished;
+    assert.match(slowResponse, /^HTTP\/1\.0 408 Request Timeout/m);
+    assert.match(slowResponse, /"code":"request_timeout"/);
     const afterSlowClients = await post(minimal("handler pool recovered"));
     assert.equal(afterSlowClients.status, 200);
 

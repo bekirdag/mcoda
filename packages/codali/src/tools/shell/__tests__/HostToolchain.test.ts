@@ -16,11 +16,12 @@ test("host toolchain discovery rejects workspace executables and mismatched pack
       await fs.symlink("pnpm.cjs", path.join(directory, "bin", "pnpm"));
       await fs.writeFile(path.join(directory, "package.json"), JSON.stringify({ name: directory === root ? "pnpm" : "unrelated-package", bin: { pnpm: "bin/pnpm.cjs" } }));
     }
-    assert.equal(discoverHostToolchain(root, `${root}/bin:${tools}/bin`).some(runtime => runtime.name === "pnpm"), false);
+    const searchPath = [path.join(root, "bin"), path.join(tools, "bin")].join(path.delimiter);
+    assert.equal(discoverHostToolchain(root, searchPath).some(runtime => runtime.name === "pnpm"), false);
     await fs.writeFile(path.join(tools, "package.json"), JSON.stringify({ name: "pnpm", bin: { pnpm: "bin/not-the-selected-script.cjs" } }));
     assert.equal(discoverHostToolchain(root, `${tools}/bin`).some(runtime => runtime.name === "pnpm"), false);
     await fs.writeFile(path.join(tools, "package.json"), JSON.stringify({ name: "pnpm", bin: { pnpm: "bin/pnpm.cjs" } }));
-    const pnpm = discoverHostToolchain(root, `${root}/bin:${tools}/bin`).find(runtime => runtime.name === "pnpm");
+    const pnpm = discoverHostToolchain(root, searchPath).find(runtime => runtime.name === "pnpm");
     assert.equal(pnpm?.readOnlyRoot, await fs.realpath(tools)); assert.equal(pnpm?.directory, true);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(tools, { recursive: true, force: true }); }
 });
@@ -92,7 +93,7 @@ test("private Python discovery mounts its library, rejects escaped libraries and
   await fs.mkdir(workspace); await fs.mkdir(path.join(install, "bin"), { recursive: true });
   await fs.mkdir(path.join(library, "encodings"), { recursive: true });
   // Native fixture is inspected, never executed during discovery.
-  await fs.copyFile(process.execPath, path.join(install, "bin", "python3"));
+  await fs.writeFile(path.join(install, "bin", "python3"), Buffer.from("7f454c4600000000", "hex"));
   await fs.chmod(path.join(install, "bin", "python3"), 0o755);
   await fs.writeFile(path.join(library, "os.py"), "# fixture\n");
   await fs.writeFile(path.join(library, "encodings", "__init__.py"), "# fixture\n");
@@ -118,18 +119,19 @@ test("rustup proxies select only the installed host toolchain without exposing C
   await fs.writeFile(path.join(toolchain, "lib", "rustlib", "manifest-rustc-fixture"), "fixture\n");
   await fs.writeFile(path.join(rustup, "settings.toml"), 'default_toolchain = "stable-fixture"\n');
   await fs.writeFile(path.join(workspace, "rust-toolchain.toml"), '[toolchain]\nchannel = "nightly-uninstalled"\n');
-  const nativeHeader = (await fs.readFile(process.execPath)).subarray(0, 4);
+  // Inspected POSIX runtime fixtures are never executed, even on Windows.
+  const nativeHeader = Buffer.from("7f454c46", "hex");
   await fs.writeFile(path.join(proxies, "rustup"), Buffer.concat([nativeHeader, Buffer.from("discovery-only-proxy-fixture")]), { mode: 0o755 });
   for (const name of ["rustc", "cargo", "rustdoc"]) {
     if (name === "cargo") await fs.link(path.join(proxies, "rustup"), path.join(proxies, name));
     else if (name === "rustc") await fs.copyFile(path.join(proxies, "rustup"), path.join(proxies, name));
     else await fs.symlink("rustup", path.join(proxies, name));
-    await fs.copyFile(process.execPath, path.join(toolchain, "bin", name)); await fs.chmod(path.join(toolchain, "bin", name), 0o755);
+    await fs.writeFile(path.join(toolchain, "bin", name), Buffer.concat([nativeHeader, Buffer.from("fixture")]), { mode: 0o755 });
   }
   process.env.RUSTUP_HOME = rustup; delete process.env.RUSTUP_TOOLCHAIN;
   const selected = discoverHostToolchain(workspace, proxies).filter(runtime => ["rustc", "cargo", "rustdoc"].includes(runtime.name));
   assert.equal(selected.length, 3);
-  for (const mount of extraRuntimeMounts(selected)) assert.ok(mount.readOnlyRoot.startsWith(`${await fs.realpath(toolchain)}/`));
+  for (const mount of extraRuntimeMounts(selected)) assert.ok(mount.readOnlyRoot.startsWith(`${await fs.realpath(toolchain)}${path.sep}`));
   const packaged = path.join(fixture, "packaged");
   await fs.mkdir(path.join(packaged, "bin"), { recursive: true });
   await fs.mkdir(path.join(packaged, "libexec", "bin"), { recursive: true });

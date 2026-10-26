@@ -45,7 +45,7 @@ const resolveRustProxy = (name: string, executable: string, home: string): strin
     const nativeProxy = path.join(packageRoot, "libexec", "bin", name);
     const nativeRustup = path.join(packageRoot, "libexec", "bin", "rustup");
     if (existsSync(nativeProxy) && existsSync(nativeRustup)
-      && within(realpathSync(nativeProxy), packageRoot) && within(realpathSync(nativeRustup), packageRoot)
+      && within(realpathSync.native(nativeProxy), packageRoot) && within(realpathSync.native(nativeRustup), packageRoot)
       && executableBinary(nativeRustup)) {
       const target = statSync(nativeProxy); const manager = statSync(nativeRustup);
       proxy = target.dev === manager.dev && target.ino === manager.ino;
@@ -66,8 +66,8 @@ const resolveRustProxy = (name: string, executable: string, home: string): strin
   const matches = existsSync(path.join(toolchains, configured)) ? [configured]
     : readdirSync(toolchains).filter(entry => entry.startsWith(`${configured}-`));
   if (matches.length !== 1) throw new Error("Rust toolchain selection is unavailable or ambiguous");
-  const root = realpathSync(path.join(toolchains, matches[0]!));
-  const target = realpathSync(path.join(root, "bin", name));
+  const root = realpathSync.native(path.join(toolchains, matches[0]!));
+  const target = realpathSync.native(path.join(root, "bin", name));
   if (!within(target, root)) throw new Error("Rust tool executable escapes selected toolchain");
   return target;
 };
@@ -78,7 +78,7 @@ const languageRuntime = (name: string, executable: string, workspace: string, ho
   if (prefix === home || within(workspace, prefix) || within(prefix, workspace) || prefix === path.parse(prefix).root) return undefined;
   const runtime: HostRuntime = { name, executable, readOnlyRoot: executable, directory: false, support: [] };
   const add = (file: string): void => {
-    const resolved = realpathSync(file);
+    const resolved = realpathSync.native(file);
     if (!within(resolved, prefix)) throw new Error("Runtime support path escapes installation");
     runtime.support!.push({ readOnlyRoot: resolved, directory: statSync(resolved).isDirectory() });
   };
@@ -100,7 +100,7 @@ const languageRuntime = (name: string, executable: string, workspace: string, ho
           const dynamic = path.join(file, "lib-dynload");
           if (process.platform === "darwin" && existsSync(dynamic)) {
             for (const entry of readdirSync(dynamic).filter(entry => /\.(?:so|dylib)$/.test(entry))) {
-              const extension = realpathSync(path.join(dynamic, entry));
+              const extension = realpathSync.native(path.join(dynamic, entry));
               if (!within(extension, prefix)) throw new Error("Python extension escapes installation");
               extensions.push(extension);
             }
@@ -123,9 +123,9 @@ const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] =>
     const query = (command: string, args: string[]) => {
       const result = spawnSync(command, args, { env: environment, cwd: os.tmpdir(), timeout: 3000, encoding: "utf8", maxBuffer: 16384 });
       if (result.status !== 0) throw new Error("Developer tool lookup failed");
-      return realpathSync(result.stdout.trim());
+      return realpathSync.native(result.stdout.trim());
     };
-    const developer = realpathSync(process.env.DEVELOPER_DIR ?? query("/usr/bin/xcode-select", ["--print-path"]));
+    const developer = realpathSync.native(process.env.DEVELOPER_DIR ?? query("/usr/bin/xcode-select", ["--print-path"]));
     if (developer === home || developer === path.parse(developer).root || within(workspace, developer) || within(developer, workspace)) return [];
     const sdk = query("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
     if (!within(sdk, developer) || !existsSync(path.join(sdk, "SDKSettings.plist"))) return [];
@@ -141,14 +141,14 @@ const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] =>
  * supply this PATH nor turn its own package.json into a trusted runtime mount.
  * Mounts are single binaries or matching package roots, never the user's home. */
 export const discoverHostToolchain = (workspaceRoot: string, searchPath = process.env.PATH ?? ""): HostRuntime[] => {
-  const workspace = realpathSync(workspaceRoot); const home = realpathSync(os.homedir());
+  const workspace = realpathSync.native(workspaceRoot); const home = realpathSync.native(os.homedir());
   const result: HostRuntime[] = darwinDeveloperTools(workspace, home);
   for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar"]) {
     if (result.some(runtime => runtime.name === name)) continue;
     const candidates = name === "node" ? [process.execPath] : searchPath.split(path.delimiter).filter(Boolean).map(directory => path.resolve(directory, name));
     for (const candidate of candidates) {
       try {
-        let executable = realpathSync(candidate);
+        let executable = realpathSync.native(candidate);
         if (within(candidate, workspace) || within(executable, workspace)) continue;
         executable = resolveRustProxy(name, executable, home);
         if (within(executable, workspace)) continue;
@@ -167,14 +167,14 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
         if (packages[name] && path.basename(path.dirname(candidate)) === ".bin" && !/\.[cm]?js$/.test(executable)) {
           for (const packageName of packages[name]) {
             try {
-              const packageRoot = realpathSync(path.resolve(path.dirname(candidate), "..", packageName));
+              const packageRoot = realpathSync.native(path.resolve(path.dirname(candidate), "..", packageName));
               if (within(packageRoot, workspace) || within(workspace, packageRoot) || packageRoot === home) continue;
               const manifest = path.join(packageRoot, "package.json");
               if (statSync(manifest).size > 65536) continue;
               const metadata = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; bin?: string | Record<string, string> };
               const bin = typeof metadata.bin === "string" ? metadata.bin : metadata.bin?.[name];
               if (metadata.name !== packageName || !bin) continue;
-              const target = realpathSync(path.resolve(packageRoot, bin));
+              const target = realpathSync.native(path.resolve(packageRoot, bin));
               if (!within(target, packageRoot) || !/\.[cm]?js$/.test(target) || !statSync(target).isFile()) continue;
               accessSync(target, constants.X_OK); executable = target; break;
             } catch { /* Another allowed package layout may exist. */ }
@@ -190,7 +190,7 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
           const metadata = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; bin?: string | Record<string, string> };
           if (!metadata.name || !packages[name].includes(metadata.name)) break;
           const bin = typeof metadata.bin === "string" ? metadata.bin : metadata.bin?.[name];
-          if (!bin || realpathSync(path.resolve(directory, bin)) !== executable) break;
+          if (!bin || realpathSync.native(path.resolve(directory, bin)) !== executable) break;
           matched = { name, executable, readOnlyRoot: directory, directory: true }; break;
         }
         if (matched) { result.push(matched); break; }

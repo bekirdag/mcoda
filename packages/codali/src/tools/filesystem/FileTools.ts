@@ -29,7 +29,7 @@ const resolveWorkspacePath = async (context: ToolContext, targetPath: string): P
 };
 
 const toRelative = (context: ToolContext, targetPath: string): string => {
-  return path.relative(realpathSync(context.workspaceRoot), targetPath) || ".";
+  return path.relative(realpathSync.native(context.workspaceRoot), targetPath) || ".";
 };
 
 const normalizeScope = (value: string): string => {

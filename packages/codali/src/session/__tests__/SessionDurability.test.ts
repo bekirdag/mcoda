@@ -32,6 +32,10 @@ test("crash-tail repair retains complete records and rejects middle corruption",
     assert.equal((await store.readTranscript("s")).length, 1);
     await store.appendTranscript("s", { type: "note", data: { n: 2 } });
     assert.deepEqual((await store.readTranscript("s")).map(e => e.data.n), [1, 2]);
+    // A complete final record without a newline must be preserved, not truncated.
+    await fs.writeFile(transcript, (await fs.readFile(transcript, "utf8")).trimEnd());
+    await store.appendTranscript("s", { type: "note", data: { n: 3 } });
+    assert.deepEqual((await store.readTranscript("s")).map(e => e.data.n), [1, 2, 3]);
     await fs.appendFile(transcript, 'broken\n{"valid":true}\n');
     await assert.rejects(store.readTranscript("s"));
   } finally { await fs.rm(root, { recursive: true, force: true }); }

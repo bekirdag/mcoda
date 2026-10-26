@@ -330,7 +330,8 @@ export class SessionStore {
           const lastNewline = contents.lastIndexOf("\n");
           let complete = false;
           try { JSON.parse(contents.slice(lastNewline + 1)); complete = true; } catch { /* Incomplete crash tail. */ }
-          const repair = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+          // Windows append-only handles cannot truncate an incomplete record.
+          const repair = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_NOFOLLOW | (complete ? constants.O_APPEND : 0));
           try { if (complete) await repair.writeFile("\n"); else await repair.truncate(Buffer.byteLength(contents.slice(0, lastNewline + 1))); }
           finally { await repair.close(); }
         }

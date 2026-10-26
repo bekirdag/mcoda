@@ -11,7 +11,8 @@ test("unborn Git repositories retain staged and untracked dirty paths without fi
     await workspaceGit(root, ["init"]);
     await fs.writeFile(path.join(root, "staged.txt"), "staged content");
     await workspaceGit(root, ["add", "staged.txt"]);
-    const untrackedName = "untracked\nfile.txt";
+    // Windows forbids control characters in filenames; spaces also exercise -z parsing.
+    const untrackedName = process.platform === "win32" ? "untracked file.txt" : "untracked\nfile.txt";
     await fs.writeFile(path.join(root, untrackedName), "user content");
     const snapshot = await captureWorkspace(root);
     assert.equal(snapshot.git, true);

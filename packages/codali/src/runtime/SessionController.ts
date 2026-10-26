@@ -189,7 +189,8 @@ export class SessionController {
     this.options = { ...options, resolved: pinOrchestrationConfig(options.resolved) };
     // Pin identity before computing storage and lock paths. macOS exposes /var
     // through /private/var; both spellings must refer to the same session.
-    this.workspaceRoot = realpathSync(options.workspaceRoot);
+    // Match fs.promises.realpath, including Windows short-name expansion.
+    this.workspaceRoot = realpathSync.native(options.workspaceRoot);
     const storage = options.storageRoot ?? path.join(os.homedir(), ".local", "state", "codali", "workspaces", hash(this.workspaceRoot));
     if (path.resolve(storage) === this.workspaceRoot || path.resolve(storage).startsWith(`${this.workspaceRoot}${path.sep}`)) throw new Error("Choose a repository workspace that does not contain Codali's private session storage");
     this.store = new SessionStore({ workspaceRoot: this.workspaceRoot, storageDir: path.join(storage, "sessions"), allowExternalStorage: true });
