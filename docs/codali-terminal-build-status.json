@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen held-out Suku evaluation E continues with unchanged client/Docdex/backend fingerprints. Pinned embedding setup and private Docdex installation are implemented and tested. Docdex 0.2.100-codali.0 prerelease preparation is underway; backend deployment, physical media qualification, application migrations and long-session/release gates remain open.",
+  "currentTask": "Frozen held-out Suku evaluation E continues unchanged. Validation command recognition, receipt discovery, pre-command input hashing and failed-check continuity are implemented and locally tested. Docdex codali.0 publication failed preflight; codali.1 has patched dependencies and Python setup and is under native requalification. Backend deployment, media admission, application migrations and remaining long-session/release gates stay open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -48,7 +48,9 @@
       "id": "P0.5",
       "description": "Write decisions for execution location, one orchestration owner, terminal renderer, session storage migration, config/key precedence, permission enforcement and platform isolation. Freeze initial event/API fixtures and a capability matrix.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "docs/codali-terminal-architecture-decisions.md records eight implemented boundaries, alternatives and remaining qualification limits. Capability/event fixture qualification remains open."
+      ]
     },
     {
       "id": "P0.6",
@@ -170,7 +172,8 @@
       "description": "Implement durable goal/requirement/decision/plan/task records and atomic revision checks, reusing P0.8's chosen storage boundaries. Include standalone sessions and project task adapters, idempotent projections and crash recovery. Distinguish invocation success from verified task/goal completion.",
       "status": "in_progress",
       "evidence": [
-        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply.",
+        "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass."
       ]
     },
     {
@@ -394,7 +397,8 @@
       "description": "Complete resume/fork/compaction and storage migration. Reconcile uncertain tool outcomes before continuing. Test stale repository state and multiple clients opening the same session.",
       "status": "in_progress",
       "evidence": [
-        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
+        "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass."
       ]
     },
     {
@@ -1045,14 +1049,83 @@
       "status": "passed",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/bdya-helper-recovery.tsv",
       "limitation": "Successful helper and Strata invocations after restart; BDYA application-level outcome remains unverified. Interrupted job explicitly failed and was not replayed."
+    },
+    {
+      "check": "Validation command recognition and newest-first paged receipt integration",
+      "status": "passed",
+      "passed": 24,
+      "artifact": "/home/wodo/.local/state/codali-verification-command-tests-2.log"
+    },
+    {
+      "check": "Codali suite after test-receipt recognition",
+      "status": "passed",
+      "passed": 1343,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-verification-command-full-tests.log"
+    },
+    {
+      "check": "General and platform CI after explicit isolation prerequisite",
+      "status": "passed",
+      "commit": "5503b45",
+      "runs": [
+        40272760471,
+        40272760453
+      ]
+    },
+    {
+      "check": "Validation pre-command inputs and failed-check persistence through compaction/restart",
+      "status": "passed",
+      "passed": 26,
+      "artifact": "/home/wodo/.local/state/codali-validation-focus-tests.log"
+    },
+    {
+      "check": "Full Codali suite with validation continuity and input fencing",
+      "status": "passed",
+      "passed": 1345,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-validation-focus-full-tests.log"
+    },
+    {
+      "check": "Docdex codali.0 native qualification before release audit",
+      "status": "passed",
+      "passed": 1042,
+      "skipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-docdex-prerelease-native-tests.log"
+    },
+    {
+      "check": "Docdex codali.0 release preflight",
+      "status": "failed",
+      "run": 40271058417,
+      "artifact": "/home/wodo/.local/state/codali-docdex-prerelease-release-failure.log",
+      "cause": "Python lacked tomllib and dependency audit reported 17 nonignored vulnerabilities; no release or npm publication occurred."
+    },
+    {
+      "check": "Docdex codali.1 patched dependency compile, publication contracts and npm regression",
+      "status": "passed",
+      "pythonTests": 22,
+      "npmTests": 227,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-docdex-security-check-2.log",
+        "/home/wodo/.local/state/codali-docdex-release-hardening-python-tests.log",
+        "/home/wodo/.local/state/codali-docdex-release-hardening-npm-tests.log"
+      ],
+      "limitation": "Full native suite is running; ring exception is retained due to incompatible Tree-sitter build dependency, with other audit warnings reported."
+    },
+    {
+      "check": "Docdex patched lock audit under existing documented policy",
+      "status": "passed",
+      "nonignoredVulnerabilities": 0,
+      "artifact": "/home/wodo/.local/state/codali-docdex-security-audit-final.json",
+      "limitation": "Existing ring exception and non-gating dependency warnings remain; this is not a zero-advisory claim."
     }
   ],
-  "updatedAt": "2026-10-26T04:48:49.482967+00:00",
+  "updatedAt": "2026-10-26T05:19:44.726907+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
-    "Docdex managed runtime is qualified locally and has an isolated installer. The release artifact manifest is intentionally empty until the 0.2.100-codali.0 prerelease passes cross-platform/release gates; automatic installation cannot yet complete.",
+    "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",
     "Both production nodes run isolated candidate E with verified Strata routes. Gateway/proxy F images are now stale relative to backend 37d6a707b; fresh images and a safe backend rollout are required before live embedding and durable-media qualification.",
     "No embedding agent is registered in the active catalog yet. Metadata transport/setup tests pass but production end-to-end embeddings require registry configuration and deployed backend/node support.",
-    "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open."
+    "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open.",
+    "Held-out E exposed unrecognized npm presentation flags and a model repair stall; failures remain preserved. The next source candidate recognizes npm --silent test, retains the latest failed check across compaction/restart, and fences validation to pre-command inputs. Follow-up model qualification is required; a passing test suite is not evidence that model repair failures are solved."
   ]
 }

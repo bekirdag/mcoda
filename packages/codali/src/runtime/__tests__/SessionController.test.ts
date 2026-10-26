@@ -52,6 +52,75 @@ test("successful npm --silent test receipts verify changed code and page newest-
   assert.equal(reviews, 1); assert.equal(step, 10);
 });
 
+test("a successful check that changes source cannot certify the changed bytes", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-check-inputs-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-check-inputs-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "src")); await fs.mkdir(path.join(root, "test"));
+  await fs.writeFile(path.join(root, "src/value.mjs"), "export const value = 1;\n");
+  await fs.writeFile(path.join(root, "test/value.test.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; import {writeFileSync} from 'node:fs'; import {value} from '../src/value.mjs'; test('checks then rewrites',()=>{assert.equal(value,2);writeFileSync(new URL('../src/value.mjs',import.meta.url),'export const value = 3;\\n');});\n");
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test test/value.test.mjs" } }));
+  let step = 0; let attemptId = ""; let reviews = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) { reviews++; return reply('{"passed":true,"findings":[]}'); }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src/value.mjs"] });
+      case 1: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "src/value.mjs" });
+      case 2: return call("write_file", { path: "src/value.mjs", content: "export const value = 2;\n" });
+      case 3: return call("read_file", { path: "src/value.mjs" });
+      case 4: return call("run_shell", { command: "npm", args: ["--silent", "test"], writePaths: ["src/value.mjs"] });
+      case 5: assert.match(previous(), /# pass 1/); return call("work_status", { receiptsOnly: true, receiptTools: ["run_shell"] });
+      case 6: {
+        const receipt = JSON.parse(previous()).receipts[0]; assert.deepEqual(receipt.validation, { recognized: true, current: false });
+        return call("work_verify", { taskId: "T1", attemptId, invocationIds: [receipt.receiptRef], summary: "The check passed." });
+      }
+      case 7: assert.match(previous(), /Validation receipt is stale/); return call("work_block", { taskId: "T1", reason: "The test rewrites source after its assertion; inspect before accepting the output." });
+      default: return reply("Verification is blocked by changed test inputs.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  assert.equal((await controller.run("Update the value to two and verify it.")).completed, false);
+  assert.equal(reviews, 0); assert.equal(controller.state?.evidence.length, 0);
+  assert.equal(await fs.readFile(path.join(root, "src/value.mjs"), "utf8"), "export const value = 3;\n");
+});
+
+test("the latest failed check survives conversation compaction and a new controller", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-check-memory-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-check-memory-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const marker = "PERSISTED_CHECK_FAILURE_X";
+  await fs.writeFile(path.join(root, "value.test.mjs"), `import test from 'node:test'; import assert from 'node:assert/strict'; test('failure',()=>assert.fail('${marker}'));\n`);
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test value.test.mjs" } }));
+  await fs.writeFile(path.join(root, "notes.txt"), "User-owned notes\n");
+  let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (step === 0) { step++; return call("work_claim", { taskId: "T1", allowedPaths: ["value.test.mjs"] }); }
+    if (step === 1) { step++; return call("run_shell", { command: "npm", args: ["--silent", "test"] }); }
+    if (step++ < 10) return call("read_file", { path: "notes.txt" });
+    if (step === 11) {
+      assert.ok(!request.messages.some(message => message.role === "tool" && message.content.includes(marker)), "old failed output must have left the conversation window");
+      assert.ok(request.messages.some(message => message.role === "system" && message.content.includes(marker) && message.content.includes('"status":"failed"')));
+      return call("work_block", { taskId: "T1", reason: "Preserve the failed check for a later diagnostic turn." });
+    }
+    return reply("Failed check retained.");
+  } };
+  const options = { workspaceRoot: root, storageRoot: storage, resolved, docdex: false as const, permissions: "workspace" as const };
+  const first = new SessionController({ ...options, provider });
+  if (!first.isolation.available) { t.skip(first.isolation.reason); return; }
+  assert.equal((await first.run("Diagnose the failing check without claiming success.")).completed, false);
+  await first.compact();
+  let resumedCalls = 0;
+  const resumed = new SessionController({ ...options, provider: { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.ok(!request.messages.some(message => message.role === "tool" && message.content.includes(marker)));
+    assert.ok(request.messages.some(message => message.role === "system" && message.content.includes(marker) && message.content.includes('"status":"failed"')));
+    return resumedCalls++ === 0 ? call("work_block", { taskId: "T1", reason: "The recorded failing check still needs repair." }) : reply("Failure remains open.");
+  } } });
+  await resumed.resume(first.sessionId!);
+  assert.equal((await resumed.run()).completed, false); assert.equal(resumedCalls, 2);
+});
+
 test("workspace aliases pin the same canonical session identity", async t => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-session-alias-"));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));

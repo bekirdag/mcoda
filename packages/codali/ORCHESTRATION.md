@@ -205,7 +205,8 @@ read-only and installs sandbox PATH aliases. It does not mount the user's home,
 adjacent packages, credentials or package-manager caches. Other tools already
 under system runtime paths keep working; additional private toolchains are not
 implicitly exposed. The installed Raijin pnpm has passed an isolated fixture
-test; macOS qualification is still pending. The macOS adapter creates a private
+test. Linux and macOS Node 20/22 platform CI passes the isolation/toolchain suite;
+this does not replace clean-package and production qualification. The macOS adapter creates a private
 temporary directory for each command, points HOME/TMPDIR there, and removes it
 after process cleanup. It grants no general read/write access to other users'
 temporary files. Linux uses a private temporary filesystem and pins TMPDIR to
