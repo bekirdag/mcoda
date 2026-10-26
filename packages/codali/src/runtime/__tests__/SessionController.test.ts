@@ -575,7 +575,8 @@ test("the final budget reserve allows Git inspection but fences new implementati
   await assert.rejects(controller.run("Set value to two, inspect the resulting diff and run a meaningful check before completion."), /Shared model\/token budget exhausted/);
   const receipts = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string; output: string });
   const final = receipts.slice(-4);
-  assert.deepEqual(final.map(receipt => receipt.status), ["success", "success", "failed", "failed"]);
+  assert.deepEqual(final.map(receipt => receipt.status), ["success", "success", "failed", "failed"],
+    JSON.stringify(final.map(receipt => ({ tool: receipt.tool, status: receipt.status, output: receipt.output.slice(0, 1600) }))));
   assert.match(final[0].output, /-export const value = 1/); assert.match(final[0].output, /\+export const value = 2/);
   assert.match(final[1].output, /value\.mjs/);
   for (const receipt of final.slice(2)) assert.match(receipt.output, /reserved for verification/);
