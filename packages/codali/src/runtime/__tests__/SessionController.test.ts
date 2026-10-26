@@ -419,6 +419,66 @@ test("the controller enforces structural evidence and invalidates it after sourc
   } finally { globalThis.fetch = originalFetch; await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
+for (const scenario of ["success", "skipped-parser", "content-race", "oversized", "host-denied", "budget"] as const) {
+  test(`prepare_edit retains child policy and receipts: ${scenario}`, { concurrency: false }, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-prepare-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-prepare-state-"));
+    const originalFetch = globalThis.fetch; let symbolCalls = 0; let step = 0;
+    const events: SessionEvent[] = [];
+    const original = scenario === "oversized" ? `// ${"a".repeat(15000)}\nexport const x = 0;\n` : "export const x = 0;\n";
+    await fs.writeFile(path.join(root, "math.js"), original);
+    t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input)); let payload: unknown = {};
+      if (url.pathname === "/healthz") return new Response("ok");
+      if (url.pathname === "/v1/initialize") payload = { repo_id: "fixture" };
+      if (url.pathname === "/v1/index/status") payload = { ready: true };
+      if (url.pathname === "/v1/graph/impact") payload = { source: "math.js", edges: [], inbound: [], outbound: [] };
+      if (url.pathname === "/v1/mcp") {
+        const body = JSON.parse(String(init?.body));
+        if (body.method === "docdex_symbols") {
+          symbolCalls++;
+          if (scenario === "content-race") await fs.writeFile(path.join(root, "math.js"), "export const x = 9;\n");
+          payload = { result: { file: "math.js", outcome: { status: scenario === "skipped-parser" ? "skipped" : "ok" }, symbols: [] } };
+        } else payload = { result: {} };
+      }
+      return Response.json(payload);
+    };
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      const previous = request.messages.at(-1)!.content;
+      if (scenario === "budget") {
+        if (step++ === 0) return call("prepare_edit", { path: "math.js" });
+        assert.match(previous, /Shared tool budget exhausted/); return reply("Budget exhausted without edits.");
+      }
+      switch (step++) {
+        case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["math.js"] });
+        case 1: return call("prepare_edit", { path: "math.js" });
+        case 2:
+          if (scenario === "success") { assert.match(previous, /"prepared":true/); assert.match(previous, /docdex_impact_graph/); }
+          else assert.match(previous, /ERROR\[/);
+          return call("write_file", { path: "math.js", content: "export const x = 1;\n" });
+        case 3:
+          assert.match(previous, scenario === "success" ? /Wrote math.js/ : /has not been read/);
+          return call("work_block", { taskId: "T1", reason: "Preparation regression scenario finished" });
+        default: return reply("Checkpoint retained.");
+      }
+    } };
+    const limited = { ...config, effort: { medium: { maxToolCalls: 3 } } };
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: scenario === "budget" ? { config: limited, hash: orchestrationHash(limited), source: "test" } : resolved, provider,
+      permissions: scenario === "budget" ? "plan" : "workspace", runContext: scenario === "host-denied" ? { deniedTools: ["docdex_symbols"] } : {}, onEvent: e => events.push(e) });
+    assert.equal((await controller.run("Prepare and safely edit math.js")).completed, false);
+    const expected = scenario === "success" ? "export const x = 1;\n" : scenario === "content-race" ? "export const x = 9;\n" : original;
+    assert.equal(await fs.readFile(path.join(root, "math.js"), "utf8"), expected);
+    const receipts = events.filter(e => e.type === "tool_receipt").map(e => e.data.receipt as { id: string; tool: string; status: string });
+    assert.equal(new Set(receipts.map(r => r.id)).size, receipts.length);
+    assert.equal(receipts.find(r => r.tool === "prepare_edit")?.status, scenario === "success" ? "success" : "failed");
+    assert.equal(receipts.some(r => r.status === "pending"), false);
+    if (scenario === "success") assert.deepEqual(receipts.slice(1, 5).map(r => r.tool), ["read_file", "docdex_symbols", "docdex_impact_graph", "prepare_edit"]);
+    if (scenario === "host-denied" || scenario === "oversized") assert.equal(symbolCalls, 0);
+    if (scenario === "budget") assert.equal((controller.status().usage as { toolCalls: number }).toolCalls, 3);
+  });
+}
+
 test("terminal shell is read-only by default and explicit writes cannot bypass structural or task scope checks", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-scope-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-scope-store-"));

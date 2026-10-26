@@ -8,7 +8,7 @@ export interface PermissionAnswer { allow: boolean; scope?: "once" | "session"; 
 export interface PermissionGrants { schemaVersion: 1; grants: string[]; denials: string[]; }
 export type PermissionPrompt = (request: PermissionRequest, signal?: AbortSignal) => Promise<PermissionAnswer>;
 
-const fileRead = new Set(["read_file", "list_directory", "list_files", "stat_path", "diff_summary", "search", "search_files", "search_text", "glob", "file_search"]);
+const fileRead = new Set(["prepare_edit", "read_file", "list_directory", "list_files", "stat_path", "diff_summary", "search", "search_files", "search_text", "glob", "file_search"]);
 const fileWrite = new Set(["write_file", "apply_patch", "apply_diff", "media_export_artifact"]);
 const controlRead = new Set(["work_status", "work_refine", "work_plan", "work_claim", "work_release", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block"]);
 const docdexReads = /^(docdex_(search|batch_search|rerank|open|files|tree|stats|symbols|ast|repo_inspect|impact_graph|impact_diagnostics|dag_export|memory_recall|get_profile|wakeup|diary_read|capabilities|conversation_search|conversation_read|conversation_list|kg_query))$/;
