@@ -20,10 +20,12 @@ test("versioned corpus has sixty held-out cases, twelve development cases and tw
   for (const task of tasks) assert.ok(Object.values(task.files).every(text => !text.includes("hiddenChecks")));
 });
 
-test("every reference passes isolated independent grading and every starter fails", { ...isolated, timeout: 120000 }, async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-selfcheck-"));
-  try {
-    for (const task of terminalTaskCorpus()) {
+// Bound each independent grader invocation instead of the aggregate duration of
+// 72 cases: loaded platform runners must still exercise every reference/starter.
+for (const task of terminalTaskCorpus()) {
+  test(`${task.id}: reference passes isolated independent grading and starter fails`, { ...isolated, timeout: 30000 }, async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `codali-corpus-selfcheck-${task.id}-`));
+    try {
       const workspace = path.join(root, task.id); await materializeTerminalTask(task, workspace);
       const starter = await gradeTerminalTask(task, workspace);
       assert.equal(starter.contractPassed, false, `${task.id}: starter unexpectedly satisfies held-out contract`);
@@ -31,9 +33,9 @@ test("every reference passes isolated independent grading and every starter fail
       await fs.appendFile(path.join(workspace, "test/task.test.mjs"), `test('additional edge cases',async()=>{${task.hiddenChecks}});\n`);
       const grade = await gradeTerminalTask(task, workspace);
       assert.equal(grade.passed, true, `${task.id}: ${grade.failures.join("; ")}`);
-    }
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+}
 
 test("grading rejects preservation/scope violations even when implementation passes", isolated, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-corpus-scope-"));

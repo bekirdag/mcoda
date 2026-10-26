@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Held-out Suku evaluation E remains frozen and has exposed an actual false completion (budget-receipts-5). Deterministic requested-test evidence and fuller reviewer context are implemented and pass 1349 tests with two skips; fresh live qualification remains required. Package CI passed all six Linux/macOS Node20/22 jobs. Docdex codali.1 platform publication and backend/application/long-session/canary gates remain open.",
+  "currentTask": "Held-out Suku evaluation E finished 52/60 across 12 correlated families, with one observed false completion. Frozen client F (runtime 4a385f4) reruns all eight failed cases as diagnostics, not new held-out evidence. Exact Linux publication tarballs passed clean installation on five platform/Node jobs; the sixth stopped at an aggregate grader timeout before installation. Splitting that grader by case preserves all assertions. Docdex prerelease, backend/application, fresh evaluation, long-session and canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -42,7 +42,8 @@
       "status": "in_progress",
       "evidence": [
         "Frozen development clients A/B/C evaluated; B 6/12 and C 9/12 on Suku. C failures stable-unique, relative-path and budget-receipts preserved. Runs use 12 correlated task families; held-out/planning/production-baseline qualification remains.",
-        "Development D completed 11/12 on Suku; budget-receipts failed its generated public tests and exited unsuccessfully. Held-out E started serially at 2026-10-26 03:56 UTC using frozen D client, 60 variants across 12 correlated families; before/after environment fingerprints stop on drift. No broad planning or throughput claim."
+        "Development D completed 11/12 on Suku; budget-receipts failed its generated public tests and exited unsuccessfully. Held-out E started serially at 2026-10-26 03:56 UTC using frozen D client, 60 variants across 12 correlated families; before/after environment fingerprints stop on drift. No broad planning or throughput claim.",
+        "Held-out E completed at 2026-10-26T06:34:13Z: 52/60 passed, 10,123,759 accounted tokens; eight failures and stable captured environment. Correlated families and shared production load limit interpretation. Reused failure cases are diagnostic only."
       ]
     },
     {
@@ -467,7 +468,8 @@
       "status": "in_progress",
       "evidence": [
         "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated.",
-        "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked."
+        "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked.",
+        "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim."
       ]
     },
     {
@@ -1183,7 +1185,7 @@
       "tokens": 2576
     }
   ],
-  "updatedAt": "2026-10-26T05:19:44.726907+00:00",
+  "updatedAt": "2026-10-26T06:44:26.207272+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
     "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",
