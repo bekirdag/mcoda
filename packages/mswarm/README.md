@@ -32,9 +32,21 @@ inference through `$XDG_RUNTIME_DIR/mcoda-media-gpu1.lock`; deployments can set
 Do not unlink an active lock file. A video HTTP deadline does not release GPU
 ownership: the worker retains the lock and local slot until the native job is
 confirmed terminal. Cancellation requested by a native server is distinguished
-from confirmed cancellation. This lock serializes cooperating bridges; it does
-not enforce VRAM reservations or protect a native job after its bridge is
-forcibly killed. Drain and reconcile native jobs before upgrading services.
+from confirmed cancellation. The same inode contains an fsynced lease receipt.
+A killed bridge or uncertain image/video submission leaves that receipt behind;
+subsequent admission fails with `media_gpu_recovery_required`. Process death,
+elapsed time and an HTTP disconnect never count as native completion. Video
+receipts retain the native job ID, and terminal responses must match that ID.
+
+Recovery uses `reconcile_media_gpu_slot(expected_id, terminal_probe)`. A trusted
+host probe must confirm that the recorded native job is terminal, or that its
+native engine has been stopped and can no longer retain the job. The scheduler
+checks the receipt ID under its exclusive lock and clears it only when that
+probe returns `True`. A live owner, stale ID, failed probe or corrupt receipt
+cannot be overwritten by ordinary admission. Do not clear the file merely to
+retry a request. This cooperating scheduler does not yet enforce VRAM
+reservations or implement deployment-specific automatic native recovery.
+Drain and reconcile native jobs before upgrading services.
 
 ## Quick Setup
 

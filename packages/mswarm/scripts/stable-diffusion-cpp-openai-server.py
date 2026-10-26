@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import http.client
 import ipaddress
 import json
 import logging
@@ -118,7 +119,11 @@ class UpstreamError(Exception):
     pass
 
 
-class UpstreamTimeout(UpstreamError):
+class UpstreamTransportError(UpstreamError):
+    pass
+
+
+class UpstreamTimeout(UpstreamTransportError):
     pass
 
 
@@ -461,10 +466,10 @@ def _bounded_json_request(
         raw = error.read(max_bytes + 1)
         status = error.code
         content_type = error.headers.get_content_type()
-    except (OSError, urllib.error.URLError) as error:
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         if _is_timeout_error(error):
             raise UpstreamTimeout("stable-diffusion.cpp request timed out") from error
-        raise UpstreamError("stable-diffusion.cpp is unreachable") from error
+        raise UpstreamTransportError("stable-diffusion.cpp is unreachable") from error
     if len(raw) > max_bytes:
         raise UpstreamError("stable-diffusion.cpp response exceeds the configured limit")
     if content_type != "application/json":
@@ -509,8 +514,16 @@ def _native_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generate_image(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
-    with media_gpu_slot("image", cancelled=state.shutdown_requested):
-        return _generate_image_locked(state, request)
+    with media_gpu_slot("image", cancelled=state.shutdown_requested) as lease:
+        try:
+            return _generate_image_locked(state, request)
+        except (UpstreamTransportError, OSError, urllib.error.URLError, http.client.HTTPException) as error:
+            # A lost HTTP connection does not prove the synchronous native
+            # renderer stopped. Keep a durable fence after this worker exits.
+            lease.mark_uncertain("image_transport_lost")
+            if isinstance(error, UpstreamError):
+                raise
+            raise UpstreamTransportError("native image outcome is uncertain") from error
 
 
 def _generate_image_locked(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
