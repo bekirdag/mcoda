@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createWorkState, replaceWorkPlan, validateWorkState } from "../session/WorkState.js";
 import type { WorkState } from "../session/WorkTypes.js";
 
-export const PLANNING_CORPUS_VERSION = "codali-planning-v2";
+export const PLANNING_CORPUS_VERSION = "codali-planning-v3";
 export interface PlanningCriterion { id: string; description: string; paths: string[]; after: string[]; phase: "design" | "build" | "validate"; }
 export interface PlanningCase {
   id: string;
@@ -127,8 +127,13 @@ export function gradePlanningState(item: PlanningCase, state: WorkState): Planni
     for (const predecessor of c.after) if (owner(predecessor).length !== 1 || !reaches(task.id, owner(predecessor)[0].id)) { metrics.orderingErrors++; fail(`Missing prerequisite ${predecessor} before ${c.id}`); }
   }
   const final = owner("R1");
-  if (final.length !== 1 || final[0].requirementIds.length !== 1 || final[0].allowedPaths.length || final[0].phaseId !== "validate"
-      || active.some(t => t !== final[0] && !reaches(final[0]?.id, t.id))) { metrics.orderingErrors++; fail("Final integration must follow all criteria without broad write scope"); }
+  if (final.length !== 1 || final[0].requirementIds.length !== 1) fail("Final integration must uniquely own R1");
+  else {
+    if (final[0].allowedPaths.length) { metrics.scopeErrors++; fail("Final integration must have no write paths"); }
+    if (active.some(t => t !== final[0] && !reaches(final[0].id, t.id))) { metrics.orderingErrors++; fail("Final integration must follow all criterion tasks"); }
+    // The prompt fixes criterion phases, but permits the final integration task
+    // to be unphased. Its explicit dependencies still fence all future work.
+  }
   for (const [id, prior] of [["design", undefined], ["build", "design"], ["validate", "build"]] as const) {
     const phase = state.phases?.find(p => p.id === id);
     if (!phase || prior && !phase.dependsOn.includes(prior)) { metrics.orderingErrors++; fail(`Missing ordered phase ${id}`); }

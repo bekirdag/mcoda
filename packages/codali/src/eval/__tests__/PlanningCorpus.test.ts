@@ -49,3 +49,16 @@ test("phase prerequisites may express ordering without duplicate explicit task e
     assert.equal(gradePlanningState(item, state).passed, true, item.id);
   }
 });
+
+test("final integration may be unphased when its required dependencies and scope are preserved", () => {
+  for (const item of planningCorpus()) {
+    const state = referencePlanningState(item);
+    state.tasks.find(t => t.id === "integrate")!.phaseId = undefined;
+    state.phases!.find(p => p.id === "validate")!.exitRequirementIds = item.criteria.filter(c => c.phase === "validate").map(c => c.id);
+    assert.equal(gradePlanningState(item, state).passed, true, item.id);
+    state.tasks.find(t => t.id === "integrate")!.allowedPaths = ["."];
+    const grade = gradePlanningState(item, state);
+    assert.equal(grade.passed, false); assert.ok(grade.failures.includes("Final integration must have no write paths"));
+    assert.equal(grade.metrics.scopeErrors, 1);
+  }
+});
