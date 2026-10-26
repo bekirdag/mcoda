@@ -17,6 +17,9 @@ test("long journeys retain module contracts without exposing reference answers",
     for (const id of ["R1", "R2", "R3", "R4", "R5"]) assert.ok(prompt.includes(id));
     assert.ok(prompt.includes(scenario.objective)); assert.ok(prompt.includes("planning-only"));
     assert.ok(!prompt.includes("hiddenChecks")); assert.ok(!prompt.includes("reference:"));
+    assert.ok(prompt.includes("Inside a module JSON report"));
+    assert.ok(prompt.includes("must be relative to that module directory"));
+    assert.ok(prompt.includes("API endpoint values remain unchanged"));
   }
   assert.match(longWorkflowHash(), /^[a-f0-9]{64}$/); assert.equal(longWorkflowHash(), longWorkflowHash());
 });

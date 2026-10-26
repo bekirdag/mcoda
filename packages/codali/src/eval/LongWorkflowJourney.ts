@@ -11,7 +11,7 @@ import { terminalWorkflowCorpus, terminalWorkflowCorpusHash } from "./TerminalWo
 import type { WorkState } from "../session/WorkTypes.js";
 import { runEvaluationProcess } from "./EvaluationProcess.js";
 
-export const LONG_WORKFLOW_VERSION = "long-workflows-v1";
+export const LONG_WORKFLOW_VERSION = "long-workflows-v2";
 export const longWorkflowScenarios = [
   { id: "data-delivery", objective: "Deliver a reliable data-processing toolkit with exact money totals, validated imports, CSV export and additive record migration.", modules: ["invoice-cents", "jsonl-import", "csv-export", "additive-record-migration"] },
   { id: "service-adapters", objective: "Deliver a service-adapter toolkit with safe headers, bounded async execution, locale fallback and interval reservations.", modules: ["header-normalization", "async-worker-pool", "locale-fallback", "interval-reservation"] },
@@ -20,13 +20,13 @@ export const longWorkflowScenarios = [
 ] as const;
 export type LongWorkflowScenario = typeof longWorkflowScenarios[number];
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-export const longWorkflowHash = () => hash(JSON.stringify({ version: LONG_WORKFLOW_VERSION, scenarios: longWorkflowScenarios, workflowHash: terminalWorkflowCorpusHash() }));
+export const longWorkflowHash = () => hash(JSON.stringify({ version: LONG_WORKFLOW_VERSION, scenarios: longWorkflowScenarios, prompts: longWorkflowScenarios.map(longWorkflowPrompt), steering, workflowHash: terminalWorkflowCorpusHash() }));
 const steering = "Keep every original module contract and protected file. Add DELIVERY.md containing a concise test-and-delivery inventory with the exact path modules/<module-id>/test/task.test.mjs for each of the four modules. Do not claim unavailable checks ran, add features, or remove criteria. This is additional required work, not a replacement objective.";
 const prefixPrompt = (module: string, prompt: string) => prompt.replace(/\b(src|test|docs|vendor-docs)\//g, `modules/${module}/$1/`);
 
 export function longWorkflowPrompt(scenario: LongWorkflowScenario): string {
   const corpus = terminalWorkflowCorpus();
-  return `${scenario.objective}\nThe repository has four independent module packages under modules/. Each module's package.json, user notes, and any paths not explicitly writable below must remain byte-identical. Root package.json and USER_NOTES.txt must also remain unchanged. No dependencies or unrelated features.\nRecord canonical requirements R2-R5, one per module contract below, plus the existing original R1 for final integration after all module tasks. Record phases and a dependency-valid plan; R1 is final integration and must depend on all module deliverables. Record a modular architecture decision with rationale and alternatives. Module tasks may be independent; no inter-module imports are needed.\n${scenario.modules.map((id, index) => `R${index + 2}: ${prefixPrompt(id, corpus.find(task => task.id === id)!.prompt)}`).join("\n\n")}\nInitially you are in planning-only mode: inspect and record the plan, but do not execute or complete it. Execution will resume in a new process with workspace permissions. The overall delivery includes actual tests and all four module outcomes. Preserve that objective across restarts and corrections.`;
+  return `${scenario.objective}\nThe repository has four independent module packages under modules/. Each module's package.json, user notes, and any paths not explicitly writable below must remain byte-identical. Root package.json and USER_NOTES.txt must also remain unchanged. No dependencies or unrelated features. Paths used to locate files in these instructions are workspace-relative. Inside a module JSON report, all source-path values (including owner, client, server, callers, evidence and citations) must be relative to that module directory, without its modules/<module-id>/ prefix. API endpoint values remain unchanged.\nRecord canonical requirements R2-R5, one per module contract below, plus the existing original R1 for final integration after all module tasks. Record phases and a dependency-valid plan; R1 is final integration and must depend on all module deliverables. Record a modular architecture decision with rationale and alternatives. Module tasks may be independent; no inter-module imports are needed.\n${scenario.modules.map((id, index) => `R${index + 2}: ${prefixPrompt(id, corpus.find(task => task.id === id)!.prompt)}`).join("\n\n")}\nInitially you are in planning-only mode: inspect and record the plan, but do not execute or complete it. Execution will resume in a new process with workspace permissions. The overall delivery includes actual tests and all four module outcomes. Preserve that objective across restarts and corrections.`;
 }
 
 interface JourneyDescriptor { schemaVersion: 1; scenarioId: string; configPath: string; configHash: string; clientBuildHash: string; root: string; objective: string; corpusHash: string }
