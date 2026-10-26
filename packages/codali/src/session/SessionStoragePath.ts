@@ -3,10 +3,16 @@ import path from "node:path";
 
 /** Existing state files must not alias another file or an external endpoint. */
 export async function assertRegularStateFile(file: string): Promise<void> {
-  try {
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error(`Unsafe session state file: ${path.basename(file)}`);
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const stat = await fs.lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error(`Unsafe session state file: ${path.basename(file)}`);
+      if (stat.nlink === 1) return;
+      // An atomic rename may unlink the old inode while the asynchronous stat
+      // is completing. Validate the new named file; never accept the old one.
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  }
+  throw new Error(`Session state file changed during validation: ${path.basename(file)}`);
 }
 
 /** Resolve trusted outer aliases (e.g. macOS /var) once, then reject symlinks
@@ -56,10 +62,13 @@ export async function sessionStoragePath(options: {
 }
 
 export async function readStateFile(file: string): Promise<string> {
-  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.nlink !== 1) throw new Error("Unsafe session state file");
-    return await handle.readFile("utf8");
-  } finally { await handle.close(); }
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session state file");
+      if (stat.nlink === 1) return await handle.readFile("utf8");
+    } finally { await handle.close(); }
+  }
+  throw new Error(`Session state file changed during validation: ${path.basename(file)}`);
 }

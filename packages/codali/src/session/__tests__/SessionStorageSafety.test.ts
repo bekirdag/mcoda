@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionStore } from "../SessionStore.js";
+import { assertRegularStateFile, readStateFile } from "../SessionStoragePath.js";
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-storage-safety-"));
@@ -12,6 +13,51 @@ async function fixture() {
   const store = new SessionStore({ workspaceRoot: workspace });
   return { root, workspace, outside, store, session: path.join(workspace, ".mcoda/codali/sessions/s") };
 }
+
+test("path validation retries an inode unlinked by an atomic replacement", async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const file = path.join(f.workspace, "state.json"); const next = `${file}.next`;
+  await fs.writeFile(file, "old"); await fs.writeFile(next, "current");
+  const handle = await fs.open(file, "r");
+  const lstat = fs.lstat; let raced = false;
+  const mock = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+    if (args[0] === file && !raced) {
+      raced = true; await fs.rename(next, file);
+      const unlinked = await handle.stat(); assert.equal(unlinked.nlink, 0);
+      return unlinked;
+    }
+    return lstat(...args);
+  });
+  try { await assertRegularStateFile(file); assert.equal(raced, true); assert.equal(mock.mock.callCount(), 2); }
+  finally { mock.mock.restore(); await handle.close(); }
+});
+
+test("state reads reopen after an atomic replacement without reading the unlinked inode", async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const file = path.join(f.workspace, "state.json"); const next = `${file}.next`;
+  await fs.writeFile(file, "old"); await fs.writeFile(next, "current");
+  const open = fs.open; let raced = false;
+  const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    const handle = await open(...args);
+    if (args[0] === file && !raced) { raced = true; await fs.rename(next, file); }
+    return handle;
+  });
+  try { assert.equal(await readStateFile(file), "current"); assert.equal(mock.mock.callCount(), 2); }
+  finally { mock.mock.restore(); }
+});
+
+test("repeated replacements stop after bounded retries and hard links remain unsafe", async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const file = path.join(f.workspace, "state.json"); await fs.writeFile(file, "old");
+  const handle = await fs.open(file, "r"); await fs.unlink(file);
+  const unlinked = await handle.stat(); assert.equal(unlinked.nlink, 0);
+  const mock = t.mock.method(fs, "lstat", async () => unlinked);
+  try { await assert.rejects(assertRegularStateFile(file), /changed during validation/); assert.ok(mock.mock.callCount() <= 8); }
+  finally { mock.mock.restore(); await handle.close(); }
+  await fs.writeFile(file, "preserve"); await fs.link(file, path.join(f.outside, "linked.json"));
+  await assert.rejects(assertRegularStateFile(file), /Unsafe session state/);
+  await assert.rejects(readStateFile(file), /Unsafe session state/);
+});
 
 for (const component of [".mcoda", ".mcoda/codali", ".mcoda/codali/sessions", ".mcoda/codali/sessions/s"]) {
   test(`session creation refuses redirected parent ${component}`, async t => {
