@@ -138,13 +138,13 @@ test("the latest failed check survives conversation compaction and a new control
   const marker = "PERSISTED_CHECK_FAILURE_X";
   await fs.writeFile(path.join(root, "value.test.mjs"), `import test from 'node:test'; import assert from 'node:assert/strict'; for(let i=0;i<18;i++)test('earlier successful validation case '+i,()=>assert.equal(1,1)); test('late failure',()=>assert.fail('${marker}'));\n`);
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test value.test.mjs" } }));
-  await fs.writeFile(path.join(root, "notes.txt"), "User-owned notes\n");
+  for (let i = 1; i <= 10; i++) await fs.writeFile(path.join(root, `notes-${i}.txt`), `User-owned note ${i}\n`);
   let step = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (step === 0) { step++; return call("work_claim", { taskId: "T1", allowedPaths: ["value.test.mjs"] }); }
     if (step === 1) { step++; return call("run_shell", { command: "npm", args: ["--silent", "test"] }); }
     if (step === 2) assert.match([...request.messages].reverse().find(message => message.role === "tool")!.content, new RegExp(marker));
-    if (step++ < 10) return call("read_file", { path: "notes.txt" });
+    if (step++ < 10) return call("read_file", { path: `notes-${step}.txt` });
     if (step === 11) {
       assert.ok(!request.messages.some(message => message.role === "tool" && message.content.includes(marker)), "old failed output must have left the conversation window");
       assert.ok(request.messages.some(message => message.role === "system" && message.content.includes(marker) && message.content.includes('"status":"failed"')), request.messages.find(message => message.role === "system")?.content.split("Latest validation receipt")[1]?.split("Retrieved memory")[0]);
@@ -331,6 +331,26 @@ test("compact planning acknowledgements and receipt lookup preserve the full can
     assert.equal(controller.state?.requirements.length, 2); assert.equal(step, 5);
     assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "User-owned notes\n");
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
+});
+
+test("unchanged successful reads produce recovery guidance and a bounded checkpoint instead of exhausting the model budget", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-read-stall-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-read-stall-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "notes.txt"), "Original notes\n");
+  const events: SessionEvent[] = []; let calls = 0; let sawGuidance = false;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++; if (request.messages.at(-1)?.content.includes("Progress guidance")) sawGuidance = true;
+    return call("read_file", { path: "notes.txt" });
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+    permissions: "plan", effort: "high", onEvent: event => { events.push(event); } });
+  await assert.rejects(controller.run("Inspect the notes and prepare a plan."), /Repeated read_file.*checkpoint retained/);
+  assert.equal(calls, 6); assert.equal(sawGuidance, true);
+  assert.equal(controller.state?.status, "active");
+  assert.ok(controller.state!.checkpoints.length > 0);
+  assert.ok(events.some(event => event.type === "progress_stalled" && event.data.unchangedInputs === true));
+  assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "Original notes\n");
 });
 
 test("planning excludes execution lifecycle tools and rejects forged calls before claims or reviewer inference", async () => {

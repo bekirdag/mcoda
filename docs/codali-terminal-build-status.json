@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Completion evidence delivery and idempotent project submission passed the full local suite (1494 passed, 2 platform skips). Published Docdex codali.2 runtime pins are committed; macOS canonical-path correction awaits platform CI. Workflow R finished with original grades Raijin 6/12 and Suku 9/12; separate oracle corrections and semantic review remediation remain. Four-process workflow S journeys are running on both hosts. Backend/application rollout and canary remain open.",
+  "currentTask": "Published Docdex runtime installs and cache reuse passed on Raijin/Suku and all six Linux/macOS Node20/22 jobs (25570f5). Workflow R offline grader-v2 correction preserves original evidence: Raijin 8/12, Suku 11/12. Long workflow S exposed oversized status and unchanged-operation retry loops; bounded status records and progress guidance/checkpoint guards are under validation. Semantic reviewer false acceptance, backend/application rollout and canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -84,7 +84,8 @@
       "status": "in_progress",
       "evidence": [
         "PlanningCorpus.ts/Runner provide six versioned constrained planning domains and mutation-tested deterministic grading. All original P/Q fixtures and failures retained; grader correction is explicit and does not rerun models or overwrite evidence. Long-task and heterogeneous corpus coverage remains incomplete.",
-        "3f9e8c3 adds 12 distinct workflows: 8 multi-file implementations, 3 repository investigations, 1 pinned fictional-document research task. 95 combined corpus/grader tests passed, including reference/starter and mutation checks. First-attempt R live runs are active on both hosts; no pass claim."
+        "3f9e8c3 adds 12 distinct workflows: 8 multi-file implementations, 3 repository investigations, 1 pinned fictional-document research task. 95 combined corpus/grader tests passed, including reference/starter and mutation checks. First-attempt R live runs are active on both hosts; no pass claim.",
+        "Workflow R completed with original grades Raijin 6/12, Suku 9/12. Separate offline terminal-workflows-v2 correction (a5f070b, 35 tests passed) gives 8/12 and 11/12, preserving original tree hashes and prompts. Corrects unspecified evidence order, synchronous RangeError and valid comparison citations. Real invoice false acceptance and failing generated tests remain."
       ]
     },
     {
@@ -247,7 +248,9 @@
       "id": "P4.1",
       "description": "Implement setup/doctor integration for local Docdex health, version, repository binding, initial index and incremental refresh. Use the existing client and registration flows.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Published docdex 0.2.100-codali.2 privately installed and cache-reused without network on Suku; binary df0a9811 and all three Codali package tarball hashes match the frozen a5f070b artifacts. This does not replace the global daemon."
+      ]
     },
     {
       "id": "P4.2",
@@ -490,7 +493,8 @@
         "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked.",
         "6c3ac22 CI passed. Exact Linux-built tarballs passed clean installation in five platform jobs; Intel macOS Node22 stopped before install when the 72-case aggregate self-check hit its 120s deadline. Per-case bounded self-check correction is being qualified; no skipped gate or full matrix claim.",
         "54e6841 platform run 40281622249 passed all six jobs. Linux-built publication tarballs had identical checksums on Linux x64/macOS x64/macOS ARM Node20/22; reports record PR merge source cbd42d187acf2c40e0b7a8b7ec80db017d3b9fb2. No repack occurs before installation or publication.",
-        "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending."
+        "b604008 platform install matrix passed Linux Node20/22; macOS native binaries ran but cache identity comparison exposed /var versus /private/var canonicalization. Installer now returns realpath on first install; trusted-parent-symlink regression passed locally. Updated platform CI pending.",
+        "25570f5 general CI40294819863 and platform40294819705 passed; all six Linux/macOS x64/arm64 Node20/22 jobs installed the pinned published Docdex native runtime and checked first-install/cache canonical identity."
       ]
     },
     {

@@ -14,6 +14,8 @@ import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel,
 import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGrants, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
+import { workStatusPage } from "./WorkStatusPage.js";
+import { ProgressTracker } from "./ProgressTracker.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { ToolExecutionError, type ToolDefinition, type ToolDescriptor, type ToolExecutionResult } from "../tools/ToolTypes.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -121,6 +123,7 @@ export class SessionController {
   private memoryContext = "";
   private lastRequestEstimate = 4000;
   private repeatedFailures = new Map<string, number>();
+  private progressTracker = new ProgressTracker();
   private connectorRegistry?: McpServerRegistry;
   private connectorNames: string[] = [];
   private connectorHealth: unknown[] = [];
@@ -135,6 +138,7 @@ export class SessionController {
     this.sequence = 0; this.currentReceipt = undefined; this.reservations.clear();
     this.baseline = undefined; this.previousSnapshot = undefined; this.instructions = ""; this.memoryContext = "";
     this.lastRequestEstimate = 4000; this.repeatedFailures.clear(); this.finalAttempts = 0;
+    this.progressTracker.clear();
     this.persistence = Promise.resolve(); this.persistenceError = undefined; this.gate.clearGrants();
     this.usage = { modelCalls: 0, toolCalls: 0, tokens: 0, inputTokens: 0, outputTokens: 0, estimated: false };
   }
@@ -447,7 +451,7 @@ export class SessionController {
     return recent.flat();
   }
 
-  async compact(): Promise<void> { this.messages = this.compactMessages(); await this.checkpoint("Context compacted; canonical requirements and decisions retained"); }
+  async compact(): Promise<void> { this.messages = this.compactMessages(); this.progressTracker.clear(); await this.checkpoint("Context compacted; canonical requirements and decisions retained"); }
 
   async clearPermissionGrants(): Promise<void> {
     this.gate.clearGrants();
@@ -732,7 +736,21 @@ export class SessionController {
     if (uncertain) this.active?.abort(new Error(`Uncertain remote operation ${receipt.id}; reconcile the observed outcome before continuing`));
     else await this.clearFence(receipt.id);
     if (workspaceConflict) throw new Error(workspaceConflict);
-    if (!result.ok) {
+    const activeTask = this.state?.tasks.find(task => task.status === "running");
+    const repeats = this.progressTracker.observe({ tool: tool.name, args, ok: result.ok, hashes: receipt.inputHashes,
+      task: { goalRevision: this.state?.goalRevision, planRevision: this.state?.planRevision, id: activeTask?.id, attemptId: activeTask?.attemptId },
+      output: result.output, errorCode: result.error?.code });
+    if (repeats > 0) {
+      const threshold = this.options.resolved.config.taskControl?.repeatedFailureThreshold ?? 3;
+      if (repeats >= threshold) {
+        const readyTaskIds = this.state?.tasks.filter(task => task.status === "ready").slice(0, 10).map(task => task.id) ?? [];
+        const hint = `Repeated ${tool.name} with unchanged inputs (${repeats} times). Read the specific failure and change the approach; repeating reads or tests is not progress. ${activeTask ? `Current task: ${activeTask.id}.` : `Claim a ready task before implementation: ${readyTaskIds.join(", ") || "inspect work_status"}.`} Use work_status for bounded records; preserve all required work.`;
+        await this.emit("progress_stalled", { tool: tool.name, repeats, unchangedInputs: true, readyTaskIds, action: hint });
+        if (result.ok) result.output += `\n\n[Progress guidance: ${hint}]`;
+        else if (result.error) result.error.message += `\n${hint}`;
+        if (repeats >= threshold * 2) this.active?.abort(new Error(`Repeated ${tool.name} without changed inputs or task progress; checkpoint retained`));
+      }
+    } else if (!result.ok) {
       const signature = hash(JSON.stringify([tool.name, args, result.error?.code, result.error?.message]));
       const count = (this.repeatedFailures.get(signature) ?? 0) + 1; this.repeatedFailures.set(signature, count);
       const threshold = this.options.resolved.config.taskControl?.repeatedFailureThreshold ?? 3;
@@ -810,7 +828,7 @@ export class SessionController {
       tool("tools_discover", "List additional available tool names and descriptions. Use tools_enable to load schemas for media, web research, memory and other optional capabilities. Authorization still applies when executing them.", {}, [], async () => this.registry.list().map(t => ({ name: t.name, description: t.description.slice(0, 180), capability: t.capability, enabled: this.enabledTools.has(t.name) }))),
       tool("tools_enable", "Expose schemas for named tools discovered through tools_discover. This does not grant execution permission.", { names: strings }, ["names"], async args => { const available = new Set(this.registry.list().map(t => t.name)); for (const name of args.names) { if (!available.has(name)) throw new Error(`Unknown tool: ${name}`); this.enabledTools.add(name); } return { enabled: args.names }; }),
       tool("work_refine", "Add criteria and task dependencies before implementation. Existing R1 is retained automatically; send only new criteria. Use phases with exit criteria for larger work; keep small tasks flat. Record constraints and non-goals from the request.", { requirements: { type: "array", items: { type: "object", properties: { id: str, description: str }, required: ["id", "description"], additionalProperties: false } }, constraints: strings, nonGoals: strings, tasks: taskSchema, phases: phaseSchema, reason: str }, ["requirements", "constraints", "nonGoals", "tasks"], async args => { await this.update(state => { for (const requirement of args.requirements as Array<{ id: string; description: string }>) { const existing = state.requirements.find(r => r.id === requirement.id); if (existing && existing.description !== requirement.description) throw new Error(`Cannot replace existing requirement ${requirement.id}; use a new criterion ID`); if (!existing) state.requirements.push({ ...requirement, required: true }); } state.constraints = [...new Set([...state.constraints, ...args.constraints])]; state.nonGoals = [...new Set([...state.nonGoals, ...args.nonGoals])]; replaceWorkPlan(state, args.tasks, args.phases, args.reason); }); return planReceipt(); }),
-      tool("work_status", "Inspect canonical records. Page with offset/limit or specific taskIds/requirementIds. Receipt lookup uses receiptsOnly:true, optional receiptTools and offset/limit, newest first; validation reports command eligibility and current file hashes. Omitted records remain mandatory for completion.", { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, taskIds: strings, requirementIds: strings, receiptsOnly: { type: "boolean" }, receiptTools: strings }, [], async args => {
+      tool("work_status", "Inspect bounded canonical records. Page with offset/limit or taskIds/requirementIds. Retrieve exact JSON with record and optional recordId, then textOffset until nextTextOffset is null. Omit recordId to read that entire record collection in chunks. Receipt lookup uses receiptsOnly:true, receiptTools and offset/limit, newest first. Omitted records remain mandatory.", { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, taskIds: strings, requirementIds: strings, record: { type: "string", enum: ["goal", "task", "requirement", "decision", "phase", "constraints"] }, recordId: str, textOffset: { type: "integer", minimum: 0 }, textLimit: { type: "integer", minimum: 1, maximum: 6000 }, receiptsOnly: { type: "boolean" }, receiptTools: strings }, [], async args => {
         const matching = [...this.receipts.values()].filter(r => !args.receiptTools || args.receiptTools.includes(r.tool)).reverse();
         const receiptOffset = args.receiptsOnly ? args.offset ?? 0 : 0; const receiptLimit = args.receiptsOnly ? args.limit ?? 20 : 20;
         const current = await this.hashes();
@@ -818,14 +836,7 @@ export class SessionController {
           ...(r.tool === "run_shell" ? { validation: { recognized: isVerificationCommand(r.args), current: Object.entries(current).every(([file, value]) => r.inputHashes[file] === value) } } : {}),
           output: r.tool === "run_shell" ? r.output?.slice(-800) : r.output?.slice(0, 500) }));
         if (args.receiptsOnly) return { receipts, totalReceipts: matching.length, nextReceiptOffset: receiptOffset + receipts.length < matching.length ? receiptOffset + receipts.length : null };
-        const offset = args.offset ?? 0; const limit = args.limit ?? 20;
-        const tasks = this.state?.tasks.filter(task => !args.taskIds || args.taskIds.includes(task.id)) ?? [];
-        const page = tasks.slice(offset, offset + limit);
-        const ids = new Set(args.requirementIds ?? page.flatMap(task => task.requirementIds));
-        return { state: this.state ? { ...JSON.parse(activeWorkContext(this.state, 16_000)), tasks: page,
-          requirements: this.state.requirements.filter(requirement => ids.has(requirement.id)), totalTasks: tasks.length,
-          nextOffset: offset + page.length < tasks.length ? offset + page.length : null } : undefined,
-          receipts };
+        return { state: this.state ? workStatusPage(this.state, args) : undefined, receipts: args.record ? [] : receipts.slice(0, 3) };
       }),
       tool("work_plan", "Replace unfinished task planning. Preserve required criteria and verified tasks; task paths are workspace-relative.", { tasks: taskSchema, phases: phaseSchema, reason: str }, ["tasks"], async args => { await this.update(state => replaceWorkPlan(state, args.tasks, args.phases, args.reason)); return planReceipt(); }),
       tool("work_claim", "Claim one ready task before working. For a localized initial T1 task, optionally provide allowedPaths for implementation AND tests to record scope and claim in one operation. Later scope changes require work_release/work_plan.", { taskId: str, allowedPaths: strings }, ["taskId"], async args => {
