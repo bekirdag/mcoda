@@ -49,6 +49,14 @@ const parseToolArgs = (raw: string): unknown => {
   }
 };
 
+// JSON permits lone UTF-16 surrogates, but native tokenizers often require
+// Unicode scalar values. Keep their visible source spelling in model context
+// instead of losing them to replacement characters. With /u, valid pairs are
+// matched as one astral code point and are therefore outside this range.
+const modelContextText = (value: string): string =>
+  value.replace(/[\uD800-\uDFFF]/gu, (unit) =>
+    `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
 const normalizeBaseUrl = (baseUrl?: string): string => {
   const root = baseUrl ?? "https://api.openai.com/v1";
   return root.endsWith("/") ? root : `${root}/`;
@@ -239,7 +247,7 @@ export class OpenAiCompatibleProvider implements Provider {
       tool_calls?: OpenAiToolCall[];
     }> = request.messages.map((message) => ({
       role: message.role,
-      content: message.content,
+      content: modelContextText(message.content),
       name: message.name,
       tool_call_id: message.toolCallId,
       tool_calls: message.toolCalls?.map((call) => ({
@@ -247,7 +255,7 @@ export class OpenAiCompatibleProvider implements Provider {
         type: "function",
         function: {
           name: call.name,
-          arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}),
+          arguments: typeof call.args === "string" ? modelContextText(call.args) : JSON.stringify(call.args ?? {}),
         },
       })),
     }));
@@ -270,7 +278,7 @@ export class OpenAiCompatibleProvider implements Provider {
         type: "function",
         function: {
           name: tool.name,
-          description: tool.description,
+          description: tool.description === undefined ? undefined : modelContextText(tool.description),
           parameters: tool.inputSchema ?? {},
         },
       })),

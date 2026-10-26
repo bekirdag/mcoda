@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "CandidateK231d2e0 remains deployed on both hosts. TNL public story smoke and Logmira Wodo/Heka grounded chat probes passed. BDYA deployed client/persisted settings passed synthetic1.7B,4B and Strata large-model routes. W long journeys were interrupted by Raijin native CUDA illegal-memory failure; native/node recovered and five native plus three public checks passed. Root cause remains open. Docdex local-runner adapter fix passed96 tests and a live1.7B call; codali.3 publication is being prepared. BackendI still awaits the protected rollout path; media, fresh quality, accounting and canary gates remain open.",
+  "currentTask": "User authorized root deployment and the protected mSwarm Compose/nginx preflight passed. BackendI images are qualified; internal/public admission and quiescence procedure still must be completed before rollout. Suku media bridges and native WebM duration fix are deployed; fresh generation, physical bridge-owner death/reconciliation and three public paths pass. X long-workflow diagnostics continue; Raijin data-delivery exposed a lone-surrogate context transport failure, fixed with17 provider tests and full regression1538pass/2optional skips; stub CLI/eval tests now isolate live Docdex. Docdex codali.3 release was blocked by new zstd advisories; Tantivy0.27 removes that dependency, compiles and passes33 index tests and zero-vulnerability audit with the existing ring exception. Old-version repository/library index compatibility probe passed; codali.4 full Rust/release qualification remains in progress.",
   "tasks": [
     {
       "id": "P0.1",
@@ -498,7 +498,8 @@
         "Node E drain keeps accepted work, relay claims and result delivery alive, gates new work and supports SIGUSR2 drain without exit; full mSwarm suite165 passed. Bootstrap Raijin upgrade interrupted one BDYA 4B helper invocation (shi_acf5c02072d54e6eb64455714655a809) because old pinned gateway routes ignored drain and the activation guard did not stop on active work. It was honestly reconciled as failed/node_restart_interrupted, never replayed. Gateway admission fixes pass 130 related tests (140 combined backend tests) and typecheck but are not deployed; future upgrades require verified local drain plus an active-work guard.",
         "G rollout confirmed SIGUSR2 drain completion for each exact process, immutable candidate hashes, and a fresh canonical invocation query before restart. Leased/started work blocks activation; gateway-owned queued work with no start may survive a node-only replacement. Observed queued Raijin invocation shi_031ced88aa764120b966efd2e56cdb1d completed successfully after replacement. No backend restart was performed.",
         "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified.",
-        "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending."
+        "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
+        "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed."
       ]
     },
     {
@@ -524,7 +525,8 @@
         "Complete-source backend G images from e6a8d2ba5 passed native schema, fresh disposable MySQL bootstrap and health checks. Gateway image0c3909ab5975c76f2ee2610849be245532d81c6bf7a551c6ced84556a8d8635f; proxy1e7a89fb2bb298a1bc3649a107c6943b7100ef3eb82a6b094c8b10306aa388da. Production data was not used; rollout/quiescence and public native-reasoning tests remain open.",
         "Native transport negotiation is implemented: the proxy advertises per-model version1 only for pinned upgraded nodes; stale nodes reject native requests before dispatch. The CLI checks every configured native parameter before inference, with zero-accounting/refund coverage. 1687 broad client/node tests passed (2 platform skips),44 follow-up session/provider checks passed, and80 backend tests plus typecheck passed. These capability changes are not deployed yet.",
         "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified.",
-        "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending."
+        "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
+        "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified."
       ]
     },
     {
@@ -546,9 +548,7 @@
       "decision": "Use runCodaliTask/Runner as the terminal execution path under one session controller; reuse existing tool registry, session persistence, providers and Docdex. Map project-attached tasks through an adapter."
     }
   ],
-  "blockers": [
-    "Root-owned mSwarm Compose/nginx deployment still needs the previously requested authorized root path; the pending deployment script must be refreshed for the final image and guarded by verified quiescence before execution."
-  ],
+  "blockers": [],
   "validation": [
     {
       "check": "Baseline repository suite via docdexd run-tests",
@@ -1367,9 +1367,10 @@
       "publicCases": 3,
       "artifact": "/home/wodo/.local/state/codali-postdeploy-node-k-raijin-engine-recovery.log",
       "limitation": "Recovery confirmed; engine failure root cause unresolved."
-    }
+    },
+    "2026-10-26: Unicode-context regression + isolated stub CLI tests: full Codali1540tests,1538pass,0fail,2optional skips. First full run retained with live-Docdex-dependent CLI stall and two eval failures; isolated CLI12/12 and eval8/8 then full run passed."
   ],
-  "updatedAt": "2026-10-26T13:21:00Z",
+  "updatedAt": "2026-10-26T14:40:48.405384+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad fresh quality evaluation, four successful multi-hour live journeys, paired helper comparisons, production consumer qualification and the 24-hour canary remain open.",
     "Docdex v0.2.100-codali.2 is published on GitHub and npm next; stable latest remains0.2.99. Pinned Linux/macOS runtime artifacts and private installations are qualified; global existing daemons remain unchanged.",
@@ -1380,6 +1381,10 @@
     "All four frozenV long workflows failed after exhausting their shared2.4M-token budget. Keep original evidence. Billing report source paths were underspecified relative to the hidden module-relative expectation; v2 clarifies the contract and hashes full prompts/steering without changing the grader. New runs are diagnostics, not fresh holdouts.",
     "TNL story, Logmira Wodo/Heka grounded chat and BDYA persisted stage synthetic routes pass on current deployment. Full production surface/background/media coverage remains open.",
     "Raijin Strata0.1.49.2 failed with CUDA illegal memory at verify layer42 on W. Native and node recovery passed; automatic unavailable-model recovery, root cause and sustained qualification remain open.",
-    "Docdex codali.2 discovers local mcoda adapters but cannot instantiate them; ff74f67 adds explicit local HTTP runner support and prepares codali.3.96 focused tests and real1.7B helper call pass; release artifacts/pins remain pending."
+    "Docdex codali.2 discovers local mcoda adapters but cannot instantiate them; ff74f67 adds explicit local HTTP runner support and prepares codali.3.96 focused tests and real1.7B helper call pass; release artifacts/pins remain pending.",
+    "Root deployment access resolved by explicit user authorization2026-10-26; root --check passed. Do not repeat the access permission question. Backend safe-quiescence procedure remains unqualified.",
+    "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed.",
+    "Native video duration patch has nine encoder duration/pixel-equivalence cases and a fresh9-frame8fps1.125s832x480 render. Normal-quality media and full CLI durable-media recovery remain open.",
+    "Docdex codali.3 release failed new RUSTSEC-2026-0403/0410 advisories. Tantivy0.27 dependency migration eliminates zstd chain and passes33 index tests/current audit; old-index migration and release matrix remain open. Do not retag failed codali.3."
   ]
 }

@@ -794,3 +794,43 @@ the node so it publishes a fresh catalog. Use `systemctl --user` for the
 inference units, then use `mswarm node status`, `mswarm node health`,
 `mswarm node doctor`, and `mswarm node logs --lines 200` to verify the
 end-to-end state.
+
+## Native WebM duration qualification (2026-10-26)
+
+The video encoder at stable-diffusion.cpp commit
+`3b6c9ca97cfcda8e68e719e6670d06379fcbe943` omits the last frame's display
+interval from the WebM segment duration. A nine-frame, 8-fps render contains
+all nine decodable frames but reports 1.0 seconds instead of 1.125 seconds.
+The JSON response alone does not reveal this discrepancy.
+
+The packaged `scripts/stable-diffusion-cpp-webm-duration.patch` sets the video
+track's default frame duration and the final segment duration before libwebm
+finalization. Apply it only to a separately built, compatible native source
+tree; the Python bridge must not rewrite arbitrary binary artifacts. Preserve
+the previous native executable and drain/reconcile accepted jobs before a
+service replacement. This patch changes container metadata, not the model or
+its generated pixels.
+
+Qualification used the actual native encoder for all nine combinations of
+1, 9 and 33 frames at 8, 16 and 24 fps. The original encoder missed the final
+interval in every case. The patched encoder reports each expected duration
+within 1 ms, passes complete FFmpeg decoding, and retains every decoded frame
+hash. Patch SHA-256:
+`dbbfbd236c233c25321cee7babe5f6a8855b61c3c761dc6d502a15844642c478`.
+The isolated Suku candidate executable is
+`70a51aeb860df90c1bc696a00abb3ff8d3c02270a76e6a70d816a43b4b0e8008`.
+It was relinked with checksum-pinned existing build objects; this is a
+host-specific build, not a newly published upstream release. It was activated
+on Suku after admission drain and an empty canonical active-job check. A fresh
+nine-frame model render passed full decoding at 832×480, 8 fps and exactly
+1.125 seconds; its SHA-256 is
+`6320cb293aef2e9e27f7e8ea3df149f4ae7cc7ba1d9e0ec050369be15fc6af68`.
+
+A physical bridge-owner crash also passed: the native job was `generating`
+when the private bridge was killed, all three production media bridges
+reported recovery required, and a new image request was rejected. Native
+cancellation returned 409; the test retained the reservation until the exact
+job reported completed, then reconciled its matching durable receipt. Node
+admission was reopened after health checks and a fresh empty active-job check.
+These checks qualify duration and this recovery path; normal-quality media,
+longer video and full CLI job recovery still require their separate gates.

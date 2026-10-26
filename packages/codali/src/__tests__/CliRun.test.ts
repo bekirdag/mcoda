@@ -27,6 +27,8 @@ const buildEnv = (homeDir: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.Pr
     ...env,
     HOME: homeDir,
     USERPROFILE: homeDir,
+    // Stub CLI behavior must not depend on a developer's live Docdex daemon.
+    CODALI_DOCDEX_BASE_URL: "http://127.0.0.1:0",
     ...overrides,
   };
 };
@@ -69,6 +71,7 @@ const runCodali = (
   let result = spawnSync(process.execPath, [cliPath, ...args], {
     encoding: "utf8",
     env,
+    timeout: 60_000,
   }) as SpawnSyncReturns<string>;
   while (result.status !== 0 && attempt < maxRetries) {
     const stderr = (result.stderr ?? "").toString();
@@ -79,6 +82,7 @@ const runCodali = (
     result = spawnSync(process.execPath, [cliPath, ...args], {
       encoding: "utf8",
       env,
+      timeout: 60_000,
     }) as SpawnSyncReturns<string>;
   }
   return result;

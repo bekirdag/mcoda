@@ -1,0 +1,22 @@
+--- a/examples/common/media_io.cpp
++++ b/examples/common/media_io.cpp
+@@ -1212,6 +1212,9 @@
+ 
+         const uint64_t frame_duration_ns = std::max<uint64_t>(
+             1, static_cast<uint64_t>(std::llround(1000000000.0 / static_cast<double>(fps))));
++        if (video_track != nullptr) {
++            video_track->set_default_duration(frame_duration_ns);
++        }
+         uint64_t timestamp_ns = 0;
+ 
+         for (int i = 0; i < num_images; ++i) {
+@@ -1256,6 +1259,9 @@
+             timestamp_ns += frame_duration_ns;
+         }
+ 
++        // Include the final frame's display interval, not only its timestamp.
++        segment.set_duration(static_cast<double>(timestamp_ns) /
++                             segment.GetSegmentInfo()->timecode_scale());
+         if (!segment.Finalize()) {
+             fprintf(stderr, "Error: Failed to finalize WebM output.\n");
+             return -1;
