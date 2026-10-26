@@ -263,7 +263,7 @@ valid for local work with an explicit qualified binary, but cannot be
 published through the release script. Clean installation does not substitute
 for the live routing, media, long-session and canary gates in the build plan.
 
-### Planning evaluation
+### Session storage
 
 Session storage rejects redirected directories beneath its configured boundary,
 symlink or hard-linked state files, unsafe summary references and unknown
@@ -273,6 +273,13 @@ the file and directory. An I/O error after rename can leave the new complete
 state visible while the caller receives an error: recovery must reread the
 durable revision instead of assuming rollback. These checks do not isolate the
 CLI from a hostile process running as the same OS user.
+
+### Planning evaluation
+
+Planning mode uses a separate planning instruction set and refuses task claims,
+execution verification and goal completion at the permission gate, even if a
+model fabricates a call to an unadvertised tool. It records plans and decisions
+while leaving the future implementation goal open.
 
 `eval/PlanningCorpusRunner.runPlanningCorpus` runs six bounded planning probes
 through the real session controller, configured provider and `plan` permission

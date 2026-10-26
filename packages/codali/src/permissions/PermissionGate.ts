@@ -11,6 +11,8 @@ export type PermissionPrompt = (request: PermissionRequest, signal?: AbortSignal
 const fileRead = new Set(["prepare_edit", "read_file", "list_directory", "list_files", "stat_path", "diff_summary", "search", "search_files", "search_text", "glob", "file_search"]);
 const fileWrite = new Set(["write_file", "apply_patch", "apply_diff", "media_export_artifact"]);
 const controlRead = new Set(["work_status", "work_refine", "work_plan", "work_claim", "work_release", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block"]);
+const executionWork = new Set(["work_claim", "work_verify", "work_complete"]);
+export const isExecutionWorkTool = (name: string): boolean => executionWork.has(name);
 const docdexReads = /^(docdex_(search|batch_search|rerank|open|files|tree|stats|symbols|ast|repo_inspect|impact_graph|impact_diagnostics|dag_export|memory_recall|get_profile|wakeup|diary_read|capabilities|conversation_search|conversation_read|conversation_list|kg_query))$/;
 
 export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
@@ -56,6 +58,7 @@ export class PermissionGate {
     const key = createHash("sha256").update(JSON.stringify([tool.name, kind, args])).digest("hex");
     const deny = (reason: string): never => { throw new ToolExecutionError("tool_permission_denied", reason, { retryable: false, details: { tool: tool.name, kind } }); };
     if (this.options.deniedTools?.includes(tool.name) || this.denials.has(key)) deny("Operation explicitly denied");
+    if (this.profile === "plan" && isExecutionWorkTool(tool.name)) deny("Planning mode cannot claim, verify or complete execution tasks; record the plan and leave the goal open");
     if (kind === "read") return;
     if (this.profile === "plan") deny("Planning mode permits read operations only");
     if (kind === "web" && this.options.allowWeb) return;

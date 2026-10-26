@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { createWorkState, replaceWorkPlan, validateWorkState } from "../session/WorkState.js";
 import type { WorkState } from "../session/WorkTypes.js";
 
-export const PLANNING_CORPUS_VERSION = "codali-planning-v1";
-export interface PlanningCriterion { id: string; description: string; paths: string[]; after: string[]; }
+export const PLANNING_CORPUS_VERSION = "codali-planning-v2";
+export interface PlanningCriterion { id: string; description: string; paths: string[]; after: string[]; phase: "design" | "build" | "validate"; }
 export interface PlanningCase {
   id: string;
   objective: string;
@@ -13,7 +13,9 @@ export interface PlanningCase {
   decision: { id: string; question: string; options: Record<string, string>; accepted: string; rationale: string };
 }
 
-const criterion = (id: string, description: string, paths: string[], after: string[] = []): PlanningCriterion => ({ id, description, paths, after });
+const criterion = (id: string, description: string, paths: string[], after: string[] = [], phase: PlanningCriterion["phase"] = id === "R2" ? "design" : ["R3", "R4", "R5"].includes(id) ? "build" : "validate"): PlanningCriterion => ({
+  id, description: `${description}${after.length ? ` Prerequisites: ${after.join(", ")} must be complete before this work starts.` : ""}`, paths, after, phase,
+});
 const common = { constraints: ["Preserve existing user edits and public compatibility", "Use existing components; add no runtime dependency"], nonGoals: ["Unrelated cleanup or UI redesign"] };
 
 /** Closed-world planning probes, not a general architecture benchmark. Expected
@@ -43,7 +45,7 @@ export function planningCorpus(): PlanningCase[] {
         criterion("R2", "Record embedding model revision, dimension and normalization as one space identity.", ["docs/embedding.md"]),
         criterion("R3", "Create a separate index namespace for the new incompatible space; preserve the active index.", ["src/index.ts"], ["R2"]),
         criterion("R4", "Backfill the new namespace incrementally and record source freshness.", ["src/backfill.ts"], ["R3"]),
-        criterion("R5", "Verify coverage, dimensional compatibility and query behavior before activating the new index.", ["test/index.test.ts"], ["R4"]),
+        criterion("R5", "Verify coverage, dimensional compatibility and query behavior before activating the new index.", ["test/index.test.ts"], ["R4"], "validate"),
         criterion("R6", "Atomically switch the index pointer only after verification.", ["src/switch.ts"], ["R5"]),
         criterion("R7", "Test reverting the pointer to the preserved compatible old model/index pair.", ["test/rollback.test.ts"], ["R6"]),
       ], decision: { id: "D1", question: "Choose how to store embeddings from the new dimension.", options: { mixed: "Write new vectors into the active index and pad old vectors", separate: "Build a separately identified index and atomically switch after validation" }, accepted: "separate", rationale: "Different embedding spaces cannot be mixed by padding dimensions." } },
@@ -79,7 +81,7 @@ export function planningCorpus(): PlanningCase[] {
 }
 
 export function planningPrompt(item: PlanningCase): string {
-  return `${item.objective}\n\nPlanning only: do not implement, run shell commands, verify implementation or claim completion. Build the durable plan using work_refine/work_plan and record D1 through work_decision. Use three phases named design, build and validate, with phase dependencies in that order. Preserve these criterion IDs and descriptions verbatim (R1 is already the whole request):\n${JSON.stringify(item.criteria.map(({ id, description }) => ({ id, description })))}\n\nRecord these constraints and non-goals verbatim:\n${JSON.stringify({ constraints: item.constraints, nonGoals: item.nonGoals })}\n\nUse one narrowly scoped task for each R2-R7 criterion, with exactly its listed future write paths. Add one final R1 integration task with no write paths, dependent on every criterion task. Architecture R2 belongs to design, implementation R3-R5 to build, validation/documentation R6-R7 to validate. Derive dependency ordering from the criterion descriptions; explicit task dependencies may supplement phases.\n${JSON.stringify(Object.fromEntries(item.criteria.map(c => [c.id, c.paths])))}\n\nDecision ${item.decision.id}: ${item.decision.question}\nOptions: ${JSON.stringify(item.decision.options)}\nSet the decision title to the chosen option ID, give a concrete rationale and list the other option IDs as alternatives. Do not invent additional requirements, APIs, files or work. End with a brief planning summary, leaving the implementation goal open.`;
+  return `${item.objective}\n\nPlanning only: do not implement, run shell commands, verify implementation or claim completion. Build the durable plan using work_refine/work_plan and record D1 through work_decision. Use three phases named design, build and validate, with phase dependencies in that order. Preserve these criterion IDs and descriptions verbatim (R1 is already the whole request):\n${JSON.stringify(item.criteria.map(({ id, description }) => ({ id, description })))}\n\nRecord these constraints and non-goals verbatim:\n${JSON.stringify({ constraints: item.constraints, nonGoals: item.nonGoals })}\n\nUse one narrowly scoped task for each R2-R7 criterion, with exactly its listed future write paths. Add one final R1 integration task with no write paths, dependent on every criterion task. Use each criterion's listed phase. Derive dependency ordering from the explicit prerequisites in its description; task dependencies supplement phase dependencies. Requirements in the same phase still need their specified ordering.\n${JSON.stringify(Object.fromEntries(item.criteria.map(c => [c.id, { paths: c.paths, phase: c.phase }])))}\n\nDecision ${item.decision.id}: ${item.decision.question}\nOptions: ${JSON.stringify(item.decision.options)}\nSet the decision title to the chosen option ID, give a concrete rationale and list the other option IDs as alternatives. Do not invent additional requirements, APIs, files or work. End with a brief planning summary, leaving the implementation goal open.`;
 }
 
 export interface PlanningGrade {
@@ -121,8 +123,7 @@ export function gradePlanningState(item: PlanningCase, state: WorkState): Planni
     if (assigned.length !== 1 || assigned[0].requirementIds.length !== 1) { fail(`Ambiguous criterion ownership: ${c.id}`); continue; }
     const task = assigned[0];
     if (JSON.stringify([...task.allowedPaths].sort()) !== JSON.stringify([...c.paths].sort())) { metrics.scopeErrors++; fail(`Scope mismatch: ${c.id}`); }
-    const phase = c.id === "R2" ? "design" : ["R3", "R4", "R5"].includes(c.id) ? "build" : "validate";
-    if (task.phaseId !== phase) { metrics.orderingErrors++; fail(`Wrong phase: ${c.id}`); }
+    if (task.phaseId !== c.phase) { metrics.orderingErrors++; fail(`Wrong phase: ${c.id}`); }
     for (const predecessor of c.after) if (owner(predecessor).length !== 1 || !reaches(task.id, owner(predecessor)[0].id)) { metrics.orderingErrors++; fail(`Missing prerequisite ${predecessor} before ${c.id}`); }
   }
   const final = owner("R1");
@@ -147,12 +148,12 @@ export function referencePlanningState(item: PlanningCase): WorkState {
   const state = createWorkState(planningPrompt(item));
   state.requirements.push(...item.criteria.map(c => ({ id: c.id, description: c.description, required: true })));
   state.constraints = [...item.constraints]; state.nonGoals = [...item.nonGoals];
-  const tasks = item.criteria.map(c => ({ id: `task-${c.id}`, title: c.description, requirementIds: [c.id], dependsOn: c.after.map(id => `task-${id}`), allowedPaths: [...c.paths], phaseId: c.id === "R2" ? "design" : ["R3", "R4", "R5"].includes(c.id) ? "build" : "validate" }));
+  const tasks = item.criteria.map(c => ({ id: `task-${c.id}`, title: c.description, requirementIds: [c.id], dependsOn: c.after.map(id => `task-${id}`), allowedPaths: [...c.paths], phaseId: c.phase }));
   tasks.push({ id: "integrate", title: "Verify complete delivery", requirementIds: ["R1"], dependsOn: tasks.map(t => t.id), allowedPaths: [], phaseId: "validate" });
   replaceWorkPlan(state, tasks, [
     { id: "design", title: "Architecture", dependsOn: [], exitRequirementIds: ["R2"] },
-    { id: "build", title: "Implementation", dependsOn: ["design"], exitRequirementIds: ["R3", "R4", "R5"] },
-    { id: "validate", title: "Validation", dependsOn: ["build"], exitRequirementIds: ["R6", "R7", "R1"] },
+    { id: "build", title: "Implementation", dependsOn: ["design"], exitRequirementIds: item.criteria.filter(c => c.phase === "build").map(c => c.id) },
+    { id: "validate", title: "Validation", dependsOn: ["build"], exitRequirementIds: [...item.criteria.filter(c => c.phase === "validate").map(c => c.id), "R1"] },
   ]);
   state.decisions.push({ id: item.decision.id, title: item.decision.accepted, rationale: item.decision.rationale, alternatives: Object.keys(item.decision.options).filter(id => id !== item.decision.accepted), paths: [] });
   return state;

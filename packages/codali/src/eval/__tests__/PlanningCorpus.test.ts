@@ -44,7 +44,8 @@ test("phase prerequisites may express ordering without duplicate explicit task e
   for (const item of planningCorpus()) {
     const state = referencePlanningState(item);
     state.tasks.find(t => t.id === "task-R3")!.dependsOn = [];
-    state.tasks.find(t => t.id === "task-R6")!.dependsOn = [];
+    const firstValidation = item.criteria.find(c => c.phase === "validate")!;
+    state.tasks.find(t => t.id === `task-${firstValidation.id}`)!.dependsOn = [];
     assert.equal(gradePlanningState(item, state).passed, true, item.id);
   }
 });

@@ -18,6 +18,16 @@ test("unknown external read hints and generation require approval", async () => 
 test("workspace execution fails closed without an isolation backend", async () => {
   await assert.rejects(new PermissionGate("workspace").authorize(tool("run_shell"), { command: "node" }), /isolated shell/);
 });
+test("planning retains plan controls but refuses execution work tools despite readOnly hints", async () => {
+  const gate = new PermissionGate("plan");
+  const execution = ["work_claim", "work_verify", "work_complete"];
+  for (const name of execution) await assert.rejects(gate.authorize(tool(name, true), {}), /Planning mode/);
+  for (const name of ["work_status", "work_refine", "work_plan", "work_checkpoint", "work_decision"]) await gate.authorize(tool(name, true), {});
+  gate.setProfile("workspace");
+  for (const name of execution) await gate.authorize(tool(name, true), {});
+  gate.setProfile("plan");
+  for (const name of execution) await assert.rejects(gate.authorize(tool(name, true), {}), /Planning mode/);
+});
 test("a permission change while awaiting approval is rechecked", async () => {
   let finish!: (v: { allow: boolean }) => void;
   const gate = new PermissionGate("ask", () => new Promise(resolve => { finish = resolve; }));

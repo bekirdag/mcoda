@@ -333,6 +333,36 @@ test("compact planning acknowledgements and receipt lookup preserve the full can
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
+test("planning excludes execution lifecycle tools and rejects forged calls before claims or reviewer inference", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-planning-mode-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-planning-mode-state-"));
+  const events: SessionEvent[] = []; let step = 0;
+  const forbidden = ["work_claim", "work_verify", "work_complete"];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.ok(request.tools?.length, "planning must not invoke the execution reviewer");
+    assert.ok(request.tools!.every(tool => !forbidden.includes(tool.name)));
+    const system = request.messages.find(message => message.role === "system")!.content;
+    assert.match(system, /planning-only mode/); assert.ok(!system.includes("Complete every required task"));
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1" });
+      case 1: return call("work_verify", { taskId: "T1", attemptId: "forged", invocationIds: [], summary: "Claim completion" });
+      case 2: return call("work_complete", {});
+      case 3: return call("work_plan", { tasks: [{ id: "T1", title: "Future implementation", requirementIds: ["R1"], dependsOn: [], allowedPaths: ["src"] }] });
+      default: return reply("The future implementation plan is recorded.");
+    }
+  } };
+  try {
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "plan", onEvent: event => { events.push(event); } });
+    assert.equal((await controller.run("Plan the implementation without executing it.")).completed, false);
+    assert.equal(controller.state!.tasks[0].attemptId, undefined); assert.deepEqual(controller.state!.evidence, []);
+    assert.equal(controller.state!.status, "active");
+    const receipts = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string; output?: string });
+    for (const name of forbidden) assert.ok(receipts.some(receipt => receipt.tool === name && receipt.status === "failed" && /Planning mode/.test(receipt.output ?? "")));
+    assert.ok(receipts.some(receipt => receipt.tool === "work_plan" && receipt.status === "success"));
+    assert.equal(step, 5);
+  } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
+});
+
 const projectAuthorityFixture = (loseFirstHandoffResponse = false) => {
   let snapshot: ProjectTaskSnapshot = { schemaVersion: 1, authority: "mcoda", taskId: "project-task", key: "PROJ-1", projectId: "project", title: "Answer arithmetic", description: "Explain why two plus two is four.", status: "not_started", revision: "original", dependencies: [] };
   let acceptedOperation: string | undefined; let submissions = 0; let claims = 0;
