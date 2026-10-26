@@ -90,6 +90,73 @@ test("module-local shell receipts retain cwd and verify the actual workspace inp
   assert.equal(reviewed, true);
 });
 
+for (const scenario of ["fresh", "stale", "unobserved-change", "old-attempt", "other-task", "failed-latest", "non-check", "invented-explicit", "review-rejected"] as const) {
+  test(`automatic verification receipts: ${scenario}`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-auto-receipt-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-auto-receipt-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    await fs.writeFile(path.join(root, "value.mjs"), "export const value = 1;\n");
+    await fs.writeFile(path.join(root, "check.test.mjs"), "import {value} from './value.mjs'; import assert from 'node:assert/strict'; assert.equal(value,2);\n");
+    await fs.writeFile(path.join(root, "fail.test.mjs"), "throw new Error('intentional failed check');\n");
+    await fs.writeFile(path.join(root, "unobserved.txt"), "original\n");
+    let taskId = "T1"; let attemptId = ""; let reviews = 0; let previous = ""; let checkRef = "";
+    const actions: Array<() => ProviderResponse | Promise<ProviderResponse>> = [
+      () => call("work_claim", { taskId, allowedPaths: ["value.mjs"] }),
+      () => { attemptId = JSON.parse(previous).attemptId; return call("read_file", { path: "value.mjs" }); },
+      () => call("write_file", { path: "value.mjs", content: "export const value = 2;\n" }),
+      () => call("run_shell", scenario === "non-check" ? { command: "node", args: ["--version"] } : { command: "node", args: ["--test", "check.test.mjs"] }),
+      () => { checkRef = previous.match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("diff_summary", {}); },
+    ];
+    if (scenario === "old-attempt" || scenario === "other-task") {
+      actions.push(() => call("work_release", { taskId, attemptId, note: "Retain implementation for a new attempt." }));
+      if (scenario === "other-task") actions.push(() => {
+        taskId = "T2";
+        return call("work_plan", { tasks: [{ id: taskId, title: "Validate retained implementation", requirementIds: ["R1"], dependsOn: [], allowedPaths: ["value.mjs"] }], phases: [], reason: "Transfer the retained work to its final validation task." });
+      });
+      actions.push(() => call("work_claim", { taskId }), () => { attemptId = JSON.parse(previous).attemptId; return call("diff_summary", {}); });
+    }
+    if (scenario === "failed-latest") actions.push(() => call("run_shell", { command: "node", args: ["--test", "fail.test.mjs"] }));
+    actions.push(async () => {
+      if (scenario === "stale") await fs.writeFile(path.join(root, "value.mjs"), "export const value = 3;\n");
+      if (scenario === "unobserved-change") await fs.writeFile(path.join(root, "unobserved.txt"), "concurrent user edit\n");
+      return call("work_verify", { taskId, attemptId, summary: "Value is two and its existing check passes.", ...(scenario === "invented-explicit" ? { invocationIds: ["receipt:deadbeef"] } : {}) });
+    });
+    actions.push(() => {
+      if (scenario === "fresh" || scenario === "review-rejected") {
+        const result = JSON.parse(previous);
+        assert.equal(result.verified, scenario === "fresh"); assert.deepEqual(result.receiptRefs, [checkRef]);
+        assert.equal(reviews, 1);
+      } else {
+        const expected = scenario === "stale" ? /Validation receipt is stale/
+          : scenario === "unobserved-change" ? /Validation input changed since the check/
+          : scenario === "failed-latest" ? /latest check.*did not succeed/
+          : scenario === "invented-explicit" ? /actual successful invocation receipts/
+          : /Changed code needs a recognized successful/;
+        assert.match(previous, expected); assert.equal(reviews, 0);
+      }
+      return scenario === "fresh" ? call("work_complete", {}) : call("work_block", { taskId, reason: "The verification evidence or independent review needs repair." });
+    });
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      if (request.responseFormat?.type === "json" && !request.tools?.length) {
+        reviews++; const review = JSON.parse(request.messages.at(-1)!.content);
+        assert.equal(review.receipts.length, 1); assert.equal(review.receipts[0].tool, "run_shell");
+        assert.deepEqual(review.receipts[0].args, { command: "node", args: ["--test", "check.test.mjs"] });
+        assert.match(review.source["value.mjs"], /value = 2/);
+        return reply(scenario === "review-rejected" ? '{"passed":false,"findings":["An assigned behavior remains unproven."]}' : '{"passed":true,"findings":[]}');
+      }
+      previous = [...request.messages].reverse().find(message => message.role === "tool")?.content ?? "";
+      const schema = request.tools?.find(tool => tool.name === "work_verify");
+      assert.ok(schema?.inputSchema); assert.ok(!(schema.inputSchema.required as string[]).includes("invocationIds"));
+      return actions.shift()?.() ?? reply("Verification remains blocked; no completion claim.");
+    } };
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+    if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+    assert.equal((await controller.run("Change value to two and run its existing check. Preserve unrelated files.")).completed, scenario === "fresh");
+    assert.equal(actions.length, 0);
+    if (scenario !== "fresh") assert.equal(controller.state?.evidence.length, 0);
+  });
+}
+
 test("model receipts separate helper and review usage and link each completed call to its intent", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-state-"));
