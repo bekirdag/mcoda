@@ -325,10 +325,27 @@ export class SessionController {
 
   private async completeGoal(): Promise<{ completed: true }> {
     const { hashes, uncertain } = await this.completionInputs();
-    await this.update(state => { refreshStaleEvidence(state, hashes); });
+    const previousProofs = this.state!.tasks.map(task => ({ taskId: task.id,
+      changedInputs: [...new Set(this.state!.evidence.filter(evidence => task.evidenceIds.includes(evidence.id))
+        .flatMap(evidence => Object.entries(evidence.inputHashes).filter(([file, value]) => hashes[file] !== value).map(([file]) => file)))],
+    }));
+    let reopened: string[] = [];
+    await this.update(state => { reopened = refreshStaleEvidence(state, hashes); });
+    if (reopened.length) {
+      const invalidated = previousProofs.filter(proof => reopened.includes(proof.taskId));
+      await this.emit("verification_invalidated", { tasks: invalidated, reason: "Completion inputs changed after earlier verification" });
+      throw new Error(`Required task work remains: Unverified/stale evidence reopened tasks ${reopened.slice(0, 20).join(", ")}. Changed inputs: ${[...new Set(invalidated.flatMap(proof => proof.changedInputs))].slice(0, 12).join(", ") || "task prerequisites"}. Task contracts and prior check receipts are retained. Claim each ready task, rerun its relevant checks against the final tree, and call work_verify with fresh receiptRef handles. Revalidate the existing implementation first; edit it only for a demonstrated defect. Complete remaining steering work before the final integration check.`);
+    }
     const completionCheck = structuredClone(this.state!);
     if (completionCheck.status === "completed") completionCheck.status = "active";
-    completeWorkGoal(completionCheck, hashes, uncertain);
+    try { completeWorkGoal(completionCheck, hashes, uncertain); }
+    catch (error) {
+      if (error instanceof Error && error.message === "Required task work remains") {
+        const remaining = completionCheck.tasks.filter(task => !["verified", "cancelled", "superseded"].includes(task.status));
+        throw new Error(`${error.message}: ${remaining.slice(0, 20).map(task => `${task.id} (${task.status})`).join(", ")}. Use work_status for the retained contracts and work_claim for a ready task; keep already verified work.`);
+      }
+      throw error;
+    }
     if (this.state?.status === "completed") return { completed: true };
     if (this.state?.projectTask?.submittedOperationId) {
       throw new Error("Submitted project evidence changed; inspect the existing review handoff before continuing");
@@ -919,7 +936,7 @@ export class SessionController {
       tool("work_checkpoint", "Save a concise handoff including blockers and next action.", { note: str }, ["note"], async args => { await this.checkpoint(args.note); return { saved: true }; }),
       tool("work_decision", "Record an architecture decision and why it satisfies the task constraints.", { id: str, title: str, rationale: str, alternatives: strings, paths: strings, supersedes: str }, ["id", "title", "rationale", "alternatives", "paths"], async args => { await this.update(state => recordDecision(state, args)); return { saved: true }; }),
       tool("work_block", "Record a concrete blocker that prevents the goal from progressing. Include the needed user action or external change.", { taskId: str, reason: str }, ["taskId", "reason"], async args => { if (!args.reason.trim()) throw new Error("A concrete blocker is required"); await this.update(state => { const task = state.tasks.find(t => t.id === args.taskId); if (!task) throw new Error("Unknown task"); task.status = "blocked"; task.blocker = args.reason; state.status = "blocked"; }); return { blocked: true }; }),
-      tool("work_verify", "Request separate review using actual successful receiptRef handles or full invocation IDs. Choose the relevant current validation receipt. Returns findings; cannot fabricate evidence.", { taskId: str, attemptId: str, invocationIds: strings, summary: str }, ["taskId", "attemptId", "invocationIds", "summary"], async args => this.verify(args)),
+      tool("work_verify", "Request separate review using at most ten distinct successful receiptRef handles or full invocation IDs. Prefer receiptRef from the relevant current check. Returns findings; cannot fabricate evidence.", { taskId: str, attemptId: str, invocationIds: { ...strings, maxItems: 10, uniqueItems: true }, summary: str }, ["taskId", "attemptId", "invocationIds", "summary"], async args => this.verify(args)),
       tool("work_complete", "Complete the main goal only after all required work has fresh verification evidence. Attached project tasks are handed to mcoda review.", {}, [], async () => this.completeGoal()),
     ];
   }

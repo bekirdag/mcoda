@@ -777,6 +777,51 @@ test("repeated confident answers leave the goal open with a durable checkpoint",
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
+test("stale completion explains changed inputs and revalidates the same task without replacing its contract", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-stale-guidance-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-stale-guidance-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const before = "export const expired = (entry, now) => now > entry.expiresAt;\n";
+  const after = "export const expired = (entry, now) => now >= entry.expiresAt;\n";
+  await fs.writeFile(path.join(root, "cache.mjs"), before);
+  let step = 0; let receiptRef = ""; let changed = false; let reviewCount = 0; let controller!: SessionController;
+  const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      const context = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(context.source["cache.mjs"], reviewCount++ ? after : before);
+      return reply('{"passed":true,"findings":[]}');
+    }
+    step++;
+    if (step === 5) {
+      const previous = request.messages.filter(message => message.role === "tool").at(-1)!.content;
+      assert.match(previous, /Unverified\/stale evidence reopened tasks T1/);
+      assert.match(previous, /Changed inputs: cache\.mjs/);
+      assert.match(previous, /contracts and prior check receipts are retained/);
+      assert.equal(controller.state!.tasks[0].status, "ready");
+    }
+    if ([1, 5].includes(step)) return call("work_claim", { taskId: "T1" });
+    if ([2, 6].includes(step)) return call("read_file", { path: "cache.mjs" });
+    if ([3, 7].includes(step)) return call("work_verify", { taskId: "T1", attemptId: controller.state!.tasks[0].attemptId,
+      invocationIds: [receiptRef], summary: reviewCount ? "Expiry includes the boundary after the concurrent update." : "Expiry initially excludes the boundary." });
+    if ([4, 8].includes(step)) return call("work_complete", {});
+    throw new Error("Unexpected task recreation or model call");
+  } };
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+    onEvent: event => {
+      events.push(event); const receipt = event.data.receipt as { id: string; tool: string; status: string } | undefined;
+      if (event.type === "tool_receipt" && receipt?.tool === "read_file") receiptRef = receipt.id;
+      if (!changed && event.type === "tool_receipt" && receipt?.tool === "work_verify" && receipt.status === "success") {
+        changed = true; writeFileSync(path.join(root, "cache.mjs"), after);
+      }
+    } });
+  const result = await controller.run("Investigate cache expiry without editing files.");
+  assert.equal(result.completed, true); assert.equal(reviewCount, 2); assert.equal(step, 8);
+  assert.equal(controller.state!.tasks.length, 1); assert.equal(controller.state!.planRevision, 1);
+  assert.equal(controller.state!.goalRevision, 1); assert.equal(await fs.readFile(path.join(root, "cache.mjs"), "utf8"), after);
+  assert.deepEqual(events.find(event => event.type === "verification_invalidated")?.data.tasks, [{ taskId: "T1", changedInputs: ["cache.mjs"] }]);
+});
+
 for (const conflict of [false, true]) test(`final evidence delivery checks unchanged source and fences late edits: conflict=${conflict}`, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evidence-delivery-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evidence-delivery-state-"));
