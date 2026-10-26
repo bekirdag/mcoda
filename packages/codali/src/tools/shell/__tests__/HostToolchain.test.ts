@@ -130,6 +130,15 @@ test("rustup proxies select only the installed host toolchain without exposing C
   const selected = discoverHostToolchain(workspace, proxies).filter(runtime => ["rustc", "cargo", "rustdoc"].includes(runtime.name));
   assert.equal(selected.length, 3);
   for (const mount of extraRuntimeMounts(selected)) assert.ok(mount.readOnlyRoot.startsWith(`${await fs.realpath(toolchain)}/`));
+  const packaged = path.join(fixture, "packaged");
+  await fs.mkdir(path.join(packaged, "bin"), { recursive: true });
+  await fs.mkdir(path.join(packaged, "libexec", "bin"), { recursive: true });
+  await fs.copyFile(path.join(proxies, "rustup"), path.join(packaged, "libexec", "bin", "rustup"));
+  for (const name of ["rustc", "cargo", "rustdoc"]) {
+    await fs.writeFile(path.join(packaged, "bin", name), "#!/bin/sh\nexit 99 # must not execute this package wrapper\n", { mode: 0o755 });
+    await fs.link(path.join(packaged, "libexec", "bin", "rustup"), path.join(packaged, "libexec", "bin", name));
+  }
+  assert.equal(discoverHostToolchain(workspace, path.join(packaged, "bin")).filter(runtime => ["rustc", "cargo", "rustdoc"].includes(runtime.name)).length, 3);
   process.env.RUSTUP_TOOLCHAIN = "../../workspace";
   assert.equal(discoverHostToolchain(workspace, proxies).some(runtime => runtime.name === "cargo"), false);
 });

@@ -37,6 +37,23 @@ const resolveRustProxy = (name: string, executable: string, home: string): strin
       proxy = digest(executable) === digest(path.join(path.dirname(executable), "rustup"));
     }
   }
+  if (!proxy && statSync(executable).size <= 16384 && !executableBinary(executable)) {
+    // Package managers may wrap rustup in a small shell script. Do not execute
+    // it: identify the adjacent native libexec proxies, then select host state.
+    const packageRoot = path.dirname(path.dirname(executable));
+    const nativeProxy = path.join(packageRoot, "libexec", "bin", name);
+    const nativeRustup = path.join(packageRoot, "libexec", "bin", "rustup");
+    if (existsSync(nativeProxy) && existsSync(nativeRustup)
+      && within(realpathSync(nativeProxy), packageRoot) && within(realpathSync(nativeRustup), packageRoot)
+      && executableBinary(nativeRustup)) {
+      const target = statSync(nativeProxy); const manager = statSync(nativeRustup);
+      proxy = target.dev === manager.dev && target.ino === manager.ino;
+      if (!proxy && target.size === manager.size && target.size <= 64 * 1024 * 1024) {
+        const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
+        proxy = digest(nativeProxy) === digest(nativeRustup);
+      }
+    }
+  }
   if (!proxy) return executable;
   const rustup = process.env.RUSTUP_HOME ?? path.join(home, ".rustup");
   if (!path.isAbsolute(rustup)) throw new Error("Rustup home must be absolute");
