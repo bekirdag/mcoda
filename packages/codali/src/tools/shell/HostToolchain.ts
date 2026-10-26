@@ -24,12 +24,31 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
     const candidates = name === "node" ? [process.execPath] : searchPath.split(path.delimiter).filter(Boolean).map(directory => path.resolve(directory, name));
     for (const candidate of candidates) {
       try {
-        const executable = realpathSync(candidate);
+        let executable = realpathSync(candidate);
         if (within(candidate, workspace) || within(executable, workspace)) continue;
         accessSync(executable, constants.X_OK);
         if (!statSync(executable).isFile()) continue;
         if (systemPath(executable)) { result.push({ name, executable, readOnlyRoot: executable, directory: false }); break; }
         if (executableBinary(executable)) { result.push({ name, executable, readOnlyRoot: executable, directory: false }); break; }
+        // Package managers also install .bin shell shims. Never execute the shim:
+        // select the known adjacent package's declared JS entry point, which is
+        // validated by the same package-root checks as a normal symlink below.
+        if (packages[name] && path.basename(path.dirname(candidate)) === ".bin" && !/\.[cm]?js$/.test(executable)) {
+          for (const packageName of packages[name]) {
+            try {
+              const packageRoot = realpathSync(path.resolve(path.dirname(candidate), "..", packageName));
+              if (within(packageRoot, workspace) || within(workspace, packageRoot) || packageRoot === home) continue;
+              const manifest = path.join(packageRoot, "package.json");
+              if (statSync(manifest).size > 65536) continue;
+              const metadata = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; bin?: string | Record<string, string> };
+              const bin = typeof metadata.bin === "string" ? metadata.bin : metadata.bin?.[name];
+              if (metadata.name !== packageName || !bin) continue;
+              const target = realpathSync(path.resolve(packageRoot, bin));
+              if (!within(target, packageRoot) || !/\.[cm]?js$/.test(target) || !statSync(target).isFile()) continue;
+              accessSync(target, constants.X_OK); executable = target; break;
+            } catch { /* Another allowed package layout may exist. */ }
+          }
+        }
         if (!packages[name] || !/\.[cm]?js$/.test(executable)) continue;
         let directory = path.dirname(executable); let matched: HostRuntime | undefined;
         for (let depth = 0; depth < 6 && directory !== path.parse(directory).root && directory !== home; depth++, directory = path.dirname(directory)) {

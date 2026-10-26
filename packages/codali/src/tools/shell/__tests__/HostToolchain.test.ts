@@ -26,7 +26,7 @@ test("host toolchain discovery rejects workspace executables and mismatched pack
 });
 
 test("isolated user-installed tools cannot read neighboring files, inherit secrets or modify their installation", async t => {
-  const status = executorStatus(); if (status.backend !== "bubblewrap" || !status.available) { t.skip("Linux bubblewrap qualification"); return; }
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-workspace-"));
   const installation = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-installation-"));
   const tool = path.join(installation, "pnpm"); const oldPath = process.env.PATH; const oldKey = process.env.MCODA_MSWARM_API_KEY;
@@ -51,6 +51,25 @@ else console.log(JSON.stringify({visible:fs.existsSync(process.argv[2]),secret:p
     if (oldKey === undefined) delete process.env.MCODA_MSWARM_API_KEY; else process.env.MCODA_MSWARM_API_KEY = oldKey;
     await fs.rm(root, { recursive: true, force: true }); await fs.rm(installation, { recursive: true, force: true });
   }
+});
+
+test("package-manager shims resolve a validated entry point without executing shell code", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shim-workspace-"));
+  const install = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shim-install-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(install, { recursive: true, force: true }); });
+  const bin = path.join(install, "node_modules", ".bin"); const pkg = path.join(install, "node_modules", "pnpm");
+  await fs.mkdir(bin, { recursive: true }); await fs.mkdir(path.join(pkg, "bin"), { recursive: true });
+  await fs.writeFile(path.join(bin, "pnpm"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  await fs.writeFile(path.join(pkg, "bin", "pnpm.cjs"), "#!/usr/bin/env node\nconsole.log('verified-package');\n", { mode: 0o755 });
+  const manifest = { name: "pnpm", bin: { pnpm: "bin/pnpm.cjs" } };
+  await fs.writeFile(path.join(pkg, "package.json"), JSON.stringify(manifest));
+  const selected = discoverHostToolchain(root, bin).find(runtime => runtime.name === "pnpm");
+  assert.equal(selected?.executable, await fs.realpath(path.join(pkg, "bin", "pnpm.cjs")));
+  assert.equal(selected?.readOnlyRoot, await fs.realpath(pkg));
+  await fs.writeFile(path.join(pkg, "package.json"), JSON.stringify({ ...manifest, bin: { pnpm: "../../.bin/pnpm" } }));
+  assert.equal(discoverHostToolchain(root, bin).some(runtime => runtime.name === "pnpm"), false);
+  await fs.writeFile(path.join(pkg, "package.json"), JSON.stringify(manifest));
+  assert.equal(discoverHostToolchain(install, bin).some(runtime => runtime.name === "pnpm"), false);
 });
 
 test("the installed pnpm runs a workspace Node test inside the isolation boundary", async t => {

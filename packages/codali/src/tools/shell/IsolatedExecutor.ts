@@ -11,11 +11,17 @@ export interface ExecutorStatus { available: boolean; backend: "bubblewrap" | "s
 /** All paths have been canonicalized by the host, before launching the sandbox. */
 export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false): string => {
   const quoted = (value: string) => JSON.stringify(value);
+  const ancestors = new Set<string>();
+  for (const target of [root, scratch, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
+    for (let parent = path.dirname(target); parent !== path.dirname(parent); parent = path.dirname(parent)) ancestors.add(parent);
+  }
   return [
     "(version 1)", "(deny default)", "(allow process*)", "(allow sysctl-read)",
     // dyld opens the root directory when locating its shared cache. This literal
     // permits the directory itself, never a recursive read of the filesystem.
     '(allow file-read* (literal "/"))',
+    // realpath/lstat needs ancestor metadata, not directory contents or sibling files.
+    ...[...ancestors].map(parent => `(allow file-read-metadata (literal ${quoted(parent)}))`),
     '(allow file-read* (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))',
     `(allow file-read* (subpath ${quoted(root)}))`,
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
