@@ -7496,6 +7496,13 @@ describe("self-hosted node runtime", () => {
 
   it("passes OpenAI tool declarations straight through to the local runner", async () => {
     const statePath = tempStatePath();
+    const responseFormat = {
+      type: "json_schema",
+      json_schema: {
+        name: "issue_count", strict: true,
+        schema: { type: "object", properties: { count: { type: "integer" } }, required: ["count"], additionalProperties: false }
+      }
+    };
     const captured: { url?: string; body?: Record<string, unknown> } = {};
     const codaliCalls: MswarmCodaliInvocationInput[] = [];
     const originalFetch = globalThis.fetch;
@@ -7553,7 +7560,8 @@ describe("self-hosted node runtime", () => {
           ],
           tool_choice: "auto",
           reasoning_effort: "high",
-          reasoning_budget_tokens: 1024
+          reasoning_budget_tokens: 1024,
+          response_format: responseFormat
         }
       });
 
@@ -7566,6 +7574,7 @@ describe("self-hosted node runtime", () => {
       expect(captured.body?.tool_choice).toBe("auto");
       expect(captured.body?.reasoning_effort).toBe("high");
       expect(captured.body?.reasoning_budget_tokens).toBe(1024);
+      assert.deepEqual(captured.body?.response_format, responseFormat);
       const choices = result.openai_response?.choices as Array<{
         message?: { tool_calls?: Array<{ function?: { name?: string } }> };
       }>;

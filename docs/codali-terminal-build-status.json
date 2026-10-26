@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Native reasoning transport/config fixes passed 1679 Codali/node tests (2 platform skips), 78 backend tests and backend TypeScript checking. Strata profile defaults to none; the same known invoice bug was rejected by both hosts with explicit high reasoning and 1024 thinking tokens. These are diagnostic replays; new node/backend deployment and fresh qualification are pending. All four frozen S long journeys ended unsuccessfully on budget before completing the required stages; original evidence is retained.",
+  "currentTask": "Both production nodes now run candidate G (90cf4a4), with guarded drain/restart and successful public mSwarm direct/gateway/staged-job compatibility checks. Isolated native-reasoning qualification passed on both hosts. Backend G images from e6a8d2ba5 pass disposable-MySQL bootstrap/schema/health checks but production proxy deployment remains pending. Frozen U direct-endpoint long journeys are running; tool pass-through response_format regression is fixed (166 node tests passed). Native capability negotiation is being tightened before release.",
   "tasks": [
     {
       "id": "P0.1",
@@ -15,7 +15,8 @@
         "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing.",
         "Fresh isolated node package passed four live Raijin Strata cases (direct, gateway, staged job, unadmitted-model rejection) with loopback route observations. Suku qualification and production activation remain pending.",
         "Suku staged node candidate D passed direct, gateway, staged-job and unadmitted-model rejection with actual loopback Strata observations; both hosts now have isolated candidate qualification. Production activation still pending.",
-        "Both production node services now run isolated candidate E (d4e2683) with registry-pinned Strata profiles. Public mSwarm direct, gateway and staged-job requests on each host asserted node identity, strata-local adapter, profile hash and actual nonzero usage."
+        "Both production node services now run isolated candidate E (d4e2683) with registry-pinned Strata profiles. Public mSwarm direct, gateway and staged-job requests on each host asserted node identity, strata-local adapter, profile hash and actual nonzero usage.",
+        "Candidate G (90cf4a4) passed five native-reasoning node scenarios on both hosts. Both production nodes now use G; public mSwarm direct, gateway and staged-job compatibility checks passed. The old production proxy still drops native settings; public API native qualification remains pending."
       ]
     },
     {
@@ -29,7 +30,8 @@
         "Docdex 64a210c adds side-effect-free runtime-info with native executable identity. 794 library tests and the new native CLI test passed; a stripped native candidate passed managed Codali integration including checksum refusal before embedding calls. Prerelease packaging is in progress.",
         "Docdex isolated release source 32e0629 passed 1042 native tests (3 ignored), 22 release contract tests and 227 npm tests after dependency hardening. v0.2.100-codali.1 release 40273838450 passed preflight; platform artifacts are still building. The existing documented ring advisory exception remains; no zero-advisory claim.",
         "Docdex codali.1 completed native builds and npm pack/smoke, then publication failed because self-hosted gh2.4.0 lacks --verify-tag. be805ef pins checksum-verified gh2.103.2 in the publication job; codali.2 run40282809157 started with prior tags preserved.",
-        "Docdex v0.2.100-codali.2 is published on GitHub and npm next; npm latest remains 0.2.99. Release 40282809157 passed after delayed registry visibility retry. Native archive and executable hashes for Linux x64 and macOS x64/arm64 are pinned in packages/codali/config/docdex-runtime.json. Raijin private installation and clean package installation passed."
+        "Docdex v0.2.100-codali.2 is published on GitHub and npm next; npm latest remains 0.2.99. Release 40282809157 passed after delayed registry visibility retry. Native archive and executable hashes for Linux x64 and macOS x64/arm64 are pinned in packages/codali/config/docdex-runtime.json. Raijin private installation and clean package installation passed.",
+        "Published Docdex 0.2.100-codali.2 private install/cache reuse passed on Suku. Current 90cf4a4 CI40300790887 and six-job platform qualification40300791120 passed with the pinned native downloads."
       ]
     },
     {
@@ -468,7 +470,8 @@
       "status": "in_progress",
       "evidence": [
         "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified.",
-        "Frozen S long-workflows-v1 baseline completed all four scenario attempts: none passed; budget exhaustion prevented completion of four-process/compaction criteria. Raijin status-context refusal/read loops and Suku repeated failing tests were observed. Later-stage steering/recovery checks not reached are unqualified, not evidence that an applied steering record was lost. 3aa685b status/stall fixes passed CI40296909284 and platform40296909315; corrected live journeys pending."
+        "Frozen S long-workflows-v1 baseline completed all four scenario attempts: none passed; budget exhaustion prevented completion of four-process/compaction criteria. Raijin status-context refusal/read loops and Suku repeated failing tests were observed. Later-stage steering/recovery checks not reached are unqualified, not evidence that an applied steering record was lost. 3aa685b status/stall fixes passed CI40296909284 and platform40296909315; corrected live journeys pending.",
+        "Frozen U from90cf4a4 started direct-endpoint diagnostic long journeys on both hosts at09:55UTC2026-10-26 with explicit native high/1024 reasoning and published Docdex. Both initial journeys passed planning and verified-task restart stages and are running steering/continued execution. These reuse known contracts and bypass mSwarm; they do not qualify API native transport or fresh held-out quality."
       ]
     },
     {
@@ -483,7 +486,8 @@
       "status": "in_progress",
       "evidence": [
         "Graceful node-drain implementation closes admission, waits for late relay claims, direct/queued jobs and result uploads, and preserves admission closure on timeout. Runtime regressions pass; expanded queued-job/full suite in progress. Old deployed nodes need a bootstrap drain before upgrade.",
-        "Node E drain keeps accepted work, relay claims and result delivery alive, gates new work and supports SIGUSR2 drain without exit; full mSwarm suite165 passed. Bootstrap Raijin upgrade interrupted one BDYA 4B helper invocation (shi_acf5c02072d54e6eb64455714655a809) because old pinned gateway routes ignored drain and the activation guard did not stop on active work. It was honestly reconciled as failed/node_restart_interrupted, never replayed. Gateway admission fixes pass 130 related tests (140 combined backend tests) and typecheck but are not deployed; future upgrades require verified local drain plus an active-work guard."
+        "Node E drain keeps accepted work, relay claims and result delivery alive, gates new work and supports SIGUSR2 drain without exit; full mSwarm suite165 passed. Bootstrap Raijin upgrade interrupted one BDYA 4B helper invocation (shi_acf5c02072d54e6eb64455714655a809) because old pinned gateway routes ignored drain and the activation guard did not stop on active work. It was honestly reconciled as failed/node_restart_interrupted, never replayed. Gateway admission fixes pass 130 related tests (140 combined backend tests) and typecheck but are not deployed; future upgrades require verified local drain plus an active-work guard.",
+        "G rollout confirmed SIGUSR2 drain completion for each exact process, immutable candidate hashes, and a fresh canonical invocation query before restart. Leased/started work blocks activation; gateway-owned queued work with no start may survive a node-only replacement. Observed queued Raijin invocation shi_031ced88aa764120b966efd2e56cdb1d completed successfully after replacement. No backend restart was performed."
       ]
     },
     {
@@ -505,7 +509,8 @@
       "status": "in_progress",
       "evidence": [
         "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published.",
-        "Publisher now explicitly maps prerelease to next and stable to latest, validates one release version before registry work, publishes checked tarballs and verifies existing registry integrity. Codali publication refuses missing Docdex platform pins. Seventeen publisher/packer tests pass; the runtime manifest stays empty until published artifacts are verified."
+        "Publisher now explicitly maps prerelease to next and stable to latest, validates one release version before registry work, publishes checked tarballs and verifies existing registry integrity. Codali publication refuses missing Docdex platform pins. Seventeen publisher/packer tests pass; the runtime manifest stays empty until published artifacts are verified.",
+        "Complete-source backend G images from e6a8d2ba5 passed native schema, fresh disposable MySQL bootstrap and health checks. Gateway image0c3909ab5975c76f2ee2610849be245532d81c6bf7a551c6ced84556a8d8635f; proxy1e7a89fb2bb298a1bc3649a107c6943b7100ef3eb82a6b094c8b10306aa388da. Production data was not used; rollout/quiescence and public native-reasoning tests remain open."
       ]
     },
     {

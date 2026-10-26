@@ -7074,6 +7074,7 @@ export class SelfHostedNodeRuntime {
     if (job.openai_request.top_p !== undefined) body.top_p = job.openai_request.top_p;
     if (job.openai_request.max_tokens !== undefined) body.max_tokens = job.openai_request.max_tokens;
     if (job.openai_request.stop !== undefined) body.stop = job.openai_request.stop;
+    if (job.openai_request.response_format !== undefined) body.response_format = job.openai_request.response_format;
     Object.assign(body, nativeReasoningRequest(job.openai_request));
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
