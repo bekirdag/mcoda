@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Native reasoning now requires an authenticated proxy/node transport capability before inference. Broad client/node suite passed1687 tests with2 platform skips; follow-up terminal preflight reservation/refund and resume checks passed44 tests. Backend capability discovery/rejection tests passed80 and TypeScript checking passed. Production nodes remainG; capability-enabled node/backend candidates and deployment are next. Frozen U Suku service-adapters failed honestly after4 unfinished responses (including unrecognized textual edit_file markup); remaining direct diagnostic journeys continue.",
+  "currentTask": "Task-scoped review and actual-progress counter fixes passed37 focused tests and the full client/node suite (1694 passed,2 platform skips). Preserve U long diagnostic results; freeze the corrected client for replay and prepare the capability-enabled node candidate. H backend images are privately qualified but production rollout remains pending.",
   "tasks": [
     {
       "id": "P0.1",
@@ -203,7 +203,8 @@
         "packages/codali/src/runtime/__tests__/SessionController.test.ts",
         "packages/codali/src/session/__tests__/WorkState.test.ts",
         "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification.",
-        "CompletionReport uses summaries from accepted receipts attached to currently verified tasks. SessionController skips unreviewed final model generation, rechecks file hashes before final delivery, and makes duplicate completed project submission idempotent. Full suite: 1494 passed, 0 failed, 2 platform skips. Semantic review false acceptance remains an independent live qualification blocker."
+        "CompletionReport uses summaries from accepted receipts attached to currently verified tasks. SessionController skips unreviewed final model generation, rechecks file hashes before final delivery, and makes duplicate completed project submission idempotent. Full suite: 1494 passed, 0 failed, 2 platform skips. Semantic review false acceptance remains an independent live qualification blocker.",
+        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open."
       ]
     },
     {
@@ -244,7 +245,9 @@
       "id": "P3.6",
       "description": "Add the repository baseline/diff ownership ledger, task path/goal-version preconditions and scoped scratch cleanup. Wire required architecture/public-contract checks and trusted verification receipts into result acceptance. A helper, shell command or generated document cannot mutate authoritative work state outside its validated API.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open."
+      ]
     },
     {
       "id": "P4.1",
@@ -362,7 +365,9 @@
       "id": "P5.8",
       "description": "Implement scoped worker capsules/results, controller-issued attempt leases/fencing, deduplication, side-effect reconciliation on expiry and bounded progress detection. Preserve one writing task per worktree; use parallel helpers only where independent work and resource limits allow.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open."
+      ]
     },
     {
       "id": "P5.9",
@@ -472,7 +477,8 @@
         "LongWorkflowJourney implements four composed scenarios across four OS processes, five compactions, a verified-task checkpoint, steering and a concurrent user edit. Exact state/hash checks and independent artifact grading are implemented; four focused process/grader/composite tests pass. Live runs and actual multi-hour duration are not yet qualified.",
         "Frozen S long-workflows-v1 baseline completed all four scenario attempts: none passed; budget exhaustion prevented completion of four-process/compaction criteria. Raijin status-context refusal/read loops and Suku repeated failing tests were observed. Later-stage steering/recovery checks not reached are unqualified, not evidence that an applied steering record was lost. 3aa685b status/stall fixes passed CI40296909284 and platform40296909315; corrected live journeys pending.",
         "Frozen U from90cf4a4 started direct-endpoint diagnostic long journeys on both hosts at09:55UTC2026-10-26 with explicit native high/1024 reasoning and published Docdex. Both initial journeys passed planning and verified-task restart stages and are running steering/continued execution. These reuse known contracts and bypass mSwarm; they do not qualify API native transport or fresh held-out quality.",
-        "Frozen U direct Suku service-adapters ended unsuccessfully2026-10-26T10:20:37Z after25.6min and1,998,200 accounted/estimated tokens. Stages1/2 passed; stage3 hit the lifetime unfinished-response counter, with final visible output containing undeclared edit_file markup. Original artifacts retained; no completion or multi-hour qualification claim. Inspection found the counter resets per turn but not after useful intermediate work; a targeted fix/validation is pending."
+        "Frozen U direct Suku service-adapters ended unsuccessfully2026-10-26T10:20:37Z after25.6min and1,998,200 accounted/estimated tokens. Stages1/2 passed; stage3 hit the lifetime unfinished-response counter, with final visible output containing undeclared edit_file markup. Original artifacts retained; no completion or multi-hour qualification claim. Inspection found the counter resets per turn but not after useful intermediate work; a targeted fix/validation is pending.",
+        "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open."
       ]
     },
     {
@@ -1217,16 +1223,39 @@
       "artifact": "/home/wodo/.local/state/codali-review-false-completion-replay.json",
       "heldOutQualification": false,
       "tokens": 2576
+    },
+    {
+      "check": "Task-scoped review, whole-goal integration, unchanged-write progress guard and terminal regressions",
+      "status": "passed",
+      "passed": 37,
+      "artifact": "/home/wodo/.local/state/codali-task-review-tests.log"
+    },
+    {
+      "check": "Native reasoning capability commit CI and platform qualification",
+      "status": "passed",
+      "commit": "5b37cec",
+      "runs": [
+        40307475592,
+        40307475640
+      ]
+    },
+    {
+      "check": "Full Codali and mSwarm suites after task-scoped review and actual-progress counter fixes",
+      "status": "passed",
+      "passed": 1694,
+      "skipped": 2,
+      "artifact": "/home/wodo/.local/state/codali-task-review-full-tests.log"
     }
   ],
-  "updatedAt": "2026-10-26T08:28:00Z",
+  "updatedAt": "2026-10-26T10:48:31.185159+00:00",
   "openFindings": [
-    "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
-    "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",
-    "Both production nodes run isolated candidate E with verified Strata routes. Gateway/proxy F images are now stale relative to backend 37d6a707b; fresh images and a safe backend rollout are required before live embedding and durable-media qualification.",
-    "No embedding agent is registered in the active catalog yet. Metadata transport/setup tests pass but production end-to-end embeddings require registry configuration and deployed backend/node support.",
+    "All accepted phases and release gates are not complete. Broad fresh quality evaluation, four successful multi-hour live journeys, paired helper comparisons, production consumer qualification and the 24-hour canary remain open.",
+    "Docdex v0.2.100-codali.2 is published on GitHub and npm next; stable latest remains0.2.99. Pinned Linux/macOS runtime artifacts and private installations are qualified; global existing daemons remain unchanged.",
+    "Both production nodes run isolated candidate G from90cf4a4; direct/gateway/staged-job compatibility passed on both hosts. H backend images fromed9d0d2 passed private database/health qualification; native capability-enabled node candidate and safe backend deployment are pending. Production proxy still drops native reasoning settings; new clients explicitly refuse unsupported native requests.",
+    "Production end-to-end configured embeddings still require the pending backend rollout and live catalog/space-identity qualification.",
     "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open.",
-    "Held-out E exposed unrecognized npm presentation flags and a model repair stall; failures remain preserved. The next source candidate recognizes npm --silent test, retains the latest failed check across compaction/restart, and fences validation to pre-command inputs. Follow-up model qualification is required; a passing test suite is not evidence that model repair failures are solved.",
-    "Workflow R Raijin invoice-cents falsely completed with PRICE_PATTERN rejecting valid leading-zero digits (0001.2), despite passing 14 model-authored tests and separate review. Source/grader contract unambiguously allows one or more digits. Locale tasks on both hosts exhausted budget with incorrect self-authored tests; implementation passed hidden checks. Preserve original frozen runs and diagnose review/repair behavior before promotion."
+    "Preserve earlier held-out E and workflow R false-completion failures. Deterministic checks and improved review are not evidence of general model reliability; new independent holdouts and human audit remain required.",
+    "Frozen U Raijin data-delivery passed all four independent module graders but exhausted the shared budget before completing the goal. Per-task reviews falsely demanded later DELIVERY.md and blamed sibling changes. Task-scoped review regression fixes are under qualification.",
+    "Frozen U Suku service-adapters failed with incomplete modules after four nonconsecutive premature prose responses, including unrecognized edit_file markup. The controller now resets that guard after actual owned file changes or accepted verification; unchanged writes do not reset it. Live follow-up remains required."
   ]
 }

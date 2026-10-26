@@ -13,6 +13,111 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("task review isolates sibling code, preserves read dependencies, and still rejects incomplete integration", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-scope-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-scope-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "value.mjs"), "export const value = 1;\n");
+  await fs.writeFile(path.join(root, "value.test.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; import {value} from './value.mjs'; test('value is two',()=>assert.equal(value,2));\n");
+  await fs.writeFile(path.join(root, "api.mjs"), "export const format = 'plain text';\n");
+  await fs.writeFile(path.join(root, "notes.txt"), "old\n");
+  const objective = "Set value to two, document its plain text format in notes.txt, and produce DELIVERY.md.";
+  let step = 0; let attemptId = ""; let validation = ""; const reviewed: string[] = []; const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      const input = JSON.parse(request.messages.at(-1)!.content); reviewed.push(input.task.id);
+      assert.equal(input.task.status, "running");
+      if (input.task.id === "B") {
+        assert.equal(input.reviewScope, "assigned_task"); assert.equal(input.goal, undefined);
+        assert.deepEqual(input.requirements.map((value: { id: string }) => value.id), ["R3"]);
+        assert.deepEqual(input.changedPaths, ["notes.txt"]); assert.deepEqual(input.otherTaskChangedPaths, ["value.mjs"]);
+        assert.equal(input.source["value.mjs"], undefined); assert.equal(input.source["value.test.mjs"], undefined);
+        assert.match(input.source["api.mjs"], /plain text/); assert.equal(input.sourceRoles["api.mjs"], "read_only_context");
+        assert.match(input.diff, /notes.txt/); assert.doesNotMatch(input.diff, /value.mjs/);
+        assert.ok(input.deferredRequirements.some((value: { id: string }) => value.id === "R1"));
+      }
+      if (input.task.id === "integration") {
+        assert.equal(input.reviewScope, "whole_goal"); assert.equal(input.goal, objective);
+        assert.deepEqual(input.changedPaths, ["value.mjs", "notes.txt"]);
+        assert.match(input.source["value.test.mjs"], /value is two/);
+        return reply('{"passed":false,"findings":["DELIVERY.md is still missing."]}');
+      }
+      return reply('{"passed":true,"findings":[]}');
+    }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_refine", { requirements: [{ id: "R2", description: "Set the exported value to two." }, { id: "R3", description: "Document the API format in notes.txt." }], constraints: [], nonGoals: [], tasks: [
+        { id: "A", title: "Update value", requirementIds: ["R2"], dependsOn: [], allowedPaths: ["value.mjs", "value.test.mjs"] },
+        { id: "B", title: "Document format", requirementIds: ["R3"], dependsOn: ["A"], allowedPaths: ["notes.txt"] },
+        { id: "integration", title: "Integrate delivery", requirementIds: ["R1"], dependsOn: ["B"], allowedPaths: ["DELIVERY.md"] },
+      ] });
+      case 1: return call("work_claim", { taskId: "A" });
+      case 2: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "value.mjs" });
+      case 3: return call("write_file", { path: "value.mjs", content: "export const value = 2;\n" });
+      case 4: return call("run_shell", { command: "node", args: ["--test", "value.test.mjs"] });
+      case 5: validation = previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("work_verify", { taskId: "A", attemptId, invocationIds: [validation], summary: "Value is two and the existing test passes." });
+      case 6: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "B" });
+      case 7: attemptId = JSON.parse(previous()).attemptId; return call("read_file", { path: "api.mjs" });
+      case 8: return call("read_file", { path: "notes.txt" });
+      case 9: return call("write_file", { path: "notes.txt", content: "The API uses plain text.\n" });
+      case 10: return call("work_verify", { taskId: "B", attemptId, invocationIds: [], summary: "Documented the API's plain text format." });
+      case 11: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "integration" });
+      case 12: attemptId = JSON.parse(previous()).attemptId; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
+      case 13: assert.match(previous(), /stale/); return call("run_shell", { command: "node", args: ["--test", "value.test.mjs"] });
+      case 14: validation = previous().match(/receiptRef=(receipt:[a-f0-9]{8})/)![1]; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [validation], summary: "Inspect the entire delivery." });
+      case 15: assert.equal(JSON.parse(previous()).verified, false); assert.match(previous(), /DELIVERY.md/); return call("work_complete", {});
+      case 16: assert.match(previous(), /work remains/); return call("work_block", { taskId: "integration", reason: "Fixture ends with a deliberately missing delivery artifact." });
+      default: return reply("Integration remains incomplete.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  assert.equal((await controller.run(objective)).completed, false);
+  assert.deepEqual(reviewed, ["A", "B", "integration"]);
+  const reads = events.filter(event => event.type === "tool_intent").map(event => event.data.receipt as { tool: string; args: { path?: string }; taskId?: string; attemptId?: string });
+  const dependencyRead = reads.find(receipt => receipt.tool === "read_file" && receipt.args.path === "api.mjs");
+  assert.equal(dependencyRead?.taskId, "B"); assert.ok(dependencyRead?.attemptId);
+  assert.equal(controller.state?.requirements.length, 3);
+});
+
+for (const changeBytes of [true, false]) {
+  test(`unfinished-response guard resets only after changed task files: ${changeBytes}`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-final-progress-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-final-progress-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    await fs.writeFile(path.join(root, "notes.txt"), "0\n");
+    let step = 0; let attemptId = ""; const events: SessionEvent[] = [];
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+      const index = step++;
+      if (index === 0) return call("work_claim", { taskId: "T1", allowedPaths: ["notes.txt"] });
+      if (index === 1) attemptId = JSON.parse([...request.messages].reverse().find(message => message.role === "tool")!.content).attemptId;
+      if (index <= 15) {
+        const round = Math.floor((index - 1) / 3);
+        switch ((index - 1) % 3) {
+          case 0: return call("read_file", { path: "notes.txt" });
+          case 1: return reply("I will continue with the next update.");
+          default: return call("write_file", { path: "notes.txt", content: `${changeBytes ? round + 1 : 0}\n` });
+        }
+      }
+      if (index === 16) return call("work_verify", { taskId: "T1", attemptId, invocationIds: [], summary: "Updated notes.txt to five." });
+      if (index === 17) return call("work_complete", {});
+      throw new Error("Unexpected extra model call");
+    } };
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+    if (changeBytes) {
+      assert.equal((await controller.run("Update notes.txt to contain five as the digit 5 followed by a newline.")).completed, true);
+      assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "5\n");
+      assert.equal(events.filter(event => event.type === "progress_resumed").length, 5);
+    } else {
+      await assert.rejects(controller.run("Update notes.txt to contain five as the digit 5 followed by a newline."), /repeatedly stopped with unmet criteria/);
+      assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "0\n");
+      assert.equal(events.filter(event => event.type === "progress_resumed").length, 0);
+      assert.equal(controller.state?.status, "active");
+    }
+  });
+}
+
 test("native reasoning preflight refusal refunds the terminal reservation and survives resume", { concurrency: false }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-preflight-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-preflight-state-"));
