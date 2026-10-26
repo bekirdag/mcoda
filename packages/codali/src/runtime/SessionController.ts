@@ -115,6 +115,8 @@ export class SessionController {
   private persistenceError?: unknown;
   private usage: SessionUsage = { modelCalls: 0, toolCalls: 0, tokens: 0, inputTokens: 0, outputTokens: 0, estimated: false };
   private reservations = new Map<string, number>();
+  private modelSettlements = new Set<Promise<void>>();
+  private closingModelTurn?: AbortController;
   private baseline?: WorkspaceSnapshot;
   private previousSnapshot?: WorkspaceSnapshot;
   private instructions = "";
@@ -581,7 +583,17 @@ export class SessionController {
 
   private provider(binding = "lead", addGoal = true): Provider {
     const lead = binding === "lead" && addGoal;
-    const configured = this.options.provider ?? new ConfiguredProvider(this.options.resolved, binding, { effort: this.effort, beforeRequest: async invocation => { await this.emit("model_route", { ...invocation }); } });
+    const turn = this.active;
+    const ownsTurn = () => !!turn && this.active === turn && this.closingModelTurn !== turn;
+    const persistSettlement = async (operation: () => Promise<void>) => {
+      const pending = operation(); this.modelSettlements.add(pending);
+      try { await pending; } finally { this.modelSettlements.delete(pending); }
+    };
+    const configured = this.options.provider ?? new ConfiguredProvider(this.options.resolved, binding, { effort: this.effort, beforeRequest: async invocation => {
+      if (!ownsTurn()) throw new Error("Model turn has closed");
+      turn?.signal.throwIfAborted();
+      await this.emit("model_route", { ...invocation });
+    } });
     return { name: configured.name, supportsToolCalls: configured.supportsToolCalls, generate: async request => {
       await this.checkProjectTask();
       if (lead && this.state?.status === "completed") {
@@ -645,20 +657,38 @@ export class SessionController {
       await this.emit("model_intent", { id, binding, configHash: this.options.resolved.hash });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
       const response = await configured.generate(request).catch(async error => {
-        if (!this.options.provider && error instanceof NativeReasoningTransportError && this.reservations.has(id)) {
-          this.usage.tokens -= this.reservations.get(id)!;
-          this.usage.modelCalls--;
-          this.reservations.delete(id);
-          await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
-          await this.emit("usage", { usage: this.usage });
-        }
+        if (!ownsTurn()) throw error;
+        await persistSettlement(async () => {
+          if (!this.options.provider && error instanceof NativeReasoningTransportError && this.reservations.has(id)) {
+            this.usage.tokens -= this.reservations.get(id)!;
+            this.usage.modelCalls--;
+            this.reservations.delete(id);
+            await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
+            await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("usage", { usage: this.usage });
+          } else {
+            // A failed transport may have executed remotely. Keep its reservation
+            // and distinguish an unknown outcome from a zero-cost failure.
+            await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, estimated: true });
+          }
+        });
         throw error;
-      }).finally(() => this.flushOutputStreams("token"));
+      }).finally(() => ownsTurn() ? this.flushOutputStreams("token") : undefined);
+      // An abort-ignoring provider can resolve after run() returned or another
+      // session opened. Its outcome remains unknown; it cannot write new state.
+      if (!ownsTurn()) { request.signal?.throwIfAborted(); throw new Error("Model turn has closed"); }
+      await persistSettlement(async () => {
+        const reported = verifiedTokenUsage(response.usage);
+        if (reported) this.usage.tokens += reported.total - reserve; else this.usage.estimated = true;
+        this.usage.inputTokens += reported?.input ?? 0; this.usage.outputTokens += reported?.output ?? 0;
+        this.reservations.delete(id);
+        await this.emit("model_receipt", { id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route,
+          usage: { inputTokens: reported?.input, outputTokens: reported?.output, totalTokens: reported?.total ?? reserve, estimated: !reported } });
+        await this.emit("usage", { usage: this.usage });
+      });
+      // Settle a received usage report before cancellation or authority changes
+      // prevent using its answer. Cancellation does not erase incurred usage.
       request.signal?.throwIfAborted();
-      const reported = verifiedTokenUsage(response.usage);
-      if (reported) this.usage.tokens += reported.total - reserve; else this.usage.estimated = true;
-      this.usage.inputTokens += reported?.input ?? 0; this.usage.outputTokens += reported?.output ?? 0;
-      this.reservations.delete(id); await this.emit("usage", { usage: this.usage });
       await this.checkProjectTask();
       return response;
     } };
@@ -1055,6 +1085,8 @@ export class SessionController {
       await this.emit("turn_failed", { message: error instanceof Error ? error.message : String(error), cancelled: signal.aborted }).catch(() => undefined);
       throw error;
     } finally {
+      this.closingModelTurn = this.active;
+      await Promise.allSettled([...this.modelSettlements]);
       clearInterval(projectHeartbeat); await renewal;
       if (projectLease) await this.options.projectTaskAuthority?.release(projectLease).catch(() => undefined);
       await this.flushOutputStreams().catch(() => undefined);

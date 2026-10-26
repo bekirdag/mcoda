@@ -13,6 +13,65 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("model receipts separate helper and review usage and link each completed call to its intent", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const candidate = structuredClone(config); candidate.bindings.helper = { useBinding: "lead" };
+  let step = 0; let attemptId = ""; const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      const payload = JSON.parse(request.messages.at(-1)!.content);
+      return payload.task === "extract" ? reply('{"result":"four","sources":["provided-capsule"],"uncertainties":[]}') : reply('{"passed":true,"findings":[]}');
+    }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1" });
+      case 1: attemptId = JSON.parse(previous()).attemptId; return call("delegate_helper", { task: "extract", instruction: "Extract the stated answer.", context: "Two plus two is four.", sources: ["provided-capsule"] });
+      case 2: assert.match(previous(), /four/); return call("work_verify", { taskId: "T1", attemptId, invocationIds: [], summary: "Two plus two equals four." });
+      case 3: return call("work_complete", {});
+      default: throw new Error("No further model call is needed.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: candidate, hash: orchestrationHash(candidate), source: "fixture" }, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  assert.equal((await controller.run("Use a bounded helper to extract the supplied arithmetic answer, validate it and report it.")).completed, true);
+  const intents = events.filter(event => event.type === "model_intent").map(event => event.data.id);
+  const receipts = events.filter(event => event.type === "model_receipt").map(event => event.data);
+  assert.equal(receipts.length, 6); assert.deepEqual(receipts.map(receipt => receipt.id), intents);
+  assert.equal(receipts.filter(receipt => receipt.binding === "helper").length, 1);
+  assert.equal(receipts.filter(receipt => receipt.binding === "reviewer").length, 1);
+  for (const receipt of receipts) { assert.equal(receipt.status, "completed"); assert.deepEqual(receipt.usage, { inputTokens: 10, outputTokens: 10, totalTokens: 20, estimated: false }); }
+  assert.equal(controller.usageSnapshot().tokens, 120);
+});
+
+for (const outcome of ["cancel_after_response", "transport_failure"] as const) {
+  test(`model usage receipts retain accounting across ${outcome}`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-usage-outcome-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-usage-outcome-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    const events: SessionEvent[] = []; let controller: SessionController;
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => {
+      if (outcome === "transport_failure") throw new Error("Connection lost after dispatch");
+      controller.cancel(); return reply("Response arrived after cancellation.");
+    } };
+    const options = { workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" as const };
+    controller = new SessionController({ ...options, onEvent: event => { events.push(event); } });
+    await assert.rejects(controller.run("Explain a small arithmetic example."), outcome === "transport_failure" ? /Connection lost/ : /Cancelled/);
+    const receipt = events.find(event => event.type === "model_receipt")!.data;
+    assert.equal(receipt.status, outcome === "transport_failure" ? "outcome_unknown" : "completed");
+    assert.equal(controller.usageSnapshot().modelCalls, 1);
+    if (outcome === "transport_failure") {
+      assert.equal(receipt.usage, undefined); assert.ok(Number(receipt.reservedTokens) > 20);
+      assert.equal(controller.usageSnapshot().estimated, true);
+    } else {
+      assert.deepEqual(receipt.usage, { inputTokens: 10, outputTokens: 10, totalTokens: 20, estimated: false });
+      assert.equal(controller.usageSnapshot().tokens, 20); assert.equal(controller.usageSnapshot().estimated, false);
+    }
+    const resumed = new SessionController(options); await resumed.resume(controller.sessionId!);
+    assert.deepEqual(resumed.usageSnapshot(), controller.usageSnapshot());
+  });
+}
+
 test("task review isolates sibling code, preserves read dependencies, and still rejects incomplete integration", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-scope-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-scope-state-"));
@@ -144,6 +203,9 @@ test("native reasoning preflight refusal refunds the terminal reservation and su
   assert.equal(dispatched, 0);
   assert.deepEqual(controller.usageSnapshot(), { modelCalls: 0, toolCalls: 0, tokens: 0, inputTokens: 0, outputTokens: 0, estimated: false });
   assert.ok(events.some(event => event.type === "model_preflight_failed" && event.data.inferenceDispatched === false));
+  const receipt = events.find(event => event.type === "model_receipt")!.data;
+  assert.equal(receipt.status, "not_dispatched");
+  assert.deepEqual(receipt.usage, { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false });
   const resumed = new SessionController(options); await resumed.resume(controller.sessionId!);
   assert.deepEqual(resumed.usageSnapshot(), controller.usageSnapshot());
 });
@@ -742,11 +804,15 @@ test("cancellation rejects a provider that ignores AbortSignal without accepting
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-cancel-store-"));
   let started!: () => void; const ready = new Promise<void>(resolve => { started = resolve; });
   let release!: (value: ProviderResponse) => void;
+  const events: SessionEvent[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => { started(); return new Promise(resolve => { release = resolve; }); } };
   try {
-    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false });
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, onEvent: event => { events.push(event); } });
     const run = controller.run("Wait for a task"); await ready; controller.cancel();
-    await assert.rejects(run, /Cancelled/); release(reply("Late success"));
+    await assert.rejects(run, /Cancelled/); const retained = controller.usageSnapshot(); release(reply("Late success"));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(controller.usageSnapshot(), retained);
+    assert.equal(events.filter(event => event.type === "model_receipt").length, 0);
     assert.equal(controller.state?.status, "active"); assert.equal(controller.busy, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });

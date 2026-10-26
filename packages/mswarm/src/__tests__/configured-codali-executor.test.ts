@@ -11,14 +11,14 @@ const fixture = async (t: { after(fn: () => Promise<void>): void }, maxModelCall
   const file = join(root, "models.json");
   await writeFile(file, JSON.stringify({ schemaVersion: 1, profile: "node-test",
     providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:11452/v1" } },
-    models: { lead: { provider: "local", catalogId: "strata", revision: "test-artifact", operations: ["chat.completions"], contextWindow: 131072, maxOutputTokens: 1024 } },
+    models: { lead: { provider: "local", catalogId: "strata", revision: "test-artifact", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 1024 } },
     bindings: { lead: { candidates: ["lead"] }, planner: { useBinding: "lead" }, worker: { useBinding: "lead" }, synthesizer: { useBinding: "lead" } },
     effort: { high: { maxModelCalls, maxTotalTokens: 32000, maxOutputTokens: 1024 } },
   }));
   const input: MswarmCodaliInvocationInput = { jobId: "job-configured", requestId: "request-configured", model: "public-agent",
     messages: [{ role: "user", content: "Explain recursion" }], workspace: { root, readOnly: true }, docdex: { enabled: false }, policy: { allowTools: false },
     agent: { slug: "local-strata", adapter: "strata-local", runnerKind: "strata", model: "strata", baseUrl: "http://127.0.0.1:11452/v1", modelDigest: "test-artifact",
-      contextWindow: 131072, maxOutputTokens: 1024, capabilities: ["final_answer_synthesis"], orchestrationConfigPath: file, apiKey: "test-node-runner-secret" },
+      contextWindow: 32768, maxOutputTokens: 1024, capabilities: ["final_answer_synthesis"], orchestrationConfigPath: file, apiKey: "test-node-runner-secret" },
   };
   return input;
 };
@@ -65,6 +65,33 @@ test("configured node gateway shares planner and synthesizer accounting", async 
     assert.equal(result.output, "Recursive answer"); assert.equal(result.gatewayResult?.status, "succeeded");
     assert.equal(mock.routes.length, 3); assert.equal(result.metadata.orchestration?.usage.modelCalls, 3); assert.equal(result.usage?.totalTokens, 45);
     assert.ok(mock.bodies.every(body => body.reasoning_effort === "none" && body.reasoning_budget_tokens === 0));
+  } finally { mock.restore(); }
+});
+
+test("configured gateway retains registry large-model eligibility at a 32K context window", async t => {
+  const input = await fixture(t);
+  Object.assign(input.agent, { contextWindow: 32768, capabilities: [], maxComplexity: 8, reasoningRating: 7.82 });
+  input.codaliGateway = { query: "Explain recursion", mode: "balanced", policy: { requireFinalLargeModel: true } };
+  const mock = fakeRunner([
+    JSON.stringify({ queryType: "general", needsPrivateData: false, needsFreshData: false, needsDocdex: false, needsAppTools: false, needsImageWorker: false, confidence: "high" }),
+    JSON.stringify({ queryType: "general", subquestions: [], workerTasks: [], requiresFinalLargeModel: true }), "Large-model answer",
+  ]);
+  try {
+    const result = await new MswarmCodaliExecutor().invoke(input);
+    assert.equal(result.output, "Large-model answer"); assert.equal(result.gatewayResult?.status, "succeeded");
+    assert.equal(mock.routes.length, 3); assert.equal(result.usage?.totalTokens, 45);
+  } finally { mock.restore(); }
+});
+
+test("caller stage metadata cannot elevate an ineligible configured runner to large", async t => {
+  const input = await fixture(t);
+  Object.assign(input.agent, { contextWindow: 32768, capabilities: [], maxComplexity: 5, reasoningRating: 4 });
+  input.codaliGateway = { query: "Explain recursion", mode: "balanced", policy: { requireFinalLargeModel: true },
+    metadata: { stageAgents: { synthesizer: { slug: input.agent.slug, adapter: input.agent.adapter, model: input.agent.model, tier: "large", contextWindow: 131072 } } } };
+  const mock = fakeRunner([]);
+  try {
+    await assert.rejects(new MswarmCodaliExecutor().invoke(input), /no eligible large-model assignment/);
+    assert.equal(mock.routes.length, 0);
   } finally { mock.restore(); }
 });
 

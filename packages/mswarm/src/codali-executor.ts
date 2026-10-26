@@ -149,6 +149,10 @@ export interface CodaliRuntimeAgentInput {
   supportsJsonSchema?: boolean;
   supportsGbnf?: boolean;
   capabilities?: string[];
+  rating?: number;
+  reasoningRating?: number;
+  maxComplexity?: number;
+  bestUsage?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
 }
@@ -595,6 +599,10 @@ export interface MswarmCodaliChatMessage {
 export interface MswarmCodaliAgent {
   /** Trusted node registry setting, never copied from an invocation payload. */
   orchestrationConfigPath?: string;
+  rating?: number;
+  reasoningRating?: number;
+  maxComplexity?: number;
+  bestUsage?: string;
   modelDigest?: string;
   slug: string;
   adapter: string;
@@ -1479,6 +1487,10 @@ function mergeGatewayDocdexContext(
 
 function runtimeAgent(agent: MswarmCodaliAgent): CodaliRuntimeAgentInput {
   return {
+    rating: agent.rating,
+    reasoningRating: agent.reasoningRating,
+    maxComplexity: agent.maxComplexity,
+    bestUsage: agent.bestUsage,
     slug: agent.slug,
     adapter: agent.adapter,
     provider: providerNameForAgent(agent),
@@ -1943,6 +1955,10 @@ function buildGatewayAgentInventory(
     contextWindow: agent.contextWindow,
     maxOutputTokens: agent.maxOutputTokens,
     capabilities: agent.capabilities,
+    rating: agent.rating,
+    reasoningRating: agent.reasoningRating,
+    maxComplexity: agent.maxComplexity,
+    bestUsage: agent.bestUsage,
     healthStatus: "healthy",
     health_status: "healthy",
     source: "self_hosted",
@@ -2329,7 +2345,10 @@ export class MswarmCodaliExecutor {
       });
       const hostOptions = {
         taskRunner: createGatewayTaskRunner({ runtimeInput, runCodali }),
-        agentInventory: buildGatewayAgentInventory(input.agent, gatewayRequest),
+        // A configured node can execute only its admitted local model. Caller
+        // stage records describe routing preferences, not authoritative model
+        // capabilities, and must not elevate a small local model to large.
+        agentInventory: buildGatewayAgentInventory(input.agent, orchestration ? undefined : gatewayRequest),
         workerOptions: {
           maxRuntimeMs: gatewayRequest.policy?.maxRuntimeMs,
           maxToolCalls: gatewayRequest.policy?.maxToolCalls,

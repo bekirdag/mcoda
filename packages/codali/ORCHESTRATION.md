@@ -59,7 +59,7 @@ the native-reasoning transport update before enabling this profile in service.
 The CLI checks the proxy's authenticated model catalog before reserving inference
 tokens. The selected model must advertise `native_reasoning.transport_version: 1`
 and every requested parameter. The proxy publishes this contract for pinned nodes
-advertising `native_reasoning_passthrough_v1`, and rejects native requests to older
+advertising `native_reasoning_transport_version: 1`, and rejects native requests to older
 nodes before dispatch. A generic `supports_reasoning` flag is insufficient.
 Load-balanced aliases do not yet advertise this contract; configure explicit
 candidate models on each host for native-reasoning failover. Direct compatible
@@ -143,6 +143,20 @@ by checksums and tool receipts. Review must reject unavailable evidence needed
 to decide correctness. Passing a test or obtaining reviewer approval alone does
 not establish a universal correctness guarantee; observed false completions
 remain release blockers and become regression fixtures.
+
+Ordinary task review includes its assigned requirements, owned changes and diff,
+plus relevant read-only dependencies. Other tasks' pending deliverables remain
+in the canonical backlog. A task assigned the original whole-objective criterion
+receives the complete current goal and all changes for integration review.
+Both review scopes retain the same global validation and source-freshness checks.
+
+Terminal `model_receipt` events link usage to `model_intent` by ID and identify
+the role binding. Completed receipts include the reported route and usage;
+missing usage is explicitly estimated. An unknown transport outcome retains its
+reservation, while a native-capability preflight refusal records zero usage and
+`not_dispatched`. Usage received during cancellation is settled before the
+answer is discarded. These receipts allow helper/lead usage to be compared
+without attributing another role's tokens to the helper.
 
 Terminal shell commands default to a read-only workspace. `command` contains a
 single executable and `args` contains its arguments. Optional `writePaths` names

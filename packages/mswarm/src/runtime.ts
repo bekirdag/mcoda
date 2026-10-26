@@ -179,6 +179,7 @@ export interface SelfHostedModelInput {
   supports_vision?: boolean;
   supports_json_schema?: boolean;
   supports_gbnf?: boolean;
+  native_reasoning_transport_version?: 1;
   openai_compatible?: boolean;
   best_usage?: string | null;
   capabilities?: string[];
@@ -3357,9 +3358,6 @@ export function mapMcodaAgentToSelfHostedModel(
   const healthStatus = normalizeHealthStatus(agent.health?.status);
   const capabilities = normalizeCapabilities(agent.capabilities);
   const localRunner = normalizeMcodaLocalRunnerConfig(adapter, agent.config);
-  if (localRunner?.runnerKind === "strata" && !capabilities.includes("native_reasoning_passthrough_v1")) {
-    capabilities.push("native_reasoning_passthrough_v1");
-  }
   const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
   const openaiCompatible =
     localRunner !== undefined || optionalBoolean(agent.openaiCompatible, agent.openai_compatible) === true;
@@ -3407,6 +3405,9 @@ export function mapMcodaAgentToSelfHostedModel(
     supports_vision: supportsVision,
     supports_json_schema: localRunner?.supportsJsonSchema,
     supports_gbnf: localRunner?.supportsGbnf,
+    // Transport metadata must not change semantic model capability sets: those
+    // sets participate in stable load-balanced pool identifiers on the gateway.
+    native_reasoning_transport_version: localRunner?.runnerKind === "strata" ? 1 : undefined,
     openai_compatible: openaiCompatible,
     exposed:
       healthStatus !== "blocked" &&
@@ -3864,6 +3865,10 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
     supportsJsonSchema: localRunner?.supportsJsonSchema,
     supportsGbnf: localRunner?.supportsGbnf,
     capabilities: normalizeCapabilities(agent.capabilities),
+    rating: optionalNumber(agent.rating) ?? undefined,
+    reasoningRating: optionalNumber(agent.reasoningRating, agent.reasoning_rating) ?? undefined,
+    maxComplexity: optionalNumber(agent.maxComplexity, agent.max_complexity) ?? undefined,
+    bestUsage: optionalText(agent.bestUsage) ?? optionalText(agent.best_usage) ?? undefined,
     contextWindow: optionalNumber(agent.contextWindow, agent.context_window) ?? undefined,
     maxOutputTokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens) ?? undefined,
     generativeOperations,

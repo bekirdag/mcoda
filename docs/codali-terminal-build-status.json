@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Task-scoped review and actual-progress counter fixes passed37 focused tests and the full client/node suite (1694 passed,2 platform skips). Preserve U long diagnostic results; freeze the corrected client for replay and prepare the capability-enabled node candidate. H backend images are privately qualified but production rollout remains pending.",
+  "currentTask": "Preparing candidate I after H rollback: separate native transport metadata preserves existing pool aliases (134 backend tests and typecheck passed). Registry ratings now reach configured Codali gateway inventory; caller stage records cannot elevate a local model. TNL production probe found mandatory-large-model assignment failure on G; corrected candidate still needs both-host and real-consumer deployment qualification. Model receipt accounting and closed-turn fencing passed focused and expanded runtime/recovery checks. Frozen V diagnostics remain incomplete; first two journeys failed.",
   "tasks": [
     {
       "id": "P0.1",
@@ -331,7 +331,8 @@
       "status": "in_progress",
       "evidence": [
         "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply.",
-        "Found native effort was absent in R/S configs and dropped by proxy/node paths. Added validated reasoning_effort/reasoning_budget_tokens forwarding, pinned effective node config with source hash, and explicit native mappings in raijin-suku.example.json. Known-failure direct native high/1024 diagnostics rejected the invoice bug on both hosts; no service defaults changed. Fresh mSwarm end-to-end qualification remains."
+        "Found native effort was absent in R/S configs and dropped by proxy/node paths. Added validated reasoning_effort/reasoning_budget_tokens forwarding, pinned effective node config with source hash, and explicit native mappings in raijin-suku.example.json. Known-failure direct native high/1024 diagnostics rejected the invoice bug on both hosts; no service defaults changed. Fresh mSwarm end-to-end qualification remains.",
+        "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified."
       ]
     },
     {
@@ -494,7 +495,8 @@
       "evidence": [
         "Graceful node-drain implementation closes admission, waits for late relay claims, direct/queued jobs and result uploads, and preserves admission closure on timeout. Runtime regressions pass; expanded queued-job/full suite in progress. Old deployed nodes need a bootstrap drain before upgrade.",
         "Node E drain keeps accepted work, relay claims and result delivery alive, gates new work and supports SIGUSR2 drain without exit; full mSwarm suite165 passed. Bootstrap Raijin upgrade interrupted one BDYA 4B helper invocation (shi_acf5c02072d54e6eb64455714655a809) because old pinned gateway routes ignored drain and the activation guard did not stop on active work. It was honestly reconciled as failed/node_restart_interrupted, never replayed. Gateway admission fixes pass 130 related tests (140 combined backend tests) and typecheck but are not deployed; future upgrades require verified local drain plus an active-work guard.",
-        "G rollout confirmed SIGUSR2 drain completion for each exact process, immutable candidate hashes, and a fresh canonical invocation query before restart. Leased/started work blocks activation; gateway-owned queued work with no start may survive a node-only replacement. Observed queued Raijin invocation shi_031ced88aa764120b966efd2e56cdb1d completed successfully after replacement. No backend restart was performed."
+        "G rollout confirmed SIGUSR2 drain completion for each exact process, immutable candidate hashes, and a fresh canonical invocation query before restart. Leased/started work blocks activation; gateway-owned queued work with no start may survive a node-only replacement. Observed queued Raijin invocation shi_031ced88aa764120b966efd2e56cdb1d completed successfully after replacement. No backend restart was performed.",
+        "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified."
       ]
     },
     {
@@ -518,7 +520,8 @@
         "Docdex publication now distinguishes stable and prerelease channels (71d4b0a). Prereleases use GitHub prerelease and npm next, skip MCP Registry, and preserve immutable-asset/tag verification. Version 0.2.100-codali.0 is being qualified; no release has been published.",
         "Publisher now explicitly maps prerelease to next and stable to latest, validates one release version before registry work, publishes checked tarballs and verifies existing registry integrity. Codali publication refuses missing Docdex platform pins. Seventeen publisher/packer tests pass; the runtime manifest stays empty until published artifacts are verified.",
         "Complete-source backend G images from e6a8d2ba5 passed native schema, fresh disposable MySQL bootstrap and health checks. Gateway image0c3909ab5975c76f2ee2610849be245532d81c6bf7a551c6ced84556a8d8635f; proxy1e7a89fb2bb298a1bc3649a107c6943b7100ef3eb82a6b094c8b10306aa388da. Production data was not used; rollout/quiescence and public native-reasoning tests remain open.",
-        "Native transport negotiation is implemented: the proxy advertises per-model version1 only for pinned upgraded nodes; stale nodes reject native requests before dispatch. The CLI checks every configured native parameter before inference, with zero-accounting/refund coverage. 1687 broad client/node tests passed (2 platform skips),44 follow-up session/provider checks passed, and80 backend tests plus typecheck passed. These capability changes are not deployed yet."
+        "Native transport negotiation is implemented: the proxy advertises per-model version1 only for pinned upgraded nodes; stale nodes reject native requests before dispatch. The CLI checks every configured native parameter before inference, with zero-accounting/refund coverage. 1687 broad client/node tests passed (2 platform skips),44 follow-up session/provider checks passed, and80 backend tests plus typecheck passed. These capability changes are not deployed yet.",
+        "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified."
       ]
     },
     {
@@ -1245,17 +1248,86 @@
       "passed": 1694,
       "skipped": 2,
       "artifact": "/home/wodo/.local/state/codali-task-review-full-tests.log"
+    },
+    {
+      "check": "Task-scoped review commit CI and platform qualification",
+      "status": "passed",
+      "commit": "88c7a744",
+      "runs": [
+        40310301897,
+        40310301840
+      ]
+    },
+    {
+      "check": "Candidate H isolated native reasoning and public API post-deploy compatibility",
+      "status": "passed",
+      "commit": "88c7a744",
+      "hosts": [
+        "raijin",
+        "suku"
+      ],
+      "casesPerHost": {
+        "native": 5,
+        "publicCompatibility": 3
+      },
+      "artifactRoot": "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration",
+      "publicNativeReasoningQualified": false
+    },
+    {
+      "check": "Frozen U native direct long diagnostics",
+      "status": "failed",
+      "passed": 0,
+      "cases": 4,
+      "environmentStable": true,
+      "limitations": "Reused contracts and direct loopback/SSH Strata; not fresh holdout or public API qualification. Three budget exhaustion failures and one repeated incomplete-response failure retained.",
+      "artifactRoots": [
+        "/home/wodo/.local/state/codali-long-workflow-native-u-direct-raijin-20261026",
+        "/home/wodo/.local/state/codali-long-workflow-native-u-direct-suku-20261026"
+      ]
+    },
+    {
+      "check": "TNL consumer compatibility after H rollout",
+      "status": "failed; both nodes rolled back to G",
+      "cause": "Native transport capability changed capability-derived pool alias",
+      "artifact": "/home/wodo/.local/state/codali-tnl-consumer-smoke-h-2.log",
+      "rollbackArtifacts": [
+        "/home/wodo/.local/state/codali-node-h-rollback-raijin.log",
+        "/home/wodo/.local/state/codali-node-h-rollback-suku.log"
+      ]
+    },
+    {
+      "check": "Native transport metadata and pool alias stability across upgrade, mixed nodes and downgrade",
+      "status": "passed",
+      "tests": 134,
+      "artifact": "/home/wodo/.local/state/codali-native-metadata-backend-tests-3.log"
+    },
+    {
+      "check": "Node, controller, session and recovery regression tests",
+      "status": "347 passed; two new tests had mismatched fixture context limits. Corrected configured-node suite then passed all five tests.",
+      "artifact": "/home/wodo/.local/state/codali-large-assignment-tests.log"
+    },
+    {
+      "check": "Configured gateway registry tier and caller-metadata isolation",
+      "status": "passed",
+      "tests": 5,
+      "artifact": "/home/wodo/.local/state/codali-large-assignment-focused-3.log"
+    },
+    {
+      "check": "TNL actual deployed story consumer smoke on restored G",
+      "status": "failed: configured synthesizer has no eligible large-model assignment; keepalive transport returns error envelope under HTTP 200",
+      "artifact": "/home/wodo/.local/state/codali-tnl-response-g-observed.json"
     }
   ],
-  "updatedAt": "2026-10-26T10:48:31.185159+00:00",
+  "updatedAt": "2026-10-26T11:43:45.306284+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad fresh quality evaluation, four successful multi-hour live journeys, paired helper comparisons, production consumer qualification and the 24-hour canary remain open.",
     "Docdex v0.2.100-codali.2 is published on GitHub and npm next; stable latest remains0.2.99. Pinned Linux/macOS runtime artifacts and private installations are qualified; global existing daemons remain unchanged.",
-    "Both production nodes run isolated candidate G from90cf4a4; direct/gateway/staged-job compatibility passed on both hosts. H backend images fromed9d0d2 passed private database/health qualification; native capability-enabled node candidate and safe backend deployment are pending. Production proxy still drops native reasoning settings; new clients explicitly refuse unsupported native requests.",
+    "Production nodes are back on verifiedG90cf4a4 after H introduced capability-hash alias churn. H images/candidates must not be promoted. Separate native transport metadata from model capabilities and verify existing pool names through rolling upgrade/downgrade before the next rollout. Backend root deployment is still pending.",
     "Production end-to-end configured embeddings still require the pending backend rollout and live catalog/space-identity qualification.",
     "TNL, BDYA, Logmira Wodo/Heka application-level migration/qualification, native physical GPU media fencing/recovery/fairness, account-cap/usage reconciliation and optional-model peak qualification remain open.",
     "Preserve earlier held-out E and workflow R false-completion failures. Deterministic checks and improved review are not evidence of general model reliability; new independent holdouts and human audit remain required.",
     "Frozen U Raijin data-delivery passed all four independent module graders but exhausted the shared budget before completing the goal. Per-task reviews falsely demanded later DELIVERY.md and blamed sibling changes. Task-scoped review regression fixes are under qualification.",
-    "Frozen U Suku service-adapters failed with incomplete modules after four nonconsecutive premature prose responses, including unrecognized edit_file markup. The controller now resets that guard after actual owned file changes or accepted verification; unchanged writes do not reset it. Live follow-up remains required."
+    "Frozen U Suku service-adapters failed with incomplete modules after four nonconsecutive premature prose responses, including unrecognized edit_file markup. The controller now resets that guard after actual owned file changes or accepted verification; unchanged writes do not reset it. Live follow-up remains required.",
+    "Deployed TNL smoke initially failed404 afterH changed its pool alias; rollback restored a response but the old smoke script reports empty completion. Inspect response semantics and actual application handling before claiming TNL consumer qualification."
   ]
 }

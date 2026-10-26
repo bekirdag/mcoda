@@ -932,7 +932,8 @@ describe("self-hosted node runtime", () => {
         config: runnerKind ? { baseUrl: "http://127.0.0.1:11452/v1", runnerKind, authMode: "none" } : {}
       }, { exposeAllModels: true, modelAllowlist: [], modelBlocklist: [] });
       assert.ok(mapped);
-      assert.equal(mapped.capabilities?.includes("native_reasoning_passthrough_v1"), runnerKind === "strata");
+      assert.equal(mapped.native_reasoning_transport_version, runnerKind === "strata" ? 1 : undefined);
+      assert.deepEqual(mapped.capabilities, ["code_write"]);
       assert.deepEqual(capabilities, ["code_write"]);
     }
   });
@@ -2314,7 +2315,7 @@ describe("self-hosted node runtime", () => {
     const statePath = tempStatePath();
     const captured: { value?: MswarmCodaliInvocationInput } = {};
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
-      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ rating: 7.5, reasoningRating: 7.82, maxComplexity: 8, bestUsage: "reasoning_and_code" })]),
       codaliExecutor: new StubCodaliExecutor(async (input) => {
         captured.value = input;
         return successfulCodaliInvocation(input);
@@ -2353,6 +2354,10 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.agent.adapter).toBe("ollama-remote");
     expect(capturedInput.agent.model).toBe("qwen3.5:35b");
     expect(capturedInput.agent.baseUrl).toBe("http://ollama.test");
+    expect(capturedInput.agent.rating).toBe(7.5);
+    expect(capturedInput.agent.reasoningRating).toBe(7.82);
+    expect(capturedInput.agent.maxComplexity).toBe(8);
+    expect(capturedInput.agent.bestUsage).toBe("reasoning_and_code");
     expect(capturedInput.policy?.allowTools).toBe(true);
     expect(capturedInput.responseFormat?.type).toBe("json_schema");
     expect(capturedInput.messages[0]?.content).toBe("Review this log.");
