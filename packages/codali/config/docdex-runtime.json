@@ -1,4 +1,21 @@
 {
   "schemaVersion": 1,
-  "artifacts": {}
+  "version": "0.2.100-codali.2",
+  "artifacts": {
+    "linux-x64-gnu": {
+      "url": "https://github.com/bekirdag/docdex/releases/download/v0.2.100-codali.2/docdexd-linux-x64-gnu.tar.gz",
+      "archiveSha256": "fe6bca2b386aaa0335d425e37745454cce31e3ac1c22c1637af8c2dd5d68e37c",
+      "binarySha256": "df0a981167f60b86cb28d0687b67c933ce3bda49135450e26c72c61d63aff15e"
+    },
+    "darwin-x64": {
+      "url": "https://github.com/bekirdag/docdex/releases/download/v0.2.100-codali.2/docdexd-darwin-x64.tar.gz",
+      "archiveSha256": "f97b6f874a9b360823bbd8fb72f10c8eb8468250e2cdd81f555ab4081973686f",
+      "binarySha256": "2f60d471e1f12437b381923d1930f8016e778c5ed304f8766fd4e6b3a6b392d5"
+    },
+    "darwin-arm64": {
+      "url": "https://github.com/bekirdag/docdex/releases/download/v0.2.100-codali.2/docdexd-darwin-arm64.tar.gz",
+      "archiveSha256": "d35ec32efa48a0d9ec6ad73a17df178f188a168a0a34c6abff81410933ab0708",
+      "binarySha256": "4141f7c3bd63c82ca8dffffbdc346649091ebae92c7a6497fead570eefff1343"
+    }
+  }
 }

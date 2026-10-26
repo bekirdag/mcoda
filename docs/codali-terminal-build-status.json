@@ -90,7 +90,9 @@
       "id": "P1.1",
       "description": "Add mSwarm login/logout/status using the existing credential resolver, masked interactive entry, stdin for automation and environment-based injection. Implement rotation and removal without logging keys.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Docdex v0.2.100-codali.2 (be805ef) published to immutable GitHub assets and npm next; latest remains0.2.99. Release40282809157 rerun passed after initial npm visibility wait expired. Downloaded npm bytes match retained sha512. Codali pins archive and binary SHA256 for Linuxx64GNU and both macOS architectures; local clean package install verified native capabilities, private install and offline cache reuse. Cross-platform native-install checks and Suku private install are pending."
+      ]
     },
     {
       "id": "P1.2",
@@ -413,7 +415,8 @@
         "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass.",
         "Reproduced legacy SessionStore symlink escape and acceptance of schemaVersion2 metadata. New path checks refuse redirected parents, state/SQLite symlinks and hard links; readers reject unknown metadata/transcript/summary schemas and unsafe summary refs. Forty session tests and full1453/2skip pass, including partial ENOSPC, fsync ambiguity, actual read-only storage and SIGKILL lock recovery; platform qualification remains.",
         "Storage91df0c2 passed generalCI40284343301 and all six platform jobs in40284343296, including real clean-package SQLite/session persistence and sandbox boundaries.",
-        "b5da1b9 general CI 40286817952 and six-platform qualification 40286817889 passed; c68bb27 and 534c72b also passed both workflows. These are regression/install checks, not production qualification."
+        "b5da1b9 general CI 40286817952 and six-platform qualification 40286817889 passed; c68bb27 and 534c72b also passed both workflows. These are regression/install checks, not production qualification.",
+        "3f9e8c3 platform run40288983970 passed; general run40288983947 exposed missing sandbox precondition in new workflow tests on the non-Bubblewrap regression runner. 663ffef applies the existing explicit-skip policy; mandatory platform sandbox availability remains unchanged and all19 local workflow tests pass without skips."
       ]
     },
     {
@@ -429,7 +432,8 @@
       "description": "Complete /context, /review and redacted export; expand /tasks recovery/evidence views and configuration provenance. Make active/background work ownership visible on exit/resume.",
       "status": "in_progress",
       "evidence": [
-        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
+        "Docdex v0.2.100-codali.2 (be805ef) published to immutable GitHub assets and npm next; latest remains0.2.99. Release40282809157 rerun passed after initial npm visibility wait expired. Downloaded npm bytes match retained sha512. Codali pins archive and binary SHA256 for Linuxx64GNU and both macOS architectures; local clean package install verified native capabilities, private install and offline cache reuse. Cross-platform native-install checks and Suku private install are pending."
       ]
     },
     {
@@ -1199,7 +1203,7 @@
       "tokens": 2576
     }
   ],
-  "updatedAt": "2026-10-26T08:12:00Z",
+  "updatedAt": "2026-10-26T08:28:00Z",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
     "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",

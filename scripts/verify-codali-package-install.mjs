@@ -98,6 +98,19 @@ try {
   `);
   assert.match(run(process.execPath, [probe, workspace]), /installed-api-native-sqlite-and-session-ok/);
   report.checks.push('installed API, native SQLite, durable session write/read through a fresh store');
+  const runtimeProbe = path.join(project, 'runtime-probe.mjs');
+  writeFileSync(runtimeProbe, `
+    import assert from 'node:assert/strict';
+    import { ensureManagedDocdexRuntime } from './node_modules/@mcoda/codali/dist/docdex/ManagedRuntime.js';
+    const stateRoot = process.argv[2];
+    const first = await ensureManagedDocdexRuntime({ stateRoot });
+    globalThis.fetch = async () => { throw new Error('Cached runtime must not download again'); };
+    const cached = await ensureManagedDocdexRuntime({ stateRoot });
+    assert.deepEqual(cached, first);
+    console.log(JSON.stringify(first));
+  `);
+  report.docdexRuntime = JSON.parse(run(process.execPath, [runtimeProbe, path.join(temporary, 'private-runtimes')], 0, 180_000).trim());
+  report.checks.push('published Docdex archive/binary pins, native capabilities, private installation and offline cached reuse');
   assert.equal(readFileSync(path.join(workspace, 'user-notes.txt'), 'utf8'), 'Preserve this existing user file.\n');
   run('npm', ['uninstall', '@mcoda/codali', '@mcoda/db', '@mcoda/shared', '--ignore-scripts', ...npmOptions], 0, 60_000);
   assert.ok(!existsSync(bin));
