@@ -73,6 +73,8 @@ export interface SessionControllerOptions {
 }
 interface InvocationReceipt {
   id: string; tool: string; args: unknown; status: "pending" | "success" | "failed"; output?: string;
+  /** False when controller admission rejected the call before its handler. */
+  admitted?: boolean;
   inputHashes: Record<string, string>; at: string;
   analysis?: StructuralAnalysis;
   writePaths?: string[];
@@ -652,11 +654,16 @@ export class SessionController {
   }
 
   private async validationContext(): Promise<string> {
-    const receipt = [...this.receipts.values()].reverse().find(value => value.tool === "run_shell" && value.status !== "pending" && isVerificationCommand(value.args));
-    if (!receipt) return "No test/typecheck/lint receipt recorded yet.";
+    const attempts = [...this.receipts.values()].reverse().filter(value => value.tool === "run_shell" && value.status !== "pending" && isVerificationCommand(value.args));
+    const latest = attempts[0];
+    const latestRejectedAttempt = latest?.admitted === false ? { receiptRef: this.receiptRef(latest), admitted: false,
+      command: JSON.stringify(sanitizeArgs(latest.args)).slice(0, 600), output: latest.output?.slice(0, 1200) } : undefined;
+    const receipt = attempts.find(value => value.admitted !== false);
+    if (!receipt) return latestRejectedAttempt ? JSON.stringify({ status: "not_run", latestRejectedAttempt,
+      nextAction: "Resolve the tool admission error before running validation. A rejected request is not a completed check; omit writePaths for checks that do not modify files." }) : "No test/typecheck/lint receipt recorded yet.";
     const changed = Object.entries(await this.hashes()).some(([file, value]) => receipt.inputHashes[file] !== value);
     return JSON.stringify({ receiptRef: this.receiptRef(receipt), command: JSON.stringify(sanitizeArgs(receipt.args)).slice(0, 600), status: receipt.status, observedInputsChangedSinceCheck: changed,
-      output: receipt.output ? validationOutputExcerpt(receipt.output) : undefined, nextAction: changed ? "Run the relevant check again after finishing the current repair. Previous evidence cannot verify changed inputs."
+      output: receipt.output ? validationOutputExcerpt(receipt.output) : undefined, latestRejectedAttempt, nextAction: changed ? "Run the relevant check again after finishing the current repair. Previous evidence cannot verify changed inputs."
         : receipt.status === "failed" ? "Resolve this recorded failure before verification. Inspect the command output and relevant source with prepare_edit before a repair; repeating unchanged checks is not a repair."
           : "Use this receipt for work_verify only if it covers the task criteria; independent review and the full freshness check still apply." });
   }
@@ -865,7 +872,7 @@ export class SessionController {
     // source cannot certify the new bytes merely by exiting successfully.
     const rawOutput = workspaceConflict ?? (result.ok ? result.output : result.error?.message ?? "failed");
     const receiptOutput = tool.name === "run_shell" ? validationOutputExcerpt(rawOutput, 8000) : rawOutput.slice(0, 12_000);
-    const receipt: InvocationReceipt = { ...pending, status: uncertain ? "pending" : result.ok && !workspaceConflict ? "success" : "failed", output: receiptOutput, inputHashes: tool.name === "run_shell" && isVerificationCommand(args) ? pending.inputHashes : await this.hashes() };
+    const receipt: InvocationReceipt = { ...pending, admitted: invoked, status: uncertain ? "pending" : result.ok && !workspaceConflict ? "success" : "failed", output: receiptOutput, inputHashes: tool.name === "run_shell" && isVerificationCommand(args) ? pending.inputHashes : await this.hashes() };
     this.receipts.set(receipt.id, receipt);
     await this.emit("tool_receipt", { receipt });
     if (uncertain) this.active?.abort(new Error(`Uncertain remote operation ${receipt.id}; reconcile the observed outcome before continuing`));
@@ -884,7 +891,10 @@ export class SessionController {
       const threshold = this.options.resolved.config.taskControl?.repeatedFailureThreshold ?? 3;
       if (repeats >= threshold) {
         const readyTaskIds = this.state?.tasks.filter(task => task.status === "ready").slice(0, 10).map(task => task.id) ?? [];
-        const hint = `Repeated ${tool.name} with unchanged inputs (${repeats} times). Read the specific failure and change the approach; repeating reads or tests is not progress. ${activeTask ? `Current task: ${activeTask.id}.` : `Claim a ready task before implementation: ${readyTaskIds.join(", ") || "inspect work_status"}.`} Use work_status for bounded records; preserve all required work.`;
+        const nextStep = this.gate.profile === "plan"
+          ? "This turn is planning-only. Use work_status to inspect the recorded plan and decisions. Resolve a specific remaining planning question, or return a concise planning summary with unresolved questions and leave implementation open. Unmet implementation criteria do not require more planning reads."
+          : `${activeTask ? `Current task: ${activeTask.id}.` : `Claim a ready task before implementation: ${readyTaskIds.join(", ") || "inspect work_status"}.`} Use work_status for bounded records; preserve all required work.`;
+        const hint = `Repeated ${tool.name} with unchanged inputs (${repeats} times). Read the specific failure and change the approach; repeating reads or tests is not progress. ${nextStep}`;
         await this.emit("progress_stalled", { tool: tool.name, repeats, unchangedInputs: true, readyTaskIds, action: hint });
         if (result.ok) result.output += `\n\n[Progress guidance: ${hint}]`;
         else if (result.error) result.error.message += `\n${hint}`;
