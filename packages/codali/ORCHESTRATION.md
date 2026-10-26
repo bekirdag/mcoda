@@ -262,3 +262,29 @@ x64 GNU, macOS Intel and macOS ARM. An empty development runtime manifest is
 valid for local work with an explicit qualified binary, but cannot be
 published through the release script. Clean installation does not substitute
 for the live routing, media, long-session and canary gates in the build plan.
+
+### Planning evaluation
+
+`eval/PlanningCorpusRunner.runPlanningCorpus` runs six bounded planning probes
+through the real session controller, configured provider and `plan` permission
+profile. It accepts `configPath`, a new `outputRoot`, optional `caseIds`, `effort`
+and cancellation `signal`. Use a frozen package installation and retain its
+manifest; the runner refuses configuration or compiled-client changes between
+cases. It does not publish, execute a planned task or modify the supplied
+production repositories.
+
+The probes cover additive migration, artifact recovery, embedding-space changes,
+worker fencing, connector authorization and usage accounting. Grading checks
+durable requirement IDs/text, ownership, dependency reachability, narrow paths,
+phases, constrained architecture choices, original intent, workspace preservation
+and compaction/resume. Invented criteria and premature completion fail. The
+grader's reference plans and dependency answers stay outside model workspaces;
+mutation tests deliberately break each major contract.
+
+These are closed-world planning probes with explicit criterion labels and
+architecture options. Rationale grading checks presence, not its semantic
+quality. Docdex is disabled because the probes contain no code; retrieval,
+implementation, multi-hour retention, helper benefit and unrestricted architecture
+quality require separate evidence. Reports retain failures, routes, usage and
+the actual work record. A rerun used to debug a failure is diagnostic evidence,
+not a fresh held-out result.
