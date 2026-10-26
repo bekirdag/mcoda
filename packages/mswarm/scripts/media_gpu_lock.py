@@ -34,9 +34,9 @@ class MediaGpuRecoveryRequired(MediaGpuError):
     code = "media_gpu_recovery_required"
 
 
-def _open_scheduler() -> int:
+def _open_scheduler(lock_path: str | None = None) -> int:
     runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    path = os.environ.get("MCODA_MEDIA_GPU_LOCK_PATH", str(runtime_dir / "mcoda-media-gpu1.lock"))
+    path = lock_path or os.environ.get("MCODA_MEDIA_GPU_LOCK_PATH", str(runtime_dir / "mcoda-media-gpu1.lock"))
     fd = -1
     try:
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)

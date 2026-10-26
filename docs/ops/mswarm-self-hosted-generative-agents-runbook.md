@@ -7,6 +7,65 @@ outbound `@mcoda/mswarm` self-hosted node. Commands that operate the model or
 service manager are intended for the owner of `sukunahikona`; this document does
 not deploy anything or require a public listener on that host.
 
+## Host RAM admission for model loading
+
+GPU headroom does not establish that a cold model load fits in host RAM. The
+optional `scripts/native_load_guard.py` coordinates a Python native runtime
+with the same durable lease used by the media bridges. Enable it only through
+a qualified runtime integration; setting an environment variable alone does
+not add the integration to an arbitrary inference server.
+
+The trusted host profile supplies `MCODA_NATIVE_LOAD_POLICY`, an absolute path
+to a private, owner-owned JSON file. The following is a configuration example;
+measure load peaks and restoration allocations on each host before choosing
+these limits:
+
+```json
+{
+  "schemaVersion": 1,
+  "lockPath": "/run/user/1000/mcoda-media-gpu1.lock",
+  "waitSeconds": 1200,
+  "minAvailableMiB": 98304,
+  "restoreReserveMiB": 8192,
+  "serviceTimeoutSeconds": 330,
+  "services": [
+    {
+      "unit": "mcoda-wan2.2-video-native.service",
+      "restoreMiB": 20480,
+      "readyUrl": "http://127.0.0.1:11447/sdcpp/v1/capabilities"
+    },
+    {
+      "unit": "sd35-q4-server.service",
+      "restoreMiB": 8192,
+      "readyUrl": "http://127.0.0.1:11445/sdcpp/v1/capabilities"
+    }
+  ]
+}
+```
+
+Before loading, the runtime must confirm its old process has stopped. The
+guard waits for active media to release the lease, refuses unresolved receipts,
+parks only configured peers that were active, and checks Linux `MemAvailable`.
+It holds the lease through native readiness and sequential restoration of the
+original peers. Each restored peer must pass its configured loopback readiness
+endpoint before the next peer starts. The guard ignores proxy variables and
+refuses readiness redirects. Inactive peers remain inactive.
+
+The runtime calls `confirm_ready()` after the native READY protocol, or
+`confirm_stopped()` after a failed attempt's process is proved dead. Missing
+proof, abrupt process death, or failed peer restoration retains a durable fence
+with the parked unit names. Reconcile the exact receipt only after native
+process and job outcomes are established; never unlink or truncate the lock to
+force admission. Model loading does not replay a failed inference request.
+
+All media traffic, including SSH forwards and other applications, must use the
+bridges that hold this lease. A direct native generation endpoint bypasses the
+admission contract. Arrange service startup so configured peers cannot begin
+loading independently after the guard has inspected their state. Qualify cold
+start, restart, automatic model recovery, active-media waiting, and graceful
+rollback before enabling the policy. Preserve strict offline mode in Strata;
+this guard needs no model download or arbitrary shell hook.
+
 ## Identifier and Routing Contract
 
 Keep the local upstream model separate from the public mswarm model:
