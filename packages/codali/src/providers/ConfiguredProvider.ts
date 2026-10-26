@@ -5,6 +5,7 @@ import { resolveCredential } from "../runcontext/CredentialFile.js";
 import { resolveBinding, type OrchestrationProvider, type ResolvedOrchestrationConfig, type ModelOperation, type EffortLevel } from "../config/OrchestrationConfig.js";
 import { OpenAiCompatibleProvider } from "./OpenAiCompatibleProvider.js";
 import { ModelServiceError } from "./ModelServiceError.js";
+import { parseRequestUsage, type RequestUsageReceipt } from "./RequestUsage.js";
 import { registerSecretValue } from "../runtime/SecretRedaction.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "./ProviderTypes.js";
 
@@ -112,6 +113,13 @@ export class ModelServiceClient {
   async usage(signal?: AbortSignal): Promise<unknown> {
     if (this.provider.adapter !== "mswarm" && !this.provider.usageUrl) return { available: false };
     return this.json(this.provider.usageUrl ?? new URL("/v1/swarm/runtime/usage-limits", this.provider.baseUrl).toString(), { signal });
+  }
+
+  async requestUsage(requestId: string, signal?: AbortSignal): Promise<RequestUsageReceipt> {
+    if (this.provider.adapter !== "mswarm") throw new Error("Provider has no authenticated request receipt contract");
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestId)) throw new Error("Invalid request UUID");
+    const url = new URL(`/v1/swarm/self-hosted/requests/${encodeURIComponent(requestId)}/receipts`, this.provider.baseUrl);
+    return parseRequestUsage(requestId, await this.json(url.href, { signal, timeoutMs: 10_000 }));
   }
 
   /** The proxy and selected node must both advertise this transport contract.

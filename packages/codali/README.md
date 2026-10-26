@@ -51,7 +51,7 @@ runtime versions remain available for existing profiles.
 
 | Command | Purpose |
 | --- | --- |
-| `/status`, `/usage` | Current execution state, local accounting and server limits |
+| `/status`, `/usage` | Current execution state, reconciled accounting and server limits |
 | `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
 | `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
 | `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
@@ -63,6 +63,15 @@ runtime versions remain available for existing profiles.
 | `/artifacts` | Inspect durable image, audio and video jobs and artifact checksums |
 | `/reconcile ID success\|failed NOTE` | Record an observed outcome for an interrupted tool invocation |
 | `/export`, `/retention DAYS`, `/delete-session ID` | Export redacted events, preview retention candidates, or delete an inactive session |
+
+Between turns, `/usage` reconciles up to 16 model requests with authenticated
+mSwarm receipts. Repeat it if `remaining` is nonzero. Durable request IDs join
+local calls to server attempts; successful reconciliation is replay-safe across
+restarts. Missing, active, truncated or unreported receipts remain unresolved,
+and an incomplete legacy ledger cannot reduce the shared budget. Reconciliation
+requires the receipt endpoint and the original configured provider/key; older
+servers return an explicit unavailable result. During a turn it is deferred.
+Accounting settlement does not mark the coding task complete or replay inference.
 
 `plan` permits reads; `ask` asks before side effects; `workspace` permits scoped
 file edits and isolated shell commands. Web research, memory writes and media

@@ -203,7 +203,10 @@ export class TerminalCommand {
       if (name === "/quit") { closed = true; queued.length = 0; controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); return; }
       if (name === "/help") output(HELP);
       else if (name === "/status") output(controller.status());
-      else if (name === "/usage") output({ session: controller.usageSnapshot(), server: await usageFor(resolved) });
+      else if (name === "/usage") {
+        const reconciliation = await controller.reconcileUsage();
+        output({ session: controller.usageSnapshot(), reconciliation, server: await usageFor(resolved) });
+      }
       else if (name === "/permissions") { if (value === "clear") await controller.clearPermissionGrants(); else if (value) { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Expected plan, ask, workspace or clear"); controller.gate.setProfile(value as PermissionProfile); } output(controller.gate.inspect()); }
       else if (name === "/effort") { if (value) { if (controller.busy) throw new Error("Change effort between turns"); if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Expected low, medium, high or max"); controller.effort = value as EffortLevel; } output({ effort: controller.effort }); }
       else if (name === "/config") { if (value === "reload") { const next = await loadOrchestrationConfig(resolved.source); await controller.reloadConfiguration(next); resolved = next; } else if (value) throw new Error("Usage: /config [reload]"); output({ source: resolved.source, hash: resolved.hash, configuration: resolved.config }); }

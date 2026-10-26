@@ -7,7 +7,7 @@ import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
 import { activeWorkContext, amendWorkGoal, assertWorkAttempt, claimWorkTask, completeWorkGoal, recordDecision, recordWorkEvidence, refreshReadyTasks, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask, replaceWorkPlan, updateWorkPlan, verifyWorkTask } from "../session/WorkState.js";
 import type { WorkState, WorkTask } from "../session/WorkTypes.js";
 import { formatInstructionBlocks, loadInstructionBlocks } from "../session/InstructionLoader.js";
-import { ConfiguredProvider, NativeReasoningTransportError, type ModelInvocation } from "../providers/ConfiguredProvider.js";
+import { ConfiguredProvider, ModelServiceClient, NativeReasoningTransportError, type ModelInvocation } from "../providers/ConfiguredProvider.js";
 import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
@@ -16,6 +16,7 @@ import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
 import { ProgressTracker } from "./ProgressTracker.js";
+import { accountedUsage, usageAccounts } from "./UsageReconciliation.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { ToolExecutionError, type ToolDefinition, type ToolDescriptor, type ToolExecutionResult } from "../tools/ToolTypes.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -260,6 +261,59 @@ export class SessionController {
       usage: this.usage, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
   }
   usageSnapshot(): SessionUsage { return { ...this.usage, estimated: this.usage.estimated || this.reservations.size > 0 }; }
+  async reconcileUsage(): Promise<Record<string, unknown>> {
+    if (!this.sessionId || this.busy) return { deferred: this.busy ? "A turn is running" : "No active session" };
+    const active = new AbortController(); this.active = active;
+    const lock = new WorkspaceLock(path.dirname(this.store.storageDir), this.sessionId);
+    try {
+      await lock.acquire();
+      const events = (await this.store.readTranscript(this.sessionId)).map(item => item.data.event as SessionEvent | undefined)
+        .filter((event): event is SessionEvent => !!event);
+      for (const event of events) {
+        this.sequence = Math.max(this.sequence, event.sequence);
+        if (event.type === "usage") this.usage = event.data.usage as unknown as SessionUsage;
+        else if (event.data.sessionUsage) this.usage = event.data.sessionUsage as unknown as SessionUsage;
+      }
+      const accounts = usageAccounts(events);
+      this.reservations.clear();
+      for (const account of accounts.values()) {
+        if (account.counted && !account.usage) {
+          this.usage.estimated = true;
+          if (account.reserve !== undefined) this.reservations.set(account.id, account.reserve);
+        }
+      }
+      const candidates = [...accounts.values()].filter(account => account.kind === "model" && account.counted && !account.reconciled &&
+        account.clientRequestId && account.modelId && account.configHash === this.options.resolved.hash &&
+        this.options.resolved.config.providers[this.options.resolved.config.models[account.modelId]?.provider]?.adapter === "mswarm");
+      const receipts: Array<Record<string, unknown>> = []; const unresolved: Array<Record<string, unknown>> = [];
+      for (const account of candidates.slice(0, 16)) {
+        active.signal.throwIfAborted();
+        try {
+          const provider = this.options.resolved.config.providers[this.options.resolved.config.models[account.modelId!].provider];
+          const receipt = await new ModelServiceClient(provider).requestUsage(account.clientRequestId!, active.signal);
+          if (!receipt.complete || !receipt.usage) { unresolved.push({ id: account.id, reason: receipt.reason }); continue; }
+          receipts.push({ id: account.id, clientRequestId: account.clientRequestId, usage: receipt.usage, invocationIds: receipt.invocationIds });
+          account.usage = receipt.usage; account.reconciled = true;
+        } catch (error) {
+          active.signal.throwIfAborted();
+          unresolved.push({ id: account.id, reason: redactSecretValues(error instanceof Error ? error.message : String(error)) });
+        }
+      }
+      const totals = accountedUsage(accounts.values());
+      const budgetUpdated = receipts.length > 0 && !!totals && totals.modelCalls === this.usage.modelCalls && totals.embeddingCalls === (this.usage.embeddingCalls ?? 0);
+      // Incomplete legacy ledgers cannot justify changing a shared budget. New
+      // reservations and settlements carry their snapshot in the same event.
+      const next = budgetUpdated ? { ...this.usage, ...totals! } : this.usage;
+      const summary = { attempted: Math.min(candidates.length, 16), confirmed: receipts.length, unresolved,
+        remaining: Math.max(0, candidates.length - 16), budgetUpdated };
+      if (receipts.length) {
+        await this.emit("model_usage_reconciled", { receipts, sessionUsage: next, summary });
+        this.usage = next;
+        if (budgetUpdated) for (const receipt of receipts) this.reservations.delete(String(receipt.id));
+      }
+      return summary;
+    } finally { if (this.active === active) this.active = undefined; await lock.release(); }
+  }
   mediaStore(): MediaJobStore {
     if (!this.sessionId) throw new Error("No active session");
     return new MediaJobStore(path.join(this.store.storageDir, this.sessionId, "media"), this.sessionId);
@@ -426,11 +480,18 @@ export class SessionController {
       this.sequence = Math.max(this.sequence, event.sequence);
       if (event.type === "tool_intent" || event.type === "tool_receipt") { const receipt = event.data.receipt as unknown as InvocationReceipt; this.receipts.set(receipt.id, receipt); }
       if (event.type === "usage") this.usage = event.data.usage as unknown as SessionUsage;
+      else if (event.data.sessionUsage) this.usage = event.data.sessionUsage as unknown as SessionUsage;
       if (event.type === "checkpoint") this.messages = (event.data.messages as ProviderMessage[] | undefined) ?? [];
       if (event.type === "conversation_state") this.messages = (event.data.messages as ProviderMessage[] | undefined) ?? [];
       if (event.type === "files_touched") for (const file of event.data.paths as string[]) this.touched.add(file);
       if (event.type === "workspace_baseline") this.baseline = event.data.snapshot as unknown as WorkspaceSnapshot;
       if (event.type === "authorization_state" && event.data.configHash === this.options.resolved.hash) this.gate.restoreGrants(event.data.grants as unknown as PermissionGrants);
+    }
+    for (const account of usageAccounts(transcript.map(item => item.data.event as SessionEvent | undefined).filter((event): event is SessionEvent => !!event)).values()) {
+      if (account.counted && !account.usage) {
+        this.usage.estimated = true;
+        if (account.reserve !== undefined) this.reservations.set(account.id, account.reserve);
+      }
     }
     await this.emit("session_resumed", { goalRevision: this.state.goalRevision, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id) });
     if (this.state.projectTask?.pendingSubmission || this.state.projectTask?.submittedOperationId) {
@@ -678,7 +739,8 @@ export class SessionController {
         throw new Error("Shared model/token budget exhausted; checkpoint retained");
       }
       this.usage.modelCalls += 1; this.usage.tokens += reserve; this.reservations.set(id, reserve);
-      await this.emit("model_intent", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, toolNames: request.tools?.map(tool => tool.name) ?? [] });
+      await this.emit("model_intent", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, reservedTokens: reserve,
+        sessionUsage: this.usageSnapshot(), toolNames: request.tools?.map(tool => tool.name) ?? [] });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
       const response = await configured.generate({ ...request, requestId: id }).catch(async error => {
         if (!ownsTurn()) throw error;
@@ -688,12 +750,12 @@ export class SessionController {
             this.usage.modelCalls--;
             this.reservations.delete(id);
             await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
-            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("usage", { usage: this.usage });
           } else {
             // A failed transport may have executed remotely. Keep its reservation
             // and distinguish an unknown outcome from a zero-cost failure.
-            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, estimated: true });
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, sessionUsage: this.usageSnapshot(), estimated: true });
           }
         });
         throw error;
@@ -706,7 +768,7 @@ export class SessionController {
         if (reported) this.usage.tokens += reported.total - reserve; else this.usage.estimated = true;
         this.usage.inputTokens += reported?.input ?? 0; this.usage.outputTokens += reported?.output ?? 0;
         this.reservations.delete(id);
-        await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route,
+        await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route, sessionUsage: this.usageSnapshot(),
           usage: { inputTokens: reported?.input, outputTokens: reported?.output, totalTokens: reported?.total ?? reserve, estimated: !reported } });
         await this.emit("usage", { usage: this.usage });
       });
