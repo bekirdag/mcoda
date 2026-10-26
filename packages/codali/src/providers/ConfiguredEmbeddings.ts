@@ -9,6 +9,8 @@ import { ConfiguredProvider } from "./ConfiguredProvider.js";
 export interface EmbeddingReceipt {
   id: string; modelId: string; catalogId: string; spaceId: string; configHash: string;
   purpose: "query" | "document"; inputs: number; reportedTokens?: number; elapsedMs: number;
+  status: "succeeded" | "failed";
+  failureCode?: "aborted" | "request_failed" | "upstream_error" | "invalid_response";
 }
 export interface EmbeddingIntent { id: string; modelId: string; catalogId: string; spaceId: string; inputs: number; estimatedTokens: number; }
 
@@ -48,21 +50,39 @@ export class ConfiguredEmbeddings {
     const id = randomUUID();
     await this.beforeRequest?.({ id, modelId: selected.id, catalogId: selected.model.catalogId, spaceId: this.space.id,
       inputs: input.length, estimatedTokens: Math.ceil(JSON.stringify(prepared.input).length / 3) });
-    const payload = await this.router.client(selected.model.provider).json(`${selected.provider.baseUrl.replace(/\/$/, "")}/embeddings`, {
-      method: "POST", body: { ...prepared, model: selected.model.catalogId }, signal, timeoutMs: 120_000,
-    });
-    const result = validateEmbeddingResponse(payload, input.length, this.space.dimensions, selected.model.catalogId);
-    if (selected.provider.adapter === "mswarm" && (payload as Record<string, unknown>).embedding_revision !== this.space.revision) throw new Error("Embedding response revision changed after selection");
-    const vectors = result.data.map(item => {
-      if (this.space.normalization === "none") return item.embedding;
-      const scale = Math.max(...item.embedding.map(Math.abs));
-      if (!scale) throw new Error("Embedding model returned a zero vector");
-      const norm = Math.sqrt(item.embedding.reduce((sum, value) => sum + (value / scale) ** 2, 0));
-      return item.embedding.map(value => value / scale / norm);
-    });
-    await this.onReceipt?.({ id, modelId: selected.id, catalogId: selected.model.catalogId,
-      spaceId: this.space.id, configHash: this.resolved.hash, purpose, inputs: input.length,
-      ...(result.usage ? { reportedTokens: result.usage.total_tokens } : {}), elapsedMs: Date.now() - started });
+    const receipt = { id, modelId: selected.id, catalogId: selected.model.catalogId,
+      spaceId: this.space.id, configHash: this.resolved.hash, purpose, inputs: input.length };
+    let failureCode: EmbeddingReceipt["failureCode"] = "request_failed";
+    let vectors: number[][];
+    let reportedTokens: number | undefined;
+    try {
+      const payload = await this.router.client(selected.model.provider).json(`${selected.provider.baseUrl.replace(/\/$/, "")}/embeddings`, {
+        method: "POST", body: { ...prepared, model: selected.model.catalogId }, signal, timeoutMs: 120_000,
+      });
+      // A relay may start a 200 keepalive before native execution fails.
+      // Do not expose upstream messages, which can contain private input.
+      if (payload && typeof payload === "object" && "error" in payload) {
+        failureCode = "upstream_error";
+        throw new Error("Embedding upstream execution failed");
+      }
+      failureCode = "invalid_response";
+      const result = validateEmbeddingResponse(payload, input.length, this.space.dimensions, selected.model.catalogId);
+      if (selected.provider.adapter === "mswarm" && (payload as Record<string, unknown>).embedding_revision !== this.space.revision) throw new Error("Embedding response revision changed after selection");
+      vectors = result.data.map(item => {
+        if (this.space.normalization === "none") return item.embedding;
+        const scale = Math.max(...item.embedding.map(Math.abs));
+        if (!scale) throw new Error("Embedding model returned a zero vector");
+        const norm = Math.sqrt(item.embedding.reduce((sum, value) => sum + (value / scale) ** 2, 0));
+        return item.embedding.map(value => value / scale / norm);
+      });
+      reportedTokens = result.usage?.total_tokens;
+    } catch (error) {
+      await this.onReceipt?.({ ...receipt, status: "failed", failureCode: signal?.aborted ? "aborted" : failureCode,
+        elapsedMs: Date.now() - started });
+      throw error;
+    }
+    await this.onReceipt?.({ ...receipt, status: "succeeded",
+      ...(reportedTokens !== undefined ? { reportedTokens } : {}), elapsedMs: Date.now() - started });
     return vectors;
   }
 }

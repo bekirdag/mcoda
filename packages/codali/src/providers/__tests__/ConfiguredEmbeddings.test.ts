@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { configuredEmbeddingSpace, validateOrchestrationConfig, orchestrationHash } from "../../config/OrchestrationConfig.js";
-import { ConfiguredEmbeddings, type EmbeddingReceipt } from "../ConfiguredEmbeddings.js";
+import { ConfiguredEmbeddings, type EmbeddingReceipt, type EmbeddingIntent } from "../ConfiguredEmbeddings.js";
 
 function config(baseUrl: string) {
   return validateOrchestrationConfig({ schemaVersion: 1, profile: "embedding-test", providers: { local: { adapter: "openai-compatible", baseUrl } },
@@ -50,7 +50,11 @@ test("configured embeddings prefix queries, validate results, report usage and f
     assert.equal(receipts[0].reportedTokens, 8);
     bad = true;
     await assert.rejects(client.embed(["hello"], "document"), /dimension/);
-    assert.equal(receipts.length, 1);
+    assert.equal(receipts.length, 2);
+    assert.equal(receipts[0].status, "succeeded");
+    assert.equal(receipts[1].status, "failed");
+    assert.equal(receipts[1].failureCode, "invalid_response");
+    assert.equal(receipts[1].reportedTokens, undefined);
     value.models.embed.revision = "sha256:new-artifact";
     const upgraded = new ConfiguredEmbeddings({ config: value, hash: orchestrationHash(value), source: "test" });
     await assert.rejects(upgraded.pin(root), /rebuild into a separate index/);
@@ -59,5 +63,45 @@ test("configured embeddings prefix queries, validate results, report usage and f
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("embedding failures settle each admitted intent without leaking input or inventing usage", async () => {
+  const privateInput = "private repository objective";
+  let outcome: "relay" | "http" | "aborted" = "relay";
+  const controller = new AbortController();
+  const server = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/v1/models") { response.end(JSON.stringify({ data: [{ id: "embed" }] })); return; }
+    for await (const _ of request) { /* drain the submitted request */ }
+    if (outcome === "aborted") { controller.abort(); return; }
+    response.statusCode = outcome === "http" ? 502 : 200;
+    response.end(JSON.stringify({ error: { code: "upstream_error", message: privateInput } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const value = config(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+  const receipts: EmbeddingReceipt[] = [];
+  const intents: EmbeddingIntent[] = [];
+  const client = new ConfiguredEmbeddings({ config: value, hash: orchestrationHash(value), source: "test" },
+    async receipt => { receipts.push(receipt); }, async intent => { intents.push(intent); });
+  try {
+    await assert.rejects(client.embed([privateInput], "query"), /Embedding upstream execution failed/);
+    outcome = "http";
+    await assert.rejects(client.embed([privateInput], "document"));
+    outcome = "aborted";
+    await assert.rejects(client.embed([privateInput], "query", controller.signal));
+    assert.equal(receipts.length, 3);
+    assert.deepEqual(receipts.map(receipt => receipt.id), intents.map(intent => intent.id));
+    assert.deepEqual(receipts.map(receipt => receipt.failureCode), ["upstream_error", "request_failed", "aborted"]);
+    assert.ok(receipts.every(receipt => receipt.status === "failed" && receipt.reportedTokens === undefined));
+    assert.ok(intents.every(intent => intent.estimatedTokens > 0));
+    assert.ok(!JSON.stringify(receipts).includes(privateInput));
+    const denied = new ConfiguredEmbeddings({ config: value, hash: orchestrationHash(value), source: "test" },
+      async receipt => { receipts.push(receipt); }, async () => { throw new Error("Budget exhausted"); });
+    await assert.rejects(denied.embed([privateInput], "query"), /Budget exhausted/);
+    assert.equal(receipts.length, 3);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
