@@ -43,7 +43,7 @@ const coding: CodingCase[] = [
     files: { "src/headers.mjs": "export const normalizeHeaders = entries => Object.fromEntries(entries);\n", "src/task.mjs": "export const buildRequest=(entries,body)=>({headers:Object.fromEntries(entries),body});\n" },
     reference: { "src/headers.mjs": "export function normalizeHeaders(entries){const out=Object.create(null);for(const [raw,value]of entries){if(typeof raw!=='string'||typeof value!=='string')throw new TypeError('strings');const name=raw.replace(/^[ \\t]+|[ \\t]+$/g,'').toLowerCase();if(!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)||/[\\r\\n]/.test(value))throw new TypeError('header');const v=value.replace(/^[ \\t]+|[ \\t]+$/g,'');out[name]=Object.hasOwn(out,name)?out[name]+', '+v:v;}return out;}\n", "src/task.mjs": "import {normalizeHeaders} from './headers.mjs';\nexport const buildRequest=(entries,body)=>({headers:normalizeHeaders(entries),body});\n" },
     smoke: "assert.equal(m.buildRequest([['X-Id','a'],[' x-ID ','b']],null).headers['x-id'],'a, b');",
-    checks: "const {normalizeHeaders}=await import('./src/headers.mjs');const body={};const h=m.buildRequest(Object.freeze([Object.freeze(['__proto__','ok'])]),body);assert.equal(Object.getPrototypeOf(h.headers),null);assert.equal(h.headers.__proto__,'ok');assert.equal(h.body,body);assert.equal(normalizeHeaders([['X','  a\\t'],['x','']]).x,'a, ');for(const name of ['','a:b','a b','é','\\nx'])assert.throws(()=>normalizeHeaders([[name,'x']]),TypeError);for(const v of ['a\\nb','a\\rb'])assert.throws(()=>normalizeHeaders([['x',v]]),TypeError);",
+    checks: "const {normalizeHeaders}=await import('./src/headers.mjs');const body={};const h=m.buildRequest(Object.freeze([Object.freeze(['__proto__','ok'])]),body);assert.equal(Object.getPrototypeOf(h.headers),null);assert.equal(h.headers.__proto__,'ok');assert.equal(h.body,body);assert.equal(normalizeHeaders([['X','  a\\t'],['x','']]).x,'a, ');for(const name of ['','a:b','a b','é','\\nx'])assert.throws(()=>normalizeHeaders([[name,'x']]));for(const v of ['a\\nb','a\\rb'])assert.throws(()=>normalizeHeaders([['x',v]]));",
   },
   {
     id: "async-worker-pool",
@@ -95,7 +95,7 @@ const reports: ReportCase[] = [
     expected: { owner: "src/cache.mjs", callers: ["src/profile.mjs", "src/update.mjs"], isolation: "unsafe", cause: "tenant-omitted", remedy: "include-tenant-and-user" } },
 ];
 
-export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v2";
+export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v3";
 export function terminalWorkflowCorpus(): TerminalCorpusTask[] {
   const common = (id: string) => ({ "package.json": JSON.stringify({ name: `workflow-${id}`, private: true, type: "module", scripts: { test: "node --test test/task.test.mjs" } }, null, 2) + "\n", "USER_NOTES.txt": `User-owned ${id} notes. Preserve byte for byte.\n` });
   const tasks: TerminalCorpusTask[] = coding.map(item => ({ id: item.id, family: "multi-file", variant: 1, split: "held-out",

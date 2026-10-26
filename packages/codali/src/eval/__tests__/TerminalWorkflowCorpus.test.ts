@@ -51,6 +51,23 @@ test("workflow IDs and content hash are stable and distinct", () => {
   assert.equal(tasks.filter(t => t.family === "multi-file").length, 8);
 });
 
+for (const mutation of ["generic-error", "invalid-name", "crlf-value"] as const) {
+  test(`workflow v3 header contract: ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+    const task = terminalWorkflowCorpus().find(t => t.id === "header-normalization")!;
+    await fixture(task, async workspace => {
+      await reference(task, workspace);
+      const implementation = task.reference["src/headers.mjs"].replace(/new TypeError/g, "new Error").replace("export function normalizeHeaders", "function inner");
+      const bypass = mutation === "invalid-name" ? "entries.some(([name])=>name==='')"
+        : mutation === "crlf-value" ? "entries.some(([,value])=>/[\\r\\n]/.test(value))" : "false";
+      await fs.writeFile(path.join(workspace, "src/headers.mjs"), implementation +
+        `export function normalizeHeaders(entries){if(${bypass})return Object.create(null);return inner(entries);}\n`);
+      const result = await gradeTerminalTask(task, workspace);
+      assert.equal(result.passed, mutation === "generic-error", JSON.stringify(result));
+      assert.equal(result.contractPassed, mutation === "generic-error");
+    });
+  });
+}
+
 for (const mutation of ["wrong-report", "protected-source", "weaken-tests", "extra-file", "missing-report"] as const) {
   test(`workflow investigation rejects ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "investigate-tenant-key")!;
