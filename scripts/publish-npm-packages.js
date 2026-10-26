@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { PACKAGE_DIRS, packTarballs, readPackedJsonFile } from './pack-npm-tarballs.js';
+import { PACKAGE_DIRS, loadPackedTarballs, packTarballs, readPackedJsonFile } from './pack-npm-tarballs.js';
 
 export function resolvePackageDirs(env = process.env) {
   const packageDirs = [
@@ -199,7 +199,9 @@ async function main() {
   assertReleaseVersions(packageDirs.map(dir => ({ manifest: readPackage(dir) })));
   const dest = mkdtempSync(join(tmpdir(), 'mcoda-release-tarballs-'));
   try {
-    const packages = packTarballs({ dest, packageDirs });
+    const packages = process.env.MCODA_PUBLISH_ARTIFACTS_DIR
+      ? loadPackedTarballs({ dest: resolve(process.env.MCODA_PUBLISH_ARTIFACTS_DIR), packageDirs })
+      : packTarballs({ dest, packageDirs });
     const channel = assertReleaseVersions(packages);
     const codali = packages.find(pkg => pkg.manifest.name === '@mcoda/codali');
     if (codali) await assertCodaliRuntimePublishable(readPackedJsonFile(codali.tarballPath, 'package/config/docdex-runtime.json'));

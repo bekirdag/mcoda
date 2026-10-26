@@ -58,7 +58,21 @@ jobs:
         run: node tests/all.js
 
       - name: Pack npm tarballs
-        run: node scripts/pack-npm-tarballs.js
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          import { packTarballs } from './scripts/pack-npm-tarballs.js';
+          packTarballs();
+          const repeat = mkdtempSync(path.join(os.tmpdir(), 'mcoda-release-repeat-'));
+          try {
+            packTarballs({dest: repeat});
+            assert.equal(readFileSync('artifacts/package-artifacts.json', 'utf8'), readFileSync(path.join(repeat, 'package-artifacts.json'), 'utf8'));
+          } finally { rmSync(repeat, {recursive: true, force: true}); }
+          JS
 
       - name: Bundle release archive
         shell: bash
@@ -72,8 +86,39 @@ jobs:
           name: ${{ matrix.archive }}
           path: release/${{ matrix.archive }}.tar.gz
 
-  publish-npm:
+  qualify-terminal:
     needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15-intel, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcoda-linux-x64-gnu
+          path: release
+      - name: Install the exact publication artifacts on this platform
+        shell: bash
+        run: |
+          mkdir -p artifacts/qualified
+          tar -xzf release/mcoda-linux-x64-gnu.tar.gz -C artifacts/qualified
+          node scripts/verify-codali-package-install.mjs --artifacts-dir artifacts/qualified --output artifacts/codali-clean-install.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codali-release-install-${{ matrix.os }}-node${{ matrix.node }}
+          path: artifacts/codali-clean-install.json
+
+  publish-npm:
+    needs: [package, qualify-terminal]
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -99,6 +144,16 @@ jobs:
 
       - name: Packaging guardrails
         run: pnpm --filter mcoda run pack:verify
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcoda-linux-x64-gnu
+          path: release
+
+      - name: Unpack the already-qualified publication artifacts
+        run: |
+          mkdir -p artifacts/qualified
+          tar -xzf release/mcoda-linux-x64-gnu.tar.gz -C artifacts/qualified
 
       - name: Verify tag matches package versions
         env:
@@ -150,5 +205,6 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
           MCODA_PUBLISH_AGENT_SETUP: "1"
           MCODA_PUBLISH_CODALI: "1"
+          MCODA_PUBLISH_ARTIFACTS_DIR: artifacts/qualified
         run: |
           pnpm run release:publish:npm

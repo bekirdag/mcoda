@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -227,6 +228,43 @@ export function readPackedJsonFile(tarballPath, memberPath) {
   throw new Error(`${tarballPath} does not contain ${memberPath}`);
 }
 
+const archiveHash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+export function writePackedArtifactManifest(packages, dest) {
+  const manifest = { schemaVersion: 1, revision: process.env.GITHUB_SHA ?? null,
+    packages: packages.map(pkg => ({ name: pkg.manifest.name, version: pkg.manifest.version,
+      filename: path.basename(pkg.tarballPath), sha256: archiveHash(pkg.tarballPath) })) };
+  writeFileSync(path.join(dest, 'package-artifacts.json'), canonicalJson(manifest));
+  return manifest;
+}
+
+/** Consume the exact bundle qualified by CI. Never normalize or rebuild it. */
+export function loadPackedTarballs({ root = process.cwd(), dest, packageDirs = PACKAGE_DIRS, workspacePackageDirs = PACKAGE_DIRS, expectedRevision = process.env.GITHUB_SHA } = {}) {
+  if (!dest) throw new Error('A qualified artifact directory is required');
+  const metadata = JSON.parse(readFileSync(path.join(dest, 'package-artifacts.json'), 'utf8'));
+  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.packages)) throw new Error('Invalid package artifact manifest');
+  if (expectedRevision && metadata.revision !== expectedRevision) throw new Error('Package artifact source revision does not match this checkout');
+  const entries = new Map();
+  for (const entry of metadata.packages) {
+    if (!entry || typeof entry.name !== 'string' || entries.has(entry.name) || !/^[a-f0-9]{64}$/.test(entry.sha256 ?? '')) throw new Error('Invalid/duplicate package artifact entry');
+    entries.set(entry.name, entry);
+  }
+  const sources = workspacePackageDirs.map(dir => JSON.parse(readFileSync(path.join(root, dir, 'package.json'), 'utf8')));
+  const internalVersions = new Map(sources.map(pkg => [pkg.name, pkg.version]));
+  return packageDirs.map(packageDir => {
+    const sourceManifest = JSON.parse(readFileSync(path.join(root, packageDir, 'package.json'), 'utf8'));
+    const entry = entries.get(sourceManifest.name);
+    const filename = packageTarballFilename(sourceManifest);
+    if (!entry || entry.version !== sourceManifest.version || entry.filename !== filename) throw new Error(`Missing/mismatched qualified artifact for ${sourceManifest.name}`);
+    const tarballPath = path.resolve(dest, filename);
+    const info = lstatSync(tarballPath);
+    if (!info.isFile() || info.isSymbolicLink() || archiveHash(tarballPath) !== entry.sha256) throw new Error(`Qualified artifact checksum mismatch: ${sourceManifest.name}`);
+    const manifest = readPackedPackageJson(tarballPath);
+    assertPackedManifestPortable({ sourceManifest, packedManifest: manifest, internalVersions, tarballPath });
+    return { packageDir, tarballPath, manifest };
+  });
+}
+
 export function packTarballs({
   root = process.cwd(),
   dest = path.join(root, 'artifacts'),
@@ -235,6 +273,7 @@ export function packTarballs({
   pnpmCommand = resolvePnpmCommand(),
   execFile = execFileSync,
 } = {}) {
+  dest = path.resolve(dest);
   mkdirSync(dest, { recursive: true });
 
   const workspacePackages = workspacePackageDirs.map((packageDir) => {
@@ -289,6 +328,7 @@ export function packTarballs({
     results.push({ packageDir, tarballPath, manifest: packedManifest });
   }
 
+  writePackedArtifactManifest(results, dest);
   return results;
 }
 

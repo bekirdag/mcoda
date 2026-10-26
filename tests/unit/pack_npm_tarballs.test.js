@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import {
   expectedPackedWorkspaceRange,
   findWorkspaceProtocolPaths,
   getPnpmCandidates,
+  loadPackedTarballs,
   normalizePackedManifestArchive,
   packTarballs,
   packageTarballFilename,
@@ -160,6 +161,20 @@ test('pnpm packs portable Agent Setup and CLI manifests', () => {
       cli.manifest.dependencies['@mcoda/shared'],
       cli.manifest.version
     );
+
+    const loaded = loadPackedTarballs({ root, dest, packageDirs: ['packages/agent-setup', 'packages/cli'] });
+    assert.deepEqual(loaded.map(pkg => pkg.tarballPath), results.map(pkg => pkg.tarballPath));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'], expectedRevision: 'wrong-source-revision' }), /source revision/);
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/codali'] }), /Missing\/mismatched/);
+    const untouched = readFileSync(cli.tarballPath);
+    writeFileSync(cli.tarballPath, Buffer.concat([untouched, Buffer.from('tampered')]));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'] }), /checksum mismatch/);
+    writeFileSync(cli.tarballPath, untouched);
+    const metadataPath = path.join(dest, 'package-artifacts.json');
+    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    metadata.packages.push(metadata.packages[0]); writeFileSync(metadataPath, JSON.stringify(metadata));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'] }), /duplicate/);
+    metadata.packages.pop(); writeFileSync(metadataPath, JSON.stringify(metadata));
 
     // Reproduce pnpm's nondeterministic workspace dependency insertion order
     // without relying on the race occurring during this particular test run.

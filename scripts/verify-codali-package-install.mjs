@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { packTarballs } from './pack-npm-tarballs.js';
+import { loadPackedTarballs, packTarballs } from './pack-npm-tarballs.js';
 
 // Run after building. This installs real tarballs, including SQLite's native
 // dependency, outside the checkout and never links or installs a global CLI.
@@ -16,6 +16,8 @@ const project = path.join(temporary, 'clean project');
 const workspace = path.join(temporary, 'workspace with spaces');
 const outputIndex = process.argv.indexOf('--output');
 const output = outputIndex < 0 ? undefined : path.resolve(process.argv[outputIndex + 1]);
+const artifactsIndex = process.argv.indexOf('--artifacts-dir');
+const artifactsDir = artifactsIndex < 0 ? undefined : path.resolve(process.argv[artifactsIndex + 1]);
 const report = { schemaVersion: 1, platform: `${process.platform}-${process.arch}`, node: process.version, checks: [], artifacts: [] };
 const env = { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) };
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -35,14 +37,17 @@ try {
   writeFileSync(path.join(temporary, 'npmrc'), '');
   writeFileSync(path.join(workspace, 'user-notes.txt'), 'Preserve this existing user file.\n');
   const packageDirs = ['packages/shared', 'packages/db', 'packages/codali'];
-  const first = packTarballs({ root, dest: path.join(temporary, 'first'), packageDirs });
-  const second = packTarballs({ root, dest: path.join(temporary, 'second'), packageDirs });
+  const first = artifactsDir ? loadPackedTarballs({ root, dest: artifactsDir, packageDirs })
+    : packTarballs({ root, dest: path.join(temporary, 'first'), packageDirs });
+  const second = artifactsDir ? undefined : packTarballs({ root, dest: path.join(temporary, 'second'), packageDirs });
   for (const [index, artifact] of first.entries()) {
     const sha256 = hash(artifact.tarballPath);
-    assert.equal(sha256, hash(second[index].tarballPath), `${artifact.manifest.name} packing must reproduce identical bytes`);
+    if (second) assert.equal(sha256, hash(second[index].tarballPath), `${artifact.manifest.name} packing must reproduce identical bytes`);
     report.artifacts.push({ name: artifact.manifest.name, version: artifact.manifest.version, sha256 });
   }
-  report.checks.push('two independent packs have identical bytes');
+  report.checks.push(artifactsDir ? 'exact prebuilt artifact checksums and portable manifests' : 'two independent packs have identical bytes');
+  report.sourceRevision = process.env.GITHUB_SHA ?? null;
+  if (artifactsDir && process.env.GITHUB_SHA) report.checks.push('artifact source revision matches the CI checkout');
   const npmOptions = ['--no-audit', '--no-fund', '--userconfig', path.join(temporary, 'npmrc'), '--cache', path.join(temporary, 'npm-cache')];
   run('npm', ['install', ...first.map(item => item.tarballPath), '--ignore-scripts=false', ...npmOptions], 0, 240_000);
   const codaliRoot = path.join(project, 'node_modules/@mcoda/codali');

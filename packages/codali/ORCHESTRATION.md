@@ -248,6 +248,15 @@ version must have identical registry integrity; rerunning a release does not
 move its dist-tags. Registry errors other than an explicit missing version
 stop publication.
 
+CI now builds the Linux publication tarballs once and supplies those same bytes
+to every terminal installation job. `package-artifacts.json` records package
+identities, SHA256 values and the CI source revision. Consumers validate those
+records before installation; the release publisher consumes the qualified
+bundle through `MCODA_PUBLISH_ARTIFACTS_DIR` without repacking it. Release
+publication waits for the six Node/platform installation jobs. Local checks can
+use `--artifacts-dir PATH`; their report leaves source revision unknown when
+they were not run with a CI revision.
+
 Codali publication also requires checksum-pinned Docdex archives for Linux
 x64 GNU, macOS Intel and macOS ARM. An empty development runtime manifest is
 valid for local work with an explicit qualified binary, but cannot be
