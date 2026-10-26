@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,6 +13,9 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
   const quoted = (value: string) => JSON.stringify(value);
   return [
     "(version 1)", "(deny default)", "(allow process*)", "(allow sysctl-read)",
+    // dyld opens the root directory when locating its shared cache. This literal
+    // permits the directory itself, never a recursive read of the filesystem.
+    '(allow file-read* (literal "/"))',
     '(allow file-read* (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))',
     `(allow file-read* (subpath ${quoted(root)}))`,
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
@@ -36,8 +39,11 @@ export const executorStatus = (): ExecutorStatus => {
     return probe.status === 0 ? { available: true, backend: "bubblewrap" } : { available: false, backend: "unavailable", reason: "bubblewrap user namespaces are unavailable" };
   }
   if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
-    const probe = spawnSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], { timeout: 3000, stdio: "ignore" });
-    if (probe.status === 0) return { available: true, backend: "sandbox-exec" };
+    const scratch = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codali-isolation-probe-")));
+    try {
+      const probe = spawnSync("/usr/bin/sandbox-exec", ["-p", darwinSandboxProfile(scratch, scratch, [], []), "/usr/bin/true"], { timeout: 3000, stdio: "ignore" });
+      if (probe.status === 0) return { available: true, backend: "sandbox-exec" };
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
   return { available: false, backend: "unavailable", reason: "No supported isolation backend on this platform" };
 };

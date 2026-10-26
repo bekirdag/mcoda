@@ -1,4 +1,4 @@
-import { constants, promises as fs } from "node:fs";
+import { constants, promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
@@ -11,7 +11,9 @@ const inScope = (file: string, scopes: string[]): boolean => scopes.some(scope =
 
 /** Private original contents separate the agent's diff from a dirty checkout. */
 export class WorkspaceLedger {
-  constructor(readonly root: string, readonly workspaceRoot: string) {}
+  constructor(readonly root: string, readonly workspaceRoot: string) {
+    this.workspaceRoot = realpathSync(workspaceRoot);
+  }
   private get manifest(): string { return path.join(this.root, "ownership.json"); }
   private async read(): Promise<OwnershipRecord> {
     try {
