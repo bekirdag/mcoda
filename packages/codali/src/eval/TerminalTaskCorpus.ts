@@ -12,6 +12,13 @@ export interface TerminalCorpusTask {
   reference: Record<string, string>;
   /** Evaluator-owned checks, materialized only in an isolated grading copy after execution. */
   hiddenChecks: string;
+  /** Evaluator-owned configuration; never exposed as an editable workspace file. */
+  grading?: {
+    entrypoint?: string | null;
+    publicTestFiles?: string[];
+    minimumPublicTests?: number;
+    testFilesToExtend?: string[];
+  };
 }
 
 interface Family {

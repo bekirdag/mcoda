@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Diagnostic F finished 7/8 on reused E failures; earlier false completion passes with requested tests, but fresh qualification is still required. Planning baseline P is running on both Strata hosts and has exposed planning-mode execution attempts plus overly implicit oracle edges. Session storage symlink/schema fixes pass 1453 tests with two skips. Exact-artifact platform matrix at 54e6841 passed all six jobs. Docdex codali.2 publication, backend/application, fresh corpus, long-session and canary gates remain open.",
+  "currentTask": "Planning diagnostic Q on frozen534c72b finished on both Strata hosts: corrected grader accepts12/12 closed-world records, with one original false-negative retained in a separate correction report. Plan-mode execution controls, storage confinement and validation failure excerpts are implemented. A fresh heterogeneous coding/investigation/recovery corpus, optional-stage comparisons, long live journeys, backend/application rollout and canary gates remain open. Docdex codali.2 passed preflight and is building native artifacts.",
   "tasks": [
     {
       "id": "P0.1",
@@ -81,7 +81,9 @@
       "id": "P0.9",
       "description": "Turn this accepted build plan into requirement-to-task-to-evidence fixtures and choose the tracked documentation destination. Establish the long-task baseline from Section 11: goal retention, missed requirements, scope drift, architecture violations, failed handoffs, duplicate work and false completion. Include bounded planning-only evaluations before qualifying smaller planners.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "PlanningCorpus.ts/Runner provide six versioned constrained planning domains and mutation-tested deterministic grading. All original P/Q fixtures and failures retained; grader correction is explicit and does not rerun models or overwrite evidence. Long-task and heterogeneous corpus coverage remains incomplete."
+      ]
     },
     {
       "id": "P1.1",
@@ -292,7 +294,9 @@
       "id": "P4.9",
       "description": "Build bounded active-task context from canonical goal/plan records plus Docdex facts, profile, diary/wakeup and decision references. Implement freshness/contradiction handling, critical-context reservation and source-linked checkpoint summaries. Keep task state and authorization outside probabilistic memory retrieval.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "c68bb27 keeps the actual late failure section and final counts in bounded validation context instead of the first900characters.112 focused tests passed, including a real late failing test retained after conversation compaction and a new controller; frozen diagnosticF/P/Q are unchanged."
+      ]
     },
     {
       "id": "P5.1",
@@ -352,8 +356,10 @@
     {
       "id": "P5.9",
       "description": "Evaluate planning/architecture/goal retention separately from coding. Compare lead-only execution, qualified helper decomposition and separate review on the same corpus/budgets. Measure constraint loss, invented tasks/APIs, ordering errors, rework and completion quality; remove optional stages that add cost without benefit. Use configured role bindings for all calls.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Planning baseline P exposed actual execution-tool access in plan mode and ambiguous oracle edges. Diagnostic Q used frozen534c72b and explicit v2 prerequisites: Raijin6/6,Suku5/6 original; grader b5da1b9 corrected one unstated final-phase requirement and accepted12/12 unchanged records. Original results and SHA256-linked correction report retained. Six constrained domains, no semantic rationale/general-architecture/helper-benefit claim."
+      ]
     },
     {
       "id": "P6.1",
@@ -404,7 +410,9 @@
       "evidence": [
         "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
         "Failed test receipts are restored from durable history into bounded model context after compaction/restart. Successful checks retain pre-command input hashes so a self-modifying test cannot certify its changed bytes; 26 focused and 1345 full-suite tests pass.",
-        "Reproduced legacy SessionStore symlink escape and acceptance of schemaVersion2 metadata. New path checks refuse redirected parents, state/SQLite symlinks and hard links; readers reject unknown metadata/transcript/summary schemas and unsafe summary refs. Forty session tests and full1453/2skip pass, including partial ENOSPC, fsync ambiguity, actual read-only storage and SIGKILL lock recovery; platform qualification remains."
+        "Reproduced legacy SessionStore symlink escape and acceptance of schemaVersion2 metadata. New path checks refuse redirected parents, state/SQLite symlinks and hard links; readers reject unknown metadata/transcript/summary schemas and unsafe summary refs. Forty session tests and full1453/2skip pass, including partial ENOSPC, fsync ambiguity, actual read-only storage and SIGKILL lock recovery; platform qualification remains.",
+        "Storage91df0c2 passed generalCI40284343301 and all six platform jobs in40284343296, including real clean-package SQLite/session persistence and sandbox boundaries.",
+        "b5da1b9 general CI 40286817952 and six-platform qualification 40286817889 passed; c68bb27 and 534c72b also passed both workflows. These are regression/install checks, not production qualification."
       ]
     },
     {
@@ -1188,7 +1196,7 @@
       "tokens": 2576
     }
   ],
-  "updatedAt": "2026-10-26T07:11:38.274651+00:00",
+  "updatedAt": "2026-10-26T07:50:00Z",
   "openFindings": [
     "All accepted phases and release gates are not complete. Held-out E, planning/architecture evaluation, four multi-hour live journeys, paired helper baselines and the 24-hour canary remain open.",
     "Docdex managed runtime and private installer are qualified locally, but the release artifact manifest is intentionally empty until published cross-platform artifacts qualify. v0.2.100-codali.0 failed release preflight; codali.1 preparation fixes Python and dependency audit blockers. No prerelease is published yet.",

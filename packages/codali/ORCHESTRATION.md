@@ -304,3 +304,22 @@ implementation, multi-hour retention, helper benefit and unrestricted architectu
 quality require separate evidence. Reports retain failures, routes, usage and
 the actual work record. A rerun used to debug a failure is diagnostic evidence,
 not a fresh held-out result.
+
+### Workflow evaluation
+
+Pass `terminalWorkflowCorpusDefinition()` from `eval/TerminalWorkflowCorpus`
+as the `corpus` option to `runTerminalCorpus` to run twelve separate workflow
+fixtures. Eight require coordinated changes in two modules and public regression
+tests. Three require source-backed repository reports, and one researches pinned
+fictional vendor documents. Report tasks permit only the report file to change;
+their tests and source files remain immutable. This research fixture does not
+measure live web retrieval.
+
+Each corpus owns its version, content hash, task list and stated limitations.
+Reference implementations and hidden assertions stay outside the agent's
+workspace. The isolated grader checks behavior, public test outcomes, required
+test extensions, protected files and exact change scope. Reference/starter checks
+and deliberately wrong reports, test weakening and unauthorized edits validate
+the grader before live runs. Retain the frozen installed client and configuration
+with every result. First attempts are qualification observations; corrective
+reruns must be labeled diagnostic, with the original failures preserved.

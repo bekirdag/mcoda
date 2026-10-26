@@ -70,13 +70,16 @@ export async function gradeTerminalTask(task: TerminalCorpusTask, workspace: str
       .filter(file => files.get(file) !== task.files[file]).sort();
     result.scopePreserved = result.changedPaths.every(file => task.allowedChanges.includes(file));
     result.protectedFilesPreserved = Object.entries(task.files).filter(([file]) => !task.allowedChanges.includes(file)).every(([file, content]) => files.get(file) === content);
-    result.testsExtended = files.has("test/task.test.mjs") && files.get("test/task.test.mjs") !== task.files["test/task.test.mjs"];
+    const requiredExtensions = task.grading?.testFilesToExtend ?? ["test/task.test.mjs"];
+    result.testsExtended = requiredExtensions.every(file => files.has(file) && files.get(file) !== task.files[file]);
     for (const [file, content] of files) {
       await fs.mkdir(path.dirname(path.join(grading, file)), { recursive: true });
       await fs.writeFile(path.join(grading, file), content, { flag: "wx", mode: 0o600 });
     }
     const nonce = randomUUID(); const hidden = `.grade-${nonce}.mjs`;
-    await fs.writeFile(path.join(grading, hidden), `import assert from 'node:assert/strict';\nimport * as m from './src/task.mjs';\n${task.hiddenChecks}\nconsole.log(${JSON.stringify(nonce)});\n`, { flag: "wx", mode: 0o600 });
+    const entrypoint = task.grading?.entrypoint === undefined ? "src/task.mjs" : task.grading.entrypoint;
+    const implementationImport = entrypoint === null ? "" : `import * as m from ${JSON.stringify(`./${entrypoint}`)};\n`;
+    await fs.writeFile(path.join(grading, hidden), `import assert from 'node:assert/strict';\n${implementationImport}${task.hiddenChecks}\nconsole.log(${JSON.stringify(nonce)});\n`, { flag: "wx", mode: 0o600 });
     const execute = createIsolatedExecutor({ network: false });
     const context = { workspaceRoot: grading, allowedWritePaths: [], shellTimeoutMs: 15000, shellMaxOutputBytes: 131072 };
     try {
@@ -85,10 +88,11 @@ export async function gradeTerminalTask(task: TerminalCorpusTask, workspace: str
       if (!result.contractPassed) result.failures.push("Hidden contract did not finish with its completion receipt");
     } catch (error) { result.failures.push(`contract: ${String(error).slice(0, 2000)}`); }
     try {
-      const outcome = await execute(process.execPath, ["--test", "test/task.test.mjs"], context);
+      const outcome = await execute(process.execPath, ["--test", ...(task.grading?.publicTestFiles ?? ["test/task.test.mjs"])], context);
       result.publicTestCount = Number(outcome.output.match(/# tests (\d+)/)?.[1] ?? 0);
-      result.publicTestsPassed = result.publicTestCount >= 2;
-      if (!result.publicTestsPassed) result.failures.push("Public suite must contain at least two passing tests");
+      const minimumTests = task.grading?.minimumPublicTests ?? 2;
+      result.publicTestsPassed = result.publicTestCount >= minimumTests;
+      if (!result.publicTestsPassed) result.failures.push(`Public suite must contain at least ${minimumTests} passing tests`);
     } catch (error) { result.failures.push(`public tests: ${String(error).slice(0, 2000)}`); }
     if (!result.scopePreserved) result.failures.push("Changes escaped the permitted paths");
     if (!result.protectedFilesPreserved) result.failures.push("User notes or package manifest changed");
@@ -107,20 +111,22 @@ export interface TerminalCorpusRunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (record: Record<string, unknown>) => void;
+  /** Trusted, versioned harness input, not model-supplied configuration. */
+  corpus?: { version: string; hash: string; tasks: TerminalCorpusTask[]; limitations: string[] };
 }
 
 /** Serial admission avoids confounding model comparisons with self-induced queue contention. */
 export async function runTerminalCorpus(options: TerminalCorpusRunOptions): Promise<void> {
   const resolved = await loadOrchestrationConfig(options.configPath);
   const clientBuildHash = await terminalClientBuildHash();
-  const all = terminalTaskCorpus();
+  const all = options.corpus?.tasks ?? terminalTaskCorpus();
   if (options.taskIds?.some(id => !all.some(task => task.id === id))) throw new Error("Unknown terminal corpus task ID");
   const selected = options.taskIds ? all.filter(task => options.taskIds!.includes(task.id)) : all.filter(task => task.split === "held-out");
   await fs.mkdir(options.outputRoot, { mode: 0o700 });
-  const manifest = { schemaVersion: 1, corpusVersion: TERMINAL_CORPUS_VERSION, corpusHash: terminalCorpusHash(),
+  const manifest = { schemaVersion: 1, corpusVersion: options.corpus?.version ?? TERMINAL_CORPUS_VERSION, corpusHash: options.corpus?.hash ?? terminalCorpusHash(),
     configHash: resolved.hash, clientBuildHash, nodeVersion: process.version, platform: process.platform, architecture: process.arch,
     effort: options.effort ?? "high", taskIds: selected.map(task => task.id), splits: [...new Set(selected.map(task => task.split))], startedAt: new Date().toISOString(),
-    limitation: "60 seeded cases across 12 correlated coding families; report families separately. Does not qualify long-session planning, media or production coexistence." };
+    limitations: options.corpus?.limitations ?? ["60 seeded cases across 12 correlated coding families; report families separately. Does not qualify long-session planning, media or production coexistence."] };
   await fs.writeFile(path.join(options.outputRoot, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
   const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
   for (const task of selected) {
