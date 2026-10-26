@@ -1,0 +1,961 @@
+{
+  "schemaVersion": 1,
+  "objective": "Complete the accepted Codali terminal CLI build through all nine phases and release gates, preserving shared configurable model orchestration, Docdex, media and durable goal/task control.",
+  "acceptedAt": "2026-10-25",
+  "baseline": "d6ae58e",
+  "status": "in_progress",
+  "currentTask": "C development recovery evaluation (DAG and journal passed; TTL running); fresh node package native binding/live qualification; media GPU scheduler backport tested, crash recovery/capacity and root backend deployment still pending.",
+  "tasks": [
+    {
+      "id": "P0.1",
+      "description": "Trace cli.ts, AskCommand.ts, RunCommand.ts, CodaliRuntime, CodaliJobRuntime, SmartPipeline and CodaliGateway to all provider/tool calls, including summarization, repair, Docdex delegation and media. Produce a current call map, enumerate every model-binding source and choose the outer lifecycle owner for terminal sessions. Preserve embedded-host behavior.",
+      "status": "in_progress",
+      "evidence": [
+        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain.",
+        "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing."
+      ]
+    },
+    {
+      "id": "P0.2",
+      "description": "Reindex affected source and repair/verify Docdex graph coverage. Record current tests, package exports, Node support, config precedence and public API consumers.",
+      "status": "in_progress",
+      "evidence": [
+        "Docdex TypeScript explicit .js imports now resolve source extensions: 39 parser tests pass; real SessionController graph resolves 33 outbound files. Configurable watcher startup (16 tests) lets private candidate serve mcoda. Global installation/complete index qualification pending."
+      ]
+    },
+    {
+      "id": "P0.3",
+      "description": "With a dedicated test account/workspace, probe mSwarm discovery, quotas, streaming, cancellation, idempotency and job-status behavior on both Raijin and Suku. Inventory Strata-served text models plus smaller, embedding, audio, image and video models; verify placement, entitlement, revisions, supported operations/formats/limits, native reasoning, embedding compatibility and synchronous/asynchronous behavior. Verify each actual transport/adapter rather than assume installation means Codali integration.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P0.4",
+      "description": "Run a small baseline corpus through current Codali. Capture success, tool validity, queue time, latency, tokens and failure modes. Record production traffic baselines for TNL/BDYA/Logmira before adding CLI load.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P0.5",
+      "description": "Write decisions for execution location, one orchestration owner, terminal renderer, session storage migration, config/key precedence, permission enforcement and platform isolation. Freeze initial event/API fixtures and a capability matrix.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P0.6",
+      "description": "Define the shared orchestration-config schema and migration from existing agent/provider settings. Produce a Raijin/Suku profile and alternate-deployment fixture; specify all internal model bindings, fallback rules, optional disabled capabilities and turn-boundary upgrades.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P0.7",
+      "description": "Refresh the read-only hardware/residency audit in Section 4.4 and extend it with controlled peak-memory measurements under text, retrieval, vision and media workloads. The selected qualification profiles are SERA-14B Q4_K_M on Suku GPU1 and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1, with SERA-8B as a Suku alternative. Preserve the measured reservations/guards and validate production coexistence; the passive baseline alone does not qualify an installation.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P0.8",
+      "description": "Map SessionStore, CodaliGatewayStore, CodaliJobRuntime and mcoda TaskOrderingService/TaskStateService. Choose the authoritative owner and adapters for standalone versus project-attached work. Freeze GoalContract, PlanRevision, TaskContract, DecisionRecord, EvidenceReceipt and Checkpoint examples; document status mapping, versioning and durability. No second mutable backlog or outer agent loop.",
+      "status": "in_progress",
+      "evidence": [
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+      ]
+    },
+    {
+      "id": "P0.9",
+      "description": "Turn this accepted build plan into requirement-to-task-to-evidence fixtures and choose the tracked documentation destination. Establish the long-task baseline from Section 11: goal retention, missed requirements, scope drift, architecture violations, failed handoffs, duplicate work and false completion. Include bounded planning-only evaluations before qualifying smaller planners.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.1",
+      "description": "Add mSwarm login/logout/status using the existing credential resolver, masked interactive entry, stdin for automation and environment-based injection. Implement rotation and removal without logging keys.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.2",
+      "description": "Normalize mSwarm catalog entries for both hosts, distinguishing text, embedding, image, audio and video operations, revisions, backend identity and resource pools. Intersect discovery with configured approved models and account entitlements; cache with expiry per endpoint/account. Never silently add an unconfigured model or reuse another account's catalog after changing keys.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.3",
+      "description": "Integrate the existing runtime usage-limits endpoint. Distinguish authentication failure, missing model entitlement, quota exhaustion, account service outage and model unavailability.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.4",
+      "description": "Expand doctor to check package version, supported runtime, credential presence/validity, endpoint trust, catalog, required routes, Docdex and platform executor capabilities. Keep useful local diagnostics available offline.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.5",
+      "description": "Specify setup's package/install behavior and backward-compatible configuration migration. Fix dev version output and stale help/README claims.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P1.6",
+      "description": "Implement the shared orchestration-config schema/loader/validator and effective-config inspection. Route CLI, embedded-host and background-job resolution through it; migrate existing settings with explicit diagnostics rather than preserve hidden defaults. Validate capability bindings and fallback chains, keep secrets indirect, and stamp resolved versions/hashes on requests.",
+      "status": "in_progress",
+      "evidence": [
+        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain.",
+        "Node executor optionally loads trusted registry codaliOrchestrationPath, restricts profiles to the admitted loopback model/capabilities, shares invocation scope across direct/gateway/job paths, and propagates failed jobs. Full mSwarm 160 and Codali 1314 tests pass; node CLI setting and live rollout qualification ongoing."
+      ]
+    },
+    {
+      "id": "P1.7",
+      "description": "Validate task-control policies with the same loader: bounded planning/review depth, concurrency, retries, checkpoints and escalation. Policies may narrow hard safety invariants; they cannot enable additional workspace writers, disable required completion evidence or expand account permissions. Expose resolved values without a model call.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.1",
+      "description": "Introduce the session controller around the chosen existing orchestration path. Define start turn, steer, queue input, cancel, inspect and checkpoint operations. Maintain compatibility adapters for legacy CLI and embedded runtime calls.",
+      "status": "in_progress",
+      "evidence": [
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+      ]
+    },
+    {
+      "id": "P2.2",
+      "description": "Extend typed runtime/provider events with stable identity, ordering, final-state rules, bounded buffers and backpressure. Persist important events through SessionStore.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.3",
+      "description": "Thread cancellation/deadlines through providers, remote invocation control, subagent scheduling and pending tool work. Distinguish cancel-requested from confirmed cancelled.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.4",
+      "description": "Add a shared budget object and usage accumulator at the controller boundary. Every nested model/tool call reserves from it before starting.",
+      "status": "in_progress",
+      "evidence": [
+        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain."
+      ]
+    },
+    {
+      "id": "P2.5",
+      "description": "Add basic crash-safe checkpoints and event replay using fake providers and a plain text/JSONL harness. Keep writing tools disabled until Phase 3's gate passes.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.6",
+      "description": "Extend the common tool/job envelope for media submission, durable remote IDs, progress, artifact references and cancellation reconciliation. Keep model bindings/configuration pinned for in-flight jobs; binary payloads do not enter text event logs.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.7",
+      "description": "Implement durable goal/requirement/decision/plan/task records and atomic revision checks, reusing P0.8's chosen storage boundaries. Include standalone sessions and project task adapters, idempotent projections and crash recovery. Distinguish invocation success from verified task/goal completion.",
+      "status": "in_progress",
+      "evidence": [
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+      ]
+    },
+    {
+      "id": "P2.8",
+      "description": "Add deterministic dependency validation/readiness and guarded task transitions. Validate coverage, missing/cyclic prerequisites, ownership and goal/plan versions. Apply steering atomically; invalidate incompatible queued tasks and reject stale results. Reserve budget for required validation.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P2.9",
+      "description": "Add headless inspect/amend/checkpoint commands and the evidence completion gate using fake providers. Prove a falsely confident model cannot complete an unmet criterion. Small tasks use the same records with minimal planning ceremony.",
+      "status": "complete",
+      "evidence": [
+        "packages/codali/src/cli/TerminalCommand.ts",
+        "packages/codali/src/runtime/__tests__/SessionController.test.ts",
+        "packages/codali/src/session/__tests__/WorkState.test.ts"
+      ]
+    },
+    {
+      "id": "P3.1",
+      "description": "Implement the central allow/deny/ask gate and approval response contract, including persisted scoped grants and current-policy rechecks immediately before side effects. Integrate existing GatewayPolicyCompiler/ToolRegistry controls rather than bypassing them.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P3.2",
+      "description": "Replace the blocking shell path with an asynchronous process runner. Stream bounded stdout/stderr, record exit/signal state, support cancellation and process-group cleanup, enforce time/output limits, and define owned background process behavior. Preserve the existing tool contract where possible.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P3.3",
+      "description": "Implement and test Linux/macOS isolation adapters. Validate filesystem and network boundaries against interpreter execution, shell scripts, hooks, package managers and child processes. Do not rely on destructive-command pattern matching.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P3.4",
+      "description": "Apply the gate to file writes, patches, MCP/HTTP tools, Docdex mutations, media generation/artifact handling and subagents. Unknown external tools require explicit permission until classified. Network-read permission is separate from upload, metered generation and an external write action; existing image readOnly metadata cannot bypass policy.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P3.5",
+      "description": "Add workspace locks, file preconditions and tool intent/receipt records. Tests cover symlinks, path traversal, changed file contents, overlapping edits and partial failures.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P3.6",
+      "description": "Add the repository baseline/diff ownership ledger, task path/goal-version preconditions and scoped scratch cleanup. Wire required architecture/public-contract checks and trusted verification receipts into result acceptance. A helper, shell command or generated document cannot mutate authoritative work state outside its validated API.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.1",
+      "description": "Implement setup/doctor integration for local Docdex health, version, repository binding, initial index and incremental refresh. Use the existing client and registration flows.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.2",
+      "description": "Wire the standard coding workflow to search, symbols/AST, precise reads and impact analysis, with output/context budgets. Treat index health as part of the tool result.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.3",
+      "description": "Expose configured web research, source attribution and timeouts. Preserve operation allowlists and the difference between local and managed encrypted repositories.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.4",
+      "description": "Integrate agent profile and repository memory with separate read/write permissions and retention. Include provenance in context and prevent tool text from rewriting policy.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.5",
+      "description": "Expose trusted MCP/HTTP connectors and per-tool health. Failure of one optional connector must not disable unrelated local tools.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.6",
+      "description": "Integrate discovered embedding services through the supported Docdex/provider contract. Pin embedding-space identity per index, batch incrementally with cancellation, implement compatible-replica failover and rebuild/switch behavior for incompatible changes, and account for query versus background indexing usage.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.7",
+      "description": "Reuse ImageGenerationTool and GenerativeOperation contracts to expose configured image/audio/video creation tools. Add missing adapters and capability-specific validation, with supported conditioning/reference inputs and operation limits drawn from configuration plus inventory.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.8",
+      "description": "Implement durable media jobs and artifact storage/download/receipt handling, with bounded payloads, tenant isolation, safe paths, checksums, expiry/retention and explicit preview/export. Exercise mixed workflows that create and integrate code plus media without a separate planner.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P4.9",
+      "description": "Build bounded active-task context from canonical goal/plan records plus Docdex facts, profile, diary/wakeup and decision references. Implement freshness/contradiction handling, critical-context reservation and source-linked checkpoint summaries. Keep task state and authorization outside probabilistic memory retrieval.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P5.1",
+      "description": "Bind text roles, retrieval and media tools through the shared orchestration configuration and existing agent resolution. Enforce this deployment's Strata-backed large-Qwen rules during dispatch/pool expansion/fallback; prove another deployment profile can choose other supported models without engine changes.",
+      "status": "in_progress",
+      "evidence": [
+        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain."
+      ]
+    },
+    {
+      "id": "P5.2",
+      "description": "Add bounded helper capsules, output schemas, source references and validation/escalation rules. Start with extraction/classification before enabling patch drafting. Never let a helper approve a privileged action.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P5.3",
+      "description": "Implement the four effort profiles with shared counters, account caps and requested/effective reporting. Add native reasoning mapping only for empirically supported adapters.",
+      "status": "in_progress",
+      "evidence": [
+        "Shared model scope/gateway adapter and mcoda authoritative project-task handoff implemented; live Strata project-task-v1 reached ready_to_code_review with durable verification. Remaining phase gates still apply."
+      ]
+    },
+    {
+      "id": "P5.4",
+      "description": "Integrate queue/admission/cancel status, cross-host routing and physical-pool concurrency, including large/small/embedding/media contention and loading peaks. Preserve interactive capacity while scheduling heavy video jobs. Fail over only after reconciling whether an invocation was already admitted; avoid duplicate renders and retry amplification.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P5.5",
+      "description": "Evaluate eligible large-model-only baselines versus offloaded runs on the same held-out tasks, recording model/host placement so routing changes do not confound the comparison. Tune helper eligibility, thresholds, context packing and review depth. Preserve source facts when small-model summaries are wrong or incomplete.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P5.6",
+      "description": "Qualify the two primary profiles from Section 4.4 first: SERA-14B Q4_K_M on Suku GPU1 within a 12-GiB process reservation plus 4-GiB guard, and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1 within 4 GiB plus a 2-GiB guard. Start at 8K context/one slot/Q8 KV. Compare the 4B candidate against resident 4B Instruct and SERA against the configured lead/worker baseline; record TypeScript task quality, full-task latency and actual loading/prefill/generation peaks. SERA-8B on Suku is a replacement alternative, not another concurrent resident.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P5.7",
+      "description": "Implement shared GPU1 admission and media drain/unload/reload before enabling Suku's specialist. During rollout, install one candidate at a time using pinned verified artifacts, stable GPU UUIDs and disabled-until-qualified configuration entries; canary before promotion. Re-run compatibility, production/vision/media coexistence and configuration-only rollback tests. Reject or resize profiles whose measured peaks breach reservations; retain existing models if the new candidates do not improve the workload.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P5.8",
+      "description": "Implement scoped worker capsules/results, controller-issued attempt leases/fencing, deduplication, side-effect reconciliation on expiry and bounded progress detection. Preserve one writing task per worktree; use parallel helpers only where independent work and resource limits allow.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P5.9",
+      "description": "Evaluate planning/architecture/goal retention separately from coding. Compare lead-only execution, qualified helper decomposition and separate review on the same corpus/budgets. Measure constraint loss, invented tasks/APIs, ordering errors, rework and completion quality; remove optional stages that add cost without benefit. Use configured role bindings for all calls.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P6.1",
+      "description": "Implement interactive TTY entry, prompt editor, history, paste, completion, streamed transcript and plain mode. Support resize and recovery of terminal state.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.2",
+      "description": "Implement the alpha command set from Section 6 against controller state. Status and permission inspection must not trigger an inference call.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.3",
+      "description": "Build approval cards with concrete operation, paths/command, reason and grant scope. Build actual-diff and tool-output views with truncation/expansion controls.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.4",
+      "description": "Make steering, queued messages, cancellation and busy-state slash commands explicit. Display phase, actual model/node route, effort, context and queue state without flooding the screen.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.5",
+      "description": "Stabilize scripted mode: JSONL event output, final result format, stderr diagnostics and documented exit codes. Retain old command behavior and add migration notes.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.6",
+      "description": "Add /artifacts and media-job detail to /tasks, with artifact paths/provenance, separate render usage and explicit download/open actions. Surface effective model bindings/configuration version, pending configuration updates and modality-specific unsupported-operation errors.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P6.7",
+      "description": "Add /goal, /decisions and the expanded /plan and /tasks commands. Show current requirements, scope history, phase/task dependencies, blockers, ownership and evidence counts through deterministic reads. Make user steering reviewable with a plan diff; preserve authorization for routine work and make planning/execution mode changes explicit.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P7.1",
+      "description": "Complete resume/fork/compaction and storage migration. Reconcile uncertain tool outcomes before continuing. Test stale repository state and multiple clients opening the same session.",
+      "status": "in_progress",
+      "evidence": [
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+      ]
+    },
+    {
+      "id": "P7.2",
+      "description": "Reconcile local usage with server invocation/account records, including retries, cancelled requests, delayed usage and reconnects. Show unknown/estimated values honestly.",
+      "status": "in_progress",
+      "evidence": [
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+      ]
+    },
+    {
+      "id": "P7.3",
+      "description": "Complete /context, /review and redacted export; expand /tasks recovery/evidence views and configuration provenance. Make active/background work ownership visible on exit/resume.",
+      "status": "in_progress",
+      "evidence": [
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+      ]
+    },
+    {
+      "id": "P7.4",
+      "description": "Add local retention/delete controls, diagnostic redaction, crash reporting that is opt-in and test-only telemetry fixtures. Do not silently enable existing dataset collection.",
+      "status": "in_progress",
+      "evidence": [
+        "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding."
+      ]
+    },
+    {
+      "id": "P7.5",
+      "description": "Run longer coding sessions against each selected model's actual context limit, including cross-host failover to a smaller compatible context window. Verify compaction preserves task constraints, pending work and validation evidence, and resume retains the pinned embedding-space identity.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P7.6",
+      "description": "Recover a render completed while the CLI was disconnected, refresh an expired artifact reference and migrate/roll back a model configuration without resubmitting active jobs. Preserve media provenance, accounting and artifact integrity across resume/export.",
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "P7.7",
+      "description": "Run the long-task/fault corpus from Section 11 with repeated compaction, fresh contexts, restarts, steering, failed dependencies and user edits. Verify requirement/decision continuity, evidence invalidation, no duplicate side effects, useful next-task selection and honest blocked/partial outcomes. Run selected multi-hour live journeys on both hosts.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.1",
+      "description": "Run the release matrix across text, smaller, embedding, image, audio and video services on both hosts, including newly qualified specialists, background indexing and peak render allocations. Measure existing tenants under mixed CLI traffic, cold model loads and either-host failure; prove no OOM-driven eviction or starvation.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.2",
+      "description": "Fix admission, starvation, cancellation, stale leases and retry behavior demonstrated by those tests. Drain remote jobs before node upgrades and reconcile in-flight records afterward.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.3",
+      "description": "Build reproducible package artifacts and install-test the tarballs on clean supported systems. Verify package files, executable permissions, version/help output, migration and uninstall behavior.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.4",
+      "description": "Deploy additive backend changes before clients that need them. Gate incompatible capabilities explicitly. Publish a prerelease package, then promote the tested artifact after the canary gates pass. Do not select a future version number until release time.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.5",
+      "description": "Roll out to internal keys, a small opted-in cohort, then general availability. Keep switches for interactive mode, helper offloading and new routing behavior independently reversible. Pin the known-good previous client/backend versions and test downgrade readers before enabling a new session schema.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "P8.6",
+      "description": "Publish the requirement-to-evidence report and failure taxonomy for the tested release. Exercise diagnosis from one user-visible stalled task to goal/plan versions, decisions, model/tool receipts and actionable recovery. Track architecture drift, scope changes, user corrections and false-completion incidents alongside latency/cost; gate optional stages/models on measured value.",
+      "status": "pending",
+      "evidence": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "decision": "Use runCodaliTask/Runner as the terminal execution path under one session controller; reuse existing tool registry, session persistence, providers and Docdex. Map project-attached tasks through an adapter."
+    }
+  ],
+  "blockers": [],
+  "validation": [
+    {
+      "check": "Baseline repository suite via docdexd run-tests",
+      "status": "passed"
+    },
+    {
+      "check": "TypeScript package build",
+      "status": "passed before latest permission flag changes"
+    },
+    {
+      "check": "Focused WorkState/config/permissions/controller/durability/process/isolation/media/SSE tests",
+      "status": "passed",
+      "tests": 32
+    },
+    {
+      "check": "Existing OpenAiCompatibleProvider tests",
+      "status": "passed",
+      "tests": 16
+    },
+    {
+      "check": "Live mSwarm auth and catalog",
+      "status": "passed: Suku routes; Raijin absent"
+    },
+    {
+      "check": "Live terminal native tool call path",
+      "status": "partial: nonstreaming reaches tools; low-effort sample exhausted budget"
+    },
+    {
+      "check": "Live Strata coding fixture: clamp implementation, tests, two task reviews, goal gate",
+      "status": "passed",
+      "session": "315d60c1-6768-43f7-ae64-651093efcb96",
+      "started": "2026-10-25T19:27:07.647Z",
+      "ended": "2026-10-25T19:29:00.486Z",
+      "modelCalls": 18,
+      "toolCalls": 20,
+      "reportedTokens": 162302,
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-coding-v2.jsonl"
+    },
+    {
+      "check": "Full Codali package suite",
+      "status": "1208/1209 passed; test fixture still matched the old reviewer prompt; fixture corrected pending rerun",
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-2.log"
+    },
+    {
+      "check": "Full Codali package suite after recovery, fork, grants and hashing changes",
+      "status": "passed",
+      "tests": 1213,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-4.log"
+    },
+    {
+      "check": "Live mSwarm routes after owner-policy fix",
+      "status": "passed",
+      "routes": [
+        "Raijin Strata",
+        "Suku Strata",
+        "Raijin Qwen3 4B helper"
+      ],
+      "latencyMs": [
+        1345,
+        1135,
+        1061
+      ]
+    },
+    {
+      "check": "Live Suku image and audio jobs",
+      "status": "passed",
+      "imageJob": "aa55d50c-164b-4c25-b580-1130e033a636",
+      "audioJob": "ca46ea4d-ca0a-4fb5-8ad6-4f3b79920e8c",
+      "audioGpu1PeakMiB": 15537,
+      "artifactDirectory": "/home/wodo/.local/state/codali-terminal-media-validation"
+    },
+    {
+      "check": "Live Raijin coding fixture with scoped edits, tests, independent review and completion gate",
+      "status": "passed",
+      "session": "7aab02c6-dbfd-4a81-a13c-5f2c203fed10",
+      "seconds": 204,
+      "modelCalls": 22,
+      "toolCalls": 25,
+      "reportedTokens": 298521,
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-coding-v3.jsonl",
+      "limitation": "High repeated-context cost; context packing and review reserve improved afterward and need live revalidation."
+    },
+    {
+      "check": "Full Codali suite after context, stale-evidence and service-error changes",
+      "status": "passed",
+      "tests": 1216,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-5.log"
+    },
+    {
+      "check": "MCP connector cancellation and no-replay regression checks",
+      "status": "passed",
+      "tests": 43,
+      "artifact": "/home/wodo/.local/state/codali-terminal-connector-tests.log"
+    },
+    {
+      "check": "Phase dependencies, plan history, session isolation and Docdex readiness regression checks",
+      "status": "passed",
+      "tests": 35,
+      "artifact": "/home/wodo/.local/state/codali-terminal-readiness-tests.log"
+    },
+    {
+      "check": "Full decoding of image/audio/video outputs",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-media-validation/decode-validation.json"
+    },
+    {
+      "check": "Suku GPU VAE video render",
+      "status": "passed",
+      "job": "6aed9f4f-022f-426b-89dc-76af9493fbc2",
+      "nativeTotalSeconds": 315.17,
+      "nativeDecodeSeconds": 21.4,
+      "gpu1PeakSampledMiB": 17795,
+      "minimumAvailableSystemKiB": 10439732,
+      "artifact": "/home/wodo/.local/state/codali-terminal-media-validation/video-gpu-vae-samples.jsonl"
+    },
+    {
+      "check": "Raijin cold-index coding v4",
+      "status": "failed without code changes; checkpoint retained",
+      "cause": "Docdex cgroup MemoryHigh throttling and indexing/backoff",
+      "fix": "Raised MemoryHigh to3GiB/MemoryMax4GiB; indexes ready without restart. Added bounded local readiness wait and error-envelope checks. Live retry in progress.",
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-coding-v4.jsonl"
+    },
+    {
+      "check": "Raijin coding retry after Docdex readiness recovery and context packing",
+      "status": "passed",
+      "session": "e93a37a3-ecc4-4d2b-853e-e33c7c409069",
+      "started": "2026-10-25T20:38:39.330Z",
+      "ended": "2026-10-25T20:41:02.807Z",
+      "usage": {
+        "modelCalls": 18,
+        "toolCalls": 15,
+        "tokens": 128041,
+        "inputTokens": 126307,
+        "outputTokens": 1734,
+        "estimated": false
+      },
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-coding-v4-recovered.jsonl"
+    },
+    {
+      "check": "Full Codali suite with phases, connector no-replay, Docdex readiness, session diff ownership and terminal control filtering",
+      "status": "passed",
+      "tests": 1227,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-6.log"
+    },
+    {
+      "check": "Embedding node transport and request/response validation suite",
+      "status": "passed before revision fencing test extension",
+      "tests": 141,
+      "artifact": "/home/wodo/.local/state/codali-embedding-node-tests.log"
+    },
+    {
+      "check": "Embedding configuration identity, prefix, normalization and persisted index upgrade fence",
+      "status": "passed",
+      "tests": 6,
+      "artifact": "/home/wodo/.local/state/codali-embedding-client-tests.log"
+    },
+    {
+      "check": "Gateway chat/media/embedding regression and nginx route coverage",
+      "status": "passed",
+      "tests": 70,
+      "artifact": "/home/wodo/.local/state/codali-embedding-gateway-suite-2.log"
+    },
+    {
+      "check": "Full Codali suite after configured embeddings and authenticated MCP",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-7.log",
+      "tests": 1232,
+      "separatelyQualifiedIntegrationTests": 1
+    },
+    {
+      "check": "Managed real Docdex process: restart, memory/profile persistence, strict embedding failure, unchanged workspace",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-managed-docdex-integration-tests.log",
+      "tests": 1
+    },
+    {
+      "check": "Real Raijin Nomic document/query embeddings through private Docdex and configured client",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-managed-docdex-live-4.log"
+    },
+    {
+      "check": "mSwarm embedding predeployment gateway/node registration/routing/scheduler coverage",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-embedding-predeploy-tests.log",
+      "tests": 193
+    },
+    {
+      "check": "Authenticated Docdex MCP session and error-envelope tests",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-docdex-auth-tests.log",
+      "tests": 20
+    },
+    {
+      "check": "Phase contract and architecture-dependent task invalidation tests",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-work-state-tests.log",
+      "tests": 18
+    },
+    {
+      "check": "MCP queue cancellation and bounded concurrency",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-mcp-budget-tests.log",
+      "tests": 14
+    },
+    {
+      "check": "Workspace preimages, unknown ownership and large artifact diff bounds",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-workspace-ledger-tests.log",
+      "tests": 8
+    },
+    {
+      "check": "Agent CLI embedding declarations and pinned digest validation",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-embedding-cli-tests.log",
+      "tests": 26
+    },
+    {
+      "check": "Structural evidence gates and explicit shell write scopes",
+      "status": "passed",
+      "tests": 16,
+      "artifact": "/home/wodo/.local/state/codali-structural-tests.log"
+    },
+    {
+      "check": "Real Docdex structural ingestion, authenticated client and controller",
+      "status": "passed",
+      "tests": 31,
+      "artifact": "/home/wodo/.local/state/codali-structural-real-docdex-tests.log"
+    },
+    {
+      "check": "Latest embedding node/shared operation regressions",
+      "status": "passed",
+      "tests": 159,
+      "artifact": "/home/wodo/.local/state/codali-embedding-node-tests-2.log"
+    },
+    {
+      "check": "Full Codali suite after structural gates and streaming redaction",
+      "status": "passed",
+      "tests": 1249,
+      "skippedIntegrationTests": 1,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-9.log"
+    },
+    {
+      "check": "Task attempt release, stale-result fencing and controller permissions",
+      "status": "passed",
+      "tests": 27,
+      "artifact": "/home/wodo/.local/state/codali-release-attempt-tests.log"
+    },
+    {
+      "check": "Initial managed Docdex/Strata coding session",
+      "status": "passed before mandatory structural gate",
+      "session": "9e892c84-7e27-4b51-975f-071e69439a98",
+      "modelCalls": 19,
+      "toolCalls": 20,
+      "reportedTokens": 127014,
+      "embeddingTokens": 83,
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-managed-coding-v1.jsonl"
+    },
+    {
+      "check": "Managed Docdex/Strata structural gate and restart recovery",
+      "status": "passed after fixes",
+      "session": "bf5279c4-b85a-4565-beb5-e8748dc7fd24",
+      "findings": [
+        "Relative ingest path failed against daemon cwd; client now sends repository-bound absolute paths and real-daemon regression passes.",
+        "Claimed tasks needed an explicit release transition before replanning; work_release now preserves history and fences old attempts."
+      ],
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-managed-coding-v2-recovered2.jsonl",
+      "completedAt": "2026-10-25T22:10:30.676Z",
+      "limitation": "Recovery increased effort to max; accumulated prior failed-attempt usage retained. Fresh-session latency/cost qualification remains."
+    },
+    {
+      "check": "Codali package suite after project authority integration",
+      "status": "passed",
+      "passed": 1261,
+      "skipped": 1,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-10.log"
+    },
+    {
+      "check": "Project CLI, authoritative SQLite and session recovery regressions",
+      "status": "passed",
+      "passed": 32,
+      "artifact": "/home/wodo/.local/state/codali-project-integration-tests.log"
+    },
+    {
+      "check": "Pinned configuration reload and project regressions",
+      "status": "passed",
+      "passed": 14,
+      "artifact": "/home/wodo/.local/state/codali-config-project-regression.log"
+    },
+    {
+      "check": "Async validation and cancellation",
+      "status": "passed",
+      "passed": 10,
+      "artifact": "/home/wodo/.local/state/codali-async-validation-tests.log"
+    },
+    {
+      "check": "Live Strata project-task handoff",
+      "status": "passed",
+      "session": "92368c94-25b1-4251-9b84-39d714b4c8ef",
+      "projectStatus": "ready_to_code_review",
+      "modelCalls": 6,
+      "toolCalls": 3,
+      "reportedTokens": 27544,
+      "embeddingTokens": 82,
+      "artifact": "/home/wodo/.local/state/codali-terminal-live-project-v1.jsonl",
+      "limitation": "Bounded answer-only project task; does not replace long coding journey or mixed tenant load qualification."
+    },
+    {
+      "check": "Full Codali package regression after configured pipeline/async validation",
+      "status": "passed",
+      "passed": 1266,
+      "skipped": 1,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-11.log"
+    },
+    {
+      "check": "Real managed Docdex and project adapter regressions",
+      "status": "passed",
+      "passed": 5,
+      "artifact": "/home/wodo/.local/state/codali-real-docdex-project-tests.log"
+    },
+    {
+      "check": "Media receipt crash recovery, locking, config pinning and controller regressions",
+      "status": "passed",
+      "passed": 23,
+      "artifact": "/home/wodo/.local/state/codali-media-config-recovery-tests.log"
+    },
+    {
+      "check": "Terminal multiline paste and PTY behavior",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-pty-smoke.log"
+    },
+    {
+      "check": "Durable remote media recovery, configuration and controller regression",
+      "status": "passed",
+      "passed": 25,
+      "artifact": "/home/wodo/.local/state/codali-remote-media-tests.log"
+    },
+    {
+      "check": "mSwarm durable media, proxy, invocation store and nginx routing",
+      "status": "passed",
+      "passed": 133,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-durable-media-core-tests.log",
+        "/home/wodo/.local/state/codali-media-proxy-tests.log",
+        "/home/wodo/.local/state/codali-media-node-store-tests.log",
+        "/home/wodo/.local/state/codali-media-nginx-tests.log"
+      ],
+      "limitation": "Source tests only; durable media server candidate is not deployed."
+    },
+    {
+      "check": "User-installed Node toolchain discovery and Linux isolation",
+      "status": "passed",
+      "passed": 10,
+      "artifact": "/home/wodo/.local/state/codali-toolchain-tests.log",
+      "limitation": "macOS remains unqualified."
+    },
+    {
+      "check": "Composite deterministic terminal recovery journey",
+      "status": "passed",
+      "passed": 1,
+      "processRestarts": 2,
+      "compactions": 5,
+      "originalCriteria": 12,
+      "criteriaAfterSteering": 13,
+      "artifact": "/home/wodo/.local/state/codali-recovery-journey-tests.log",
+      "limitation": "Scripted providers prove controller invariants; live coding/model quality qualification remains separate."
+    },
+    {
+      "check": "Full Codali package suite after durable media and toolchains",
+      "status": "1281 passed, 1 failed, 1 skipped; the setup fixture expected an unsanitized server message; assertion corrected to check HTTP403, rerun pending",
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-12.log"
+    },
+    {
+      "check": "Configured embedded runtime model/tool budgets, scope fencing and cancellation",
+      "status": "passed",
+      "passed": 29,
+      "artifact": "/home/wodo/.local/state/codali-embedded-scope-tests.log"
+    },
+    {
+      "check": "Legacy run/ask and retrieval compatibility",
+      "status": "passed",
+      "passed": 56,
+      "artifact": "/home/wodo/.local/state/codali-embedded-migration-tests.log"
+    },
+    {
+      "check": "Configured public API tenant isolation and orchestration adapters",
+      "status": "passed",
+      "passed": 26,
+      "artifact": "/home/wodo/.local/state/codali-embedded-api-tests.log"
+    },
+    {
+      "check": "Setup regression and composite recovery rerun",
+      "status": "passed",
+      "passed": 3,
+      "artifact": "/home/wodo/.local/state/codali-setup-recovery-tests.log"
+    },
+    {
+      "check": "Full Codali package regression after configured CLI/API/job migration",
+      "status": "passed",
+      "passed": 1297,
+      "skipped": 1,
+      "durationMs": 25042,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-13.log"
+    },
+    {
+      "at": "2026-10-26T00:24:33Z",
+      "area": "Production gateway retention recovery",
+      "result": "Gateway healthy; authenticated catalog 197 ms, 14 healthy models; innodb_trx empty. Bounded PRIMARY-key cleanup passed 3 unit, 4 isolation, 2 retention tests and real MySQL temporary-table race/scope tests. Running gateway hotfix has rollback image. Prepared gateway/proxy runtime images now include embeddings, durable media and retention; root deployment still pending."
+    },
+    {
+      "check": "Full Codali regression after configured node integration",
+      "status": "passed",
+      "passed": 1314,
+      "skipped": 1,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-15.log"
+    },
+    {
+      "check": "Full mSwarm regression after configured node integration",
+      "status": "passed",
+      "passed": 160,
+      "skipped": 0,
+      "artifact": "/home/wodo/.local/state/codali-mswarm-package-tests-1.log"
+    },
+    {
+      "check": "Configured node, scope, gateway and required retrieval checks",
+      "status": "passed",
+      "passed": 41,
+      "skipped": 0,
+      "artifact": "/home/wodo/.local/state/codali-node-orchestration-tests-4.log"
+    },
+    {
+      "check": "CLI node profile setting and rollback",
+      "status": "passed",
+      "passed": 27,
+      "artifact": "/home/wodo/.local/state/codali-cli-node-config-tests.log"
+    },
+    {
+      "check": "Development corpus v1 grader audit",
+      "status": "defect corrected in v2; five self-check tests passed including all 72 references/starters",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/corpus-v1-audit-20261026.json",
+      "limitation": "Frozen A/B artifacts and results remain untouched. v1 development results are diagnostic; do not label the TTL error-class mismatch a model defect. No held-out evaluation has started."
+    },
+    {
+      "check": "Private shell scratch and process environment boundary",
+      "status": "passed on Linux; macOS host qualification pending",
+      "passed": 13,
+      "artifact": "/home/wodo/.local/state/codali-shell-private-tests.log"
+    },
+    {
+      "check": "Media bridge scheduler backport and non-cancellable video timeout/recovery",
+      "status": "passed",
+      "passed": 10,
+      "artifact": "/home/wodo/.local/state/codali-media-scheduler-backport-tests-3.log",
+      "limitation": "Server deployment and process-crash GPU ownership recovery remain."
+    },
+    {
+      "check": "Optimized Docdex managed integration",
+      "status": "passed",
+      "passed": 1,
+      "artifact": "/home/wodo/.local/state/codali-docdex-release-integration.log"
+    },
+    {
+      "check": "Frozen development package manifest audit",
+      "status": "passed",
+      "artifacts": [
+        "corpus-client-20261026a",
+        "corpus-client-20261026b",
+        "corpus-client-20261026c"
+      ],
+      "result": "All recorded regular-file hashes unchanged after A/B runs and during C."
+    },
+    {
+      "check": "Full Codali package regression after scoped recovery and private shell scratch",
+      "status": "passed",
+      "passed": 1321,
+      "skipped": 1,
+      "artifact": "/home/wodo/.local/state/codali-terminal-package-tests-16.log"
+    },
+    {
+      "check": "Real configured node orchestration on Raijin Strata",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/raijin-live-qualification.json",
+      "scenarios": [
+        "direct",
+        "gateway",
+        "staged-job",
+        "unadmitted-model rejection"
+      ],
+      "limitation": "Private candidate executor; production node activation and Suku qualification pending."
+    }
+  ],
+  "updatedAt": "2026-10-26T02:02:00.043907+00:00",
+  "openFindings": [
+    "Suku outbound relay rejects streamed tool calls; nonstreaming is configured, SSE errors now surface.",
+    "Full task completion, embedded config migration, GPU admission, embedding identity, long-task evaluation and release/deploy gates are not yet complete.",
+    "Managed Docdex integration is qualified locally with source changes in /home/wodo/apps/docdex; Docdex release packaging and default installation remain pending.",
+    "mSwarm embedding gateway images built on Suku and loaded on Raijin. Root-owned Compose environment and host nginx require an authorized root deployment path; prepared script includes preflight and rollback. Node candidate is packaged and its sqlite native binding rebuilt; node activation and live gateway embedding verification remain pending.",
+    "Durable media, embeddings and bounded retention cleanup are included in prepared runtime-20261026 gateway/proxy images. Root deployment is pending; enable mediaJobsUrl only after live qualification."
+  ]
+}

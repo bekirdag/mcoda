@@ -36,9 +36,11 @@ import { AgentRunCommand } from '../commands/agents/AgentRunCommand.js';
 import { SetWorkspaceCommand } from '../commands/workspace/SetWorkspaceCommand.js';
 import { ProjectGuidanceCommand } from '../commands/workspace/ProjectGuidanceCommand.js';
 import { MswarmConfigStore } from '@mcoda/core';
+import { CodaliTerminalCommand } from '../commands/work/CodaliTerminalCommand.js';
 
 const TOP_LEVEL_USAGE =
-  'Usage: mcoda <agent|cloud|cloud-agent|self-hosted|self-hosted-agent|workers|worker|gpu|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+  'Usage: mcoda <codali|agent|cloud|cloud-agent|self-hosted|self-hosted-agent|workers|worker|gpu|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+  'Terminal: `mcoda codali chat --project-task TASK_KEY` attaches Codali to an existing project task.\n' +
   'Setup: use `mcoda setup` after installation (or accept the postinstall prompt) to complete the mandatory mswarm telemetry consent flow.\n' +
   'Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n' +
   'Consent: use `mcoda consent accept` before other commands if you need to complete consent outside the guided setup flow.\n' +
@@ -130,6 +132,10 @@ export class McodaEntrypoint {
           'Telemetry consent is required before using mcoda. Review the mswarm data collection terms and run `mcoda setup` or `mcoda consent accept`.'
         );
       }
+    }
+    if (command === 'codali') {
+      await CodaliTerminalCommand.run(rest);
+      return;
     }
     if (command === 'agent') {
       await AgentsCommands.run(rest);

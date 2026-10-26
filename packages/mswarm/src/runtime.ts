@@ -20,6 +20,8 @@ import {
 import {
   GENERATIVE_OPERATION_DEFAULT_PATHS,
   GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS,
+  validateEmbeddingRequest,
+  validateEmbeddingResponse,
   MSWARM_CAPABILITY_SCHEMA_VERSION,
   CryptoHelper,
   assertMswarmSafeRelativePath,
@@ -113,6 +115,10 @@ export interface SelfHostedGenerativeOperationCatalogInput {
     max_video_frames?: number;
     max_steps?: number;
     max_high_noise_steps?: number;
+    max_input_items?: number;
+    max_input_chars?: number;
+    max_total_input_chars?: number;
+    embedding_dimensions?: number;
   };
 }
 
@@ -125,6 +131,7 @@ type McodaLocalRunnerConfig = LocalOpenAiCompatibleRunnerConfig & {
 };
 
 type MswarmGenerativeAgent = MswarmCodaliAgent & {
+  modelDigest?: string;
   generativeOperations: SelfHostedGenerativeOperationConfig[];
   inputModalities: SelfHostedGenerativeModality[];
   outputModalities: SelfHostedGenerativeModality[];
@@ -553,6 +560,7 @@ export interface SelfHostedNodeInvocationJob {
      */
     execution_class?: string;
     max_runtime_ms?: number;
+    expected_model_digest?: string;
     max_output_tokens?: number;
     allow_tools?: boolean;
     allow_images?: boolean;
@@ -1030,6 +1038,9 @@ const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
 ]);
 const SECRET_LOCAL_RUNNER_HEADER_KEYS = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"]);
 const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
+  "input",
+  "dimensions",
+  "encoding_format",
   "model",
   "messages",
   "prompt",
@@ -1054,6 +1065,7 @@ const REQUIRED_GENERATIVE_OPERATION_REQUEST_PARAMETERS: Record<
   SelfHostedGenerativeOperationName,
   readonly string[]
 > = {
+  embeddings: ["model", "input", "encoding_format"],
   "chat.completions": ["model", "messages"],
   "images.generations": ["model", "prompt", "response_format"],
   "audio.generations": ["model", "prompt", "response_format"],
@@ -1170,7 +1182,7 @@ export function normalizeSelfHostedGenerativeOperationName(
   value: unknown
 ): SelfHostedGenerativeOperationName | null {
   const normalized = optionalText(value);
-  return normalized === "chat.completions" ||
+  return normalized === "embeddings" || normalized === "chat.completions" ||
     normalized === "images.generations" ||
     normalized === "audio.generations" ||
     normalized === "videos.generations"
@@ -1216,7 +1228,7 @@ function normalizeGenerativeOperationDescriptor(value: unknown): SelfHostedGener
   const responseFormats =
     normalized.responseFormats?.length
       ? normalized.responseFormats
-      : operation === "chat.completions"
+      : operation === "embeddings" ? ["float"] : operation === "chat.completions"
         ? undefined
         : operation === "images.generations"
           ? ["b64_json"]
@@ -1274,6 +1286,7 @@ function inferGenerativeModalities(
 ): SelfHostedGenerativeModality[] {
   const modalities = new Set<SelfHostedGenerativeModality>();
   for (const descriptor of operations) {
+    if (direction === "output" && descriptor.operation === "embeddings") modalities.add("embedding");
     if (direction === "input" || descriptor.operation === "chat.completions") {
       modalities.add("text");
     }
@@ -1295,6 +1308,10 @@ function generativeOperationCatalogInput(
 ): SelfHostedGenerativeOperationCatalogInput {
   const limits = descriptor.limits
     ? {
+        ...(descriptor.limits.maxInputItems !== undefined ? { max_input_items: descriptor.limits.maxInputItems } : {}),
+        ...(descriptor.limits.maxInputChars !== undefined ? { max_input_chars: descriptor.limits.maxInputChars } : {}),
+        ...(descriptor.limits.maxTotalInputChars !== undefined ? { max_total_input_chars: descriptor.limits.maxTotalInputChars } : {}),
+        ...(descriptor.limits.embeddingDimensions !== undefined ? { embedding_dimensions: descriptor.limits.embeddingDimensions } : {}),
         ...(descriptor.limits.maxRequestBytes !== undefined
           ? { max_request_bytes: descriptor.limits.maxRequestBytes }
           : {}),
@@ -2213,13 +2230,14 @@ function isAgentExposed(
   agentSlug: string,
   defaultModel: string | null,
   bestUsage: string | null,
-  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
+  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">,
+  supportsEmbeddings = false,
 ): boolean {
   const identities = [agentSlug, defaultModel].filter((value): value is string => Boolean(value));
   if (identities.some((identity) => config.modelBlocklist.includes(identity))) {
     return false;
   }
-  if (isEmbeddingUsage(bestUsage) || identities.some((identity) => isEmbeddingModel(identity))) {
+  if (!supportsEmbeddings && (isEmbeddingUsage(bestUsage) || identities.some((identity) => isEmbeddingModel(identity)))) {
     return false;
   }
   if (config.modelAllowlist.length > 0) {
@@ -3360,6 +3378,7 @@ export function mapMcodaAgentToSelfHostedModel(
     model_id: publicModelId || model,
     public_model_id: publicModelId,
     upstream_model: model,
+    digest: optionalText(legacyConfig.modelDigest),
     base_url: localRunner?.baseUrl ?? legacyNativeBase ?? undefined,
     runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind ?? (legacyNativeBase ? "llama-cpp" : undefined),
     auth_mode: localRunner?.authMode ?? (legacyNativeBase ? normalizeLocalRunnerAuthMode(legacyConfig.authMode) : undefined),
@@ -3378,7 +3397,7 @@ export function mapMcodaAgentToSelfHostedModel(
     exposed:
       healthStatus !== "blocked" &&
       agentRunsOnThisNode(agent) &&
-      isAgentExposed(slug, defaultModel, bestUsage, config),
+      isAgentExposed(slug, defaultModel, bestUsage, config, operations.some(entry => entry.operation === "embeddings")),
     best_usage: bestUsage,
     capabilities,
     cost_per_million: optionalNumber(agent.costPerMillion, agent.cost_per_million),
@@ -3803,6 +3822,8 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
     localRunner?.operations ??
     [defaultGenerativeOperationDescriptor("chat.completions", localRunner ? "/chat/completions" : undefined)];
   return {
+    modelDigest: configText(config, "modelDigest"),
+    orchestrationConfigPath: configText(config, "codaliOrchestrationPath"),
     slug: optionalText(agent.slug) || fallbackSlug,
     adapter,
     provider: resolveCodaliProviderForAgent(agent),
@@ -7426,6 +7447,55 @@ export class SelfHostedNodeRuntime {
     };
   }
 
+  private prepareEmbeddingPassthrough(job: SelfHostedNodeInvocationJob, agent: MswarmGenerativeAgent) {
+    if (job.policy?.expected_model_digest && agent.modelDigest !== job.policy.expected_model_digest) {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "Embedding model revision changed after admission");
+    }
+    const descriptor = this.generativeOperationForAgent(agent, "embeddings");
+    const baseUrl = optionalText(agent.baseUrl);
+    let endpoint: URL;
+    try { endpoint = new URL(baseUrl || ""); } catch {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "embedding runner URL is missing or invalid");
+    }
+    if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "embedding runner URL is invalid");
+    }
+    let body: ReturnType<typeof validateEmbeddingRequest>;
+    try {
+      body = validateEmbeddingRequest(job.openai_request, optionalText(agent.model) || job.openai_request.model, descriptor.limits);
+    } catch (error) {
+      throw new SelfHostedPreStartJobError("validation_failed", error instanceof Error ? error.message : "invalid embedding request");
+    }
+    if (Buffer.byteLength(JSON.stringify(body)) > Math.min(descriptor.limits?.maxRequestBytes || 1_048_576, 1_048_576)) {
+      throw new SelfHostedPreStartJobError("validation_failed", "embedding request exceeds byte limit");
+    }
+    const headers: Record<string, string> = {};
+    const bearer = agent.authMode === "bearer" ? optionalText(agent.apiKey)
+      : agent.authMode === "dummy-bearer" ? optionalText(agent.dummyBearerToken) || "local" : undefined;
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
+    for (const [key, value] of Object.entries(agent.headers ?? {})) if (typeof value === "string") headers[key.toLowerCase()] = value;
+    headers["content-type"] = "application/json";
+    return { descriptor, body, headers, url: `${baseUrl!.replace(/\/+$/, "")}${descriptor.path}` };
+  }
+
+  private async executeEmbeddingPassthrough(prepared: ReturnType<SelfHostedNodeRuntime["prepareEmbeddingPassthrough"]>) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(this.config.jobTimeoutMs, 120_000));
+    try {
+      const response = await this.fetchImpl(prepared.url, {
+        method: "POST", headers: prepared.headers, body: JSON.stringify(prepared.body), signal: controller.signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`local embeddings runner request failed with status ${response.status}`);
+      }
+      const raw = await readBoundedResponseText(response,
+        Math.min(prepared.descriptor.limits?.maxOutputBytes || 16_777_216, 16_777_216), "embedding response exceeds byte limit");
+      return validateEmbeddingResponse(JSON.parse(raw), prepared.body.input.length,
+        prepared.descriptor.limits?.embeddingDimensions ?? prepared.body.dimensions, prepared.body.model);
+    } finally { clearTimeout(timeout); }
+  }
+
   private async executeOpenAiGenerativePassthrough(
     prepared: {
       descriptor: SelfHostedGenerativeOperationConfig;
@@ -7947,6 +8017,17 @@ export class SelfHostedNodeRuntime {
       const agent = await this.resolveMcodaAgentForJob(job);
       selectedAgent = agent;
       this.generativeOperationForAgent(agent, operation);
+      if (operation === "embeddings") {
+        const prepared = this.prepareEmbeddingPassthrough(job, agent);
+        await acknowledgeStarted(agent);
+        await recordProgress({ type: "agent_selected", operation, job_id: job.job_id,
+          request_id: job.request_id, agent_slug: agent.slug, adapter: agent.adapter, local_model: prepared.body.model });
+        const result = await this.executeEmbeddingPassthrough(prepared);
+        this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
+        return { job_id: job.job_id, request_id: job.request_id, operation, status: "success",
+          openai_response: { ...result, ...(agent.modelDigest ? { embedding_revision: agent.modelDigest } : {}) }, ...(result.usage ? { usage: { ...result.usage, completion_tokens: 0 } } : {}),
+          ...(progressEvents.length ? { progress_events: progressEvents } : {}), timing: { local_latency_ms: Date.now() - startedAt } };
+      }
       if (
         operation === "images.generations" ||
         operation === "audio.generations" ||
@@ -8108,6 +8189,7 @@ export class SelfHostedNodeRuntime {
             agent_slug: response.metadata.agent_slug,
             runtime: response.metadata.runtime,
             codali_run_id: response.metadata.run_id,
+            orchestration: response.metadata.orchestration,
             tool_calls_executed: response.metadata.tool_calls_executed,
             called_tools: response.metadata.called_tools,
             dynamic_tools_considered: response.metadata.dynamic_tools_considered,

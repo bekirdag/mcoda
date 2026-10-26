@@ -1,4 +1,13 @@
 export interface ToolContext {
+  signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+  beforeTool?: (tool: ToolDescriptor, args: unknown) => Promise<void>;
+  afterTool?: (tool: ToolDescriptor, args: unknown, result: ToolExecutionResult) => Promise<void>;
+  checkPath?: (resolvedPath: string, action: "read" | "write") => Promise<void>;
+  shellTimeoutMs?: number;
+  shellMaxOutputBytes?: number;
+  /** Optional trusted executor wrapper, applied after permission evaluation. */
+  shellExecutor?: (command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>;
   workspaceRoot: string;
   runId?: string;
   recordTouchedFile?: (path: string) => void;

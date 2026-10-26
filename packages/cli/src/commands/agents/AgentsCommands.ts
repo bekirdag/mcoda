@@ -14,6 +14,7 @@ import {
   type SelfHostedGenerativeOperation,
 } from "@mcoda/shared";
 import readline from "node:readline";
+import path from "node:path";
 
 interface ParsedArgs {
   flags: Record<string, string | boolean | string[]>;
@@ -95,8 +96,10 @@ Subcommands:
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
-    --config-input-modality <M> Repeatable input modality (text|image|audio|video)
-    --config-output-modality <M> Repeatable output modality (text|image|audio|video)
+    --config-model-digest <SHA> Pinned model artifact digest (sha256:<64 hex digits>)
+    --config-orchestration-path <PATH|none> Absolute node model profile path, or disable it
+    --config-input-modality <M> Repeatable input modality (text|image|audio|video|embedding)
+    --config-output-modality <M> Repeatable output modality (text|image|audio|video|embedding)
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
@@ -128,8 +131,10 @@ Subcommands:
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
-    --config-input-modality <M> Repeatable input modality (text|image|audio|video)
-    --config-output-modality <M> Repeatable output modality (text|image|audio|video)
+    --config-model-digest <SHA> Pinned model artifact digest (sha256:<64 hex digits>)
+    --config-orchestration-path <PATH|none> Absolute node model profile path, or disable it
+    --config-input-modality <M> Repeatable input modality (text|image|audio|video|embedding)
+    --config-output-modality <M> Repeatable output modality (text|image|audio|video|embedding)
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
@@ -233,6 +238,8 @@ const CONFIG_FLAG_NAMES = [
   "config-health-path",
   "config-models-path",
   "config-public-model-id",
+  "config-model-digest",
+  "config-orchestration-path",
   "config-input-modality",
   "config-output-modality",
   "config-operation",
@@ -476,8 +483,19 @@ const parseConfig = (
   const modelsPath = getLastStringFlag(flags["config-models-path"], "--config-models-path");
   if (modelsPath) config.modelsPath = modelsPath;
 
+  const orchestrationPath = getLastStringFlag(flags["config-orchestration-path"], "--config-orchestration-path");
+  if (orchestrationPath) {
+    if (orchestrationPath !== "none" && (!path.isAbsolute(orchestrationPath) || /[\x00-\x1f]/.test(orchestrationPath))) throw new Error("Invalid --config-orchestration-path; expected an absolute path or none");
+    config.codaliOrchestrationPath = orchestrationPath === "none" ? null : path.normalize(orchestrationPath);
+  }
+
   const publicModelId = getLastStringFlag(flags["config-public-model-id"], "--config-public-model-id");
   if (publicModelId) config.publicModelId = publicModelId;
+  const modelDigest = getLastStringFlag(flags["config-model-digest"], "--config-model-digest");
+  if (modelDigest) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(modelDigest)) throw new Error("Invalid --config-model-digest; expected sha256:<64 lowercase hex digits>");
+    config.modelDigest = modelDigest;
+  }
 
   const inputModalities = parseConfigModalities(
     flags["config-input-modality"],

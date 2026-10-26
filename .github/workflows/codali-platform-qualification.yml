@@ -1,0 +1,55 @@
+name: Codali platform qualification
+
+on:
+  pull_request:
+    paths:
+      - "packages/codali/**"
+      - "packages/db/**"
+      - "packages/shared/**"
+      - "scripts/verify-codali-terminal-pty.py"
+      - ".github/workflows/codali-platform-qualification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Record actual platform and toolchain
+        run: |
+          sw_vers
+          uname -m
+          node --version
+          python3 --version
+      - name: Install and build
+        run: |
+          pnpm install
+          pnpm --filter '@mcoda/codali...' run build
+      - name: Require working macOS isolation
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { executorStatus } from './packages/codali/dist/tools/shell/IsolatedExecutor.js';
+          const status = executorStatus();
+          console.log(status);
+          assert.equal(status.available, true, status.reason);
+          assert.equal(status.backend, 'sandbox-exec');
+          JS
+      - name: Codali regression and real shell boundary
+        run: node scripts/run-node-tests.js packages/codali/dist
+      - name: Terminal input, resize and restoration
+        run: python3 scripts/verify-codali-terminal-pty.py

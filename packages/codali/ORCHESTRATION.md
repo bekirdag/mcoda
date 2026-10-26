@@ -1,0 +1,205 @@
+# Orchestration configuration
+
+The JSON file declares providers, model identities, role bindings, effort limits
+and task-control policy. It contains credential references, never secret values.
+The loader rejects unknown fields, undeclared models, alias cycles, unsafe URLs,
+unsupported operations and policies that allow more than one workspace writer.
+The packaged `config/orchestration.schema.json` describes the structural contract;
+the runtime additionally validates references, backend intersections and URL trust.
+
+Providers use `mswarm` or `openai-compatible`, with `baseUrl` and optional
+`credentialRef: "env:VARIABLE"`. mSwarm requires a credential reference. Catalog
+and usage URLs must share the provider origin. HTTPS is required except for local
+loopback development. Redirects do not receive credentials.
+
+Every model declares `provider`, `catalogId`, `revision`, `operations`,
+`contextWindow` and `maxOutputTokens`. Optional properties identify `backend`,
+`host`, `resourcePool`, tool/streaming support and embedding dimensions. A catalog
+that does not expose an artifact revision must be labeled `catalog-unversioned`;
+that label is not a verified weight checksum. Configuration hashes identify the
+effective routing policy, not a physical model artifact.
+
+Operations are `chat.completions`, `embeddings`, `images.generations`,
+`audio.generations` and `videos.generations`. A binding declares ordered
+`candidates`, aliases another binding using `useBinding`, or is explicitly
+disabled. Aliases inherit all backend restrictions along their chain. Discovery
+only filters declared candidates; it never adds unconfigured routes. If no
+candidate is eligible, execution fails before dispatch. A submitted request is
+not automatically replayed against another host.
+
+The lead owns task progression. `reviewer` independently evaluates evidence;
+`helper` accepts a bounded capsule and returns a draft with source references.
+Helpers cannot execute tools or grant permissions. `image`, `audio` and `video`
+bind generation operations. Media parameters are checked against advertised
+formats and limits, and every artifact records its model, config hash and SHA-256.
+Roles such as `planner`, `architect`, `worker`, `router`, `repair`, `compactor`,
+`adjudicator`, `synthesizer` and `verifier` can explicitly alias the lead. Disabled
+optional capabilities do not silently invoke a model from daemon defaults.
+
+Effort controls shared limits, not a claim about hidden model reasoning:
+
+| Effort | Steps | Model calls | Tool calls | Total tokens | Time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| low | 12 | 12 | 12 | 32,000 | 5 min |
+| medium | 32 | 36 | 48 | 128,000 | 15 min |
+| high | 64 | 72 | 128 | 320,000 | 30 min |
+| max | 128 | 144 | 256 | 640,000 | 60 min |
+
+An `effort` object may override positive integer limits by level. Provider output
+and context limits remain enforced. Native `reasoning_effort`, `reasoning_budget`
+or `enable_thinking` settings belong in that model's `reasoning` mapping only after
+the adapter has been tested with them. Unreported usage is estimated and shown as
+such; an unknown server balance is not treated as a known zero balance.
+
+Configuration changes apply between turns using `/config reload`. Saved grants
+are revoked when reloading. Jobs already submitted retain their pinned provider,
+model and request. Switching a retrieval embedding space requires explicit index
+migration; changing a role alias does not make incompatible vectors compatible.
+
+The Raijin/Suku example deliberately leaves unqualified specialist and embedding
+routes disabled. Use `setup` to generate identifiers authorized for your account,
+then qualify and enable optional bindings. GPU free space alone is insufficient
+to admit another resident model or a concurrent media workload.
+
+An enabled `embedding` binding requires a pinned artifact revision, explicit
+`embeddingDimensions`, and an `embedding` object declaring `queryPrefix`,
+`documentPrefix`, `normalization` (`none` or `l2`) and `pooling`. All fallback
+candidates must share that exact embedding contract. For example, a qualified
+Nomic service may use `search_query: `, `search_document: `, `l2`, `mean` and 768
+dimensions; confirm these against the deployed artifact before configuring it.
+Use `mcoda agent add/update --config-model-digest sha256:<artifact checksum>`
+and an `embeddings` operation with `limits.embeddingDimensions` to expose a
+qualified runner. The mSwarm catalog and response must attest the pinned digest.
+
+With this binding enabled, the terminal controller owns a private Docdex process.
+Repository embeddings pass through the configured provider and shared session
+budget. Docdex text inference uses the configured helper, or the lead when no
+helper is enabled. Private indexes live outside the repository, are separated by
+embedding-space identity, and are reused on restart. The session also pins its
+space; an incompatible upgrade requires a separate index and session. Query and
+document receipts retain purpose, model, configuration hash and reported usage.
+
+The managed daemon must advertise workspace-metadata control, query/document
+embedding input types, strict repository embeddings and deterministic profile
+embeddings. An older daemon fails startup with an explicit compatibility error.
+`docdex.binary` can select an installed qualified binary; `startupTimeoutMs` bounds
+startup. It does not rewrite Git ignore files or create repository-local metadata.
+Global profile preferences use separate persistent deterministic hash storage,
+which makes no LLM call and survives repository embedding upgrades. Failed remote
+repository embeddings never substitute vectors from this hash space.
+
+Large plans remain complete in durable storage. The model context reserves the
+original goal, constraints, active task criteria and applicable architecture
+decisions, while paging unrelated work out of the prompt. `work_status` supports
+`offset`/`limit`, `taskIds` and `requirementIds`. Every required criterion remains
+subject to the final completion gate. A changed prerequisite or superseded
+decision invalidates dependent attempts before another write can proceed.
+
+Before editing existing source, the controller requires a current file read and
+successful symbols/AST plus impact-graph receipts for that content hash. Parser
+skips and failed requests do not satisfy the gate. Index ingestion uses the bound
+repository's absolute paths, independent of the daemon's working directory.
+An empty dependency graph is still incomplete dependency evidence: review imports
+and relevant callers, and verify behavior with tests.
+
+Terminal shell commands default to a read-only workspace. `command` contains a
+single executable and `args` contains its arguments. Optional `writePaths` names
+existing files/directories inside the claimed task scope; existing source below
+them needs the same read/analysis preconditions, including Git-ignored source.
+Narrow writable paths avoid inspecting unrelated build and dependency trees.
+
+Use `work_release` with the current task/attempt IDs and a reason before replanning
+a claimed task. It preserves the goal, criteria and historical receipts while
+invalidating the old attempt. A checkpoint saves context without releasing the
+claim. Rejected tool attempts are recorded and consume the shared tool budget.
+
+Resolved credentials are registered for exact-value redaction as well as common
+token-pattern detection. Stream processing buffers incomplete words so credentials
+split across chunks cannot expose their prefix or tail. Human-facing output also
+removes terminal control sequences; approvals retain complete operation arguments
+with credential fields redacted.
+
+## Shared embedded model scope
+
+`ConfiguredModelScope` pins a validated configuration and effort at invocation start. Every role provider shares call/token reservations, a deadline and cancellation. Missing or failed usage retains a conservative token reservation; `pendingCalls` counts unresolved accounting, not a claim that remote inference is still running. The caller persists `onEvent` intents/receipts when recovery is required.
+
+Legacy automation can opt into the same configuration with `codali run --orchestration-config /path/models.json --effort high ...` or `codali ask --orchestration-config /path/models.json --effort low ...`. `CODALI_ORCHESTRATION_CONFIG` supplies the deployment default. For `run`, the old `--config` still selects workflow/validation settings. Explicit legacy model/provider/agent overrides are rejected when orchestration configuration is selected. Old commands without an orchestration file retain their compatibility behavior.
+
+The configured entry points use these bindings:
+
+| Entry point | Model bindings | Shared boundary |
+| --- | --- | --- |
+| Terminal `chat`/`exec` | Lead, configured helpers/reviewer, embedding and media | Durable session controller |
+| Legacy `run` direct | `lead` | One scope for the command |
+| Legacy `run` smart | `router`, `architect`, `worker`, optional `summarizer` and `repair` | One scope across retrieval, summarization and retries |
+| Legacy `ask` and public `runCodali` API | `planner`, `worker`, `synthesizer` | One scope across classifier, planner, workers and final answer |
+| `runCodaliTask` | Explicit binding or `lead` | Owned scope or validated parent scope |
+| `runCodaliJob` | Each stage's explicit role or kind, including repair | One scope shared by parallel stages |
+
+The public API accepts `{ orchestration: { resolved, effort, caller }, signal }` in its trusted dependency argument. `caller` contains the authenticated `clientIdentity` and `clientProduct`; it is pinned and accompanies both mSwarm catalog and inference calls. Do not copy model configuration or caller identity from an untrusted tenant request. Pass each tenant's approved credential reference in its resolved host configuration. Tenant tool context remains mandatory; configuring a model does not authorize operator credential fallback. Request-level media overrides are refused in configured API mode; a host can register approved media tools and explicitly authorize them through its tool context.
+
+Runtime/job result accounting includes the configuration hash, actual selected catalog routes and cumulative shared usage. Borrowed scopes must match configuration, effort and any explicit caller identity; children never close their parent's scope. Nested tool hooks reserve from the shared tool budget. Configured CLI retrieval also meters every underlying Docdex HTTP attempt, including negotiation/retries, so a logical Docdex tool can consume more than one operation reservation. This conservative accounting is explicit rather than unmetered background work. Syntax validation uses cancellable processes.
+
+These library and CLI paths are implemented. Production applications must still pass their trusted configuration/caller context and be deployed and tested.
+
+The mSwarm node executor reads an operator-selected profile from the admitted
+agent's registry `codaliOrchestrationPath`. Set it with
+`mcoda agent update AGENT --config-orchestration-path /absolute/models.json`;
+`none` restores legacy execution for rollback. This setting is never accepted
+from a tenant invocation. Every declared provider must match the admitted
+loopback runner and its catalog endpoint; every model must match the admitted
+model, artifact when pinned, operations and capability/size limits. Calling the
+public mSwarm gateway from this path is rejected. A node profile uses the same
+schema and explicit role aliases as a terminal profile.
+
+The executor resolves runner credentials from the trusted registry/auth store
+into an invocation-local scope. It never sets process-global credential variables.
+Direct calls, gateway planning/synthesis and job stages share that scope's model,
+token, tool and cancellation limits. Required Docdex retrieval runs through the
+ordinary authorized protocol/tool path without a synthetic model override or an
+invented model-call receipt. A failed job propagates as a server error. The new
+node path has regression coverage; production activation and live qualification
+remain release requirements.
+
+`runConfiguredGateway` uses that scope for planner and synthesizer calls; host workers obtain their role providers from the same scope. The host still owns tool policy, tool budgets and cancellation of external operations. Legacy provider/planner overrides are rejected. If the gateway requires a final large model, every configured synthesizer candidate must have an eligible assignment in the host inventory/policy before any model dispatch. Traces identify the selected catalog route; configuration host labels are not physical execution attestations.
+
+## Existing mcoda project tasks
+
+Use `mcoda codali chat --project-task TASK_KEY --workspace-root /path/to/repo`, or `mcoda codali exec "Complete the existing task" --project-task TASK_KEY` with the desired permission profile. This opens an existing workspace task database; it does not initialize a project in an ordinary repository. Resume attached sessions through `mcoda codali resume SESSION_ID`. The standalone library accepts the small `ProjectTaskAuthority` contract for embedded hosts.
+
+The project task title/description remains part of the original objective. Terminal phases/subtasks describe execution of that one parent task. `McodaProjectTaskAuthority` uses the existing `WorkspaceRepository` transaction and `TaskStateService` status-event path. Canonical task revision and predecessor status fence claims; lease renewal and checks before model/tool execution stop stale owners. A running legacy task without a Codali lease cannot be taken over. Planning permissions read project state without claiming or submitting it.
+
+Verified local completion writes a durable submission intent, hands the task to `ready_to_code_review`, then acknowledges local completion. mcoda review and QA remain required. Replaying a lost response checks the operation ID, evidence digest, original revision and accepted revision. Recovery refuses changed inputs or a changed project review state. Session evidence cannot be deleted until the project task is completed or cancelled. A local project execution fork is refused because it would introduce another status owner.
+
+`runConfiguredPipeline` adapts the existing cognitive pipeline to the same model scope. Its retrieval-query, architect, builder and optional interpreter use the `router`, `architect`, `worker` and `repair` bindings. Builder tool calls share a counter across retries. The embedded host remains responsible for retrieval-tool metering, a configured Docdex client, policy checks/patch permissions, memory persistence and a validator using the scope signal. Legacy callbacks that silently swap providers are rejected. These adapters are available for migration; older application call sites still require rollout and qualification before the configuration migration is complete.
+
+`ValidationRunner` executes checks asynchronously, accepts the host cancellation signal and an optional shell executor, and preserves timeout/failure outcomes. The terminal's executor remains the isolation boundary; using an allowlisted command alone is not isolation.
+
+Media workers persist an artifact receipt before atomically publishing the complete, synced output file. A restarted client can validate the receipt's session/job/model/configuration identity, file format, byte count and checksum, then acknowledge success without another render. An incomplete or corrupt receipt leaves the job uncertain. Reconciliation probes the SQLite execution lock rather than trusting a PID that may have been reused. This closes the local receipt crash window; remote jobs whose responses never reached the client still require backend reconciliation support or an explicitly confirmed outcome.
+Durable media providers can declare `mediaJobsUrl` on the same origin as
+`baseUrl`. The `mswarm-media-jobs-v1` transport persists a client UUID before
+submission and reconciles by that UUID after a disconnect. Reusing a UUID with
+different input is rejected. Recovery reads the original job; it does not
+resubmit an uncertain render. Job summaries include the server invocation and
+node IDs, cancellation acknowledgement, expiry and available usage.
+
+The server retains a completed artifact for one hour, or until the client
+acknowledges its response checksum after persisting a verified local artifact.
+Expired server artifacts cannot be recovered by regenerating them silently.
+Cancellation that wins before the node start acknowledgement prevents
+inference. Cancellation after that boundary remains requested and unconfirmed;
+disconnecting an HTTP request does not prove that a native render stopped.
+Synchronous providers remain supported with explicitly limited remote recovery.
+`codali setup` negotiates this API; `codali doctor` reports the selected protocol.
+
+The isolated executor discovers host Node/npm/pnpm/yarn/bun installations outside
+the workspace. On Linux it mounts only the executable or a matching package root
+read-only and installs sandbox PATH aliases. It does not mount the user's home,
+adjacent packages, credentials or package-manager caches. Other tools already
+under system runtime paths keep working; additional private toolchains are not
+implicitly exposed. The installed Raijin pnpm has passed an isolated fixture
+test; macOS qualification is still pending. The macOS adapter creates a private
+temporary directory for each command, points HOME/TMPDIR there, and removes it
+after process cleanup. It grants no general read/write access to other users'
+temporary files. Linux uses a private temporary filesystem and pins TMPDIR to
+that filesystem.

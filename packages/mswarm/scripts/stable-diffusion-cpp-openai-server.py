@@ -28,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Any
 
+from media_gpu_lock import MediaGpuError, media_gpu_slot
+
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11449
@@ -507,6 +509,11 @@ def _native_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generate_image(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
+    with media_gpu_slot("image", cancelled=state.shutdown_requested):
+        return _generate_image_locked(state, request)
+
+
+def _generate_image_locked(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
     max_json_bytes = math.ceil(state.max_output_bytes / 3) * 4 + 131_072
     status, payload = _bounded_json_request(
         f"{state.upstream_base_url}/v1/images/generations",
@@ -921,7 +928,8 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
             threading.Thread(
                 target=run_generation,
                 name="sd-cpp-image-generation",
-                daemon=True,
+                # Preserve the GPU lease until non-cancellable inference ends.
+                daemon=False,
             ).start()
             if not completed.wait(state.inference_timeout_seconds):
                 logging.error("generation exceeded client deadline; native request still active")
@@ -947,6 +955,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                 )
             elif isinstance(error, ApiError):
                 self._send_error(error)
+            elif isinstance(error, MediaGpuError):
+                self._send_error(
+                    ApiError(error.status, str(error), error_type="server_error", code=error.code)
+                )
             elif isinstance(error, UpstreamTimeout):
                 logging.error("generation failed reason=upstream timeout")
                 self._send_error(

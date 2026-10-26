@@ -217,6 +217,9 @@ export type CodaliRuntimeEvent =
   | { type: "error"; message: string; code?: string; retryable?: boolean; at: string };
 
 export interface CodaliRuntimeInput {
+  orchestration?: { resolved: NodeOrchestrationConfig; effort: "high"; scope: NodeModelScope; binding?: string };
+  requiredRetrieval?: GatewayRequiredProtocolNeed[];
+  signal?: AbortSignal;
   task: string;
   messages?: ProviderMessage[];
   workspace: CodaliRuntimeWorkspace;
@@ -557,7 +560,19 @@ export interface CodaliGatewayEvent {
   [key: string]: unknown;
 }
 
+interface NodeOrchestrationConfig { config: { providers: Record<string, unknown> }; hash: string; }
+interface NodeModelScope {
+  readonly signal: AbortSignal;
+  snapshot(): { modelCalls: number; inputTokens: number; outputTokens: number; totalTokens: number; estimated: boolean; pendingCalls: number };
+  close(): void;
+}
 interface CodaliModule {
+  loadNodeOrchestrationConfig?(file: string, agent: MswarmCodaliAgent): Promise<NodeOrchestrationConfig>;
+  ConfiguredModelScope?: new (resolved: NodeOrchestrationConfig, options: { effort: "high"; signal?: AbortSignal; credentials?: Record<string, string> }) => NodeModelScope;
+  runConfiguredGateway?(request: MswarmCodaliGateway, options: {
+    orchestration: NodeOrchestrationConfig; effort: "high"; scope: NodeModelScope;
+    configure: () => Omit<CodaliGatewayOptions, "provider">;
+  }): Promise<{ result: CodaliGatewayResult; usage: ProviderUsage }>;
   runCodaliTask(input: CodaliRuntimeInput): Promise<CodaliRuntimeResult>;
   runCodaliJob?(input: CodaliJobRuntimeInput): Promise<CodaliJobRuntimeResult>;
   runCodaliGateway?(
@@ -576,6 +591,9 @@ export interface MswarmCodaliChatMessage {
 }
 
 export interface MswarmCodaliAgent {
+  /** Trusted node registry setting, never copied from an invocation payload. */
+  orchestrationConfigPath?: string;
+  modelDigest?: string;
   slug: string;
   adapter: string;
   provider?: string;
@@ -648,6 +666,7 @@ export interface MswarmCodaliSession extends CodaliRuntimeSessionInput {}
 export interface MswarmCodaliSubagents extends CodaliRuntimeSubagentsInput {}
 
 export interface MswarmCodaliInvocationInput {
+  signal?: AbortSignal;
   jobId: string;
   requestId: string;
   model: string;
@@ -797,6 +816,7 @@ export interface MswarmCodaliInvocationResult {
   gatewayResult?: CodaliGatewayResult;
   openAIChunks: Record<string, unknown>[];
   metadata: {
+    orchestration?: { configHash: string; effort: string; usage: ReturnType<NodeModelScope["snapshot"]> };
     provider: string;
     adapter: string;
     local_model: string;
@@ -2134,7 +2154,9 @@ function createGatewayTaskRunner(input: {
             : input.runtimeInput.policy.mode,
           timeoutMs,
         },
-        providerInstance: requiredProtocolProvider ?? input.runtimeInput.providerInstance,
+        ...(input.runtimeInput.orchestration
+          ? { orchestration: { ...input.runtimeInput.orchestration, binding: "worker" }, requiredRetrieval: requiredProtocolNeeds, providerInstance: undefined }
+          : { providerInstance: requiredProtocolProvider ?? input.runtimeInput.providerInstance }),
         streaming: { enabled: false },
         onEvent: undefined,
       });
@@ -2142,7 +2164,7 @@ function createGatewayTaskRunner(input: {
         status: "succeeded",
         output: result.finalMessage,
         toolCalls: runtimeToolCallsToGatewayToolCalls(result.telemetry, result.events),
-        modelCalls: [
+        modelCalls: requiredProtocolNeeds ? [] : [
           {
             role: "worker",
             status: "success",
@@ -2194,6 +2216,25 @@ function openAIStopChunk(input: MswarmCodaliInvocationInput): Record<string, unk
 export class MswarmCodaliExecutor {
   async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
     const codali = await loadCodaliModule();
+    const file = input.agent.orchestrationConfigPath;
+    if (!file) return this.invokeWithinScope(input, codali);
+    if (input.runCodaliGateway || input.runCodali || input.runCodaliJob) throw new Error("Configured node execution cannot accept legacy runtime overrides");
+    if (!codali.loadNodeOrchestrationConfig || !codali.ConfiguredModelScope || !codali.runConfiguredGateway) {
+      throw new Error("Installed Codali lacks configured node orchestration support");
+    }
+    const resolved = await codali.loadNodeOrchestrationConfig(file, input.agent);
+    const credential = input.agent.apiKey ?? (input.agent.authMode === "dummy-bearer" ? input.agent.dummyBearerToken : undefined);
+    const credentials = credential ? Object.fromEntries(Object.keys(resolved.config.providers).map(id => [id, credential])) : undefined;
+    const scope = new codali.ConfiguredModelScope(resolved, { effort: "high", signal: input.signal, credentials });
+    try {
+      const result = await this.invokeWithinScope(input, codali, { resolved, effort: "high", scope });
+      const usage = scope.snapshot();
+      return { ...result, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
+        metadata: { ...result.metadata, orchestration: { configHash: resolved.hash, effort: "high", usage } } };
+    } finally { scope.close(); }
+  }
+
+  private async invokeWithinScope(input: MswarmCodaliInvocationInput, codali: CodaliModule, orchestration?: CodaliRuntimeInput["orchestration"]): Promise<MswarmCodaliInvocationResult> {
     const workspace: MswarmCodaliWorkspace = input.workspace ?? {
       root: process.cwd(),
       readOnly: true,
@@ -2218,6 +2259,8 @@ export class MswarmCodaliExecutor {
       }
     };
     const runtimeInput: CodaliRuntimeInput = {
+      orchestration,
+      signal: orchestration?.scope.signal ?? input.signal,
       task: messagesToTask(input.messages),
       messages: toProviderMessages(input.messages),
       workspace,
@@ -2278,8 +2321,7 @@ export class MswarmCodaliExecutor {
         runId: gatewayRequest.id,
         mode: gatewayRequest.mode,
       });
-      gatewayResult = await runCodaliGateway(gatewayRequest, {
-        provider: createGatewayProvider({ providerName, runtimeInput, runCodali }),
+      const hostOptions = {
         taskRunner: createGatewayTaskRunner({ runtimeInput, runCodali }),
         agentInventory: buildGatewayAgentInventory(input.agent, gatewayRequest),
         workerOptions: {
@@ -2289,6 +2331,13 @@ export class MswarmCodaliExecutor {
         finalSynthesizerOptions: {
           maxTokens: input.policy?.maxOutputTokens ?? input.agent.maxOutputTokens,
         },
+      };
+      if (orchestration) {
+        if (input.runCodaliGateway || input.runCodali || input.runCodaliJob) throw new Error("Configured node execution cannot accept legacy runtime overrides");
+        gatewayResult = (await codali.runConfiguredGateway!(gatewayRequest, { orchestration: orchestration.resolved,
+          scope: orchestration.scope, effort: orchestration.effort, configure: () => hostOptions })).result;
+      } else gatewayResult = await runCodaliGateway(gatewayRequest, {
+        ...hostOptions, provider: createGatewayProvider({ providerName, runtimeInput, runCodali }),
       });
       await input.onGatewayEvent?.({
         type: "gateway_result",
@@ -2337,6 +2386,12 @@ export class MswarmCodaliExecutor {
         runtime: runtimeInput,
         onEvent: input.onJobEvent,
       });
+      if (jobResult.status === "failed") {
+        const failure = jobResult.errors[0];
+        throw Object.assign(new Error(`CODALI_JOB_FAILED:${failure?.code ?? "JOB_FAILED"}:${failure?.message ?? "Job failed without an error message"}`), {
+          code: "CODALI_JOB_FAILED", jobRunId: jobResult.runId, retryable: false,
+        });
+      }
     } else {
       runtimeResult = await runCodali(runtimeInput);
     }

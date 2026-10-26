@@ -4720,6 +4720,59 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("routes operation-bound embeddings to the configured local runner and rejects dimension drift", async () => {
+    const config = permissiveServiceConfigFor(tempStatePath());
+    let localRequest: Record<string, unknown> | undefined;
+    let badDimensions = false;
+    let calls = 0;
+    const agent = healthyMcodaAgent({ slug: "nomic-embed", adapter: "openai-compatible-local",
+      defaultModel: "nomic-embed-text", bestUsage: "embedding", supportsTools: false, capabilities: ["embedding"],
+      config: { baseUrl: "http://embedding.test/v1", runnerKind: "llama-cpp", authMode: "none", modelDigest: "sha256:qualified",
+        operations: [{ operation: "embeddings", path: "/embeddings", limits: { embeddingDimensions: 2, maxInputItems: 2 } }] } });
+    const mapped = mapMcodaAgentToSelfHostedModel(agent, config);
+    assert.equal(mapped?.exposed, true);
+    assert.equal(mapped?.digest, "sha256:qualified");
+    assert.deepEqual(mapped?.output_modalities, ["embedding"]);
+    assert.equal(mapped?.operations?.[0].limits?.embedding_dimensions, 2);
+    const runtime = new SelfHostedNodeRuntime(config, {
+      mcoda: mcodaAgentListClient([agent]),
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        assert.equal(String(url), "http://embedding.test/v1/embeddings");
+        calls++; localRequest = JSON.parse(String(init?.body));
+        return jsonResponse({ model: "nomic-embed-text", data: [{ index: 0, embedding: badDimensions ? [1] : [1, 2] }], usage: { prompt_tokens: 4, total_tokens: 4 } });
+      }) as typeof fetch,
+    });
+    const job: SelfHostedNodeInvocationJob = { job_id: "embedding-job", request_id: "embedding-request", node_id: config.nodeId,
+      agent_slug: "nomic-embed", source_agent_slug: "nomic-embed", provider: "mcoda", model: "public-nomic", operation: "embeddings",
+      policy: { expected_model_digest: "sha256:qualified" },
+      openai_request: { model: "public-nomic", input: ["search_query: hello"] } };
+    const token = signInvocationToken({ secret: config.invocationSigningSecret || "", nodeId: job.node_id,
+      jobId: job.job_id, requestId: job.request_id, model: job.model!, operation: "embeddings" });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/jobs", headers: { authorization: `Bearer ${token}` }, payload: job });
+      assert.equal(response.statusCode, 200, response.body);
+      const result = response.json();
+      assert.equal(result.status, "success", response.body);
+      assert.equal(result.operation, "embeddings");
+      assert.equal(result.usage.total_tokens, 4);
+      assert.equal(result.openai_response.embedding_revision, "sha256:qualified");
+      assert.equal(localRequest?.model, "nomic-embed-text");
+      assert.deepEqual(localRequest?.input, ["search_query: hello"]);
+      badDimensions = true;
+      const failed = await runtime.executeJob({ ...job, job_id: "embedding-bad-dimensions" });
+      assert.equal(failed.status, "failed");
+      assert.match(failed.error?.message || "", /dimension/);
+      const before = calls;
+      const invalid = await runtime.executeJob({ ...job, job_id: "embedding-invalid-input", openai_request: { model: "public-nomic", input: [] } });
+      assert.equal(invalid.status, "failed");
+      assert.equal(calls, before, "invalid inputs must fail before dispatch");
+      const stale = await runtime.executeJob({ ...job, job_id: "embedding-stale-revision", policy: { expected_model_digest: "sha256:stale" } });
+      assert.equal(stale.status, "failed");
+      assert.equal(calls, before, "stale revision must fail before dispatch");
+    } finally { await app.close(); }
+  });
+
   it("accepts a public-model direct image token and remaps the local runner model", async () => {
     const statePath = tempStatePath();
     const config = permissiveServiceConfigFor(statePath);

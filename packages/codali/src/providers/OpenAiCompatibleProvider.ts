@@ -5,6 +5,7 @@ import {
   type LocalRunnerConfigIssue,
   type LocalRunnerResponseFormatStrategy,
 } from "@mcoda/shared";
+import { ModelServiceError } from "./ModelServiceError.js";
 import type {
   Provider,
   ProviderConfig,
@@ -208,6 +209,7 @@ export class OpenAiCompatibleProvider implements Provider {
   }
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    request.signal?.throwIfAborted();
     const baseUrl = normalizeBaseUrl(this.localRunner.baseUrl ?? this.config.baseUrl);
     const url = new URL("chat/completions", baseUrl).toString();
     const auth = this.resolveAuth();
@@ -300,27 +302,30 @@ export class OpenAiCompatibleProvider implements Provider {
     }
 
     const controller = new AbortController();
+    const onAbort = () => controller.abort(request.signal?.reason);
+    request.signal?.addEventListener("abort", onAbort, { once: true });
     const timeoutMs = this.config.timeoutMs ?? 60_000;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetchWithTransientRetry(
+      const requestFetch = this.config.retryTransient === false ? (url: string, init: RequestInit) => fetch(url, init) : fetchWithTransientRetry;
+      const response = await requestFetch(
         url,
         {
           method: "POST",
           headers,
           body: JSON.stringify(body),
           signal: controller.signal,
+          redirect: "error",
         },
         controller,
       );
 
       if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`OpenAI-compatible error ${response.status}: ${errorBody}`);
+        throw await ModelServiceError.fromResponse(response);
       }
 
-      if (request.stream) {
+      if (request.stream && !response.headers.get("content-type")?.includes("application/json")) {
         if (!response.body) {
           throw new Error("OpenAI-compatible streaming response missing body");
         }
@@ -328,55 +333,53 @@ export class OpenAiCompatibleProvider implements Provider {
         const decoder = new TextDecoder();
         let buffer = "";
         let content = "";
+        let ended = false;
+        let finishReason: string | undefined;
         const toolCallMap = new Map<number, { id: string; name: string; args: string }>();
         let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
 
-        while (true) {
+        const consume = (line: string): void => {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) return;
+            const data = trimmed.slice(5).trim();
+            if (!data) return;
+            if (data === "[DONE]") { ended = true; return; }
+            const chunk = JSON.parse(data) as { error?: unknown; choices?: Array<{ delta?: any; finish_reason?: string }>; usage?: typeof usage };
+            if (chunk.error) {
+              const detail = typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error);
+              throw new Error(`OpenAI-compatible stream error: ${this.config.apiKey ? detail.split(this.config.apiKey).join("[redacted]").slice(0, 600) : detail.slice(0, 600)}`);
+            }
+            const delta = chunk.choices?.[0]?.delta;
+            if (typeof chunk.choices?.[0]?.finish_reason === "string") finishReason = chunk.choices[0].finish_reason;
+            if (typeof delta?.content === "string") {
+              content += delta.content;
+              if (content.length > 4_000_000) throw new Error("Model stream exceeds output limit");
+              emitToken(delta.content);
+            }
+            if (Array.isArray(delta?.tool_calls)) for (const call of delta.tool_calls) {
+              const index = call.index ?? 0;
+              if (!Number.isInteger(index) || index < 0 || index > 128) throw new Error("Invalid streamed tool index");
+              const existing = toolCallMap.get(index) ?? { id: call.id ?? `call_${index + 1}`, name: "", args: "" };
+              if (typeof call.id === "string") existing.id = call.id;
+              if (typeof call.function?.name === "string") existing.name = call.function.name;
+              if (typeof call.function?.arguments === "string") existing.args += call.function.arguments;
+              if (existing.args.length > 2_000_000) throw new Error("Tool arguments exceed stream limit");
+              toolCallMap.set(index, existing);
+            }
+            if (chunk.usage) usage = chunk.usage;
+        };
+        try { while (true) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done) { buffer += decoder.decode(); if (buffer.trim()) consume(buffer); break; }
           buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > 2_000_000) throw new Error("Model stream frame exceeds limit");
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith("data:")) continue;
-            const data = trimmed.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
-            try {
-              const chunk = JSON.parse(data) as OpenAiResponse & {
-                choices?: Array<{ delta?: any }>;
-                usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-              };
-              const delta = chunk.choices?.[0]?.delta;
-              if (delta?.content) {
-                content += delta.content;
-                emitToken(delta.content);
-              }
-              if (Array.isArray(delta?.tool_calls)) {
-                for (const call of delta.tool_calls) {
-                  const index = call.index ?? 0;
-                  const existing = toolCallMap.get(index) ?? {
-                    id: call.id ?? `call_${index + 1}`,
-                    name: "",
-                    args: "",
-                  };
-                  if (call.function?.name) {
-                    existing.name = call.function.name;
-                  }
-                  if (typeof call.function?.arguments === "string") {
-                    existing.args += call.function.arguments;
-                  }
-                  toolCallMap.set(index, existing);
-                }
-              }
-              if (chunk.usage) {
-                usage = chunk.usage;
-              }
-            } catch {
-              // ignore malformed chunks
-            }
-          }
-        }
+          for (const line of lines) consume(line);
+        } } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+        if ((!ended && !finishReason) || finishReason === "length") throw new Error("Model stream ended before a complete response");
+        if (!content && !toolCallMap.size) throw new Error("Model stream returned no content or tool calls");
+        for (const call of toolCallMap.values()) { if (!call.name || !call.id) throw new Error("Incomplete streamed tool call"); JSON.parse(call.args); }
 
         const toolCalls =
           toolCallMap.size > 0
@@ -444,6 +447,7 @@ export class OpenAiCompatibleProvider implements Provider {
         raw,
       };
     } finally {
+      request.signal?.removeEventListener("abort", onAbort);
       clearTimeout(timeout);
     }
   }

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { configureMediaBridgeEnvironment } from "../helpers/media-bridge-environment.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -65,9 +66,11 @@ function semanticPng({
   ]);
 }
 
+configureMediaBridgeEnvironment(test, path.dirname(serverScript));
+
 function resolvePython() {
   for (const candidate of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
-    const probe = spawnSync(candidate, ["-c", "import sys; print(sys.executable)"], {
+    const probe = spawnSync(candidate, ["-c", "import sys, fcntl; print(sys.executable)"], {
       encoding: "utf8",
     });
     if (probe.status === 0 && probe.stdout.trim()) return probe.stdout.trim();
@@ -272,7 +275,7 @@ test(
   async (t) => {
     const python = resolvePython();
     if (!python) {
-      t.skip("Python is unavailable");
+      t.skip("Python with POSIX file locking is unavailable");
       return;
     }
 

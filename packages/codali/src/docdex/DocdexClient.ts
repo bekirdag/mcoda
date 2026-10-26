@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import type {
   DocdexCapabilityMap,
@@ -9,6 +10,11 @@ import type {
 import { mswarmClientProductHeaders } from "@mcoda/shared";
 
 export interface DocdexClientOptions {
+  /** Trusted host accounting hook; each retrieval HTTP attempt reserves before dispatch. */
+  beforeRequest?: (url: string) => void | Promise<void>;
+  signal?: () => AbortSignal | undefined;
+  timeoutMs?: number;
+  localSearchOnly?: boolean;
   baseUrl: string;
   repoRoot?: string;
   repoId?: string;
@@ -50,6 +56,12 @@ export type DocdexRuntimeOperation =
   | "tree"
   | "memory_save"
   | "memory_recall"
+  | "wakeup"
+  | "diary_read"
+  | "diary_write"
+  | "conversation_read"
+  | "conversation_search"
+  | "kg_query"
   | "profile_read"
   | "profile_write"
   | "web_research"
@@ -202,6 +214,12 @@ const DOCDEX_RUNTIME_OPERATIONS = new Set<DocdexRuntimeOperation>([
   "tree",
   "memory_save",
   "memory_recall",
+  "wakeup",
+  "diary_read",
+  "diary_write",
+  "conversation_read",
+  "conversation_search",
+  "kg_query",
   "profile_read",
   "profile_write",
   "web_research",
@@ -226,6 +244,12 @@ const MCP_OPERATION_BY_METHOD: Record<string, DocdexRuntimeOperation> = {
   docdex_repo_inspect: "repo_inspect",
   docdex_memory_save: "memory_save",
   docdex_memory_recall: "memory_recall",
+  docdex_wakeup: "wakeup",
+  docdex_diary_read: "diary_read",
+  docdex_diary_write: "diary_write",
+  docdex_conversation_read: "conversation_read",
+  docdex_conversation_search: "conversation_search",
+  docdex_kg_query: "kg_query",
   docdex_tree: "tree",
   docdex_open: "open",
   docdex_get_profile: "profile_read",
@@ -314,10 +338,21 @@ export class DocdexClient {
   private healthChecked = false;
   private repoInitializeAttempted = false;
   private capabilitySnapshot?: DocdexCapabilitySnapshot;
+  private mcpSessionId?: string;
+  private mcpInitialize?: Promise<void>;
 
   constructor(private options: DocdexClientOptions) {
     this.repoId = options.repoId;
     this.dagSessionId = options.dagSessionId;
+  }
+
+  private async fetch(input: string, init: RequestInit = {}): Promise<Response> {
+    const signals = [init.signal, this.options.signal?.(), AbortSignal.timeout(this.options.timeoutMs ?? 60_000)].filter((signal): signal is AbortSignal => !!signal);
+    const signal = AbortSignal.any(signals);
+    signal.throwIfAborted();
+    await this.options.beforeRequest?.(input);
+    signal.throwIfAborted();
+    return globalThis.fetch(input, { ...init, signal, redirect: "error" });
   }
 
   setRepoId(repoId: string): void {
@@ -581,7 +616,7 @@ export class DocdexClient {
     }
     let response: Response;
     try {
-      response = await fetch(`${this.resolveBaseUrl()}/healthz`);
+      response = await this.fetch(`${this.resolveBaseUrl()}/healthz`);
     } catch (error) {
       throw this.runtimeError(
         "docdex_unavailable",
@@ -600,7 +635,7 @@ export class DocdexClient {
 
   private async initializeRepo(rootUri: string): Promise<{ repoId?: string; repoRoot?: string }> {
     await this.ensureHealth();
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/initialize`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/initialize`, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({ rootUri }),
@@ -625,6 +660,28 @@ export class DocdexClient {
       // Keep endpoint-specific calls responsible for reporting the final failure.
       // Single-repo daemons can still accept repo_root without a prior initialize.
     }
+  }
+
+  /** Wait locally for a warming index instead of paying for model polling. */
+  async waitForIndex(timeoutMs = 30_000, onProgress?: (status: string) => void): Promise<unknown> {
+    if (this.isEncryptedSearchGateway()) return { managed: true };
+    this.assertOperationAllowed("stats");
+    const deadline = Date.now() + timeoutMs;
+    await this.ensureHealth();
+    await this.ensureRepoInitialized();
+    while (Date.now() < deadline) {
+      this.options.signal?.()?.throwIfAborted();
+      const response = await this.fetch(`${this.resolveBaseUrl()}/v1/index/status`, {
+        headers: this.buildHeaders(), signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      });
+      if (!response.ok) await this.throwResponseError(response, "index readiness");
+      const status = await response.json() as { ready?: boolean; status?: string; indexing_in_progress?: boolean };
+      if (status.ready === true && status.indexing_in_progress !== true) return status;
+      if (status.status === "failed") throw this.runtimeError("docdex_unavailable", "Repository indexing failed; inspect Docdex diagnostics", { retryable: false });
+      onProgress?.(status.status ?? "indexing");
+      await delay(Math.min(1000, Math.max(1, deadline - Date.now())), undefined, { signal: this.options.signal?.() });
+    }
+    throw this.runtimeError("docdex_unavailable", "Repository index did not become ready within the bounded wait; inspect Docdex health and memory pressure", { retryable: false });
   }
 
   private withRepoId(params: URLSearchParams): void {
@@ -702,6 +759,9 @@ export class DocdexClient {
     response: Response,
     operation: string,
   ): unknown {
+    if (payload && typeof payload === "object" && !Array.isArray(payload) && (payload as Record<string, unknown>).error) {
+      this.throwResponseBodyError(response.status, JSON.stringify(payload), operation, this.responseRequestId(response));
+    }
     const headerRequestId = this.responseRequestId(response);
     if (!headerRequestId || !payload || typeof payload !== "object" || Array.isArray(payload)) {
       return payload;
@@ -751,13 +811,14 @@ export class DocdexClient {
   }
 
   async search(query: string, options: DocdexSearchOptions = {}): Promise<unknown> {
+    if (this.options.localSearchOnly && options.forceWeb) throw new Error("Use the separately authorized web research tool");
     this.assertOperationAllowed("search");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const dagSessionId = options.dagSessionId ?? this.dagSessionId;
     const executeSearch = (searchQuery: string): Promise<Response> => {
       if (this.isEncryptedSearchGateway()) {
-        return fetch(`${this.resolveBaseUrl()}/search`, {
+        return this.fetch(`${this.resolveBaseUrl()}/search`, {
           method: "POST",
           headers: this.buildHeaders(dagSessionId),
           body: JSON.stringify({
@@ -768,6 +829,7 @@ export class DocdexClient {
         });
       }
       const params = new URLSearchParams({ q: searchQuery });
+      if (this.options.localSearchOnly) params.set("repo_only", "true");
       if (options.limit !== undefined) params.set("limit", String(options.limit));
       if (dagSessionId) params.set("dag_session_id", dagSessionId);
       if (options.forceWeb) {
@@ -775,7 +837,7 @@ export class DocdexClient {
         params.set("skip_local_search", "true");
       }
       this.withRepoId(params);
-      return fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
+      return this.fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
         headers: this.buildHeaders(dagSessionId),
       });
     };
@@ -845,7 +907,7 @@ export class DocdexClient {
     if (options.textOnly) params.set("text_only", "true");
     if (options.query) params.set("q", options.query);
     this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/snippet/${encodeURIComponent(docId)}?${params.toString()}`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/snippet/${encodeURIComponent(docId)}?${params.toString()}`, {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
@@ -867,7 +929,7 @@ export class DocdexClient {
     if (options.maxEdges !== undefined) params.set("max_edges", String(options.maxEdges));
     if (options.edgeTypes?.length) params.set("edge_types", options.edgeTypes.join(","));
     this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/graph/impact?${params.toString()}`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/graph/impact?${params.toString()}`, {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
@@ -885,7 +947,7 @@ export class DocdexClient {
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.offset !== undefined) params.set("offset", String(options.offset));
     this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/graph/impact/diagnostics?${params.toString()}`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/graph/impact/diagnostics?${params.toString()}`, {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
@@ -897,7 +959,7 @@ export class DocdexClient {
   async indexRebuild(libsSources?: string): Promise<unknown> {
     this.assertOperationAllowed("index_rebuild");
     await this.ensureHealth();
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/index/rebuild`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/index/rebuild`, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify(libsSources ? { libs_sources: libsSources } : {}),
@@ -911,10 +973,16 @@ export class DocdexClient {
   async indexIngest(file: string): Promise<unknown> {
     this.assertOperationAllowed("index_ingest");
     await this.ensureHealth();
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/index/ingest`, {
+    await this.ensureRepoInitialized();
+    // The HTTP ingest endpoint resolves filesystem paths against the daemon cwd.
+    // Send an absolute path bound to this client, never that incidental cwd.
+    const root = this.options.repoRoot ? path.resolve(this.options.repoRoot) : undefined;
+    const target = root ? path.resolve(root, file) : file;
+    if (root && !target.startsWith(`${root}${path.sep}`)) throw new Error("Index path escapes the bound repository");
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/index/ingest`, {
       method: "POST",
       headers: this.buildHeaders(),
-      body: JSON.stringify({ file }),
+      body: JSON.stringify({ file: target }),
     });
     if (!response.ok) {
       await this.throwResponseError(response, "index ingest");
@@ -925,7 +993,7 @@ export class DocdexClient {
   async hooksValidate(files: string[]): Promise<unknown> {
     this.assertOperationAllowed("hooks_validate");
     await this.ensureHealth();
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/hooks/validate`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/hooks/validate`, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({ files }),
@@ -939,7 +1007,7 @@ export class DocdexClient {
   async delegate(payload: Record<string, unknown>): Promise<unknown> {
     this.assertOperationAllowed("delegate");
     await this.ensureHealth();
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/delegate`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/delegate`, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify(payload),
@@ -965,7 +1033,7 @@ export class DocdexClient {
     if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
     if (options.temperature !== undefined) body.temperature = options.temperature;
     if (options.docdex) body.docdex = options.docdex;
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/chat/completions`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/chat/completions`, {
       method: "POST",
       headers: this.buildHeaders(this.dagSessionId),
       body: JSON.stringify(body),
@@ -984,7 +1052,7 @@ export class DocdexClient {
     if (options.format) params.set("format", options.format);
     if (options.maxNodes !== undefined) params.set("max_nodes", String(options.maxNodes));
     this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/dag/export?${params.toString()}`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/dag/export?${params.toString()}`, {
       headers: this.buildHeaders(),
     });
     const body = await response.text();
@@ -1014,24 +1082,49 @@ export class DocdexClient {
     return body;
   }
 
+  private async ensureMcpSession(): Promise<void> {
+    if (!this.options.authToken || this.options.apiKey || this.mcpSessionId) return;
+    if (!this.mcpInitialize) {
+      this.mcpInitialize = (async () => {
+        const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, {
+          method: "POST", headers: this.buildHeaders(),
+          body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method: "initialize", params: {
+            protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "codali", version: "1" },
+            auth_token: this.options.authToken,
+            ...(this.options.repoRoot ? { rootUri: pathToFileURL(path.resolve(this.options.repoRoot)).toString() } : {}),
+          } }),
+        });
+        if (!response.ok) await this.throwResponseError(response, "MCP initialize");
+        const payload = await response.json() as { error?: { message?: string } };
+        if (payload.error) throw this.runtimeError("docdex_auth_failed", payload.error.message ?? "MCP authentication failed", { retryable: false });
+        const sessionId = response.headers.get("mcp-session-id") ?? response.headers.get("x-docdex-mcp-session");
+        if (!sessionId) throw this.runtimeError("docdex_unavailable", "Docdex did not issue an authenticated MCP session", { retryable: false });
+        this.mcpSessionId = sessionId;
+      })();
+    }
+    try { await this.mcpInitialize; } finally { this.mcpInitialize = undefined; }
+  }
+
   async callMcp<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const operation = MCP_OPERATION_BY_METHOD[method];
     if (operation) {
       this.assertOperationAllowed(operation);
     }
     await this.ensureHealth();
+    await this.ensureMcpSession();
     const payload = {
       jsonrpc: "2.0",
       id: randomUUID(),
       method,
       params,
     };
-    const response = await fetch(`${this.resolveBaseUrl()}/v1/mcp`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, {
       method: "POST",
-      headers: this.buildHeaders(),
+      headers: { ...this.buildHeaders(), ...(this.mcpSessionId ? { "mcp-session-id": this.mcpSessionId } : {}) },
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
+      if (response.status === 404) this.mcpSessionId = undefined;
       await this.throwResponseError(response, "MCP");
     }
     const raw = (await response.json()) as {
@@ -1060,6 +1153,11 @@ export class DocdexClient {
       content?: unknown;
       isError?: unknown;
     };
+
+    if (record.isError === true) {
+      const body = JSON.stringify(record.structuredContent ?? record.content ?? "Docdex tool failed");
+      throw this.runtimeError(this.mapResponseErrorCode(500, body), body.slice(0, 4000), { retryable: false });
+    }
 
     if (record.structuredContent !== undefined) {
       return record.structuredContent;
@@ -1202,6 +1300,30 @@ export class DocdexClient {
     return this.callMcp("docdex_memory_recall", this.buildProjectParams({ query, top_k: topK }));
   }
 
+  wakeup(query: string, agentId = "codali-terminal", maxTokens = 1500): Promise<unknown> {
+    return this.callMcp("docdex_wakeup", this.buildProjectParams({ query, agent_id: agentId, max_tokens: maxTokens }));
+  }
+
+  diaryRead(limit = 5): Promise<unknown> {
+    return this.callMcp("docdex_diary_read", this.buildProjectParams({ agent_id: "codali-terminal", limit }));
+  }
+
+  diaryWrite(content: string): Promise<unknown> {
+    return this.callMcp("docdex_diary_write", this.buildProjectParams({ agent_id: "codali-terminal", content, entry_type: "handoff" }));
+  }
+
+  conversationSearch(query: string, limit = 5): Promise<unknown> {
+    return this.callMcp("docdex_conversation_search", this.buildProjectParams({ query, limit }));
+  }
+
+  conversationRead(sessionId: string): Promise<unknown> {
+    return this.callMcp("docdex_conversation_read", this.buildProjectParams({ session_id: sessionId }));
+  }
+
+  knowledgeQuery(query: string, limit = 5): Promise<unknown> {
+    return this.callMcp("docdex_kg_query", this.buildProjectParams({ query, limit }));
+  }
+
   tree(options: DocdexTreeOptions = {}): Promise<unknown> {
     return this.callMcp(
       "docdex_tree",
@@ -1269,7 +1391,7 @@ export class DocdexClient {
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     if (this.isEncryptedSearchGateway()) {
-      const response = await fetch(`${this.resolveBaseUrl()}/web/search`, {
+      const response = await this.fetch(`${this.resolveBaseUrl()}/web/search`, {
         method: "POST",
         headers: this.buildHeaders(this.dagSessionId),
         body: JSON.stringify({
@@ -1299,7 +1421,7 @@ export class DocdexClient {
       params.set("no_cache", String(options.noCache));
     }
     this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
+    const response = await this.fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
       headers: this.buildHeaders(this.dagSessionId),
     });
     if (!response.ok) {
@@ -1326,7 +1448,7 @@ export class DocdexClient {
     if (this.isEncryptedSearchGateway()) {
       this.assertOperationAllowed("batch_search");
       await this.ensureHealth();
-      const response = await fetch(`${this.resolveBaseUrl()}/search`, {
+      const response = await this.fetch(`${this.resolveBaseUrl()}/search`, {
         method: "POST",
         headers: this.buildHeaders(this.dagSessionId),
         body: JSON.stringify({

@@ -122,6 +122,8 @@ export interface CodaliGatewayOptions {
    * that was never called.
    */
   finalAgent?: CodaliGatewayAgentAssignment;
+  /** Host-qualified assignments for each catalog route in a configured binding. */
+  finalRouteAssignments?: Record<string, CodaliGatewayAgentAssignment>;
   /**
    * Model-facing tool descriptors, keyed by tool name. Derived from the
    * caller's ToolRegistry rather than stored here, so the planner can never see
@@ -941,7 +943,7 @@ export class CodaliGateway {
     // sources list — that is exactly the false provenance the gateway exists to
     // prevent.
     const sources = grounding === "open" ? [] : sourcesFromContextPack(contextPack);
-    const finalModel = finalModelFromAssignment(finalAgent.assignment);
+    let finalModel = finalModelFromAssignment(finalAgent.assignment);
     const messages = buildCodaliGatewayFinalSynthesizerMessages(
       input.request,
       contextPack,
@@ -1033,6 +1035,14 @@ export class CodaliGateway {
       };
       try {
         const response = await this.options.provider.generate(request);
+        if (response.route) {
+          const assignment = this.options.finalRouteAssignments?.[response.route.catalogId];
+          if (input.request.policy.requireFinalLargeModel && (!assignment || assignment.candidate.tier !== "large" || assignment.policy.tier !== "large")) {
+            throw Object.assign(new Error("Configured final route has no qualifying large-model assignment"), { retryable: false });
+          }
+          finalModel = finalModelFromAssignment(assignment);
+          if (finalModel) finalModel = { ...finalModel, agentSlug: response.route.catalogId, model: response.route.catalogId };
+        }
         const answer = response.message.content.trim();
         if (!answer) {
           throw Object.assign(new Error("Final synthesizer returned an empty answer."), {
@@ -1060,6 +1070,7 @@ export class CodaliGateway {
           metadata: {
             attempt,
             usage,
+            ...(response.route ? { route: response.route } : {}),
             sourceEvidenceIds: sources.map((source) => source.evidenceId),
           },
         });

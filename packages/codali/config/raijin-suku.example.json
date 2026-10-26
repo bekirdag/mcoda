@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "profile": "raijin-suku-example",
+  "providers": {
+    "mswarm": {
+      "adapter": "mswarm",
+      "baseUrl": "https://api.mswarm.org/v1/swarm/self-hosted/openai",
+      "credentialRef": "env:MCODA_MSWARM_API_KEY"
+    }
+  },
+  "models": {
+    "raijin-strata": {
+      "provider": "mswarm",
+      "catalogId": "mcoda-raijin-qwen-latest-flash-next",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "chat.completions"
+      ],
+      "backend": "strata",
+      "host": "raijin",
+      "contextWindow": 32768,
+      "maxOutputTokens": 4096,
+      "supportsTools": true,
+      "supportsStreaming": false
+    },
+    "sukunahikona-strata": {
+      "provider": "mswarm",
+      "catalogId": "mcoda-sukunahikona-qwen-latest-flash-next",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "chat.completions"
+      ],
+      "backend": "strata",
+      "host": "sukunahikona",
+      "contextWindow": 32768,
+      "maxOutputTokens": 4096,
+      "supportsTools": true,
+      "supportsStreaming": false
+    },
+    "suku-image": {
+      "provider": "mswarm",
+      "catalogId": "mcoda-sukunahikona-sd3-5-large-q4",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "images.generations"
+      ],
+      "contextWindow": 8192,
+      "maxOutputTokens": 1
+    },
+    "suku-audio": {
+      "provider": "mswarm",
+      "catalogId": "mcoda-sukunahikona-stable-audio-3",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "audio.generations"
+      ],
+      "contextWindow": 8192,
+      "maxOutputTokens": 1
+    },
+    "suku-video": {
+      "provider": "mswarm",
+      "catalogId": "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "videos.generations"
+      ],
+      "contextWindow": 8192,
+      "maxOutputTokens": 1
+    }
+  },
+  "bindings": {
+    "lead": {
+      "candidates": [
+        "raijin-strata",
+        "sukunahikona-strata"
+      ]
+    },
+    "architect": {
+      "useBinding": "lead"
+    },
+    "worker": {
+      "useBinding": "lead"
+    },
+    "reviewer": {
+      "useBinding": "lead"
+    },
+    "planner": {
+      "useBinding": "lead"
+    },
+    "compactor": {
+      "useBinding": "lead"
+    },
+    "router": {
+      "useBinding": "lead"
+    },
+    "adjudicator": {
+      "useBinding": "lead"
+    },
+    "synthesizer": {
+      "useBinding": "lead"
+    },
+    "verifier": {
+      "useBinding": "lead"
+    },
+    "repair": {
+      "useBinding": "lead"
+    },
+    "helper": {
+      "enabled": false
+    },
+    "embedding": {
+      "enabled": false
+    },
+    "image": {
+      "candidates": [
+        "suku-image"
+      ]
+    },
+    "audio": {
+      "candidates": [
+        "suku-audio"
+      ]
+    },
+    "video": {
+      "candidates": [
+        "suku-video"
+      ]
+    }
+  },
+  "routing": {
+    "strategy": "capability-and-capacity",
+    "requiredBackends": {
+      "lead": [
+        "strata"
+      ]
+    }
+  }
+}

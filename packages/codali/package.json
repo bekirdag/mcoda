@@ -15,7 +15,9 @@
     "!dist/**/*.test.*",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "ORCHESTRATION.md",
+    "config"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -41,6 +43,7 @@
   "dependencies": {
     "@mcoda/db": "workspace:*",
     "@mcoda/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.5.2"
   }
 }

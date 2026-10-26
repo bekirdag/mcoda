@@ -72,6 +72,69 @@ const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>):
   }
 };
 
+test("HTTP 200 error envelopes cannot masquerade as successful search evidence", { concurrency: false }, async () => {
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ error: { code: "indexing_in_progress", message: "Index is warming" } }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture" });
+    await assert.rejects(client.search("symbols"), /indexing_in_progress/);
+  });
+});
+
+test("index ingestion binds relative paths to the client repository, not the daemon cwd", { concurrency: false }, async () => {
+  let payload: unknown;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    payload = JSON.parse(String(init?.body)); return makeJsonResponse({ ok: true });
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", repoRoot: "/repo" });
+    await client.indexIngest("src/a.ts");
+    assert.deepEqual(payload, { file: "/repo/src/a.ts" });
+    await assert.rejects(client.indexIngest("../outside.ts"), /escapes/);
+  });
+});
+
+test("authenticated MCP initializes once and sends the issued session without replaying rejected tools", { concurrency: false }, async () => {
+  let initializations = 0; let invocations = 0;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    const body = JSON.parse(String(init?.body));
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.authorization, "Bearer private-token");
+    if (body.method === "initialize") {
+      initializations++;
+      assert.equal(body.params.auth_token, "private-token");
+      assert.equal(headers["mcp-session-id"], undefined);
+      return makeJsonResponse({ result: {} }, { "mcp-session-id": "private-session" });
+    }
+    invocations++;
+    assert.equal(headers["mcp-session-id"], "private-session");
+    return invocations <= 2 ? makeJsonResponse({ result: { ok: true } }) : makeErrorResponse(404, "unknown or expired MCP session");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", authToken: "private-token" });
+    await Promise.all([client.stats(), client.files()]);
+    assert.equal(initializations, 1);
+    await assert.rejects(client.memorySave("fact"), /expired/);
+    assert.equal(invocations, 3);
+    assert.equal(initializations, 1);
+  });
+});
+
+test("MCP tool error envelopes cannot become successful evidence", { concurrency: false }, async () => {
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ result: { isError: true, content: [{ type: "text", text: "embedding dimension mismatch" }] } }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture" });
+    await assert.rejects(client.memorySave("fact"), /embedding dimension mismatch/);
+  });
+});
+
+test("index readiness waits locally and cancellation remains responsive", { concurrency: false }, async () => {
+  const abort = new AbortController();
+  let progress = 0;
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ ready: false, status: "indexing", indexing_in_progress: true }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", signal: () => abort.signal });
+    await assert.rejects(client.waitForIndex(10_000, () => { progress++; abort.abort(); }), /abort/i);
+    assert.equal(progress, 1);
+  });
+});
+
 test("DocdexClient initializes repo before HTTP search when repo id is missing", {
   concurrency: false,
 }, async () => {

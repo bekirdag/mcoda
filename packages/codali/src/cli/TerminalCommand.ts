@@ -1,0 +1,240 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createInterface, type Interface } from "node:readline";
+import { execFile } from "node:child_process";
+import { SessionController, type SessionEvent } from "../runtime/SessionController.js";
+import { loadOrchestrationConfig, orchestrationHash, validateOrchestrationConfig, type EffortLevel, type OrchestrationConfig, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
+import { ConfiguredProvider, ModelServiceClient, providerCredential } from "../providers/ConfiguredProvider.js";
+import { PermissionGate, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
+import { executorStatus } from "../tools/shell/IsolatedExecutor.js";
+import { atomicWriteJson } from "../session/AtomicState.js";
+import { readTerminalCredential, setTerminalCredential } from "./TerminalCredentials.js";
+import { redactSecretValues, sanitizeArgs } from "../gateway/GatewayTracer.js";
+import { terminalText, TerminalTextStream } from "./TerminalText.js";
+import type { ProjectTaskAuthority } from "@mcoda/shared";
+import { TerminalInput, insertTerminalPaste } from "./TerminalInput.js";
+import { ModelServiceError } from "../providers/ModelServiceError.js";
+import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
+
+const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
+const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
+const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/steer", "/continue", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/quit"];
+const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
+
+interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
+export interface TerminalHost { projectTaskAuthority?: ProjectTaskAuthority; }
+export const parseTerminalArguments = (argv: string[]): Arguments => {
+  const [command = "chat", ...input] = argv;
+  const result: Arguments = { command, prompt: "", workspaceRoot: process.cwd(), effort: "medium", permissions: "ask", json: false, plain: false, stdin: false };
+  const positional: string[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const flag = input[i];
+    if (["--allow-web", "--allow-memory", "--allow-media", "--allow-network"].includes(flag)) { const key = { "--allow-web": "allowWeb", "--allow-memory": "allowMemory", "--allow-media": "allowMedia", "--allow-network": "allowNetwork" }[flag]!; (result as unknown as Record<string, unknown>)[key] = true; continue; }
+    if (["--json", "--plain", "--stdin"].includes(flag)) { (result as unknown as Record<string, unknown>)[flag.slice(2)] = true; continue; }
+    if (["--workspace-root", "--config", "--effort", "--permissions", "--project-task"].includes(flag)) {
+      const value = input[++i]; if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+      if (flag === "--workspace-root") result.workspaceRoot = path.resolve(value);
+      if (flag === "--config") result.config = path.resolve(value);
+      if (flag === "--project-task") result.projectTask = value;
+      if (flag === "--effort") { if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Invalid effort level"); result.effort = value as EffortLevel; }
+      if (flag === "--permissions") { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
+    } else if (flag.startsWith("--")) throw new Error(`Unknown terminal option: ${flag}`); else positional.push(flag);
+  }
+  result.prompt = positional.join(" "); return result;
+};
+
+export const setupTerminalConfig = async (destination: string): Promise<ResolvedOrchestrationConfig> => {
+  try { await fs.access(destination); throw new Error(`Configuration already exists: ${destination}`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const client = new ModelServiceClient(DEFAULT_PROVIDER);
+  const catalog = await client.catalog(undefined, true);
+  const config: OrchestrationConfig = { schemaVersion: 1, profile: "mswarm-strata", providers: { mswarm: { ...DEFAULT_PROVIDER } }, models: {}, bindings: {}, routing: { strategy: "capability-and-capacity", requiredBackends: { lead: ["strata"], architect: ["strata"], worker: ["strata"], reviewer: ["strata"] } } };
+  const mediaJobsUrl = new URL("/v1/media/jobs", DEFAULT_PROVIDER.baseUrl).toString();
+  try {
+    const capability = await client.json(mediaJobsUrl) as { protocol?: string };
+    if (capability.protocol === "mswarm-media-jobs-v1") config.providers.mswarm.mediaJobsUrl = mediaJobsUrl;
+  } catch (error) { if (!(error instanceof ModelServiceError) || ![404, 405].includes(error.status)) throw error; }
+  const lead = catalog.filter(entry => entry.backend === "strata" && entry.supportsTools && entry.health === "healthy");
+  if (!lead.length) throw new Error("No entitled healthy Strata tool route is advertised; setup cannot invent a fallback");
+  for (const entry of lead) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.revision ?? entry.raw.updated_at ?? "catalog-unversioned"), operations: ["chat.completions"], backend: "strata", contextWindow: entry.contextWindow ?? 32768, maxOutputTokens: 4096, supportsTools: true, supportsStreaming: false };
+  config.bindings.lead = { candidates: lead.map(entry => entry.id) };
+  for (const role of ["architect", "worker", "reviewer", "planner", "compactor", "router", "adjudicator", "synthesizer", "verifier", "repair"]) config.bindings[role] = { useBinding: "lead" };
+  config.bindings.helper = { enabled: false }; config.bindings.embedding = { enabled: false };
+  for (const [binding, operation] of [["image", "images.generations"], ["audio", "audio.generations"], ["video", "videos.generations"]] as const) {
+    const entries = catalog.filter(entry => entry.health === "healthy" && entry.operations.includes(operation));
+    for (const entry of entries) {
+      const previous = config.models[entry.id];
+      config.models[entry.id] = previous ? { ...previous, operations: [...new Set([...previous.operations, operation])] }
+        : { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.revision ?? "catalog-unversioned"), operations: [operation], contextWindow: 8192, maxOutputTokens: 1 };
+    }
+    config.bindings[binding] = entries.length ? { candidates: entries.map(entry => entry.id) } : { enabled: false };
+  }
+  validateOrchestrationConfig(config); await atomicWriteJson(destination, config);
+  return { config, source: destination, hash: orchestrationHash(config) };
+};
+
+const usageFor = async (resolved: ResolvedOrchestrationConfig): Promise<Record<string, unknown>> => {
+  const entries = await Promise.all(Object.entries(resolved.config.providers).map(async ([id, provider]) => { try { return [id, await new ModelServiceClient(provider).usage()]; } catch (error) { return [id, { available: false, error: error instanceof Error ? error.message : String(error) }]; } }));
+  return Object.fromEntries(entries);
+};
+
+export const terminalDoctor = async (configPath?: string): Promise<Record<string, unknown>> => {
+  const report: Record<string, unknown> = { node: process.version, runtimeSupported: Number(process.versions.node.split(".")[0]) >= 20, isolation: executorStatus() };
+  report.nodeToolchain = discoverHostToolchain(process.cwd()).map(runtime => ({ name: runtime.name, executable: runtime.executable, readOnlyRoot: runtime.readOnlyRoot }));
+  try {
+    const resolved = await loadOrchestrationConfig(configPath); report.configuration = { source: resolved.source, hash: resolved.hash, profile: resolved.config.profile };
+    const routes: Record<string, unknown> = {};
+    for (const binding of ["lead", "reviewer", "helper", "image", "audio", "video"]) {
+      if (resolved.config.bindings[binding]?.enabled === false) { routes[binding] = { enabled: false }; continue; }
+      try { const selected = await new ConfiguredProvider(resolved, binding).select(binding === "image" ? "images.generations" : binding === "audio" ? "audio.generations" : binding === "video" ? "videos.generations" : "chat.completions", undefined, binding === "lead"); routes[binding] = { model: selected.id, backend: selected.actual.backend, health: selected.actual.health }; }
+      catch (error) { routes[binding] = { error: error instanceof Error ? error.message : String(error) }; }
+    }
+    report.routes = routes;
+    report.mediaRecovery = Object.fromEntries(Object.entries(resolved.config.providers).map(([id, provider]) => [id, { protocol: provider.mediaJobsUrl ? "mswarm-media-jobs-v1" : "synchronous", reconnect: provider.mediaJobsUrl ? "Recover by durable job id" : "Only complete local receipts can be recovered; ambiguous remote jobs require reconciliation" }]));
+  } catch (error) { report.configuration = { error: error instanceof Error ? error.message : String(error) }; }
+  try { const response = await fetch("http://127.0.0.1:28491/healthz", { signal: AbortSignal.timeout(3000) }); report.docdex = { available: response.ok, status: response.status }; }
+  catch { report.docdex = { available: false, action: "Install/start docdexd, then run codali setup" }; }
+  return report;
+};
+
+export class TerminalCommand {
+  static async run(argv: string[], host: TerminalHost = {}): Promise<void> {
+    try { await this.execute(argv, host); }
+    catch (error) {
+      if (!argv.includes("--json")) throw error;
+      const message = redactSecretValues(error instanceof Error ? error.message : String(error));
+      process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: "command_failed", data: { message, completed: false } })}\n`);
+      process.exitCode = /cancel/i.test(message) ? 130 : 1;
+    }
+  }
+
+  private static async execute(argv: string[], host: TerminalHost): Promise<void> {
+    if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(`${HELP}\n`); return; }
+    const args = parseTerminalArguments(argv);
+    if (args.projectTask && !host.projectTaskAuthority) throw new Error("Use mcoda codali with --project-task to attach to the existing mcoda task repository");
+    if (args.stdin && ["chat", "exec"].includes(args.command)) {
+      let text = "";
+      for await (const chunk of process.stdin) { text += chunk.toString(); if (Buffer.byteLength(text) > 262144) throw new Error("Input prompt exceeds 256 KiB"); }
+      args.prompt = [args.prompt, text.trim()].filter(Boolean).join("\n\n");
+    }
+    const output = (value: unknown): void => { const text = redactSecretValues(typeof value === "string" ? value : JSON.stringify(value, null, args.json ? 0 : 2)); process.stdout.write(`${args.json ? text : terminalText(text)}\n`); };
+    if (args.command === "login") { const key = await readTerminalCredential(args.stdin); if (!key) throw new Error("API key is required"); await new ModelServiceClient(DEFAULT_PROVIDER, key).catalog(undefined, true); await setTerminalCredential(key); output("mSwarm credential saved and validated."); return; }
+    if (args.command === "logout") { await setTerminalCredential(); output("Stored Codali mSwarm credential removed. Environment credentials, if set, take precedence."); return; }
+    if (args.command === "auth-status") { try { await providerCredential(DEFAULT_PROVIDER); const catalog = await new ModelServiceClient(DEFAULT_PROVIDER).catalog(); output({ authenticated: true, entitledModels: catalog.length }); } catch (error) { output({ authenticated: false, error: error instanceof Error ? error.message : String(error) }); process.exitCode = 1; } return; }
+    if (args.command === "setup") {
+      const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH);
+      const root = await fs.realpath(args.workspaceRoot);
+      const docdex = await new Promise<string>(resolve => execFile("docdexd", ["repo", "init", "--repo", root], { timeout: 60_000, maxBuffer: 1024 * 1024 }, error => resolve(error ? "Docdex initialization unavailable; run docdexd repo init when installed" : "Docdex repository initialized")));
+      output({ configuration: resolved.source, hash: resolved.hash, bindings: resolved.config.bindings, docdex }); return;
+    }
+    if (args.command === "doctor") { output(await terminalDoctor(args.config)); return; }
+    let resolved = await loadOrchestrationConfig(args.config).catch(error => { throw new Error(`Cannot load orchestration configuration; run codali setup. ${error instanceof Error ? error.message : String(error)}`); });
+    const interactive = args.command === "chat" && !!process.stdin.isTTY && !args.json;
+    let rl: Interface | undefined; let pendingApproval: ((decision: "once" | "session" | "deny") => void) | undefined;
+    let closed = false; let lastCtrlC = 0; let activeRun: Promise<void> | undefined; const queued: string[] = [];
+    const approve: PermissionPrompt = async (request, signal) => {
+      if (!interactive || closed) return { allow: false };
+      const reviewableArgs = JSON.stringify(request.args, (key, value: unknown) => /authorization|api[_-]?key|password|credential|secret|signature|token/i.test(key) ? "[redacted]" : value, 2);
+      process.stderr.write(terminalText(`\nPermission: ${request.tool} (${request.kind})\n${reviewableArgs}\nAllow once, for this session, or deny? [once/session/deny]\n`));
+      return new Promise(resolve => {
+        const abort = () => { pendingApproval = undefined; resolve({ allow: false }); };
+        pendingApproval = decision => { signal?.removeEventListener("abort", abort); resolve({ allow: decision !== "deny", scope: decision === "session" ? "session" : "once" }); };
+        signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
+      });
+    };
+    const textStream = new TerminalTextStream();
+    const controller = new SessionController({ workspaceRoot: await fs.realpath(args.workspaceRoot), resolved, effort: args.effort, permissions: args.permissions, approve, allowWeb: args.allowWeb, allowMemory: args.allowMemory, allowMedia: args.allowMedia, allowNetwork: args.allowNetwork,
+      projectTaskKey: args.projectTask, projectTaskAuthority: host.projectTaskAuthority,
+      onEvent: (event: SessionEvent) => {
+        if (args.json) { output(event); return; }
+        if (event.type === "turn_started") textStream.reset();
+        if (["tool_intent", "turn_result", "turn_failed"].includes(event.type) && !args.plain) process.stdout.write(textStream.finish());
+        if (event.type === "token" && typeof event.data.content === "string" && !args.plain) process.stdout.write(textStream.write(event.data.content));
+        else if (event.type === "model_route") process.stderr.write(terminalText(`\n[${event.data.binding}: ${event.data.modelId}${event.data.host ? ` on ${event.data.host}` : ""}]\n`));
+        else if (event.type === "tool_intent") { const receipt = event.data.receipt as { tool: string }; process.stderr.write(terminalText(`[${receipt.tool}]\n`)); }
+        else if (event.type === "process_output" && typeof event.data.content === "string") process.stderr.write(terminalText(event.data.content));
+        else if (event.type === "index_progress") process.stderr.write(`[Docdex: ${terminalText(String(event.data.status))}]\n`);
+      },
+    });
+    const showPrompt = (): void => { if (!closed && !controller.busy && !pendingApproval) { rl?.setPrompt("codali> "); rl?.prompt(); } };
+    const run = (prompt?: string): void => {
+      activeRun = (async () => {
+        try { if (controller.state?.status === "completed" && prompt) await controller.start(prompt); const result = await controller.run(prompt); if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || args.permissions === "plan" ? 0 : 2; }
+        catch (error) { const message = redactSecretValues(error instanceof Error ? error.message : String(error)); if (args.json) output({ schemaVersion: 1, type: "command_failed", sessionId: controller.sessionId, data: { message, completed: false } }); else process.stderr.write(`${terminalText(message)}\n`); if (!interactive) process.exitCode = /cancel/i.test(String(error)) ? 130 : 1; }
+        finally { pendingApproval?.("deny"); pendingApproval = undefined; activeRun = undefined; if (!closed && queued.length) { const next = queued.shift()!; await controller.steer(next); run(); } else showPrompt(); }
+      })();
+    };
+    const command = async (line: string): Promise<void> => {
+      const [name, ...parts] = line.trim().split(/\s+/); const value = parts.join(" ");
+      if (name === "/cancel") { controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined; return; }
+      if (name === "/quit") { closed = true; queued.length = 0; controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); return; }
+      if (name === "/help") output(HELP);
+      else if (name === "/status") output(controller.status());
+      else if (name === "/usage") output({ session: controller.usageSnapshot(), server: await usageFor(resolved) });
+      else if (name === "/permissions") { if (value === "clear") await controller.clearPermissionGrants(); else if (value) { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Expected plan, ask, workspace or clear"); controller.gate.setProfile(value as PermissionProfile); } output(controller.gate.inspect()); }
+      else if (name === "/effort") { if (value) { if (controller.busy) throw new Error("Change effort between turns"); if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Expected low, medium, high or max"); controller.effort = value as EffortLevel; } output({ effort: controller.effort }); }
+      else if (name === "/config") { if (value === "reload") { const next = await loadOrchestrationConfig(resolved.source); await controller.reloadConfiguration(next); resolved = next; } else if (value) throw new Error("Usage: /config [reload]"); output({ source: resolved.source, hash: resolved.hash, configuration: resolved.config }); }
+      else if (name === "/models") output(resolved.config.bindings);
+      else if (name === "/goal") output(controller.state ? { original: controller.state.originalObjective, objective: controller.state.objective, requirements: controller.state.requirements, amendments: controller.state.amendments } : {});
+      else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
+      else if (name === "/plan") output({ revision: controller.state?.planRevision ?? 1, phases: controller.state?.phases ?? [], tasks: controller.state?.tasks ?? [], history: controller.state?.planHistory?.map(p => ({ revision: p.revision, goalRevision: p.goalRevision, at: p.at, reason: p.reason })) ?? [] });
+      else if (name === "/decisions") output(controller.state?.decisions ?? []);
+      else if (name === "/context") output({ goal: controller.state, configHash: resolved.hash });
+      else if (name === "/diff") output(await controller.diff());
+      else if (name === "/sessions") output(await controller.store.listSessions());
+      else if (name === "/artifacts") output(await controller.artifacts());
+      else if (name === "/retention") { const days = value ? Number(value) : 30; if (!Number.isFinite(days) || days < 0) throw new Error("Retention days must be nonnegative"); output({ dryRun: true, days, candidates: (await controller.store.listSessions()).filter(s => s.status === "completed" && Date.parse(s.updatedAt) < Date.now() - days * 86_400_000).map(s => ({ id: s.sessionId, updatedAt: s.updatedAt })), action: "Use /delete-session ID to remove a reviewed session and its local artifacts" }); }
+      else if (controller.busy) throw new Error("This command requires an idle turn; use /cancel or queue an instruction");
+      else if (name === "/resume") { await controller.resume(value); output(controller.status()); }
+      else if (name === "/fork") { output({ sessionId: await controller.fork(), verification: "Fresh verification required; permissions were reset" }); }
+      else if (name === "/delete-session") { await controller.deleteSession(value); output({ deleted: value }); }
+      else if (name === "/new") { if (!value) throw new Error("Provide the new objective"); await controller.start(value); run(); }
+      else if (name === "/steer") { if (!value) throw new Error("Provide the correction"); await controller.steer(value); output(controller.state); }
+      else if (name === "/continue") run();
+      else if (name === "/checkpoint") { await controller.checkpoint(value || "User checkpoint"); output("Checkpoint saved."); }
+      else if (name === "/compact") { await controller.compact(); output("Context compacted."); }
+      else if (name === "/review") { if (!controller.state) throw new Error("No goal to review"); await controller.steer("Review the current changes against the original goal and architecture decisions; fix concrete findings and reverify."); run(); }
+      else if (name === "/reconcile") { const [id, outcome, ...note] = parts; if (!["success", "failed"].includes(outcome)) throw new Error("Usage: /reconcile ID success|failed observed outcome"); await controller.reconcile(id, outcome as "success" | "failed", note.join(" ")); output("Reconciliation recorded."); }
+      else if (name === "/reconcile-media") { const [id, outcome, ...note] = parts; if (outcome !== "failed") throw new Error("Usage: /reconcile-media ID failed confirmed remote failure or cancellation; a lost response alone is not confirmation"); output(await controller.mediaStore().reconcileFailure(id, note.join(" ")).then(job => ({ id: job.id, status: job.status, reconciliation: job.reconciliation }))); }
+      else if (name === "/export") { if (!controller.sessionId) throw new Error("No active session"); output({ schemaVersion: 1, state: controller.state, events: await controller.store.readTranscript(controller.sessionId) }); }
+      else throw new Error(`Unknown command ${name}; use /help`);
+    };
+    const onSignal = (): void => { const now = Date.now(); if (!controller.busy || now - lastCtrlC < 1000) { closed = true; rl?.close(); } lastCtrlC = now; controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined; };
+    const onTerminate = (): void => { closed = true; queued.length = 0; controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); };
+    process.on("SIGINT", onSignal); process.on("SIGTERM", onTerminate);
+    try {
+    if (["sessions", "status", "resume", "inspect", "checkpoint", "amend"].includes(args.command)) {
+      if (args.command === "sessions") { output(await controller.store.listSessions()); return; }
+      const [id, ...rest] = args.prompt.split(" "); await controller.resume(id);
+      if (args.command === "checkpoint") await controller.checkpoint(rest.join(" "));
+      else if (args.command === "amend") await controller.steer(rest.join(" "));
+      else if (args.command === "resume") { if (controller.state?.status === "completed") output(controller.status()); else { run(); await activeRun; } return; }
+      output(controller.status()); return;
+    }
+      if (!interactive) { if (!args.prompt) throw new Error("Provide a prompt for noninteractive execution"); run(args.prompt); await activeRun; return; }
+      output(`Codali — ${resolved.config.profile}\nWorkspace: ${controller.workspaceRoot}\nUse /help for commands. Permissions: ${args.permissions}; effort: ${args.effort}.`);
+      const historyFile = path.join(path.dirname(controller.store.storageDir), "terminal-history.json");
+      let history: string[] = [];
+      try { const value = JSON.parse(await fs.readFile(historyFile, "utf8")); if (Array.isArray(value)) history = value.filter(v => typeof v === "string").slice(0, 500); } catch { /* First terminal session has no history. */ }
+      const pasteInput = args.plain ? undefined : new TerminalInput({ onPaste: text => { if (rl) insertTerminalPaste(rl, text); }, onRejected: message => { process.stderr.write(`${message}\n`); showPrompt(); } });
+      const input = pasteInput ? Object.assign(pasteInput, { isTTY: process.stdin.isTTY, setRawMode: (mode: boolean) => process.stdin.setRawMode(mode) }) : process.stdin;
+      rl = createInterface({ input, output: process.stdout, terminal: !args.plain, history, historySize: 500, removeHistoryDuplicates: true, completer: (line: string) => { const matches = COMMANDS.filter(c => c.startsWith(line)); return [matches.length ? matches : COMMANDS, line]; } });
+      if (pasteInput) { process.stdout.write("\u001b[?2004h"); process.stdin.pipe(pasteInput); }
+      rl.on("history", values => { history = values.map(value => redactSecretValues(value)); });
+      rl.on("SIGINT", onSignal);
+      let chain = Promise.resolve();
+      rl.on("line", line => { chain = chain.then(async () => {
+        if (pendingApproval) { const response = line.trim().toLowerCase(); if (!["once", "session", "deny"].includes(response)) { process.stderr.write("Enter once, session or deny.\n"); return; } const resolve = pendingApproval; pendingApproval = undefined; resolve(response as "once" | "session" | "deny"); return; }
+        if (!line.trim()) { showPrompt(); return; }
+        if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); }
+        else if (controller.busy) { queued.push(line); output("Instruction queued for the next turn. Use /cancel to interrupt first."); }
+        else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(); }
+        else run(line);
+      }).catch(error => { process.stderr.write(`${terminalText(error instanceof Error ? error.message : String(error))}\n`); showPrompt(); }); });
+      if (args.prompt) run(args.prompt); else showPrompt();
+      await new Promise<void>(resolve => rl!.once("close", () => { closed = true; controller.cancel(); pendingApproval?.("deny"); pendingApproval = undefined;
+        if (pasteInput) { process.stdin.unpipe(pasteInput); pasteInput.destroy(); process.stdout.write("\u001b[?2004l"); } resolve(); }));
+      await chain; await activeRun; await atomicWriteJson(historyFile, history);
+    } finally { process.off("SIGINT", onSignal); process.off("SIGTERM", onTerminate); rl?.close(); }
+  }
+}

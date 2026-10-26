@@ -24,6 +24,18 @@ All three are loopback-only deployment components, not public listeners. See
 `docs/ops/mswarm-self-hosted-generative-agents-runbook.md` in the mcoda
 repository for pinned service, registration, readiness, and rollback guidance.
 
+The POSIX media bridges share `media_gpu_lock.py`. Install that module beside
+all three scripts and run them under the same service user. They serialize GPU
+inference through `$XDG_RUNTIME_DIR/mcoda-media-gpu1.lock`; deployments can set
+`MCODA_MEDIA_GPU_LOCK_PATH` to one shared, private regular file and
+`MCODA_MEDIA_GPU_WAIT_SECONDS` to a finite admission deadline (default 600).
+Do not unlink an active lock file. A video HTTP deadline does not release GPU
+ownership: the worker retains the lock and local slot until the native job is
+confirmed terminal. Cancellation requested by a native server is distinguished
+from confirmed cancellation. This lock serializes cooperating bridges; it does
+not enforce VRAM reservations or protect a native job after its bridge is
+forcibly killed. Drain and reconcile native jobs before upgrading services.
+
 ## Quick Setup
 
 ```sh

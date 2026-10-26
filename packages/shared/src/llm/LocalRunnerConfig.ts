@@ -50,6 +50,7 @@ export interface LocalOpenAiCompatibleRunnerConfig {
   endpoint?: string;
   apiBaseUrl?: string;
   publicModelId?: string;
+  modelDigest?: string;
   inputModalities?: GenerativeModality[];
   outputModalities?: GenerativeModality[];
   operations?: SelfHostedGenerativeOperation[];
@@ -489,6 +490,7 @@ export function normalizeLocalOpenAiCompatibleRunnerConfig(
     endpoint: readString(merged, ["endpoint"]),
     apiBaseUrl: readString(merged, ["apiBaseUrl"]),
     publicModelId: readString(merged, ["publicModelId", "public_model_id"]),
+    modelDigest: readString(merged, ["modelDigest", "model_digest"]),
     inputModalities: normalizeModalityDeclaration(
       merged.inputModalities ?? merged.input_modalities,
       ["text"],

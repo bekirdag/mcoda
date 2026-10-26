@@ -81,9 +81,9 @@ export const createImageGenerationTool = (options: ImageToolOptions): ToolDefini
     description:
       "Generate an image from a text prompt. Returns the path to the written image file, not the image itself. Use for any request to draw, render, or generate a picture.",
     capability: "media",
-    // Generation writes a file, but only inside the run's own artifact
-    // directory — it cannot touch the workspace or anything the user owns.
-    readOnly: true,
+    // Generation consumes compute and writes an artifact, so it requires
+    // explicit media permission even when the artifact directory is private.
+    readOnly: false,
     inputSchema: {
       type: "object",
       required: ["prompt"],

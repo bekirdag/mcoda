@@ -8,6 +8,7 @@ export * from "./qa/QaTechStack.js";
 export * from "./metadata/CommandMetadata.js";
 export * from "./llm/LocalRunnerConfig.js";
 export * from "./llm/GenerativeOperation.js";
+export * from "./llm/EmbeddingContract.js";
 export * from "./llm/CodexReasoningEffort.js";
 export * from "./mswarm/GenericJobContract.js";
 export * from "./mswarm/CapabilityContract.js";
@@ -15,6 +16,7 @@ export * from "./mswarm/ArtifactSandboxContract.js";
 export * from "./mswarm/LifecycleContract.js";
 export * from "./mswarm/ClientProductContract.js";
 export * from "./status/TaskStatus.js";
+export * from "./status/ProjectTaskAuthority.js";
 export type {
   BacklogLaneTotals,
   BacklogTotals,

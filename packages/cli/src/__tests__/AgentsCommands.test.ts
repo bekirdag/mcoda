@@ -531,6 +531,44 @@ test("agent add declares the existing sd-server image model for mswarm publicati
   });
 });
 
+test("agent add pins an embedding artifact and dimensions for managed orchestration", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    await AgentsCommands.run(["add", "embedding-fixture", "--adapter", "llama-cpp-local", "--model", "nomic-embed-text",
+      "--config-base-url", "http://127.0.0.1:11438/v1", "--config-auth-mode", "none",
+      "--config-model-digest", digest, "--config-input-modality", "text", "--config-output-modality", "embedding",
+      "--config-operation", JSON.stringify({ operation: "embeddings", path: "/v1/embeddings", limits: { embeddingDimensions: 768 } })]);
+    const repo = await GlobalRepository.create();
+    try {
+      const agent = await repo.getAgentBySlug("embedding-fixture");
+      assert.equal(agent?.config?.modelDigest, digest);
+      assert.deepEqual(agent?.config?.outputModalities, ["embedding"]);
+      assert.equal((agent?.config?.operations as Array<{ limits: { embeddingDimensions: number } }>)[0].limits.embeddingDimensions, 768);
+      await assert.rejects(AgentsCommands.run(["update", "embedding-fixture", "--config-model-digest", "latest"]), /64 lowercase hex/);
+      assert.equal((await repo.getAgentBySlug("embedding-fixture"))?.config?.modelDigest, digest);
+    } finally { await repo.close(); }
+  });
+});
+
+test("agent update pins and rolls back a node orchestration file without replacing runner settings", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "configured-strata", "--adapter", "strata-local", "--model", "strata",
+      "--config-base-url", "http://127.0.0.1:11452/v1", "--config-auth-mode", "none"]);
+    const repo = await GlobalRepository.create();
+    try {
+      const file = path.join(os.tmpdir(), "codali-operator-profile.json");
+      await AgentsCommands.run(["update", "configured-strata", "--config-orchestration-path", file]);
+      let agent = await repo.getAgentBySlug("configured-strata");
+      assert.equal(agent?.config?.codaliOrchestrationPath, file); assert.equal(agent?.config?.baseUrl, "http://127.0.0.1:11452/v1");
+      await assert.rejects(AgentsCommands.run(["update", "configured-strata", "--config-orchestration-path", "repo-models.json"]), /absolute path/);
+      assert.equal((await repo.getAgentBySlug("configured-strata"))?.config?.codaliOrchestrationPath, file);
+      await AgentsCommands.run(["update", "configured-strata", "--config-orchestration-path", "none"]);
+      agent = await repo.getAgentBySlug("configured-strata");
+      assert.equal(agent?.config?.codaliOrchestrationPath, null); assert.equal(agent?.config?.authMode, "none");
+    } finally { await repo.close(); }
+  });
+});
+
 test("agent add declares a video generator for mswarm publication", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run([

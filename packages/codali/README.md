@@ -1,6 +1,85 @@
 # @mcoda/codali
 
-Standalone tool-runner adapter for mcoda. codali runs a tool loop that can edit the repo directly via built-in tools, with optional streaming output and pre-flight cost estimates.
+Codali is mcoda's terminal coding agent and embeddable tool runtime.
+
+## Terminal quick start
+
+```sh
+codali login                 # masked mSwarm API-key entry
+codali setup                 # discover authorized Strata and media routes
+codali doctor
+codali chat --permissions ask --effort medium
+```
+
+For automation, inject `MCODA_MSWARM_API_KEY` through your secret manager, or pipe
+the key to `codali login --stdin`. Keys are never command-line arguments. Existing
+encrypted mcoda credentials are reused when their service origin matches.
+`codali logout` removes the terminal credential and disables that fallback;
+an explicitly supplied environment credential still takes precedence.
+
+```sh
+codali exec 'Fix the failing parser test and verify the fix' \
+  --permissions workspace --effort high --json
+codali sessions
+codali resume SESSION_ID --permissions workspace --effort high --json
+codali inspect SESSION_ID
+```
+
+The terminal uses a versioned orchestration file: `--config PATH`, then
+`CODALI_ORCHESTRATION_CONFIG`, then `~/.codali/orchestration.json`. Repository files
+cannot silently select credential destinations or change terminal permissions.
+See [the configuration reference](ORCHESTRATION.md) and the packaged `config/`
+examples. `setup` never overwrites an existing profile. `/config reload` applies
+an edited, validated profile between turns; submitted media jobs keep their
+original configuration. All optional model roles must be explicitly bound or
+disabled. Setup selects only catalog routes that identify their backend as Strata
+for large-model work; it does not choose a paid fallback.
+
+| Command | Purpose |
+| --- | --- |
+| `/status`, `/usage` | Current execution state, local accounting and server limits |
+| `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
+| `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
+| `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
+| `/models`, `/config [reload]` | Inspect configured routes and the effective configuration hash |
+| `/context`, `/diff`, `/review` | Inspect retained context/changes or request a new review task |
+| `/checkpoint`, `/compact` | Save progress or reduce conversation context while preserving canonical work state |
+| `/cancel`, `/continue`, `/steer TEXT` | Interrupt, continue, or apply an explicit goal amendment |
+| `/sessions`, `/resume ID`, `/fork`, `/new TEXT` | Manage sessions; forks require fresh verification and reset grants |
+| `/artifacts` | Inspect durable image, audio and video jobs and artifact checksums |
+| `/reconcile ID success\|failed NOTE` | Record an observed outcome for an interrupted tool invocation |
+| `/export`, `/retention DAYS`, `/delete-session ID` | Export redacted events, preview retention candidates, or delete an inactive session |
+
+`plan` permits reads; `ask` asks before side effects; `workspace` permits scoped
+file edits and isolated shell commands. Web research, memory writes and media
+generation have separate approval categories. Automation can explicitly enable
+them with `--allow-web`, `--allow-memory` and `--allow-media`. Shell networking is
+disabled unless `--allow-network` is supplied. Noninteractive requests for approval
+are denied. Session grants match the exact tool arguments and remain subordinate
+to the current policy. Linux execution requires bubblewrap; run `doctor` to check
+the available platform executor.
+
+Each task is tied to the original goal and a bounded path scope. A successful tool
+call is not task completion: changed code needs recorded validation and separate
+review, and the goal gate checks requirement coverage, current file hashes and
+unresolved operations. Interruptions preserve checkpoints and uncertain outcomes;
+they do not trigger an automatic retry of a side effect. Session data lives under
+`~/.local/state/codali/workspaces/`, outside the editable repository. Media workers
+survive terminal disconnects and keep binary artifacts out of model transcripts.
+
+`--json` emits JSONL events. Stable fields are `schemaVersion`, `type` and `data`;
+session events also carry `id`, `sessionId`, `sequence` and `at`. `turn_result`
+contains `completed`; consumers must check it. `command_failed` covers command
+failures. Exit codes are 0 for verified completion (or a requested planning turn),
+1 for errors, 2 for open/blocked work, and 130 for cancellation. `--plain` disables
+terminal editing escapes and token streaming. Ctrl-C requests cancellation;
+a second Ctrl-C closes the terminal after cleanup.
+
+## Legacy runtime commands
+
+The following commands preserve the previous provider/configuration contract.
+They do not automatically inherit the terminal orchestration profile. Embedded
+hosts opt in with the trusted `orchestration.resolved` runtime input.
 
 ## Usage
 

@@ -25,6 +25,8 @@ from pathlib import Path
 from socketserver import TCPServer
 from typing import Any, Protocol
 
+from media_gpu_lock import MediaGpuError, media_gpu_slot
+
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11446
@@ -165,7 +167,7 @@ class SubprocessBackend:
         seed: int | None,
     ) -> tuple[bytes, dict[str, Any]]:
         effective_seed = seed if seed is not None else secrets.randbelow(2**31)
-        with tempfile.TemporaryDirectory(prefix="stable-audio-3-") as temp_dir:
+        with media_gpu_slot("audio"), tempfile.TemporaryDirectory(prefix="stable-audio-3-") as temp_dir:
             output_path = Path(temp_dir) / "generation.wav"
             command = [
                 str(self.python),
@@ -244,7 +246,8 @@ class ServerState:
 
 
 class AudioHttpServer(ThreadingHTTPServer):
-    daemon_threads = True
+    # Let active inference finish before process exit releases the shared GPU.
+    daemon_threads = False
     request_queue_size = 8
 
     def server_bind(self) -> None:
@@ -568,6 +571,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                 )
             except ApiError as error:
                 self._send_error(error)
+            except MediaGpuError as error:
+                self._send_error(
+                    ApiError(error.status, str(error), error_type="server_error", code=error.code)
+                )
             except Exception as error:
                 logging.error("generation failed error_type=%s", type(error).__name__)
                 self._send_error(

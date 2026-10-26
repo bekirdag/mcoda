@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { runProcess } from "../tools/shell/AsyncProcess.js";
 import { createWriteStream, existsSync } from "node:fs";
 import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 import { loadConfig } from "../config/ConfigLoader.js";
+import { loadOrchestrationConfig, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
+import { ConfiguredModelScope } from "../providers/ConfiguredModelScope.js";
 import type { CodaliConfig, ResolvedWorkflowProfile, ToolConfig } from "../config/Config.js";
 import { createProvider } from "../providers/ProviderRegistry.js";
 import type {
@@ -69,6 +71,8 @@ import type {
 } from "../runtime/RunTelemetryTypes.js";
 
 interface ParsedArgs {
+  orchestrationConfig?: string;
+  effort?: EffortLevel;
   workspaceRoot?: string;
   project?: string;
   command?: string;
@@ -369,6 +373,14 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       parsed.taskFile = next;
       i += 1;
       continue;
+    }
+    if (arg === "--orchestration-config") {
+      if (!next || next.startsWith("--")) throw new Error("--orchestration-config requires a file path");
+      parsed.orchestrationConfig = next; i += 1; continue;
+    }
+    if (arg === "--effort") {
+      if (!["low", "medium", "high", "max"].includes(next ?? "")) throw new Error("--effort requires low|medium|high|max");
+      parsed.effort = next as EffortLevel; i += 1; continue;
     }
     if (arg === "--config" && next) {
       parsed.configPath = next;
@@ -733,6 +745,7 @@ const createPatchValidator = (
   workspaceRoot: string,
   allowShell: boolean,
   shellAllowlist: string[],
+  scope?: ConfiguredModelScope,
 ) => {
   if (!allowShell) return undefined;
   const allowlist = new Set(shellAllowlist ?? []);
@@ -744,16 +757,8 @@ const createPatchValidator = (
     if (!allowlist.has("node")) {
       return;
     }
-    const result = spawnSync("node", ["--check", filePath], {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-    });
-    if (result.error) {
-      throw result.error;
-    }
-    if (result.status !== 0) {
-      throw new Error(result.stderr?.toString() || "node --check failed");
-    }
+    scope?.reserveTool();
+    await runProcess(process.execPath, ["--check", filePath], { workspaceRoot, signal: scope?.signal, shellTimeoutMs: 30000 });
   };
 };
 
@@ -1346,8 +1351,27 @@ const registerBuiltins = () => {
 
 export class RunCommand {
   static async run(argv: string[]): Promise<void> {
-    registerBuiltins();
     const parsed = parseArgs(argv);
+    const file = parsed.orchestrationConfig ?? process.env.CODALI_ORCHESTRATION_CONFIG;
+    if (!file) {
+      if (parsed.effort) throw new Error("Legacy run requires --orchestration-config to select an effort budget");
+      return this.runParsed(parsed);
+    }
+    if ([parsed.agent, parsed.agentId, parsed.agentSlug, parsed.agentLibrarian, parsed.agentArchitect, parsed.agentBuilder,
+      parsed.agentCritic, parsed.agentInterpreter, parsed.provider, parsed.model, parsed.baseUrl, parsed.apiKey,
+      parsed.interpreterProvider, parsed.interpreterModel].some(value => value !== undefined)) throw new Error("Configured run cannot accept legacy model/provider/agent overrides; edit role bindings in the orchestration file");
+    const resolved = await loadOrchestrationConfig(file);
+    const abort = new AbortController();
+    const stop = () => abort.abort(new Error("Configured run cancelled"));
+    const scope = new ConfiguredModelScope(resolved, { effort: parsed.effort, signal: abort.signal });
+    process.once("SIGINT", stop); process.once("SIGTERM", stop);
+    try { await this.runParsed(parsed, { resolved, scope }); }
+    finally { scope.close(); process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); }
+  }
+
+  private static async runParsed(parsed: ParsedArgs, orchestration?: { resolved: ResolvedOrchestrationConfig; scope: ConfiguredModelScope }): Promise<void> {
+    registerBuiltins();
+    const scope = orchestration?.scope;
     const resolvedWorkspaceRoot = resolveWorkspaceRoot(process.cwd(), parsed.workspaceRoot);
 
     const agentRef = parsed.agent ?? parsed.agentId ?? parsed.agentSlug;
@@ -1522,6 +1546,19 @@ export class RunCommand {
       configPath: parsed.configPath,
       cwd: resolvedWorkspaceRoot,
     });
+    if (scope) {
+      const limits = scope.budget();
+      config.limits = { ...config.limits, maxSteps: Math.min(config.limits.maxSteps, limits.maxSteps),
+        maxToolCalls: Math.min(config.limits.maxToolCalls, limits.maxToolCalls),
+        maxTokens: Math.min(config.limits.maxTokens ?? limits.maxOutputTokens, limits.maxOutputTokens),
+        timeoutMs: Math.min(config.limits.timeoutMs, limits.timeoutMs) };
+      config.routing = {};
+      // The legacy configuration still controls workflow/validation; model identity comes only from bindings.
+      config.provider = "configured"; config.model = scope.models("lead")[0]!.model.catalogId;
+      for (const binding of config.smart ? ["router", "architect", "worker"] : ["lead"]) scope.models(binding);
+      if (config.localContext.enabled && config.localContext.summarize.enabled) scope.models("summarizer");
+      if (config.builder.mode === "freeform" || config.builder.fallbackToInterpreter) scope.models("repair");
+    }
 
     if (config.deepInvestigation?.enabled && !config.smart) {
       throw new Error(
@@ -1576,7 +1613,7 @@ export class RunCommand {
     const outputLogPath = path.join(path.dirname(logger.logPath), `${runId}.output.log`);
     await mkdir(path.dirname(outputLogPath), { recursive: true });
     const outputStream = createWriteStream(outputLogPath, { flags: "a" });
-    const unregisterSignals = lock.registerSignalHandlers({
+    const unregisterSignals = scope ? () => {} : lock.registerSignalHandlers({
       onSignal: async (signal) => {
         try {
           await logger.log("run_cancelled", {
@@ -1788,6 +1825,9 @@ export class RunCommand {
       registerIfEnabled(createShellTool());
 
       const docdexClient = new DocdexClient({
+        signal: () => scope?.signal,
+        beforeRequest: scope ? () => scope.reserveTool() : undefined,
+        localSearchOnly: Boolean(scope),
         baseUrl: config.docdex.baseUrl,
         repoId: config.docdex.repoId,
         repoRoot: config.docdex.repoRoot ?? config.workspaceRoot,
@@ -1796,6 +1836,8 @@ export class RunCommand {
       for (const tool of createDocdexTools(docdexClient)) registerIfEnabled(tool);
 
       const toolContext = {
+        signal: scope?.signal,
+        beforeTool: scope && config.smart ? async () => scope.reserveTool() : undefined,
         workspaceRoot: config.workspaceRoot,
         recordTouchedFile: (filePath: string) => runContext.recordTouchedFile(filePath),
         allowOutsideWorkspace: config.tools.allowOutsideWorkspace,
@@ -1804,6 +1846,19 @@ export class RunCommand {
         shellAllowlist: config.tools.shellAllowlist,
       };
       const streamState = createStreamState(config.streaming.flushEveryMs, outputStream);
+      const scopedProvider = (binding: string): Provider => {
+        const provider = scope!.provider(binding);
+        return { ...provider, generate: async request => {
+          try {
+            const response = await provider.generate(request);
+            await logger.log("configured_model_route", { ...response.route, usage: scope!.snapshot() });
+            return response;
+          } catch (error) {
+            await logger.log("configured_model_failure", { binding, configHash: scope!.configHash, usage: scope!.snapshot() });
+            throw error;
+          }
+        } };
+      };
 
       if (config.smart) {
         const hasRoutingAgent = Object.values(config.routing ?? {}).some((phase) =>
@@ -1813,8 +1868,8 @@ export class RunCommand {
           parsed.provider || parsed.model || parsed.baseUrl || parsed.apiKey,
         );
         const shouldForceAgentDefaults =
-          !agentRef && !hasRoutingAgent && !hasExplicitProvider;
-        const shouldSelectAgents = config.provider !== "stub";
+          !scope && !agentRef && !hasRoutingAgent && !hasExplicitProvider;
+        const shouldSelectAgents = !scope && config.provider !== "stub";
         const emptySelection = (phase: PipelinePhase): PhaseAgentSelection => ({
           phase,
           capabilities: [],
@@ -1941,6 +1996,14 @@ export class RunCommand {
         }
 
         const buildDefaultsForPhase = (phase: PipelinePhase) => {
+          if (scope) {
+            const binding = ({ librarian: "router", architect: "architect", builder: "worker", critic: "lead", interpreter: "repair" } as const)[phase];
+            // An unused interpreter does not require an enabled repair binding.
+            const required = phase !== "interpreter" || config.builder.mode === "freeform" || config.builder.fallbackToInterpreter;
+            const model = scope.models(required ? binding : "lead")[0]!.model;
+            config.localContext.modelTokenLimits = { ...config.localContext.modelTokenLimits, [model.catalogId]: model.contextWindow };
+            return { provider: `configured:${binding}`, config: { model: model.catalogId, timeoutMs: config.limits.timeoutMs } };
+          }
           const selected = phaseSelections[phase].resolved;
           return selected
             ? {
@@ -2018,9 +2081,9 @@ export class RunCommand {
           model: criticRoute.config.model,
         };
 
-        const librarianProvider = createProvider(librarianRoute.provider, librarianRoute.config);
-        const architectProvider = createProvider(architectRoute.provider, architectRoute.config);
-        const builderProvider = createProvider(builderRoute.provider, builderRoute.config);
+        const librarianProvider = scope ? scopedProvider("router") : createProvider(librarianRoute.provider, librarianRoute.config);
+        const architectProvider = scope ? scopedProvider("architect") : createProvider(architectRoute.provider, architectRoute.config);
+        const builderProvider = scope ? scopedProvider("worker") : createProvider(builderRoute.provider, builderRoute.config);
 
         const profileAgentId =
           config.agentId ??
@@ -2064,7 +2127,7 @@ export class RunCommand {
               model: config.localContext.summarize.model,
             };
           }
-          const summarizerProvider = createProvider(summarizerProviderName, summarizerConfig);
+          const summarizerProvider = scope ? scopedProvider("summarizer") : createProvider(summarizerProviderName, summarizerConfig);
           summarizer = new ContextSummarizer(summarizerProvider, {
             maxTokens: config.localContext.summarize.targetTokens,
             temperature: summarizerTemperature,
@@ -2180,6 +2243,7 @@ export class RunCommand {
           config.workspaceRoot,
           config.tools.allowShell ?? false,
           config.tools.shellAllowlist ?? [],
+          scope,
         );
         const needsPatchApplier =
           config.builder.mode === "patch_json" || config.builder.mode === "freeform" || config.builder.mode === "tool_calls";
@@ -2199,7 +2263,7 @@ export class RunCommand {
           ? resolveInterpreterRoute(config, phaseRoutes)
           : undefined;
         const interpreterProvider = interpreterRoute
-          ? createProvider(interpreterRoute.provider, {
+          ? scope ? scopedProvider("repair") : createProvider(interpreterRoute.provider, {
               ...interpreterRoute.config,
               timeoutMs:
                 config.interpreter.timeoutMs ??
@@ -2250,6 +2314,7 @@ export class RunCommand {
           model: builderRoute.config.model,
         });
         const validator = new ValidationRunner({
+          signal: scope?.signal,
           allowShell: config.tools.allowShell ?? false,
           shellAllowlist: config.tools.shellAllowlist ?? [],
           workspaceRoot: config.workspaceRoot,
@@ -2465,14 +2530,16 @@ export class RunCommand {
           minimumVerificationChecks: workflowProfile?.verificationMinimumChecks,
           enforceVerificationHighConfidence: workflowProfile?.verificationEnforceHighConfidence,
           onEvent: streamState.onEvent,
-          onPhaseProviderFailure: recoverPhaseProvider,
+          onPhaseProviderFailure: scope ? undefined : recoverPhaseProvider,
         });
 
         const result = await pipeline.run(workflowTaskInput);
+        scope?.signal.throwIfAborted();
         for (const file of result.builderResult.touchedFiles ?? []) {
           runContext.recordTouchedFile(file);
         }
         smartRuntimeSummary = {
+          orchestration: scope ? { configHash: scope.configHash, usage: scope.snapshot(), toolCalls: scope.toolsUsed } : undefined,
           attempts: result.attempts,
           maxRetries: config.limits.maxRetries,
           maxContextRefreshes: config.context.maxContextRefreshes,
@@ -2567,9 +2634,11 @@ export class RunCommand {
             throw new Error("Run cancelled due to cost limit");
           }
         }
-        const provider = createProvider(config.provider, buildDefaultProviderConfig(config));
+        const provider = scope ? undefined : createProvider(config.provider, buildDefaultProviderConfig(config));
 
         const result = await runCodaliTask({
+          orchestration: orchestration ? { ...orchestration, effort: scope!.effort } : undefined,
+          signal: scope?.signal,
           task: workflowTaskInput,
           workspace: { root: config.workspaceRoot },
           provider: {
@@ -2632,6 +2701,7 @@ export class RunCommand {
         finalMessageContent = result.finalMessage;
         usage = result.usage;
         toolCallsExecuted = result.toolCallsExecuted;
+        if (result.orchestration) await logger.log("configured_runtime_usage", result.orchestration);
       }
 
       streamState.flush();

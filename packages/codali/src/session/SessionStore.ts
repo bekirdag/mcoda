@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { atomicWriteJson, withStateLock } from "./AtomicState.js";
+import { createWorkState, validateWorkState } from "./WorkState.js";
+import type { WorkState } from "./WorkTypes.js";
 
 export type CodaliSessionStatus = "active" | "paused" | "completed" | "failed";
 
@@ -59,6 +62,8 @@ export interface CodaliResumeBundle {
 export interface SessionStoreOptions {
   workspaceRoot: string;
   storageDir?: string;
+  /** Trusted host-only option. Repository configuration must never set this. */
+  allowExternalStorage?: boolean;
 }
 
 export interface CreateSessionInput {
@@ -75,18 +80,25 @@ export interface CreateSessionInput {
 const DEFAULT_SESSION_STORAGE_DIR = ".mcoda/codali/sessions";
 
 const safeId = (value: string): string => {
-  const safe = value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
-  if (!safe) throw new Error("Session id must contain at least one safe character");
-  return safe;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(value)) throw new Error("Invalid session id");
+  return value;
 };
 
 const parseJsonLines = <T>(content: string): T[] => {
   if (!content.trim()) return [];
-  return content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
+  const lines = content.split("\n");
+  const result: T[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    try { result.push(JSON.parse(line) as T); }
+    catch (error) {
+      // Only an unterminated final record may be a crash tail. Never hide middle corruption.
+      if (index === lines.length - 1 && !content.endsWith("\n")) break;
+      throw error;
+    }
+  }
+  return result;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -141,16 +153,18 @@ export class SessionStore {
   readonly workspaceRoot: string;
   readonly storageDir: string;
   private lastTimestampMs = 0;
+  private readonly allowExternalStorage: boolean;
 
   constructor(options: SessionStoreOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
     this.storageDir = options.storageDir ?? DEFAULT_SESSION_STORAGE_DIR;
+    this.allowExternalStorage = options.allowExternalStorage === true;
   }
 
   private rootDir(): string {
     const resolved = path.resolve(this.workspaceRoot, this.storageDir);
     const relative = path.relative(this.workspaceRoot, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (!this.allowExternalStorage && (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) {
       throw new Error("Session storage path is outside workspace root");
     }
     return resolved;
@@ -203,7 +217,11 @@ export class SessionStore {
       updatedAt: createdAt,
     };
     await fs.mkdir(this.sessionDir(sessionId), { recursive: true });
-    await fs.writeFile(this.metadataPath(sessionId), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+    await withStateLock(this.metadataPath(sessionId), async () => {
+      try { await fs.stat(this.metadataPath(sessionId)); throw new Error("Session already exists"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      await atomicWriteJson(this.metadataPath(sessionId), metadata);
+    });
     return metadata;
   }
 
@@ -229,7 +247,16 @@ export class SessionStore {
     sessionId: string,
     patch: Partial<Omit<CodaliSessionMetadata, "schemaVersion" | "sessionId" | "createdAt">>,
   ): Promise<CodaliSessionMetadata> {
+    return this.mutateSession(sessionId, current => ({ ...current, ...patch }));
+  }
+
+  private async mutateSession(
+    sessionId: string,
+    mutate: (current: CodaliSessionMetadata) => CodaliSessionMetadata,
+  ): Promise<CodaliSessionMetadata> {
+    return withStateLock(this.metadataPath(sessionId), async () => {
     const current = await this.readSession(sessionId);
+    const patch = mutate(structuredClone(current));
     const next: CodaliSessionMetadata = {
       ...current,
       ...patch,
@@ -240,14 +267,13 @@ export class SessionStore {
       instructionSources: patch.instructionSources ?? current.instructionSources,
       updatedAt: this.nextTimestampIso(current.updatedAt),
     };
-    await fs.writeFile(this.metadataPath(sessionId), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    await atomicWriteJson(this.metadataPath(sessionId), next);
     return next;
+    });
   }
 
   async addRun(sessionId: string, runId: string): Promise<CodaliSessionMetadata> {
-    const current = await this.readSession(sessionId);
-    if (current.runIds.includes(runId)) return current;
-    return this.updateSession(sessionId, { runIds: [...current.runIds, runId] });
+    return this.mutateSession(sessionId, current => ({ ...current, runIds: [...new Set([...current.runIds, runId])] }));
   }
 
   async appendTranscript(
@@ -266,7 +292,19 @@ export class SessionStore {
     };
     const transcriptPath = this.transcriptPath(sessionId);
     await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
-    await fs.appendFile(transcriptPath, `${JSON.stringify(record)}\n`, "utf8");
+    await withStateLock(transcriptPath, async () => {
+      try {
+        const contents = await fs.readFile(transcriptPath, "utf8");
+        if (contents && !contents.endsWith("\n")) {
+          const lastNewline = contents.lastIndexOf("\n");
+          try { JSON.parse(contents.slice(lastNewline + 1)); await fs.appendFile(transcriptPath, "\n"); }
+          catch { await fs.truncate(transcriptPath, Buffer.byteLength(contents.slice(0, lastNewline + 1))); }
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const handle = await fs.open(transcriptPath, "a", 0o600);
+      try { await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8"); await handle.sync(); }
+      finally { await handle.close(); }
+    });
     await this.updateSession(sessionId, {});
     return record;
   }
@@ -320,11 +358,9 @@ export class SessionStore {
     await fs.mkdir(summariesDir, { recursive: true });
     const fileName = `${createdAt.replace(/[^0-9T]/g, "").slice(0, 15)}-${events.length}.json`;
     const filePath = path.join(summariesDir, fileName);
-    await fs.writeFile(filePath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    await atomicWriteJson(filePath, summary);
     const relativeRef = path.relative(this.sessionDir(sessionId), filePath);
-    await this.updateSession(sessionId, {
-      summaryRefs: [...metadata.summaryRefs, relativeRef],
-    });
+    await this.mutateSession(sessionId, current => ({ ...current, summaryRefs: [...new Set([...current.summaryRefs, relativeRef])] }));
     return summary;
   }
 
@@ -348,5 +384,38 @@ export class SessionStore {
       latestSummary: await this.readLatestSummary(sessionId),
       recentEvents: recentCount ? transcript.slice(-recentCount) : [],
     };
+  }
+
+  async initializeWork(sessionId: string, objective: string): Promise<WorkState> {
+    await this.readSession(sessionId);
+    const file = path.join(this.sessionDir(sessionId), "work.json");
+    return withStateLock(file, async () => {
+      try { return await this.readWork(sessionId); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const state = createWorkState(objective);
+      await atomicWriteJson(file, state);
+      return state;
+    });
+  }
+
+  async readWork(sessionId: string): Promise<WorkState> {
+    const state = JSON.parse(await fs.readFile(path.join(this.sessionDir(sessionId), "work.json"), "utf8")) as WorkState;
+    validateWorkState(state);
+    return state;
+  }
+
+  async updateWork(sessionId: string, expectedRevision: number, mutate: (state: WorkState) => void): Promise<WorkState> {
+    const file = path.join(this.sessionDir(sessionId), "work.json");
+    return withStateLock(file, async () => {
+      const state = await this.readWork(sessionId);
+      if (state.revision !== expectedRevision) throw new Error("Work revision conflict; reload before retrying");
+      const identity = [state.goalId, state.originalObjective, state.createdAt];
+      mutate(state);
+      if (JSON.stringify(identity) !== JSON.stringify([state.goalId, state.originalObjective, state.createdAt])) throw new Error("Original goal identity is immutable");
+      state.revision += 1; state.updatedAt = nowIso();
+      validateWorkState(state);
+      await atomicWriteJson(file, state);
+      return state;
+    });
   }
 }

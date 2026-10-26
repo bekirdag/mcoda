@@ -1,4 +1,25 @@
 export { runCli } from "./cli.js";
+export { SessionController } from "./runtime/SessionController.js";
+export type { SessionControllerOptions, SessionEvent } from "./runtime/SessionController.js";
+export { loadOrchestrationConfig, validateOrchestrationConfig, resolveBinding, orchestrationHash, effortBudget, EFFORT_BUDGETS } from "./config/OrchestrationConfig.js";
+export type { OrchestrationConfig, ResolvedOrchestrationConfig, OrchestrationModel, OrchestrationProvider, ModelBinding, EffortLevel, EffortBudget } from "./config/OrchestrationConfig.js";
+export { ConfiguredProvider, ModelServiceClient } from "./providers/ConfiguredProvider.js";
+export { ConfiguredModelScope } from "./providers/ConfiguredModelScope.js";
+export { loadNodeOrchestrationConfig } from "./config/NodeOrchestration.js";
+export type { ModelCallerContext } from "./providers/ConfiguredProvider.js";
+export type { ScopedModelUsage, ScopedModelEvent } from "./providers/ConfiguredModelScope.js";
+export { runConfiguredGateway } from "./gateway/ConfiguredGateway.js";
+export { runConfiguredPipeline } from "./cognitive/ConfiguredPipeline.js";
+export type { ConfiguredPipelineOptions, ConfiguredPipelineHost } from "./cognitive/ConfiguredPipeline.js";
+export type { ConfiguredGatewayOptions, ConfiguredGatewayHostOptions } from "./gateway/ConfiguredGateway.js";
+export { ConfiguredEmbeddings } from "./providers/ConfiguredEmbeddings.js";
+export type { EmbeddingIntent, EmbeddingReceipt } from "./providers/ConfiguredEmbeddings.js";
+export { configuredEmbeddingSpace } from "./config/OrchestrationConfig.js";
+export { PermissionGate } from "./permissions/PermissionGate.js";
+export type { PermissionProfile, PermissionPrompt, PermissionRequest, PermissionAnswer } from "./permissions/PermissionGate.js";
+export type { WorkState, WorkTask, Requirement, DecisionRecord, EvidenceReceipt, WorkCheckpoint } from "./session/WorkTypes.js";
+export { MediaJobStore } from "./connectors/media/MediaJobStore.js";
+export type { MediaJob, MediaArtifact } from "./connectors/media/MediaJobStore.js";
 export {
   codaliEventToOpenAIChatCompletionChunk,
   codaliEventToOpenAISseData,
@@ -1174,3 +1195,5 @@ export { resetAccessTokenCache } from "./connectors/http/HttpToolDefinition.js";
 export { createRelevanceJudge, summarizeResultTitles } from "./gateway/RelevanceJudge.js";
 export type { RelevanceJudgeOptions } from "./gateway/RelevanceJudge.js";
 export type { RelevanceJudge, DocdexToolOptions } from "./tools/docdex/DocdexTools.js";
+export { TerminalCommand, parseTerminalArguments } from "./cli/TerminalCommand.js";
+export type { TerminalHost } from "./cli/TerminalCommand.js";

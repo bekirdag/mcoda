@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { ToolExecutionError, type ToolContext, type ToolDefinition } from "../ToolTypes.js";
+import { runProcess } from "./AsyncProcess.js";
 
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
@@ -45,15 +45,16 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
-  description: "Run a shell command from the workspace root (allowlist only).",
+  description: 'Run an allowlisted executable from the workspace root. command is a single executable; arguments go in args, e.g. {"command":"npm","args":["test"]}. In terminal mode the workspace is read-only unless writePaths explicitly names paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
   readOnly: false,
   capability: "shell",
   inputSchema: {
     type: "object",
     required: ["command"],
     properties: {
-      command: { type: "string" },
+      command: { type: "string", description: "One executable name, without arguments or shell syntax." },
       args: { type: "array", items: { type: "string" } },
+      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: narrow existing files/directories to make writable. Default: no workspace writes. Must fit the claimed task scope." },
     },
   },
   handler: async (args, context: ToolContext) => {
@@ -89,33 +90,6 @@ export const createShellTool = (): ToolDefinition => ({
       });
     }
 
-    const result = spawnSync(command, commandArgs, {
-      cwd: context.workspaceRoot,
-      encoding: "utf8",
-    });
-
-    if (result.error) {
-      throw result.error;
-    }
-
-    const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? "";
-    const exitCode = result.status ?? 0;
-    if (exitCode !== 0) {
-      const message = stderr || stdout || `Command failed with exit code ${exitCode}`;
-      throw new ToolExecutionError("tool_execution_failed", message, {
-        retryable: false,
-        details: { command, exitCode },
-      });
-    }
-
-    return {
-      output: stdout || stderr,
-      data: {
-        stdout,
-        stderr,
-        exitCode,
-      },
-    };
+    return (context.shellExecutor ?? runProcess)(command, commandArgs, context);
   },
 });

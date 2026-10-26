@@ -18,6 +18,7 @@ const DOCDEX_WRITE_TOOLS = new Set([
   "docdex_memory_save",
   "docdex_save_preference",
   "docdex_delegate",
+  "docdex_diary_write",
 ]);
 
 /**
@@ -357,12 +358,29 @@ export type RelevanceJudge = (input: {
 
 export interface DocdexToolOptions {
   judgeRelevance?: RelevanceJudge;
+  /** Terminal clients authorize web research as a separate operation. */
+  allowSearchWebFallback?: boolean;
 }
 
 export const createDocdexTools = (
   client: DocdexClient,
   options: DocdexToolOptions = {},
-): ToolDefinition[] => withDocdexMetadata(docdexToolDefinitions(client, options));
+): ToolDefinition[] => withDocdexMetadata([...docdexToolDefinitions(client, options), ...continuityTools(client)]);
+
+const continuityTools = (client: DocdexClient): ToolDefinition[] => {
+  const single = (name: string, description: string, key: string, call: (value: string) => Promise<unknown>): ToolDefinition => ({
+    name, description, inputSchema: { type: "object", properties: { [key]: { type: "string", minLength: 1, maxLength: 12000 } }, required: [key], additionalProperties: false },
+    handler: async args => toOutput(await call((args as Record<string, string>)[key])),
+  });
+  return [
+    single("docdex_wakeup", "Read bounded continuity context for this repository and agent. Canonical goal and authorization remain authoritative.", "query", query => client.wakeup(query)),
+    single("docdex_conversation_search", "Find source-linked prior conversation records in this repository.", "query", query => client.conversationSearch(query)),
+    single("docdex_conversation_read", "Read a prior repository conversation by its returned session ID.", "sessionId", id => client.conversationRead(id)),
+    single("docdex_kg_query", "Inspect temporal knowledge-graph facts and provenance for this repository.", "query", query => client.knowledgeQuery(query)),
+    single("docdex_diary_write", "Save a concise durable handoff with the current goal, observed outcome and next action. Requires memory-write permission.", "content", content => client.diaryWrite(content)),
+    { name: "docdex_diary_read", description: "Read the agent's recent durable repository handoffs.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, handler: async () => toOutput(await client.diaryRead()) },
+  ];
+};
 
 const docdexToolDefinitions = (
   client: DocdexClient,
@@ -433,7 +451,7 @@ const docdexToolDefinitions = (
       }
 
       const webQuery = normalizeWebQuery(query);
-      if (!localAnswers && webQuery && !webResearchBlocked()) {
+      if (options.allowSearchWebFallback !== false && !localAnswers && webQuery && !webResearchBlocked()) {
         try {
           const web = await client.search(webQuery, { limit, forceWeb: true });
           if (hasWebFindings(web)) {

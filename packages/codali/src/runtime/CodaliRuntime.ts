@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { requiredRetrievalProvider, type RequiredRetrievalNeed } from "./RequiredRetrieval.js";
 import type {
   LocalOpenAiCompatibleRunnerConfig,
   LocalRunnerAuthMode,
@@ -18,6 +19,9 @@ import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { CodexCliProvider } from "../providers/CodexCliProvider.js";
 import { ClaudeCliProvider } from "../providers/ClaudeCliProvider.js";
 import { MswarmWorkerProvider } from "../providers/MswarmWorkerProvider.js";
+import type { ModelCallerContext, ModelInvocation } from "../providers/ConfiguredProvider.js";
+import { ConfiguredModelScope, type ScopedModelUsage } from "../providers/ConfiguredModelScope.js";
+import { validateOrchestrationConfig, orchestrationHash, type ResolvedOrchestrationConfig, type EffortLevel } from "../config/OrchestrationConfig.js";
 import type {
   AgentEvent,
   AgentStatusPhase,
@@ -273,6 +277,18 @@ export type CodaliRuntimeEvent =
   | { type: "error"; message: string; code?: string; retryable?: boolean; at: string };
 
 export interface CodaliRuntimeInput {
+  /** Execute required retrieval using normal tool authorization, without a synthetic model override. */
+  requiredRetrieval?: readonly RequiredRetrievalNeed[];
+  /** Trusted host configuration. Never populate from an untrusted repository or tenant request. */
+  orchestration?: {
+    resolved: ResolvedOrchestrationConfig; binding?: string; effort?: EffortLevel;
+    caller?: ModelCallerContext;
+    /** Trusted parent job scope; configuration and effort must match. */
+    scope?: ConfiguredModelScope;
+  };
+  signal?: AbortSignal;
+  continueAfterFinal?: (message: ProviderMessage) => string | undefined | Promise<string | undefined>;
+  onMessages?: (messages: ProviderMessage[]) => Promise<void>;
   task: string;
   messages?: ProviderMessage[];
   workspace: CodaliRuntimeWorkspace;
@@ -316,6 +332,7 @@ export interface CodaliOpenAIChunkOptions {
 }
 
 export interface CodaliRuntimeResult {
+  orchestration?: { configHash: string; routes: ModelInvocation[]; cumulativeUsage: ScopedModelUsage; cumulativeToolCalls: number };
   finalMessage: string;
   messages: ProviderMessage[];
   toolCallsExecuted: number;
@@ -389,6 +406,12 @@ const DOCDEX_TOOL_OPERATIONS = new Map<string, DocdexRuntimeOperation[]>([
   ["docdex_tree", ["tree"]],
   ["docdex_memory_save", ["memory_save"]],
   ["docdex_memory_recall", ["memory_recall"]],
+  ["docdex_wakeup", ["wakeup"]],
+  ["docdex_diary_read", ["diary_read"]],
+  ["docdex_diary_write", ["diary_write"]],
+  ["docdex_conversation_read", ["conversation_read"]],
+  ["docdex_conversation_search", ["conversation_search"]],
+  ["docdex_kg_query", ["kg_query"]],
   ["docdex_get_profile", ["profile_read"]],
   ["docdex_save_preference", ["profile_write"]],
   ["docdex_web_research", ["web_research"]],
@@ -2357,6 +2380,7 @@ const runProtocolLoop = async (options: {
     );
     const response = await withTimeout(
       provider.generate({
+        signal: input.signal,
         messages: [...messages],
         maxTokens: input.policy.maxTokens,
         stream: input.streaming?.enabled,
@@ -2567,6 +2591,30 @@ export const createCodaliRuntime = (input: CodaliRuntimeInput): CodaliRuntime =>
 });
 
 export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRuntimeResult> => {
+  if (!input.orchestration) return runCodaliTaskWithinScope(input);
+  const configured = input.orchestration;
+  validateOrchestrationConfig(configured.resolved.config);
+  if (orchestrationHash(configured.resolved.config) !== configured.resolved.hash) throw new Error("Orchestration configuration changed after resolution");
+  if (input.providerInstance) throw new Error("Configured orchestration cannot be bypassed by a provider override");
+  if (input.subagents?.enabled) throw new Error("Configured orchestration requires controller-managed helper bindings; legacy subagents must be disabled");
+  const scope = configured.scope ?? new ConfiguredModelScope(configured.resolved, { effort: configured.effort, signal: input.signal, caller: configured.caller });
+  try {
+    if (scope.configHash !== configured.resolved.hash || (configured.effort !== undefined && scope.effort !== configured.effort)) throw new Error("Parent orchestration scope does not match configuration or effort");
+    if (configured.caller && !scope.matchesCaller(configured.caller)) throw new Error("Parent orchestration scope does not match caller identity");
+    const budget = scope.budget();
+    const signals = [scope.signal, input.signal, input.toolContext?.signal].filter((value): value is AbortSignal => Boolean(value));
+    return await runCodaliTaskWithinScope({ ...input, signal: AbortSignal.any(signals), policy: { ...input.policy,
+      maxSteps: Math.min(input.policy.maxSteps, budget.maxSteps),
+      maxToolCalls: Math.min(input.policy.maxToolCalls, budget.maxToolCalls),
+      maxTokens: Math.min(input.policy.maxTokens ?? budget.maxOutputTokens, budget.maxOutputTokens),
+      timeoutMs: Math.min(input.policy.timeoutMs, budget.timeoutMs),
+    } }, scope);
+  } finally { if (!configured.scope) scope.close(); }
+};
+
+const runCodaliTaskWithinScope = async (input: CodaliRuntimeInput, scope?: ConfiguredModelScope): Promise<CodaliRuntimeResult> => {
+  input.signal?.throwIfAborted();
+  if (input.requiredRetrieval && input.policy.mode !== "protocol_loop") throw new Error("Required retrieval needs protocol_loop mode");
   const runId = input.metadata?.requestId ?? randomUUID();
   const touchedFiles = new Set<string>();
   const warnings: string[] = [];
@@ -2580,16 +2628,30 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
     emitRuntimeEvent(event, input.onEvent, warnings);
   };
 
-  const provider = input.providerInstance ?? createRuntimeProvider(input.provider);
+  const routes: ModelInvocation[] = [];
+  const selected = input.requiredRetrieval ? requiredRetrievalProvider(input.requiredRetrieval, `${runId}:required-tools`)
+    : scope ? scope.provider(input.orchestration?.binding ?? "lead") : input.providerInstance ?? createRuntimeProvider(input.provider);
+  const provider: Provider = scope ? { ...selected, generate: async request => {
+    const response = await selected.generate(request);
+    if (response.route) routes.push(response.route);
+    return response;
+  } } : selected;
+  const orchestration = () => scope ? { configHash: scope.configHash, routes, cumulativeUsage: scope.snapshot(), cumulativeToolCalls: scope.toolsUsed } : undefined;
   const registry = buildRuntimeToolRegistry(input, dynamicToolState, warnings);
   const originalRecordTouchedFile = input.toolContext?.recordTouchedFile;
   const toolContext: ToolContext = {
     ...input.toolContext,
+    signal: input.signal ?? input.toolContext?.signal,
     workspaceRoot: input.workspace.root,
     runId: input.toolContext?.runId ?? runId,
     allowOutsideWorkspace: input.policy.allowOutsideWorkspace,
     allowShell: input.policy.allowShell,
     allowDestructiveOperations: input.policy.allowDestructiveOperations,
+    beforeTool: scope ? async (...args) => {
+      scope.reserveTool();
+      await input.toolContext?.beforeTool?.(...args);
+      input.signal?.throwIfAborted();
+    } : input.toolContext?.beforeTool,
     recordTouchedFile: (filePath: string) => {
       touchedFiles.add(filePath);
       originalRecordTouchedFile?.(filePath);
@@ -2632,6 +2694,7 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
       await appendSessionEvent(session, runId, "final", { content: result.finalMessage.content }, warnings);
       const finalSession = await compactRuntimeSession(session, "completed", warnings);
       return {
+        orchestration: orchestration(),
         finalMessage: result.finalMessage.content,
         messages: result.messages,
         toolCallsExecuted: result.toolCallsExecuted,
@@ -2670,6 +2733,9 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
   }
 
   const runner = new Runner({
+    signal: input.signal,
+    continueAfterFinal: input.continueAfterFinal,
+    onMessages: input.onMessages,
     provider,
     tools: registry,
     context: toolContext,
@@ -2700,6 +2766,7 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
     await appendSessionEvent(session, runId, "final", { content: result.finalMessage.content }, warnings);
     const finalSession = await compactRuntimeSession(session, "completed", warnings);
     return {
+      orchestration: orchestration(),
       finalMessage: result.finalMessage.content,
       messages: result.messages,
       toolCallsExecuted: result.toolCallsExecuted,
