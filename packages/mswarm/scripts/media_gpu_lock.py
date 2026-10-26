@@ -106,6 +106,22 @@ class MediaGpuLease:
         self.record["native_job_id"] = job_id
         _write_lease(self._fd, self.record)
 
+    def record_native_process(self, pid: int) -> None:
+        """Pin a Linux native child's identity without recording its arguments."""
+        if self._closed or not isinstance(pid, int) or pid <= 0:
+            raise MediaGpuError("invalid native media process receipt")
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            if int(fields[2]) != pid or not boot_id:
+                raise ValueError("native process must own its process group")
+            identity = {"pid": pid, "process_group": pid,
+                        "start_ticks": int(fields[19]), "boot_id": boot_id}
+        except (OSError, ValueError, IndexError) as error:
+            raise MediaGpuError("cannot establish native media process identity") from error
+        self.record["native_process"] = identity
+        _write_lease(self._fd, self.record)
+
     def confirm_finished(self) -> None:
         if self._closed:
             raise MediaGpuError("media GPU lease is already closed")
@@ -137,6 +153,25 @@ def reconcile_media_gpu_slot(expected_id: str, terminal_probe: Callable[[dict], 
         return True
     finally:
         os.close(fd)
+
+
+def media_gpu_health() -> str:
+    """Report admission state without exposing a receipt or clearing uncertainty."""
+    fd = -1
+    try:
+        fd = _open_scheduler()
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "busy"
+        return "ready" if _read_lease(fd) is None else "recovery_required"
+    except MediaGpuRecoveryRequired:
+        return "recovery_required"
+    except MediaGpuError:
+        return "unavailable"
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 @contextmanager

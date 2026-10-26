@@ -154,13 +154,114 @@ with tempfile.TemporaryDirectory() as directory:
     try:
         with media_gpu_slot('new-video'): raise AssertionError('uncertain image overlapped')
     except MediaGpuRecoveryRequired: pass
-    responses=iter([(200,{'id':'other-job','status':'completed'}),(200,{'id':'our-job','status':'generating'}),(200,{'id':'our-job','status':'completed'})])
+    responses=iter([(404,{}),(200,{'id':'other-job','status':'completed'}),(200,{'id':'our-job','status':'generating'}),(200,{'id':'our-job','status':'completed'})])
     seen=[]
     def poll(*args,**kwargs):
         response=next(responses); seen.append(response); return response
     video._bounded_json_request=poll; video.time.sleep=lambda seconds: None
     video._wait_for_native_job_end(SimpleNamespace(upstream_base_url='http://127.0.0.1:1',max_output_bytes=1024,request_timeout_seconds=1,poll_interval_seconds=0.1),'our-job')
-    assert len(seen)==3
+    assert len(seen)==4
 ` , scripts], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("native audio ownership records process identity and retains the fence after lost waits or surviving groups", { skip: !available || process.platform !== "linux" }, () => {
+  const result = spawnSync("python3", ["-c", `
+import importlib.util, json, os, pathlib, signal, subprocess, sys, tempfile
+from media_gpu_lock import media_gpu_slot, reconcile_media_gpu_slot, MediaGpuRecoveryRequired
+spec=importlib.util.spec_from_file_location('audio_lease_fixture', pathlib.Path(sys.argv[1])/'stable-audio-3-openai-server.py')
+audio=importlib.util.module_from_spec(spec); sys.modules[spec.name]=audio; spec.loader.exec_module(audio)
+real_popen=subprocess.Popen; real_killpg=os.killpg
+with tempfile.TemporaryDirectory() as directory:
+    root=pathlib.Path(directory); lock=root/'gpu.lock'; os.environ['MCODA_MEDIA_GPU_LOCK_PATH']=str(lock)
+    entry=root/'native.py'
+    entry.write_text("import sys,time,wave\\nfrom pathlib import Path\\ntime.sleep(0.1)\\np=Path(sys.argv[sys.argv.index('--out')+1])\\nwith wave.open(str(p),'wb') as w:\\n w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(bytes(44100*4))\\n")
+    backend=audio.SubprocessBackend.__new__(audio.SubprocessBackend)
+    backend.python=pathlib.Path(sys.executable); backend.entrypoint=entry; backend.runtime_root=root
+    backend.dit='fixture'; backend.decoder='fixture'; backend.precision=None; backend.models_dir=None
+    backend.timeout_seconds=2; backend.max_output_bytes=1048576
+    # Real successful child proves the ordinary path still releases the lease.
+    wav, metadata=backend.generate('fixture',seconds=1,steps=1,seed=2)
+    assert wav[:4]==b'RIFF' and metadata['seed']==2 and lock.read_bytes()==b''
+    for mode in ('lost_wait','surviving_group'):
+        children=[]
+        def launch(*args,**kwargs):
+            child=real_popen(*args,**kwargs); children.append(child)
+            if mode=='lost_wait':
+                original_wait=child.wait
+                def lost_wait(*args,**kwargs): raise RuntimeError('fixture wait observation lost')
+                child.wait=lost_wait
+                child.original_wait=original_wait
+            return child
+        def group_probe(pid,sig):
+            if mode=='surviving_group' and sig==0: return
+            return real_killpg(pid,sig)
+        subprocess.Popen=launch; os.killpg=group_probe
+        try:
+            try:
+                backend.generate('fixture',seconds=1,steps=1,seed=2)
+                raise AssertionError('uncertain child reported finished')
+            except RuntimeError as error:
+                assert 'observation lost' in str(error) or isinstance(error,MediaGpuRecoveryRequired)
+            receipt=json.loads(lock.read_text()); identity=receipt['native_process']
+            assert receipt['status']=='uncertain' and identity['pid']==children[0].pid
+            assert identity['process_group']==children[0].pid and identity['start_ticks']>0
+            assert identity['boot_id']==pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            try:
+                with media_gpu_slot('image'): raise AssertionError('audio uncertainty allowed overlap')
+            except MediaGpuRecoveryRequired: pass
+        finally:
+            subprocess.Popen=real_popen; os.killpg=real_killpg
+            for child in children:
+                if child.poll() is None:
+                    try: real_killpg(child.pid,signal.SIGKILL)
+                    except ProcessLookupError: pass
+                getattr(child,'original_wait',child.wait)(timeout=3)
+        assert reconcile_media_gpu_slot(receipt['id'], lambda current: current['native_process']==identity and children[0].poll() is not None)
+    # Failed exec never admitted native work, so it may release its own lease.
+    backend.python=root/'missing-python'
+    try: backend.generate('fixture',seconds=1,steps=1,seed=2); raise AssertionError('missing executable succeeded')
+    except FileNotFoundError: pass
+    assert lock.read_bytes()==b''
+`, scripts], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("all media health endpoints expose shared quarantine without clearing or disclosing the lease", { skip: !available }, () => {
+  const result = spawnSync("python3", ["-c", `
+import importlib.util, json, os, pathlib, sys, tempfile, threading, urllib.request, urllib.error
+from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
+from media_gpu_lock import media_gpu_health, media_gpu_slot
+with tempfile.TemporaryDirectory() as directory:
+    lock=pathlib.Path(directory)/'gpu.lock'; os.environ['MCODA_MEDIA_GPU_LOCK_PATH']=str(lock)
+    servers=[]; threads=[]
+    try:
+        for name,filename in [('image','stable-diffusion-cpp-openai-server.py'),('audio','stable-audio-3-openai-server.py'),('video','wan22-openai-server.py')]:
+            spec=importlib.util.spec_from_file_location('health_'+name,pathlib.Path(sys.argv[1])/filename)
+            module=importlib.util.module_from_spec(spec); sys.modules[spec.name]=module; spec.loader.exec_module(module)
+            module._check_upstream_model=lambda state: None
+            module._check_upstream_ready=lambda state: None
+            state=SimpleNamespace(model_id=name,upstream_model_id='fixture',fatal_error=threading.Event(),backend_name='fixture',dit='fixture',decoder='fixture')
+            server=ThreadingHTTPServer(('127.0.0.1',0),module._handler_for(state)); servers.append(server)
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();threads.append(thread)
+        def check(expected_status,expected_gpu):
+            for server in servers:
+                try: response=urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/healthz',timeout=2)
+                except urllib.error.HTTPError as error: response=error
+                with response:
+                    payload=json.load(response);assert response.status==expected_status,(response.status,payload)
+                    assert payload['media_gpu']==expected_gpu
+                    assert not any(key in payload for key in ('id','pid','native_job_id','native_process'))
+        assert media_gpu_health()=='ready';check(200,'ready')
+        with media_gpu_slot('video') as lease:
+            assert media_gpu_health()=='busy';check(200,'busy');lease.record_native_job('private-native-job');lease.mark_uncertain('lost')
+        original=lock.read_bytes();check(503,'recovery_required');assert lock.read_bytes()==original
+        lock.write_text('{partial');check(503,'recovery_required');assert lock.read_text()=='{partial'
+        lock.chmod(0o644);check(503,'unavailable');assert lock.read_text()=='{partial'
+    finally:
+        for server in servers:server.shutdown();server.server_close()
+        for thread in threads:thread.join(timeout=2)
+`, scripts], { encoding: "utf8", timeout: 15000 });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });

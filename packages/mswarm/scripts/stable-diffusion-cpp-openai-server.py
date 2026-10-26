@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Any
 
-from media_gpu_lock import MediaGpuError, media_gpu_slot
+from media_gpu_lock import MediaGpuError, media_gpu_health, media_gpu_slot
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -796,6 +796,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                     ApiError(404, "not found", error_type="not_found_error")
                 )
                 return
+            gpu = media_gpu_health() if self.path == "/healthz" else None
+            if self.path == "/healthz" and gpu not in ("ready", "busy"):
+                self._send_json(503, {"status": "unhealthy", "model": state.model_id, "media_gpu": gpu})
+                return
             try:
                 _check_upstream_model(state)
             except UpstreamError:
@@ -821,6 +825,7 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         "status": "ok",
                         "model": state.model_id,
                         "upstream_model": state.upstream_model_id,
+                        "media_gpu": gpu,
                         "upstream": "stable-diffusion.cpp",
                     },
                 )

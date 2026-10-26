@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Any
 
-from media_gpu_lock import MediaGpuError, MediaGpuLease, media_gpu_slot
+from media_gpu_lock import MediaGpuError, MediaGpuLease, media_gpu_health, media_gpu_slot
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -452,7 +452,7 @@ def _wait_for_native_job_end(state: ServerState, job_id: str) -> None:
                 url, method="GET", timeout=state.request_timeout_seconds,
                 max_bytes=max_bytes,
             )
-            if status == 404 or (
+            if (
                 status == 200 and job.get("id") == job_id
                 and job.get("status") in ("completed", "failed", "cancelled")
             ):
@@ -650,6 +650,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             if self.path == "/healthz":
+                gpu = media_gpu_health()
+                if gpu not in ("ready", "busy"):
+                    self._send_json(503, {"status": "unhealthy", "model": state.model_id, "media_gpu": gpu})
+                    return
                 try:
                     _check_upstream_ready(state)
                 except UpstreamError:
@@ -664,6 +668,7 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         "status": "ok",
                         "model": state.model_id,
                         "upstream": "stable-diffusion.cpp",
+                        "media_gpu": gpu,
                     },
                 )
                 return

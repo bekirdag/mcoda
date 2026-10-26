@@ -141,8 +141,40 @@ claim that closing an HTTP socket cancels CUDA work. If that deadline expires,
 the bridge returns 504 but a single background transport continues waiting for
 the native response and retains the inference slot. Later generations receive
 429 until native completion is known; the slot is released only then. If the
-native server never replies, the bridge stays fail-closed until an operator
-restarts the native service and bridge.
+native server never replies, the bridge stays fail-closed until native inference
+has a confirmed terminal outcome and its shared reservation is reconciled.
+
+### Shared media admission and recovery
+
+The image, audio and video bridges import `media_gpu_lock.py` from the same
+installed scripts directory. They must run as the same user with the same
+`MCODA_MEDIA_GPU_LOCK_PATH` (default: `$XDG_RUNTIME_DIR/mcoda-media-gpu1.lock`).
+Keep this private, owner-owned regular file in place; never unlink it while any
+bridge or waiter can be running. Its kernel lock serializes calls, and its
+fsynced receipt survives a killed bridge or an uncertain native response. A
+restart, elapsed timeout or client disconnect does not clear that receipt.
+
+All three `/healthz` responses include `media_gpu`: `ready` and `busy` permit
+normal service health; `recovery_required` and `unavailable` return HTTP 503.
+The health probe does not clear reservations or expose native job/process IDs.
+Other readiness checks still apply. A corrupt or unsafe lock file fails closed.
+
+Video completion requires a terminal response for the exact native job ID. A
+404 is an unknown outcome, not proof that CUDA work ended. Audio records its
+Linux child PID, process group, start ticks and boot ID before waiting. A reaped
+audio launcher is insufficient if its process group remains alive; an unexpected
+wait failure retains the reservation. Failed process creation can release the
+reservation because no native job was admitted.
+
+`reconcile_media_gpu_slot(expected_id, terminal_probe)` is an internal host-side
+recovery API. It refuses a live lock owner or a stale reservation ID and clears
+only when a trusted backend probe returns true for the current receipt. A
+recovery operator must establish exact native completion, or stop the responsible
+native engine and confirm that its job/process group cannot remain. Never use an
+unconditional probe, remove the file or equate an accepted cancellation with
+completion. Automated native recovery, physical GPU memory admission and
+fairness still require deployment qualification; the shared lock alone does not
+coordinate Strata vision or other processes on the same GPU.
 
 ## Image Readiness Checks
 

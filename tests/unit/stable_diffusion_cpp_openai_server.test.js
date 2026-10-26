@@ -489,6 +489,7 @@ test(
       status: "ok",
       model: "sd-cpp-local",
       upstream_model: "sd-cpp-local",
+      media_gpu: "ready",
       upstream: "stable-diffusion.cpp",
     });
     const models = await fetch(`${baseUrl}/v1/models`);
