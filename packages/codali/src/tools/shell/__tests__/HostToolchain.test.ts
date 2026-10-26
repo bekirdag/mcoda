@@ -44,7 +44,7 @@ else console.log(JSON.stringify({visible:fs.existsSync(process.argv[2]),secret:p
     const execute = createIsolatedExecutor({ status }); const context = { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 };
     const output = await execute("pnpm", [path.join(installation, "private.txt")], context);
     assert.deepEqual(JSON.parse(output.output), { visible: false, secret: null, tool: true });
-    await assert.rejects(execute("pnpm", ["write"], context), /read-only|EROFS|permission/i);
+    await assert.rejects(execute("pnpm", ["write"], context), /read-only|EROFS|EPERM|permission/i);
     assert.match(await fs.readFile(path.join(tool, "bin", "pnpm.cjs"), "utf8"), /tool:true/);
   } finally {
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;

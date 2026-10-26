@@ -50,10 +50,13 @@ jobs:
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { executorStatus } from './packages/codali/dist/tools/shell/IsolatedExecutor.js';
+          import { discoverHostToolchain } from './packages/codali/dist/tools/shell/HostToolchain.js';
           const status = executorStatus();
           console.log(status);
           assert.equal(status.available, true, status.reason);
           assert.equal(status.backend, process.platform === 'darwin' ? 'sandbox-exec' : 'bubblewrap');
+          const toolchain = discoverHostToolchain(process.cwd());
+          for (const name of ['node', 'pnpm']) assert.ok(toolchain.some(runtime => runtime.name === name), `${name} must be qualified, not skipped`);
           JS
       - name: Diagnose actual macOS command sandbox
         if: runner.os == 'macOS'
