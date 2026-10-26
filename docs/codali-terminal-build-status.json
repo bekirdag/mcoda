@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Client request correlation and authenticated /usage settlement pass 86 focused checks and full1598/3skip; backend receipt API cea32426f/PR4 passes205 regressions and typecheck, not deployed. AC completed all four workflows without passing the completion gate (two token-budget exits, two repeated-read guards). Preparing drained activation of the qualified native Strata recovery candidate, then backend/client postdeploy checks. Release .5 was cancelled before publication; no stable promotion or24-hour canary has started.",
+  "currentTask": "Backend request-accounting L is deployed and live lost-response settlement passes on both hosts without replay. Native Strata recovery1 is activated on Raijin/Suku with three public routes passing per host; Suku needed idle media parked during startup after an OOM rollback, then media restored. Postdeploy image/audio/video checks are running. fcf8831 fixes planning-mode recovery guidance and keeps executed test failures visible after rejected retries; full1600/3skip passes. Next: RAM admission hardening, remaining quality/context/consumer/load gates, fresh prerelease and 24-hour canary. No stable promotion.",
   "tasks": [
     {
       "id": "P0.1",
@@ -452,7 +452,8 @@
         "b5da1b9 general CI 40286817952 and six-platform qualification 40286817889 passed; c68bb27 and 534c72b also passed both workflows. These are regression/install checks, not production qualification.",
         "3f9e8c3 platform run40288983970 passed; general run40288983947 exposed missing sandbox precondition in new workflow tests on the non-Bubblewrap regression runner. 663ffef applies the existing explicit-skip policy; mandatory platform sandbox availability remains unchanged and all19 local workflow tests pass without skips.",
         "Public image/video/audio worker-SIGKILL recovery tests pass with original remote job IDs, one invocation, idempotent replay, conflicting409, verified artifact export and ACK expiration. Native video duration and full decode pass.",
-        "179fd62 fixes POSIX atomic-rename nlink=0 races without accepting symlinks/hardlinks. Three regression fixtures reproduce old failure and pass; a1c26a7 platform40410934650 passes all six Linux/macOS jobs. General Windows CI rejected two POSIX-only test setups; those now explicitly skip there, with common file-safety tests retained."
+        "179fd62 fixes POSIX atomic-rename nlink=0 races without accepting symlinks/hardlinks. Three regression fixtures reproduce old failure and pass; a1c26a7 platform40410934650 passes all six Linux/macOS jobs. General Windows CI rejected two POSIX-only test setups; those now explicitly skip there, with common file-safety tests retained.",
+        "fcf8831 preserves the last admitted validation result in model context alongside later rejected tool attempts; reproduced permission rejection previously hid the actual failed test. Plan-only progress guidance now stays in planning mode. 52focused/1600full tests pass, 3 full-suite skips."
       ]
     },
     {
@@ -461,7 +462,8 @@
       "status": "in_progress",
       "evidence": [
         "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
-        "e7c0060 carries one durable UUID through session intent, route and mSwarm x-request-id. New /usage reconciliation validates bounded consumer receipts, aggregates all terminal attempts and preserves unknown/partial/missing usage. Atomic settlement snapshots survive replay and observer failure. 86focused and1598full/3skip pass. Backend cea32426f in draft bekirdag/mswarm4 passes97focused/205regressions and tsc; live API deployment and public cross-key/end-to-end settlement checks remain."
+        "e7c0060 carries one durable UUID through session intent, route and mSwarm x-request-id. New /usage reconciliation validates bounded consumer receipts, aggregates all terminal attempts and preserves unknown/partial/missing usage. Atomic settlement snapshots survive replay and observer failure. 86focused and1598full/3skip pass. Backend cea32426f in draft bekirdag/mswarm4 passes97focused/205regressions and tsc; live API deployment and public cross-key/end-to-end settlement checks remain.",
+        "Backend cea32426f deployed as L after205regressions, typecheck, isolated MySQL authenticated-projection/isolation tests and exact-image graceful drain. Live Raijin/Suku sessions deliberately lost successful replies, reconciled3017/3019 actual tokens, resumed exact durable totals and made zero additional inference. Unknown UUID404/anonymous401 pass. Public cross-key/revocation and delayed usage coverage remain."
       ]
     },
     {
@@ -517,8 +519,10 @@
     {
       "id": "P8.1",
       "description": "Run the release matrix across text, smaller, embedding, image, audio and video services on both hosts, including newly qualified specialists, background indexing and peak render allocations. Measure existing tenants under mixed CLI traffic, cold model loads and either-host failure; prove no OOM-driven eviction or starvation.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Suku native cold restart with resident image/video engines hit systemd-oomd and rolled back; parking idle engines under the GPU1 lease allowed recovery1 startup, then engines restored and Strata remained ready. This is a real RAM-admission gap; no OOM-free coexistence or canary claim. Postdeploy media regeneration is in progress."
+      ]
     },
     {
       "id": "P8.2",
@@ -551,7 +555,8 @@
         "Release40376949005 at436e0b1 passed six packaging jobs and six Linux/macOS Node20/22 exact-tarball clean installs. The downloaded Linux publication archive has ten SHA256-verified tarballs. Registry @mcoda/codali0.1.135-codali.2 matches qualified sha512 and installs with its dependencies in a fresh directory.",
         "bc91c761 CI40393105463 passed Linux and Windows; six-platform qualification40393106353 passed Linux x64/macOS Intel/macOS ARM on Node20/22. Version-only .4 preparation follows the cancelled immutable .3 tag.",
         "v0.1.135-codali.4 atc275ce1 passed all six package jobs and six Linux/macOS Node20/22 clean-install qualification jobs. Independent Linux install of exact artifact tarballs passed nativeSQLite,privateDocdex,session persistence,version/help and data-preserving uninstall;10artifact manifest hashes verified.",
-        "4ebdefa expands reproducible producer and clean-install consumer to all ten packages. CI40406147220 and six Linux/macOS Node20/22 jobs40406147139 passed; no automatic Docdex npm peer installed. This catches and corrects the .4 full-CLI lifecycle side effect; corrected .5 artifacts require release qualification."
+        "4ebdefa expands reproducible producer and clean-install consumer to all ten packages. CI40406147220 and six Linux/macOS Node20/22 jobs40406147139 passed; no automatic Docdex npm peer installed. This catches and corrects the .4 full-CLI lifecycle side effect; corrected .5 artifacts require release qualification.",
+        "6f8423a passed CI40414229416 including Windows and all six Linux/macOS Node20/22 jobs40414229382. fcf8831 full1600/3skip passed locally; CI40418128709/platform40418128658 running. No new package version published."
       ]
     },
     {
@@ -575,7 +580,8 @@
         "Logmira .2 activated2026-10-26T20:20:54UTC: app and worker image26aaf28ec7da, canonical source48072c4ec. Both old processes exited0 after exact idle checks; HTTP closure proved before app shutdown. MySQL container unchanged, both restart policies restored, package identity/import and health pass. Wodo/Heka live probes pending.",
         "Logmira .2 source48072c4ec/image26aaf28ec7da deployed after worker/app idle proofs,HTTP drain and clean exits; database unchanged. Wodo/Heka postdeploy checks passed. Source draftPR sealunit/okacam3 records exact dependency-only change and189passing tests;213dist files unchanged.",
         "Preparing prerelease .5 with automatic verification receipts and full-CLI installer isolation. Published .4 installations were staged but not activated; active global CLI remains .134. No stable promotion or canary claim.",
-        "Release .5 at858fff6 was cancelled before publish-npm after its exact-tag Mac ARM run exposed the session rename race; retain the failed tag. Fixed a1c26a7 passes six-platform qualification. Published next remains .4, global CLI .134, Logmira .2. New accounting client must follow additive receipt backend deployment."
+        "Release .5 at858fff6 was cancelled before publish-npm after its exact-tag Mac ARM run exposed the session rename race; retain the failed tag. Fixed a1c26a7 passes six-platform qualification. Published next remains .4, global CLI .134, Logmira .2. New accounting client must follow additive receipt backend deployment.",
+        "Native Strata recovery1 activated on both hosts after node drains/zero accepted jobs; native READY and direct/gateway/staged public route checks pass. Suku attempt1 OOM/rollback retained; attempt2 passed with idle media parked, media then restored. Backend L gateway78cdc956/proxyeed6247e deployed after accepted job finished and both HTTP listeners closed; previous K rollback images retained. Public usage settlement passes both hosts."
       ]
     },
     {
@@ -1754,22 +1760,52 @@
       "tests": 1598,
       "skipped": 3,
       "artifact": "/home/wodo/.local/state/codali-usage-reconcile-full-tests.log"
+    },
+    {
+      "check": "fcf8831 recovery guidance and admission-aware validation context",
+      "status": "passed",
+      "focusedTests": 52,
+      "fullPassed": 1600,
+      "fullSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-recovery-guidance-full-tests.log"
+    },
+    {
+      "check": "Backend L isolated MySQL authenticated request receipts",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-image-qualification-l/result.json"
+    },
+    {
+      "check": "Backend L public lost-response reconciliation and durable resume",
+      "status": "passed on Raijin and Suku; one inference per session, no replay",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/accounting-l-raijin-b/result.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/accounting-l-suku-b/result.json"
+      ]
+    },
+    {
+      "check": "fcf8831 general CI and six-platform clean-install qualification",
+      "status": "passed",
+      "runs": [
+        "https://github.com/bekirdag/mcoda/actions/runs/40418128709",
+        "https://github.com/bekirdag/mcoda/actions/runs/40418128658"
+      ]
     }
   ],
-  "updatedAt": "2026-10-26T22:40:18.446296+00:00",
+  "updatedAt": "2026-10-26T23:24:21.007320+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
-    "Raijin native Strata failure at 12:56:43 UTC correlates with kernel Xid31/MMU FAULT_PDE in the Strata process. Isolated reproduction proves the existing fatal classifier missed the exact illegal-memory signature. A narrow classification patch and opt-in bounded/no-replay reload passed native regressions and both staged runtime tests. Candidate is not activated; originating GPU kernel/driver/hardware cause remains unproven.",
+    "Raijin native Strata failure at 12:56:43 UTC correlates with kernel Xid31/MMU FAULT_PDE in the Strata process. Isolated reproduction proves the existing fatal classifier missed the exact illegal-memory signature. A narrow classification patch and opt-in bounded/no-replay reload passed native regressions and both staged runtime tests. Recovery candidate is now activated on both hosts and public chat routes pass. It mitigates the classified failure without replay; originating GPU kernel/driver/hardware cause remains unproven.",
     "Normal-parameter image/video/audio durable public recovery passed. Audio auditory quality/prompt-adherence review and remaining media lifecycle/quota/coexistence cases remain open. A busy image bridge rejected one earlier request429 before native dispatch; retain evidence and assess bounded admission/backpressure handling.",
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
     "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
     "Core tool schemas remain visible after claim release, with authoritative execution fencing. AA still failed final budget completion. New 4ea5d61 removes model-generated receipt IDs from the normal verification path; nine deterministic cases pass. AB was stopped for installation interference, so no measured live improvement is claimed.",
     "No additional specialist promoted: Thinking4B fits but underperforms resident4B on the six-case initial planning screen; SERA14B fails current reservation-plus-guard admission. Both smaller planners remain unqualified for general planning; Strata retains lead ownership.",
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
-    "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment."
+    "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
+    "Suku cold Strata loading with idle media resident triggered systemd-oomd. Rollback restored service; retry passed after parking media engines, and media was restored. Add measured host-RAM admission/load ordering and qualify cold restart/recovery with media before canary. Do not treat GPU headroom alone as sufficient."
   ]
 }
