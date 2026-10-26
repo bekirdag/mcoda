@@ -2,11 +2,15 @@
 
 ## Unreleased
 
+## 0.1.135-codali.3 - 2026-10-26
+
 - Allow bounded Git diff/status inspection within the final validation budget;
   keep edits blocked and require actual test evidence before verifying code.
 - Disable terminal echo before displaying the API-key prompt, preventing fast
   input from being echoed. Verify masked entry, backspace, cancellation, key
   rotation, logout, credential-cache refresh and bounded piped input.
+
+- Internal `next` prerelease; quality, rollout and canary gates remain open.
 
 ## 0.1.135-codali.2 - 2026-10-26
 
