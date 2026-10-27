@@ -148,7 +148,7 @@ export function assertPackedManifestPublishable(dir, { root = process.cwd(), pac
 // for five minutes, so without --prefer-online the retries only re-read the same
 // cached copy that did not have the version yet.
 export function verifyPublishedInstall(name, version, {
-  attempts = 12,
+  attempts = 24,
   retryDelayMs = 15000,
   spawn = spawnSync,
   wait = sleep
@@ -188,6 +188,40 @@ export function verifyPublishedInstall(name, version, {
   }
 }
 
+export function publishCheckedPackages(packages, {
+  dryRun = false,
+  skipInstallCheck = false,
+  publish = run,
+  verifyInstall = verifyPublishedInstall,
+} = {}) {
+  const channel = assertReleaseVersions(packages);
+  // Check the whole batch before the first mutation, including retries after
+  // partial publication. A retry may reuse only byte-identical versions.
+  for (const pkg of packages) {
+    if (!['absent', 'identical', ...(dryRun ? ['dry-run'] : [])].includes(pkg.registryState)) throw new Error('Unverified registry state; publication refused');
+    if (tarballIntegrity(pkg.tarballPath) !== pkg.integrity) throw new Error(`Packed artifact changed before publishing ${pkg.manifest.name}`);
+  }
+  for (const pkg of packages) {
+    const { name, version } = pkg.manifest;
+    if (tarballIntegrity(pkg.tarballPath) !== pkg.integrity) throw new Error(`Packed artifact changed before publishing ${name}`);
+    if (pkg.registryState === 'identical') {
+      console.log(`${name}@${version} already has identical registry bytes; leaving its dist-tags unchanged.`);
+    } else {
+      console.log(`${dryRun ? 'Dry-run publishing' : 'Publishing'} ${name}@${version} on ${channel}: ${pkg.integrity}`);
+      publish('npm', npmPublishArgs(pkg.tarballPath, version, { dryRun }));
+    }
+  }
+  // Publish the dependency-ordered batch first so registry propagation for one
+  // package does not prevent the rest from starting. Every package still has
+  // to install from the registry before the release can pass.
+  if (!dryRun && !skipInstallCheck) for (const pkg of packages) {
+    const { name, version } = pkg.manifest;
+    console.log(`Installing ${name}@${version} into an empty project to confirm it resolves`);
+    verifyInstall(name, version);
+    console.log(`${name}@${version} installs cleanly.`);
+  }
+}
+
 async function main() {
   const packageDirs = resolvePackageDirs();
   if (skipInstallCheck) {
@@ -202,7 +236,7 @@ async function main() {
     const packages = process.env.MCODA_PUBLISH_ARTIFACTS_DIR
       ? loadPackedTarballs({ dest: resolve(process.env.MCODA_PUBLISH_ARTIFACTS_DIR), packageDirs })
       : packTarballs({ dest, packageDirs });
-    const channel = assertReleaseVersions(packages);
+    assertReleaseVersions(packages);
     const codali = packages.find(pkg => pkg.manifest.name === '@mcoda/codali');
     if (codali) await assertCodaliRuntimePublishable(readPackedJsonFile(codali.tarballPath, 'package/config/docdex-runtime.json'));
     const states = packages.map(pkg => ({
@@ -212,21 +246,7 @@ async function main() {
     for (const pkg of states) {
       pkg.registryState = dryRun ? 'dry-run' : registryVersionState(pkg.manifest.name, pkg.manifest.version, pkg.integrity);
     }
-    for (const pkg of states) {
-      const { name, version } = pkg.manifest;
-      if (tarballIntegrity(pkg.tarballPath) !== pkg.integrity) throw new Error(`Packed artifact changed before publishing ${name}`);
-      if (pkg.registryState === 'identical') {
-        console.log(`${name}@${version} already has identical registry bytes; leaving its dist-tags unchanged.`);
-      } else {
-        console.log(`${dryRun ? 'Dry-run publishing' : 'Publishing'} ${name}@${version} on ${channel}: ${pkg.integrity}`);
-        run('npm', npmPublishArgs(pkg.tarballPath, version, { dryRun }));
-      }
-      if (!dryRun && !skipInstallCheck) {
-        console.log(`Installing ${name}@${version} into an empty project to confirm it resolves`);
-        verifyPublishedInstall(name, version);
-        console.log(`${name}@${version} installs cleanly.`);
-      }
-    }
+    publishCheckedPackages(states, { dryRun, skipInstallCheck });
   } finally {
     rmSync(dest, { recursive: true, force: true });
   }

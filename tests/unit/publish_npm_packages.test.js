@@ -1,15 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   assertPackedManifestPublishable,
   assertCodaliRuntimePublishable,
   assertReleaseVersions,
   npmPublishArgs,
   publicationChannel,
+  publishCheckedPackages,
   registryVersionState,
   readPackage,
   resolvePackageDirs,
   verifyPublishedInstall,
+  tarballIntegrity,
 } from '../../scripts/publish-npm-packages.js';
 
 const okResult = { status: 0, stdout: '', stderr: '' };
@@ -168,4 +173,33 @@ test('a slow-to-propagate version is retried before it is called a failure', () 
 
   assert.equal(passed, true);
   assert.equal(attempt, 2);
+});
+
+test('the default registry window accommodates the observed propagation delay beyond three minutes', () => {
+  let elapsed = 0;
+  assert.equal(verifyPublishedInstall('@mcoda/codali', '0.1.135-codali.6', {
+    spawn: () => elapsed < 200_000 ? { status: 1, stdout: '', stderr: 'npm error code ETARGET' } : okResult,
+    wait: ms => { elapsed += ms; },
+  }), true);
+  assert.ok(elapsed >= 200_000 && elapsed < 360_000);
+});
+
+test('all checked artifacts publish before registry install verification, including identical-version recovery', t => {
+  const root = mkdtempSync(join(tmpdir(), 'mcoda-publish-order-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const packages = ['dependency', 'client', 'worker'].map(name => {
+    const tarballPath = join(root, `${name}.tgz`); writeFileSync(tarballPath, `fixture ${name}`);
+    return { manifest: { name, version: '1.0.0-beta.1' }, tarballPath, integrity: tarballIntegrity(tarballPath), registryState: name === 'dependency' ? 'identical' : 'absent' };
+  });
+  const published = []; const verified = [];
+  publishCheckedPackages(packages, {
+    publish: (_command, args) => { assert.equal(verified.length, 0); published.push(args[1]); assert.equal(args.at(-1), 'next'); },
+    verifyInstall: name => { assert.deepEqual(published, packages.slice(1).map(pkg => pkg.tarballPath)); verified.push(name); },
+  });
+  assert.deepEqual(verified, packages.map(pkg => pkg.manifest.name));
+  assert.throws(() => publishCheckedPackages(packages, { publish: () => {}, verifyInstall: () => { throw new Error('registry install failed'); } }), /registry install failed/);
+  writeFileSync(packages.at(-1).tarballPath, 'changed after qualification');
+  let mutations = 0;
+  assert.throws(() => publishCheckedPackages(packages, { publish: () => { mutations++; } }), /Packed artifact changed/);
+  assert.equal(mutations, 0);
 });
