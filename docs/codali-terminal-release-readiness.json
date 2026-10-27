@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T07:06:26.597401+00:00",
+  "updatedAt": "2026-10-27T12:10:55.329011+00:00",
   "candidate": {
-    "version": "0.1.135-codali.8",
-    "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40447102955",
+    "version": "0.1.135-codali.12",
+    "sourceCommit": "9eae2e3e4156da0e37d6d722be9d2b3afe4e6fd7",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40493844277",
     "publishedChannel": "next",
     "stableVersion": "0.1.134",
-    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease8-registry-artifacts/verification.json"
+    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease12-registry-artifacts/verification.json"
   },
   "releaseReady": false,
   "requirements": [
@@ -638,7 +638,7 @@
       "id": "long-workflows",
       "status": "open",
       "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
-      "current": "All four AE .7 workflows failed. First cases ended on transient discovery503 plus invoice/interval defects. Second cases exhausted 4.8M shared tokens; Raijin passed all module grades, Suku failed endpoint-format contract. Neither completed the main goal or qualified the multi-hour gate. New integration proof renewal requires fresh live confirmation."
+      "current": "AG exact .11 service-adapters passed4/4 independent module grades and canonical completion/restarts after105m31s, below2h. Billing-audit passed4/4 module grades but exhausted4.8M budget after133m; final goal incomplete. Routes validated271Suku/326Raijin with native4096 and stable environments. Followons localized-export/data-delivery active; no four successful multi-hour journeys."
     },
     {
       "id": "broad-quality",
@@ -650,13 +650,13 @@
       "id": "context-and-failover",
       "status": "open",
       "required": "Actual context limit and cross-host smaller compatible context failover with pinned embeddings.",
-      "current": "Both current Strata native windows are32768; smaller resident helpers do not advertise tool calls. Live context/failover remains open; deterministic preflight refund regression now passes."
+      "current": "Node N actual native context refusals passed on both hosts for streaming/nonstreaming, one submission and canonical pre-admission zero accounting. Both Strata windows are32768; resident smaller helpers lack advertised tools. Cross-host smaller-compatible-context qualification remains open."
     },
     {
       "id": "tenant-coexistence",
       "status": "open",
       "required": "Matched mixed-load latency/error bounds, starvation, media peak residency and host failure.",
-      "current": "Postdeploy consumer smokes and cold/render reload checks passed; broader business/peak-load coverage remains."
+      "current": "Node N TNL and both Logmira tenant smokes passed. BDYA first impact probe exposed a native429 hidden as empty output; exact capacity classification fixes are qualified but staged. Later successful probe is not clearance. Resource observer7tests and initial both-host snapshot pass; matched load, starvation and host-failure gates remain open."
     },
     {
       "id": "auth-lifecycle",
@@ -759,6 +759,27 @@
       "correction": "Safely classify structured_output_failed as invalid_response. Terminal reviewer owns JSON parsing so malformed received output retains usage and can receive one bounded format repair.",
       "state": "regression_passed_live_confirmation_pending",
       "evidence": "/home/wodo/.local/state/codali-review-json-full.log"
+    },
+    {
+      "class": "tool-budget-restart-loss",
+      "observation": "AG service-adapters restored385 tool calls after a recorded386 because the last attempt had no durable usage event.",
+      "correction": "749089c persists usage before authorization/execution. No historical counter was fabricated.",
+      "state": "regression_fixed_prerelease13_pending",
+      "evidence": "/home/wodo/.local/state/codali-terminal-deployment/tool-usage-reader-qualification.json"
+    },
+    {
+      "class": "assessed-source-access-denial",
+      "observation": "Later narrow reviews promised prior fresh assessed source but did not include it in allowed read paths.",
+      "correction": "977e632 extends only review read context with same-snapshot assessed paths; unrelated paths remain rejected.",
+      "state": "regression_fixed_prerelease13_pending",
+      "evidence": "/home/wodo/.local/state/codali-assessed-source-full.log"
+    },
+    {
+      "class": "native-capacity-propagation",
+      "observation": "BDYA invocationshi_4b920c5fae0f480ca228037202e95e92 recorded native429 as upstream_error and relay reported MCODA_EMPTY_RESPONSE.",
+      "correction": "Client .12 published; backendN source54753f5 and isolated BDYA relay sourcee380a2b staged with HTTP/drain/rollback qualification.",
+      "state": "qualified_pending_deployment_and_live_retest",
+      "evidence": "/home/wodo/.local/state/codali-terminal-deployment/bdya-empty-exact-invocation.json"
     }
   ],
   "diagnosedIncident": {
@@ -784,44 +805,18 @@
   },
   "unpublishedCorrections": [
     {
-      "description": "Preserve scalar negative review findings without accepting malformed approvals.",
-      "sourceCommit": "c9d844e",
-      "candidatePublished": false
+      "description": "Persist each attempted tool call before permission and execution so restart cannot reset the shared tool budget.",
+      "sourceCommit": "749089c21e88fa896788e708c76e6c97f47e626f",
+      "validation": "80focused and1729full tests pass; old .11/current readers retain successful and denied tool counts in four independent compatibility cases.",
+      "candidatePublished": false,
+      "pendingVersion": "0.1.135-codali.13"
     },
     {
-      "description": "Prepare a source-attributed specification checklist before inspecting implementation; use configured effort and reviewer output/context limits in both review stages.",
-      "validation": "1689 full Codali tests pass; 3 skipped. Known live review false acceptance and control false rejection remain under investigation.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Review all canonical criteria at whole-goal integration; record fresh full-snapshot proofs for previously verified tasks while retaining original assessments. Reject missing inputs, partial coverage, unfinished tasks and stale revisions.",
-      "validation": "Two pre-fix regressions reproduced; 133 focused and 1689 full tests pass. Frozen AE uses older .7; current long-task confirmation remains open.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Receive and strictly parse terminal review JSON in Codali, retaining model usage and allowing one bounded formatting repair. Classify native structured_output_failed separately from outages; no replay of unknown transport outcomes.",
-      "validation": "1692 full tests and27 additional focused tests passed; known diagnostic I passes4/4 with11 complete canonical receipts. J/K expose separate whole-goal size and attribution failures; no broad qualification.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
-      "validation": "Coordinator/assessment chain CI passes. Q passes five scoped reviews but final preparation misattributes overlapping source wording. Indexed-excerpt correction has93 focused tests passing; full suite and R continuation pending. No new whole-workflow completion.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Version the workflow oracle as v5 and detect extra worker dispatch after synchronous throw, waiting for existing work and preserving falsy failures.",
-      "validation": "One pre-fix regression reproduced; 1701 full Codali tests pass, 3 skipped. Known P artifact fails the new independent contract while all 15 public tests pass. Historical frozen evaluation records remain unchanged.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Present every authoritative source as lossless excerpts and resolve model-selected source/index references into exact controller-owned quotations. Preserve strict legacy quote validation, coverage and context bounds.",
-      "validation": "Two regressions reproduced;93 focused and1709 full Codali tests pass (3 skips). Live R validates its three preparation batches; repeated quotations then exceed the complete review context. No final acceptance.",
-      "candidatePublished": false
-    },
-    {
-      "description": "Store each exact checklist quotation once per source, retaining every expected behavior with a quotation reference in the final review payload.",
-      "validation": "One context regression reproduced;1710 full Codali tests and CI/platform pass. Known-workspace S passes final integration at67797/72192 input characters with5 complete canonical receipts. Fresh AF workflows are not started.",
-      "candidatePublished": false
+      "description": "Allow later narrow reviews to page freshly assessed source as read-only context; retain snapshot checks, attribution and rejection of unassessed files.",
+      "sourceCommit": "977e6325ed57abe0a2b91a26b6c14fe6e3de2f3e",
+      "validation": "Red regression reproduced;103focused and1731full Codali tests pass,3optional skips.",
+      "candidatePublished": false,
+      "pendingVersion": "0.1.135-codali.13"
     }
   ],
   "publishedCorrections": [
@@ -843,6 +838,91 @@
       "validation": "1645fulltests pass,3skipped; both saved failed-workspace probes reject but Suku still misses the explicit error-message defect.",
       "candidatePublished": true,
       "publishedVersion": "0.1.135-codali.8"
+    },
+    {
+      "description": "Preserve scalar negative review findings without accepting malformed approvals.",
+      "sourceCommit": "c9d844e",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Prepare a source-attributed specification checklist before inspecting implementation; use configured effort and reviewer output/context limits in both review stages.",
+      "validation": "1689 full Codali tests pass; 3 skipped. Known live review false acceptance and control false rejection remain under investigation.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Review all canonical criteria at whole-goal integration; record fresh full-snapshot proofs for previously verified tasks while retaining original assessments. Reject missing inputs, partial coverage, unfinished tasks and stale revisions.",
+      "validation": "Two pre-fix regressions reproduced; 133 focused and 1689 full tests pass. Frozen AE uses older .7; current long-task confirmation remains open.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Receive and strictly parse terminal review JSON in Codali, retaining model usage and allowing one bounded formatting repair. Classify native structured_output_failed separately from outages; no replay of unknown transport outcomes.",
+      "validation": "1692 full tests and27 additional focused tests passed; known diagnostic I passes4/4 with11 complete canonical receipts. J/K expose separate whole-goal size and attribution failures; no broad qualification.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
+      "validation": "Coordinator/assessment chain CI passes. Q passes five scoped reviews but final preparation misattributes overlapping source wording. Indexed-excerpt correction has93 focused tests passing; full suite and R continuation pending. No new whole-workflow completion.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Version the workflow oracle as v5 and detect extra worker dispatch after synchronous throw, waiting for existing work and preserving falsy failures.",
+      "validation": "One pre-fix regression reproduced; 1701 full Codali tests pass, 3 skipped. Known P artifact fails the new independent contract while all 15 public tests pass. Historical frozen evaluation records remain unchanged.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Present every authoritative source as lossless excerpts and resolve model-selected source/index references into exact controller-owned quotations. Preserve strict legacy quote validation, coverage and context bounds.",
+      "validation": "Two regressions reproduced;93 focused and1709 full Codali tests pass (3 skips). Live R validates its three preparation batches; repeated quotations then exceed the complete review context. No final acceptance.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Store each exact checklist quotation once per source, retaining every expected behavior with a quotation reference in the final review payload.",
+      "validation": "One context regression reproduced;1710 full Codali tests and CI/platform pass. Known-workspace S passes final integration at67797/72192 input characters with5 complete canonical receipts. Fresh AF workflows are not started.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Classify explicit native rate_limited responses as bounded capacity errors without replay or fabricated usage. Backend and BDYA relay counterparts remain staged.",
+      "sourceCommit": "d9a86c4f87183fb39a888e92157a6ed6a1a8ae3d",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12"
+    },
+    {
+      "description": "Fit serialized review source-page replies to remaining context and advance cursors only by delivered text.",
+      "sourceCommit": "58e9e09c760cb1b7da0f9b76a8f6d5a45b8fe03b",
+      "validation": "96 focused and1727 full Codali tests pass,3optional skips.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12"
     }
-  ]
+  ],
+  "pendingCandidate": {
+    "version": "0.1.135-codali.13",
+    "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
+    "status": "building_not_yet_verified"
+  },
+  "deployedEnvironment": {
+    "backend": "M",
+    "backendSource": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
+    "node": "N",
+    "nodeVersion": "0.1.135-codali.11",
+    "globalStableCli": "0.1.134",
+    "plannedNode": "O/.13",
+    "stagedBackend": "N",
+    "canaryStarted": false
+  }
 }
