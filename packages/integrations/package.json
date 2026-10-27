@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/integrations",
-  "version": "0.1.135-codali.9",
+  "version": "0.1.135-codali.10",
   "description": "External integrations for mcoda (vcs, QA, telemetry).",
   "type": "module",
   "main": "dist/index.js",

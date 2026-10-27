@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Prerelease0.1.135-codali.9 is published and its10 registry artifacts match CI. Frozen AF workflows are running against both public Strata routes with high4096 reasoning; both first journeys passed stages1/2 and are in stage3. A real native context refusal exposed lost classification and unsettled usage. Client/node8f77fc2 passes1884 tests (3 skips); backendc5fa80b11 passes112 integration tests and typecheck. CandidateM is being qualified in isolation. Keep production services unchanged during AF; no stable promotion or canary yet.",
+  "currentTask": "Prerelease0.1.135-codali.9 is published and its10 registry artifacts match CI. Frozen AF workflows are running against both public Strata routes with high4096 reasoning; both first journeys passed stages1/2 and are in stage3. A real native context refusal exposed lost classification and unsettled usage. Client/node8f77fc2 passes1884 tests (3 skips); backendc5fa80b11 passes112 integration tests and typecheck. CandidateM isolated health/accounting checks passed;0.1.135-codali.10 is being prepared for publication. Keep production services unchanged during AF; no stable promotion or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2286,6 +2286,13 @@
       "backendTestsPassed": 112,
       "backendArtifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-context-suite.log",
       "limitation": "Zero only for explicit pre-generation refusal in a proven complete invocation scope. Validation failures and lost transport retain unknown usage. Native node POST retries disabled; discovered3attempts become1. Candidate deployment and actual public boundary recheck remain."
+    },
+    {
+      "check": "Backend candidateM exact image isolated accounting and health",
+      "status": "passed_deployment_pending",
+      "sourceCommit": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-image-qualification-m/result.json",
+      "limitation": "Candidate images overlay2 source files on pinned deployedL bases. Isolated MySQL authenticated receipts preserve confirmed-zero context rejection and unknown usage. No production data or service replacement; live recheck pending."
     }
   ],
   "updatedAt": "2026-10-27T07:49:04.220841+00:00",
