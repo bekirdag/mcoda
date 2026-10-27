@@ -42,6 +42,11 @@ export async function runTaskReview(options: {
       result = value as Record<string, unknown>;
     } catch { return reject("Review did not provide valid JSON acceptance evidence."); }
     if (!Object.prototype.hasOwnProperty.call(result, "sourceRequests")) {
+      // Preserve an actionable negative finding from providers that emit a
+      // scalar instead of an array. Malformed approval can never pass here.
+      if (result.passed === false && typeof result.findings === "string" && result.findings.trim()) {
+        return reject(result.findings);
+      }
       if (typeof result.passed !== "boolean" || !Array.isArray(result.findings) || !result.findings.every(finding => typeof finding === "string")) {
         return reject("Review did not provide valid acceptance evidence.");
       }

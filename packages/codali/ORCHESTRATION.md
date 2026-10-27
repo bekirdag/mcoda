@@ -151,6 +151,9 @@ by checksums and tool receipts. Review must reject unavailable evidence needed
 to decide correctness. Passing a test or obtaining reviewer approval alone does
 not establish a universal correctness guarantee; observed false completions
 remain release blockers and become regression fixtures.
+If a provider returns an explicit rejection with one finding as a string, the
+controller retains that finding as a one-item list so the agent can repair the
+defect. This normalization cannot turn a malformed approval into acceptance.
 
 The reviewer can request additional source pages before deciding. Requests are
 read-only and restricted to the current review paths; each page rechecks the

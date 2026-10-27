@@ -49,6 +49,16 @@ test("explicit offsets still permit focused reads within the declared source sco
   assert.equal(result.passed, true);
 });
 
+test("a malformed rejection retains its concrete finding without granting acceptance", async () => {
+  let calls = 0;
+  const result = await runTaskReview({ provider: { name: "fixture", generate: async () => {
+    calls++; return response({ passed: false, findings: "The implementation and test contradict the exact required error message." });
+  } }, messages, allowedPaths: [], maxInputChars: 1000,
+  readSourcePage: async () => { throw new Error("A rejection must not request additional source"); } });
+  assert.deepEqual(result, { passed: false, findings: ["The implementation and test contradict the exact required error message."] });
+  assert.equal(calls, 1);
+});
+
 for (const value of [
   { sourceRequests: [{ path: "../private.env", offset: 0 }] },
   { sourceRequests: [{ path: "known.txt", offset: -1 }] },
@@ -59,6 +69,9 @@ for (const value of [
   { sourceRequests: [] },
   { passed: true, findings: ["blocking defect"] },
   { passed: true, findings: [42] },
+  { passed: true, findings: "" },
+  { passed: true, findings: "A blocking defect" },
+  { passed: false, findings: "   " },
   { passed: "true", findings: [] },
   [], null,
 ]) {
