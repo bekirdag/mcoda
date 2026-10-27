@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Backend M is deployed and both-host public direct/gateway/staged-job checks passed. Suku node M now runs published 0.1.135-codali.10; Raijin remains on node L pending the next qualified update. The readonly AH review diagnostic passed all five scopes and final integration with 16 complete receipts at verified max4096. Actual Suku native context rejection still produced unknown usage on .10; source250115c settles only proven first-call native refusals and passes 1894 tests plus a real native diagnostic. Prerelease .11 source6ecdedd is packaging. Qualify its exact published artifacts, update both nodes, repeat public native refusal checks, then run fresh long and broad workflows. Full business/load and 24-hour canary gates remain open.",
+  "currentTask": "Published .11 source6ecdedd is qualified and deployed as node N on both hosts, with backend M. All10 registry artifacts equal CI bytes and six installation jobs pass. Both-host public direct/gateway/staged-job and four native context-refusal receipt probes pass; Strata/Nomic processes unchanged. TNL and both Logmira tenants pass postdeploy checks. BDYA helpers pass, but its first large-model probe hit native429 and the relay obscured it as MCODA_EMPTY_RESPONSE; follow-up passes, original defect remains under investigation. Frozen AG long workflows started09:25UTC on exact .11 with both high/max4096 asserted. Do not update node/backend/native/pinned clients during these runs. Remaining quality, recovery, business/load and24-hour canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -21,7 +21,8 @@
         "BackendJ/nodeL now pass both-host direct/gateway/staged and native reasoning preflight, actual ConfiguredProvider Unicode requests, TNL story smoke, BDYA three stages and both Logmira tenants. See validation records; full production coverage remains open.",
         "Logmira production app/worker now embed0.1.135-codali.2. Postdeploy Wodo/Heka each returned15scoped search hits,4module contexts,grounded answers and warnings[]/failures[]; observed direct Strata receipts across both nodes. Broader scheduled/business coverage remains open.",
         "2026-10-27 backendL/recovery2 requalification passed TNL story intelligence (4model/2Docdex calls,8sources,no warnings), BDYA3synthetic stages, and Logmira Wodo/Heka (40/24citations,8/6direct Strata calls,4module contexts each,Docdex,warnings[]/failures[]). TNL current symlink now points to20261026-content-recovery, updated outside this rollout; smoke inspected that actual service. Broader business/scheduled coverage remains open.",
-        "BackendM deployed with6public compatibility cases passing; production nodes remainL until staged.10 qualification and graceful activation."
+        "BackendM deployed with6public compatibility cases passing; production nodes remainL until staged.10 qualification and graceful activation.",
+        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json."
       ]
     },
     {
@@ -470,7 +471,8 @@
         "Local media receipt recovery and project handoff outbox now pass regressions. Remote inference reconciliation and broader crash corpus remain outstanding.",
         "e7c0060 carries one durable UUID through session intent, route and mSwarm x-request-id. New /usage reconciliation validates bounded consumer receipts, aggregates all terminal attempts and preserves unknown/partial/missing usage. Atomic settlement snapshots survive replay and observer failure. 86focused and1598full/3skip pass. Backend cea32426f in draft bekirdag/mswarm4 passes97focused/205regressions and tsc; live API deployment and public cross-key/end-to-end settlement checks remain.",
         "Backend cea32426f deployed as L after205regressions, typecheck, isolated MySQL authenticated-projection/isolation tests and exact-image graceful drain. Live Raijin/Suku sessions deliberately lost successful replies, reconciled3017/3019 actual tokens, resumed exact durable totals and made zero additional inference. Unknown UUID404/anonymous401 pass. Public cross-key/revocation and delayed usage coverage remain.",
-        "Public queued-loss probes onboth hosts explicitly observed incomplete canonical receipts before disconnect, retained5798estimated reservation, then settled3850Raijin/3848Suku actual tokens. Both resumed exact state with1inference and no replay. Initial stream-header probe completed too early and used an invalid raw-adapter assertion; original evidence retained, follow-up checks canonical receipts. Cross-key probe was invalid because TNL and CLI use the same key; distinct/revoked public-key checks remain open."
+        "Public queued-loss probes onboth hosts explicitly observed incomplete canonical receipts before disconnect, retained5798estimated reservation, then settled3850Raijin/3848Suku actual tokens. Both resumed exact state with1inference and no replay. Initial stream-header probe completed too early and used an invalid raw-adapter assertion; original evidence retained, follow-up checks canonical receipts. Cross-key probe was invalid because TNL and CLI use the same key; distinct/revoked public-key checks remain open.",
+        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json."
       ]
     },
     {
@@ -496,7 +498,8 @@
       "status": "in_progress",
       "evidence": [
         "Read-only native status and authenticated catalogs confirm both current Strata hosts have actual32768context; resident Raijin helpers expose16384but do not advertise tool calls, so they are not compatible lead fallbacks. Actual-limit/live smaller-compatible-window qualification is still open. A deterministic smaller-advertised-context rejection exposed and now tests the pre-dispatch accounting fix; this is not a live context pass.",
-        "Actual-native overflow failure retained; .10 adds typed context refusals and explicit confirmed-zero propagation with no uncertain transport replay. BackendM deployed; node activation and live proof pending."
+        "Actual-native overflow failure retained; .10 adds typed context refusals and explicit confirmed-zero propagation with no uncertain transport replay. BackendM deployed; node activation and live proof pending.",
+        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json."
       ]
     },
     {
@@ -609,7 +612,8 @@
         "Preparing fresh .6 prerelease including installer isolation, rename/accounting/validation fixes and packaged native-load guard. npm registry and Git tag .6 were absent at preflight. Preserve .5cancelled tag and .4published bytes; publish only after exact-artifact release checks. No global activation or24-hour canary started.",
         "Release40427999530 .6 attempts1/2 stopped on post-publication ETARGET for agent-setup and Codali respectively; each became visible afterward with integrity identical to the qualified tarball. Failed job reruns preserve original release artifacts and skip identical already-published versions. Attempt3 is running; stablelatest remains.134. These are observed propagation failures, not successful complete publication yet.",
         "Prerelease .7 aabcd63 published successfully in40435839582; exact ten registry artifacts independently verified. Stablelatest remains.134, activeglobalCLI remains.134. .7 includes multi-check review, active-owner guidance, bounded source pagination and install-propagation handling; publication does not establish stable release readiness.",
-        "BackendM additive context-code/accounting fix deployed after qualified graceful drain. Both-host public direct/gateway/staged-job compatibility passes; .10nodes staged, notactivated yet."
+        "BackendM additive context-code/accounting fix deployed after qualified graceful drain. Both-host public direct/gateway/staged-job compatibility passes; .10nodes staged, notactivated yet.",
+        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json."
       ]
     },
     {
@@ -2366,13 +2370,39 @@
       "status": "passed_scoped",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/configured-native-zero-source-20261027b/result.json",
       "limitation": "One real Raijin Strata context refusal produced proven zero usage through the current configured executor. Source hashes retained and native stays loaded. Public node .11 canonical receipt proof remains pending; first setup failure preserved separately."
+    },
+    {
+      "check": "Prerelease.11 exact publication and registry bytes",
+      "status": "passed",
+      "sourceCommit": "6ecdedd62cc1125487301be834898ce0cc81925f",
+      "releaseRun": 40476059974,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease11-registry-artifacts/verification.json",
+      "limitation": "Ten packages match exact CI bytes, six Linux/macOS Node20/22 installation jobs passed. Stablelatest remains0.1.134."
+    },
+    {
+      "check": "Both node N .11 graceful activation and public native boundary",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/node-n-postdeploy-environment.json",
+      "limitation": "Each host passed six candidate checks, drained at zero accepted DB rows, activated .11 and passed three public paths plus two actual native context refusals with completezero receipts and one submission. NativeStrata/Nomic PIDs unchanged. No canary claim."
+    },
+    {
+      "check": "Post-node N consumers",
+      "status": "partial_failure",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/consumers-postdeploy-node-n.json",
+      "limitation": "TNL story passed six model/four tool calls/eight sources; Wodo/Heka40/24citations and5/8direct Strata calls, no warnings/failures. BDYAhelpers passed; first impact failed with native429/obscured error. Follow-up impact passes but intermittent admission/error propagation remains unresolved."
+    },
+    {
+      "check": "AG .11 public long workflows",
+      "status": "running",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-ag-raijin-20261027.log",
+      "limitation": "Started09:25UTC; both routes use exact .11 source6ecdedd and frozen profiles with high/max4096. Actual routes will be asserted. Existing known contracts reused, no untouched holdout or matched latency claim; AF failures preserved."
     }
   ],
-  "updatedAt": "2026-10-27T09:00:27.334199+00:00",
+  "updatedAt": "2026-10-27T09:30:19.987760+00:00",
   "openFindings": [
-    "Backend M and client/node context error classification are deployed on Suku .10, but its actual native refusal probe left canonical usage unknown. Source250115c fixes configured-scope proof handling; 182 focused / 1894 full tests and the actual native source diagnostic pass. Public .11 node deployment and both-host streaming/nonstreaming receipt checks remain required. Original failed evidence is retained.",
+    "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.10 are published on next; .11 release run40476059974 is in progress. All ten .10 registry tarballs match exact CI artifacts with six installation jobs passing. Stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.11 are published on next. All ten .11 registry tarballs match exact CI artifacts and six installation jobs passed. Nodes run isolated .11; stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
@@ -2388,6 +2418,7 @@
     "AD used4.8Mtokens per journey. Billing/service-adapters failed; data-delivery/localized-export were intentionally stopped for superseding fixes. All four AE runs on exact .7 artifacts ended failed: billing/service-adapters failed early; data-delivery/localized-export exhausted the 4.8M budget. No matched full-run comparison or new held-out quality claim.",
     "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
     "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures.",
-    "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters."
+    "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters.",
+    "Post-nodeN TNL story smoke and Logmira Wodo/Heka pass. BDYA first impact probe failed: exact invocationshi_4b920c5fae0f480ca228037202e95e92 records nativeHTTP429 as upstream_error; relay returnedMCODA_EMPTY_RESPONSE. Later same deployed-client impact probe passes via Suku Strata. Cause of concurrent native admission and lost classification must be fixed/qualified; a successful retry is not clearance. Evidence consumers-postdeploy-node-n.json and bdya-empty-exact-invocation.json."
   ]
 }
