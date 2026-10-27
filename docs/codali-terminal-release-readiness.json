@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T06:46:36.470879+00:00",
+  "updatedAt": "2026-10-27T07:06:26.597401+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -668,7 +668,7 @@
       "id": "media-lifecycle-quality",
       "status": "open",
       "required": "Human prompt/quality review and remaining lifecycle/expiry/coexistence contracts.",
-      "current": "Real generation and recovery decode passed. All three acknowledged artifacts remain exportable/hash-valid/decodable locally after remote expiry, with zero requests. Human review and broader lifecycle/coexistence remain open."
+      "current": "Real generation/recovery decode and all three acknowledged local exports after remote expiry pass. Unacknowledged audio after actual retention expiry now fails clearly with one GET, no replay/ACK and export refused. Human quality and broader lifecycle/coexistence remain open."
     },
     {
       "id": "canary-and-promotion",
@@ -820,7 +820,7 @@
     },
     {
       "description": "Store each exact checklist quotation once per source, retaining every expected behavior with a quotation reference in the final review payload.",
-      "validation": "One context regression reproduced; four focused and1710 full Codali tests pass (3 skips). Continuation S is pending.",
+      "validation": "One context regression reproduced;1710 full Codali tests and CI/platform pass. Known-workspace S passes final integration at67797/72192 input characters with5 complete canonical receipts. Fresh AF workflows are not started.",
       "candidatePublished": false
     }
   ],

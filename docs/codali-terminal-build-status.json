@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Indexed-excerpt review correction is committed as7eddcae;93 focused and1709 full Codali tests pass (3 skips). Live R validates all three preparation batches, then fails the review context bound because101 checks repeat29 source quotations. The coordinator now stores exact quotations once and preserves every check; one regression reproduced and four focused coordinator tests pass. The full suite passes1710 tests (3 skips); continuation S is running. SERA8B remains rejected at8/12 versus Strata12/12. No .9 publication, AF dispatch or canary yet.",
+  "currentTask": "Release40463853473 is qualifying0.1.135-codali.9 at tagd20ec48; source CI/platform both pass and1710 full Codali tests pass (3 skips). Known-workspace continuation S now passes final integration with5 complete canonical receipts and unchanged snapshot. Real unacknowledged audio expiry recovery passes with one GET, no replay and no export. Waiting for exact-artifact release installation/publication before freezing and starting AF workflows; no stable promotion or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2213,9 +2213,41 @@
       "fullTestsPassed": 1710,
       "fullTestsSkipped": 3,
       "fullArtifact": "/home/wodo/.local/state/codali-checklist-quotes-full.log"
+    },
+    {
+      "check": "Indexed source and quotation reuse source CI/platform",
+      "status": "passed",
+      "sourceCommit": "d20ec48f7b275b521a58c10c73eacd01eda36f6b",
+      "ciRun": 40463187750,
+      "platformRun": 40463187755
+    },
+    {
+      "check": "Known-workspace final integration continuation S",
+      "status": "passed_diagnostic",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027s/result.json",
+      "canonicalUsageReceipts": 5,
+      "finalReviewInputChars": 67797,
+      "configuredMaxInputChars": 72192,
+      "limitation": "Five Q same-snapshot assessments reused only after exact hash and complete canonical receipt checks. Original authority and every prepared check retained. Workspace unchanged; reference-assisted control and continuation are not a fresh agent workflow or independent coding-quality pass."
+    },
+    {
+      "check": "Real unacknowledged artifact expiry after worker loss",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/unacknowledged-media-expiry-20261027/expiry-result.json",
+      "remoteExpiry": "2026-10-27T07:02:32.430Z",
+      "requests": 1,
+      "generationReplay": false,
+      "exportRejected": true,
+      "limitation": "One real audio job completed remotely after the isolated local worker was killed. Recovery after its natural retention deadline returns failed/expired with a clear reason, no artifact and no ACK. Recovery uses one authenticated GET; no PUT/POST or replacement generation. Human media quality and broader coexistence remain open."
+    },
+    {
+      "check": "Refreshed private Docdex dependency graph for review quotation flow",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-contract-refreshed-private-impact.json",
+      "limitation": "Targeted private index refresh succeeds and returns ReviewCoordinator/test inbound imports plus ProviderTypes outbound. Main MCP graph remains empty; no claim of full-repository coverage repair."
     }
   ],
-  "updatedAt": "2026-10-27T06:46:36.470879+00:00",
+  "updatedAt": "2026-10-27T07:06:26.597401+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
