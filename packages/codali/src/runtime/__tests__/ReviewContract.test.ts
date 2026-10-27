@@ -8,7 +8,63 @@ const sources = reviewContractSources({
   constraints: ["Run the existing tests."], nonGoals: ["Do not add dependencies."],
 });
 const checks = sources.map(source => ({ sourceId: source.id, contractQuote: source.text, expectedBehavior: source.text }));
+const restoreSources = (values: { id: string; excerpts: string[] }[]) => values.map(source => ({ id: source.id, text: source.excerpts.join("") }));
 const response = (value: unknown): ProviderResponse => ({ message: { role: "assistant", content: JSON.stringify(value) } });
+
+test("indexed excerpts resolve similar sources without model-copied quotation changes", async () => {
+  const original = [
+    { id: "goal", text: "Reject the FIRST error. A synchronous throw follows the same rule." },
+    { id: "requirement:R3", text: "Reject the FIRST error; a synchronous throw follows the same rule." },
+  ];
+  const result = await prepareReviewContract({ sources: original, maxInputChars: 10_000,
+    provider: { name: "fixture", generate: async () => response({ checks: original.map(source => ({
+      sourceId: source.id, quoteIndex: 0, expectedBehavior: "Stop dispatching after the first observed failure.",
+    })) }) } });
+  assert.deepEqual(result, { checks: original.map(source => ({ sourceId: source.id, contractQuote: source.text,
+    expectedBehavior: "Stop dispatching after the first observed failure." })) });
+});
+
+test("source excerpts preserve every character, Unicode boundary and authoritative source", async () => {
+  const original = [{ id: "goal", text: "x".repeat(511) + "🧭" + " original obligation;\n".repeat(80) }];
+  const result = await prepareReviewContract({ sources: original, maxInputChars: 10_000,
+    provider: { name: "fixture", generate: async request => {
+      const payload = JSON.parse(request.messages[1].content);
+      const excerpts = payload.contractSources[0].excerpts;
+      assert.ok(Array.isArray(excerpts)); assert.equal(excerpts.join(""), original[0].text);
+      assert.ok(excerpts.length > 1);
+      for (const text of excerpts) {
+        assert.ok(text.length > 0 && text.length <= 512);
+        assert.doesNotMatch(text, /[\uD800-\uDBFF]$/); assert.doesNotMatch(text, /^[\uDC00-\uDFFF]/);
+      }
+      return response({ checks: excerpts.map((text: string, quoteIndex: number) => ({
+        sourceId: "goal", quoteIndex, expectedBehavior: "Preserve this obligation.",
+      })) });
+    } } });
+  assert.ok("checks" in result); assert.equal(result.checks.map(check => check.contractQuote).join(""), original[0].text);
+});
+
+for (const quoteIndex of [-1, 0.5, 1, "0", null]) {
+  test(`invalid excerpt reference cannot establish acceptance: ${JSON.stringify(quoteIndex)}`, async () => {
+    let calls = 0;
+    const result = await prepareReviewContract({ sources, maxInputChars: 10_000,
+      provider: { name: "fixture", generate: async () => {
+        calls++;
+        return response({ checks: sources.map(source => ({ sourceId: source.id, quoteIndex, expectedBehavior: source.text })) });
+      } } });
+    assert.ok("findings" in result && /excerpt index/.test(result.findings[0])); assert.equal(calls, 2);
+  });
+}
+
+test("an excerpt index cannot conceal a conflicting quotation or an omitted source", async () => {
+  for (const invalid of [
+    { checks: [{ sourceId: sources[0].id, quoteIndex: 0, expectedBehavior: sources[0].text }] },
+    { checks: sources.map(source => ({ sourceId: source.id, quoteIndex: 0, contractQuote: "Allow other errors", expectedBehavior: source.text })) },
+  ]) {
+    const result = await prepareReviewContract({ sources, maxInputChars: 10_000,
+      provider: { name: "fixture", generate: async () => response(invalid) } });
+    assert.ok("findings" in result);
+  }
+});
 
 test("whole-goal preparation retains current steering without duplicating an identical goal source", () => {
   const context = { goal: "Original objective", requirements: [{ id: "R1", description: "Original objective" }], constraints: [], nonGoals: [] };
@@ -27,7 +83,7 @@ test("contract preparation receives only authoritative sources and retains exact
   const result = await prepareReviewContract({ sources, maxInputChars: 10_000,
     provider: { name: "fixture", generate: async request => {
       calls++; assert.equal(request.tools, undefined); assert.equal(request.maxTokens, 4096);
-      assert.deepEqual(JSON.parse(request.messages[1].content), { contractSources: sources });
+      assert.deepEqual(restoreSources(JSON.parse(request.messages[1].content).contractSources), sources);
       assert.equal(request.messages.length, 2); assert.equal(request.responseFormat, undefined);
       return response({ checks });
     } } });
@@ -50,7 +106,7 @@ for (const invalid of [
     let calls = 0;
     const result = await prepareReviewContract({ sources, maxInputChars: 100_000,
       provider: { name: "fixture", generate: async request => {
-        assert.deepEqual(JSON.parse(request.messages[1].content), { contractSources: sources });
+        assert.deepEqual(restoreSources(JSON.parse(request.messages[1].content).contractSources), sources);
         if (calls++) assert.match(request.messages.at(-1)!.content, /Validation failure/);
         return response(invalid);
       } } });
@@ -63,7 +119,7 @@ test("one successful format repair keeps every original source and does not appr
   const result = await prepareReviewContract({ sources, maxInputChars: 10_000,
     provider: { name: "fixture", generate: async request => {
       if (!calls++) return { message: { role: "assistant", content: "invalid JSON" } };
-      assert.deepEqual(JSON.parse(request.messages[1].content), { contractSources: sources });
+      assert.deepEqual(restoreSources(JSON.parse(request.messages[1].content).contractSources), sources);
       assert.equal(request.messages[2].content, "invalid JSON");
       return response({ checks, passed: true });
     } } });
@@ -76,7 +132,7 @@ test("large contracts prepare bounded source groups while retaining all authorit
   const result = await prepareReviewContract({ sources: large, maxInputChars: 25_000, maxOutputTokens: 4096,
     provider: { name: "fixture", generate: async request => {
       const payload = JSON.parse(request.messages[1].content);
-      assert.deepEqual(payload.contractSources, large, "other sources still qualify and constrain the targeted checks");
+      assert.deepEqual(restoreSources(payload.contractSources), large, "other sources still qualify and constrain the targeted checks");
       assert.equal(payload.targetSourceIds.length, 1);
       targets.push(payload.targetSourceIds);
       const source = large.find(s => payload.targetSourceIds.includes(s.id))!;

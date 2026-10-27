@@ -156,8 +156,12 @@ controller retains that finding as a one-item list so the agent can repair the
 defect. This normalization cannot turn a malformed approval into acceptance.
 
 Review begins with separate specification-only calls, before implementation,
-tests, diffs or claimed results are supplied. Its checklist must quote the
-identified authoritative source exactly and cover every supplied source. Large
+tests, diffs or claimed results are supplied. Each source is presented as a
+lossless array of excerpts. The model selects a source ID and zero-based excerpt
+index; the controller supplies the exact quotation, preserving whitespace and
+Unicode boundaries. Invalid indexes, conflicting quotations and omitted sources
+cannot establish acceptance. Legacy quoted responses remain valid only when
+their text occurs verbatim in the identified source. Large
 contracts use at most sixteen bounded source groups, with every original source
 retained as context in every call. Text already contained verbatim in the current
 goal is supplied once; all canonical criterion IDs remain in the actual review.

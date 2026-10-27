@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T06:16:00.784836+00:00",
+  "updatedAt": "2026-10-27T06:38:29.389439+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -805,12 +805,17 @@
     },
     {
       "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
-      "validation": "Coordinator and assessment chain commits 511e4a7/23701e5 pass 1700 Codali tests plus CI/platform. M/N reject unsupported delivery claims; P identifies a real generated pool defect. Whole-goal control Q is pending; no fresh long-workflow completion.",
+      "validation": "Coordinator/assessment chain CI passes. Q passes five scoped reviews but final preparation misattributes overlapping source wording. Indexed-excerpt correction has93 focused tests passing; full suite and R continuation pending. No new whole-workflow completion.",
       "candidatePublished": false
     },
     {
       "description": "Version the workflow oracle as v5 and detect extra worker dispatch after synchronous throw, waiting for existing work and preserving falsy failures.",
       "validation": "One pre-fix regression reproduced; 1701 full Codali tests pass, 3 skipped. Known P artifact fails the new independent contract while all 15 public tests pass. Historical frozen evaluation records remain unchanged.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Present every authoritative source as lossless excerpts and resolve model-selected source/index references into exact controller-owned quotations. Preserve strict legacy quote validation, coverage and context bounds.",
+      "validation": "Two regressions reproduced before fix;93 focused tests pass. Full suite and known-workspace R continuation pending.",
       "candidatePublished": false
     }
   ],

@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Unpublished .9 review coordinator and assessment chain are committed through 23701e5 with passing CI/platform. M/N correctly reject unsupported delivery claims; O falsely rejects a Unicode case, and P accepts its actual runtime counterevidence before identifying a real synchronous pool dispatch bug. Workflow corpus v5 now detects that bug, with 1701 Codali tests passing (3 skipped). Fresh controlled diagnostic Q uses a repaired pool and accurate delivery inventory; no .9 publication, AF dispatch or canary yet.",
+  "currentTask": "Unpublished .9 source through 754e38d passes CI/platform and 1701 Codali tests. Diagnostic Q passes all five scoped reviews but final checklist preparation twice misattributes near-identical source wording. A lossless indexed-excerpt protocol now resolves quotes in the controller; two regressions reproduced and 93 focused tests pass, with full suite and continuation R running. Repeated SERA8B planning passes8/12 versus Strata12/12, so no specialist is promoted. No .9 publication, AF dispatch or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2157,9 +2157,43 @@
       "artifact": "/home/wodo/.local/state/codali-workflow-v5-full.log",
       "regradeArtifact": "/home/wodo/.local/state/codali-terminal-deployment/review-p-pool-regrade-v5.json",
       "limitation": "Independent grader rejects the known faulty pool despite its 15 passing public tests. Added coverage stops dispatch immediately on synchronous throw, waits for existing work and preserves falsy thrown values. Original frozen runs retain their original corpus version/hash/results."
+    },
+    {
+      "check": "Workflow v5 commit CI and platform",
+      "status": "passed",
+      "sourceCommit": "754e38d2edbd7c919451cd538809053f88a5de32",
+      "ciRun": 40460143096,
+      "platformRun": 40460143008
+    },
+    {
+      "check": "Whole-goal controlled diagnostic Q",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027q/result.json",
+      "scopedReviewsPassed": 5,
+      "canonicalUsageReceipts": 14,
+      "limitation": "Reference-assisted pool repair, interval repair and accurate delivery inventory pass all four independent v5 module grades and five scoped reviews. Final preparation copies goal punctuation while citing child R3, twice; strict attribution rejects it. Workspace unchanged; no final integration or fresh coding-quality pass."
+    },
+    {
+      "check": "Controller-owned exact source excerpts for review preparation",
+      "status": "focused_passed_full_live_pending",
+      "focusedTestsPassed": 93,
+      "redFailures": 2,
+      "redArtifact": "/home/wodo/.local/state/codali-excerpt-review-red.log",
+      "artifact": "/home/wodo/.local/state/codali-excerpt-review-green.log",
+      "limitation": "Models select source IDs and excerpt indexes; original text reconstructs exactly without splitting surrogate pairs. Reject invalid/foreign/conflicting references or source omissions. R reuses only Q same-snapshot assessments with complete canonical receipts; not a new whole workflow."
+    },
+    {
+      "check": "Repeated bounded SERA8B and public Strata planning drafts",
+      "status": "candidate_rejected",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/planner-paired-20261027-result.json",
+      "candidatePassed": 8,
+      "baselinePassed": 12,
+      "casesPerModel": 12,
+      "candidatePromoted": false,
+      "limitation": "Six known planning contracts repeated at seeds43/44. Candidate failures lose task ownership or produce invalid drafts. Strata has12 complete canonical receipts. Both use2048 output cap and512 reasoning budget. Candidate native vs public baseline transport timings do not establish full CLI speedup. Production PIDs unchanged; SERA GPU peak5416MiB, free minimum11047MiB."
     }
   ],
-  "updatedAt": "2026-10-27T06:16:00.784836+00:00",
+  "updatedAt": "2026-10-27T06:38:29.389439+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
@@ -2171,7 +2205,7 @@
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
     "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
     "Core tool schemas remain visible after claim release, with authoritative execution fencing. AA still failed final budget completion. New 4ea5d61 removes model-generated receipt IDs from the normal verification path; nine deterministic cases pass. AB was stopped for installation interference, so no measured live improvement is claimed.",
-    "No additional specialist promoted. Thinking4B underperformed resident4B on its initial six-case screen. SERA8B now fits measured Suku headroom and passes6/6 initial planning drafts, but still needs paired/repeated quality, integration and media coexistence qualification; Strata keeps lead ownership.",
+    "No additional specialist promoted. Thinking4B underperformed resident4B on its initial six-case screen. SERA8B fits measured Suku headroom but passes only8/12 repeated planning drafts versus Strata12/12, reversing the initial6/6 impression. Do not promote this candidate/profile; Strata keeps planning ownership.",
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
