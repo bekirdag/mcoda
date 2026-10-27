@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "BackendM sourcec5fa80b11 is deployed with graceful drain and both-host direct/gateway/staged-job checks passing. Prerelease0.1.135-codali.10 (60b2d733) is published and all10 npm packages match6-platform-qualified CI artifacts; stablelatest remains0.1.134. AF first journeys failed; follow-ons were deliberately aborted and preserved. Sourcec40deda bounds review checklists and labels source excerpts, with1887 tests passing and3skipped. Readonly review diagnosticAH confirms effective max4096 and is running; .10 node candidates are staged and undergoing native checks before activation. Full long-workflow, broad quality, business/load and canary gates remain open.",
+  "currentTask": "Backend M is deployed and both-host public direct/gateway/staged-job checks passed. Suku node M now runs published 0.1.135-codali.10; Raijin remains on node L pending the next qualified update. The readonly AH review diagnostic passed all five scopes and final integration with 16 complete receipts at verified max4096. Actual Suku native context rejection still produced unknown usage on .10; source250115c settles only proven first-call native refusals and passes 1894 tests plus a real native diagnostic. Prerelease .11 source6ecdedd is packaging. Qualify its exact published artifacts, update both nodes, repeat public native refusal checks, then run fresh long and broad workflows. Full business/load and 24-hour canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2333,13 +2333,46 @@
       "sourceCommit": "c40dedab1726aaaecf6b77e17bda79d9b0fa94da",
       "artifact": "/home/wodo/.local/state/codali-review-batches-full.log",
       "limitation": "121focused and1887full Codali/mswarm tests passed,3optional skips. Every checklist item is reviewed in at most16 bounded batches retaining full original authority; late defect rejects acceptance. Explicit excerpt labels preserve exact Unicode source bytes. Readonly copy of failed AFbilling with fresh reviews is running; it is not autonomous workflow completion."
+    },
+    {
+      "check": "Suku node M .10 graceful activation and public compatibility",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/node-orchestration/suku-postdeploy-matrix-node-m.json",
+      "limitation": "Six native candidate checks passed; drained PID978233 was replaced by2449511 after zero accepted DB rows. Three public paths passed. Raijin node L remains unchanged; native Strata services were not restarted."
+    },
+    {
+      "check": "Actual Suku .10 native context rejection accounting",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/native-context-node-m-suku/result-false.json",
+      "limitation": "Single public inference POST classified context_length_exceeded correctly, but canonical invocation usage remained null and request complete=false. Streaming case not reached. Preserved failure motivates .11; no production receipts were changed."
+    },
+    {
+      "check": "Readonly failed AF workspace review diagnostic AH",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-af-billing-ah-20261027/result.json",
+      "limitation": "Sourcec40deda, unchanged failed AF billing workspace. Five fresh scoped reviews and final integration in two checklist batches passed, all16 canonical receipts complete, actual native4096 asserted. No source or plan repair; not a fresh autonomous workflow success."
+    },
+    {
+      "check": "Configured native zero-proof accounting regressions",
+      "status": "passed",
+      "sourceCommit": "250115c",
+      "artifact": "/home/wodo/.local/state/codali-configured-zero-full.log",
+      "passed": 1894,
+      "skipped": 3,
+      "limitation": "182 focused tests pass. Exact bounded loopback HTTP400 native diagnostics settle only that pending reservation; other unknown/prior usage is preserved. Full tests and precommit pass."
+    },
+    {
+      "check": "Actual native configured executor context refusal source diagnostic",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/configured-native-zero-source-20261027b/result.json",
+      "limitation": "One real Raijin Strata context refusal produced proven zero usage through the current configured executor. Source hashes retained and native stays loaded. Public node .11 canonical receipt proof remains pending; first setup failure preserved separately."
     }
   ],
-  "updatedAt": "2026-10-27T08:34:57.835937+00:00",
+  "updatedAt": "2026-10-27T09:00:27.334199+00:00",
   "openFindings": [
-    "Actual native context refusal currently loses public error classification and leaves usage unsettled. Client/node8f77fc2 and backendc5fa80b11 fixes pass regressions, but need qualified deployment and live recheck after frozenAF drains.",
+    "Backend M and client/node context error classification are deployed on Suku .10, but its actual native refusal probe left canonical usage unknown. Source250115c fixes configured-scope proof handling; 182 focused / 1894 full tests and the actual native source diagnostic pass. Public .11 node deployment and both-host streaming/nonstreaming receipt checks remain required. Original failed evidence is retained.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.10 are published on next; .11 release run40476059974 is in progress. All ten .10 registry tarballs match exact CI artifacts with six installation jobs passing. Stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
@@ -2354,6 +2387,7 @@
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
     "AD used4.8Mtokens per journey. Billing/service-adapters failed; data-delivery/localized-export were intentionally stopped for superseding fixes. All four AE runs on exact .7 artifacts ended failed: billing/service-adapters failed early; data-delivery/localized-export exhausted the 4.8M budget. No matched full-run comparison or new held-out quality claim.",
     "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
-    "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures."
+    "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures.",
+    "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters."
   ]
 }
