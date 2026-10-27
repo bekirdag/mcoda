@@ -165,6 +165,8 @@ their text occurs verbatim in the identified source. Large
 contracts use at most sixteen bounded source groups, with every original source
 retained as context in every call. Text already contained verbatim in the current
 goal is supplied once; all canonical criterion IDs remain in the actual review.
+The review checklist stores repeated quotations once per source and retains each
+check with a reference to that exact quotation; no expected behavior is dropped.
 One format repair per group is permitted; invalid source attribution or missing coverage
 cannot establish acceptance. The checklist supplements the full original
 contract and does not prove correctness. Both preparation and source review use

@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Unpublished .9 source through 754e38d passes CI/platform and 1701 Codali tests. Diagnostic Q passes all five scoped reviews but final checklist preparation twice misattributes near-identical source wording. A lossless indexed-excerpt protocol now resolves quotes in the controller; two regressions reproduced and 93 focused tests pass, with full suite and continuation R running. Repeated SERA8B planning passes8/12 versus Strata12/12, so no specialist is promoted. No .9 publication, AF dispatch or canary yet.",
+  "currentTask": "Indexed-excerpt review correction is committed as7eddcae;93 focused and1709 full Codali tests pass (3 skips). Live R validates all three preparation batches, then fails the review context bound because101 checks repeat29 source quotations. The coordinator now stores exact quotations once and preserves every check; one regression reproduced and four focused coordinator tests pass. The full suite passes1710 tests (3 skips); continuation S is running. SERA8B remains rejected at8/12 versus Strata12/12. No .9 publication, AF dispatch or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2175,12 +2175,15 @@
     },
     {
       "check": "Controller-owned exact source excerpts for review preparation",
-      "status": "focused_passed_full_live_pending",
+      "status": "regression_passed_live_preparation_passed",
       "focusedTestsPassed": 93,
       "redFailures": 2,
       "redArtifact": "/home/wodo/.local/state/codali-excerpt-review-red.log",
       "artifact": "/home/wodo/.local/state/codali-excerpt-review-green.log",
-      "limitation": "Models select source IDs and excerpt indexes; original text reconstructs exactly without splitting surrogate pairs. Reject invalid/foreign/conflicting references or source omissions. R reuses only Q same-snapshot assessments with complete canonical receipts; not a new whole workflow."
+      "limitation": "Models select source IDs and excerpt indexes; original text reconstructs exactly without splitting surrogate pairs. Reject invalid/foreign/conflicting references or source omissions. R reuses only Q same-snapshot assessments with complete canonical receipts; not a new whole workflow.",
+      "fullTestsPassed": 1709,
+      "fullTestsSkipped": 3,
+      "fullArtifact": "/home/wodo/.local/state/codali-excerpt-review-full.log"
     },
     {
       "check": "Repeated bounded SERA8B and public Strata planning drafts",
@@ -2191,9 +2194,28 @@
       "casesPerModel": 12,
       "candidatePromoted": false,
       "limitation": "Six known planning contracts repeated at seeds43/44. Candidate failures lose task ownership or produce invalid drafts. Strata has12 complete canonical receipts. Both use2048 output cap and512 reasoning budget. Candidate native vs public baseline transport timings do not establish full CLI speedup. Production PIDs unchanged; SERA GPU peak5416MiB, free minimum11047MiB."
+    },
+    {
+      "check": "Whole-goal indexed-excerpt continuation R",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027r/result.json",
+      "canonicalUsageReceipts": 3,
+      "limitation": "All three preparation batches validate.101 checks repeat29 quotations and occupy64288 characters; the complete final-review evidence exceeds the72192-character configured bound. Context rejection is preserved; no integration acceptance."
+    },
+    {
+      "check": "Deduplicate exact review quotations without dropping checks",
+      "status": "regression_passed_live_pending",
+      "redFailures": 1,
+      "focusedTestsPassed": 4,
+      "redArtifact": "/home/wodo/.local/state/codali-checklist-quotes-red.log",
+      "artifact": "/home/wodo/.local/state/codali-checklist-quotes-green.log",
+      "limitation": "A141-check regression formerly exceeded22000 input characters; all141 checks now retain their exact source quotation references and reach review within that bound. Full suite and known-workspace continuation S pending.",
+      "fullTestsPassed": 1710,
+      "fullTestsSkipped": 3,
+      "fullArtifact": "/home/wodo/.local/state/codali-checklist-quotes-full.log"
     }
   ],
-  "updatedAt": "2026-10-27T06:38:29.389439+00:00",
+  "updatedAt": "2026-10-27T06:46:36.470879+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",

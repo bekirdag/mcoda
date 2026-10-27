@@ -23,6 +23,7 @@ const reviewInstructions: ProviderMessage[] = [
   { role: "system", content: 'Before rejecting evidence solely because source was truncated, request its missing pages. Reply JSON {"sourceRequests":[{"path":"an exact key from sourceRoles"}]} instead of a verdict; omitting offset continues at the exact next unread offset tracked by the controller. An explicit offset is zero-based in characters after secret redaction. Each page supplies up to 8000 characters. Request at most eight pages per round, at most four rounds. sourceTruncatedPaths identifies incomplete initial evidence and sourceNextOffsets supplies its exact initial cursor. Request that file without an offset to read the missing continuation; do not guess character counts. Retain every original requirement and acceptance check. Never treat a source request, unavailable source, or exhausted review context as a pass. Source requests are read-only; no execution tools are available. When evidence is sufficient, return the original passed/findings verdict.' },
   { role: "system", content: 'A requirement descriptionReference points to its exact unchanged text in goal at offset/length; review that text as the requirement, not as a summary. reviewSnapshotHash identifies the controller-verified source snapshot. All sourceRoles paths remain available for hash-checked paging. Treat explicit error messages, literal values, schema fields and specified defaults as exact contracts; do not approve altered values merely because the supplied tests accept them. contractChecklist was derived before seeing source or tests. Compare each check directly with the implementation, preserving the complete original contract as authority if a generated expectedBehavior is mistaken. Tests and docstrings are implementation artifacts: a passing test that requires behavior incompatible with the user contract is itself a blocking defect. The checklist never removes an original obligation. Distinguish internal implementation helpers shared between source files from public API changes: identify the violated public entry-point contract rather than treating every internal export as a new public feature.' },
   { role: "system", content: "taskAssessments are controller-recorded successful reviews of the identified task criteria at this exact workspaceSnapshotHash during this verification. Their sourcePaths were reviewed in those task scopes and remain available for sourceRequests. Use these assessments for already-reviewed criteria in later scoped reviews as well as integration; inspect the source needed for this task's own behavior and cross-task interactions. For integration, check the complete original goal, global constraints, architecture, cross-task interactions and remaining deliverables using these fresh assessments plus the current evidence. Do not demand an already assessed module's entire source merely to repeat its scoped review; request the specific files needed to investigate an integration defect. An assessment never certifies a different criterion, snapshot or missing deliverable. Empty findings still require sufficient evidence for every obligation." },
+  { role: "system", content: "contractChecklist.checks preserves every prepared check. Each check's quoteId refers to the exact sourceId and contractQuote in contractChecklist.quotes. Identical quotations from the same source are stored once; every expectedBehavior remains separate. Follow those references when comparing a check to its authoritative text." },
 ];
 
 /** Review one scope without loading every sibling's source into the prompt.
@@ -52,6 +53,17 @@ export async function reviewTaskScope(options: {
   const contract = await prepareReviewContract({ provider: options.provider, sources: reviewContractSources(options.scope),
     maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens, signal: options.signal });
   if ("findings" in contract) return { passed: false, findings: contract.findings };
+  const quotes: Record<string, { sourceId: string; contractQuote: string }> = {};
+  const quoteIds = new Map<string, string>();
+  const checks = contract.checks.map(({ sourceId, contractQuote, expectedBehavior }) => {
+    const key = JSON.stringify([sourceId, contractQuote]);
+    let quoteId = quoteIds.get(key);
+    if (quoteId === undefined) {
+      quoteId = "quote" + quoteIds.size; quoteIds.set(key, quoteId);
+      quotes[quoteId] = { sourceId, contractQuote };
+    }
+    return { quoteId, expectedBehavior };
+  });
   const assessedPaths = new Set(assessments.flatMap(value => value.sourcePaths));
   const initialPaths = options.scope.reviewPaths.filter(file => !assessedPaths.has(file));
   const source: Record<string, string> = {};
@@ -59,7 +71,7 @@ export async function reviewTaskScope(options: {
   const sourceNextOffsets: Record<string, number> = Object.fromEntries(initialPaths.map(file => [file, 0]));
   const input = { ...reviewPromptContext(options.scope, options.hashes), workspaceSnapshotHash,
     ...(assessments.length ? { taskAssessments: assessments } : {}),
-    contractChecklist: contract.checks, task: options.task,
+    contractChecklist: { quotes, checks }, task: options.task,
     receipts: options.receipts.map(r => ({ id: r.id, tool: r.tool, args: r.args, status: r.status,
       output: r.output ? r.tool === "run_shell" ? validationOutputExcerpt(r.output, 2400) : r.output.slice(0, 2000) : undefined, taskId: r.taskId })),
     validatedInputCount: Object.keys(options.hashes).length, preExistingDirtyPaths: options.preExistingDirtyPaths,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T06:38:29.389439+00:00",
+  "updatedAt": "2026-10-27T06:46:36.470879+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -815,7 +815,12 @@
     },
     {
       "description": "Present every authoritative source as lossless excerpts and resolve model-selected source/index references into exact controller-owned quotations. Preserve strict legacy quote validation, coverage and context bounds.",
-      "validation": "Two regressions reproduced before fix;93 focused tests pass. Full suite and known-workspace R continuation pending.",
+      "validation": "Two regressions reproduced;93 focused and1709 full Codali tests pass (3 skips). Live R validates its three preparation batches; repeated quotations then exceed the complete review context. No final acceptance.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Store each exact checklist quotation once per source, retaining every expected behavior with a quotation reference in the final review payload.",
+      "validation": "One context regression reproduced; four focused and1710 full Codali tests pass (3 skips). Continuation S is pending.",
       "candidatePublished": false
     }
   ],

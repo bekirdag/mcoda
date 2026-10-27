@@ -15,6 +15,35 @@ function fixture() {
   return { state, task, scope, hashes };
 }
 
+test("many checks share exact quotations without dropping obligations at the review context limit", async () => {
+  const { task, scope, hashes } = fixture(); let reviewed = false;
+  const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review every obligation.",
+    maxInputChars: 22_000, maxOutputTokens: 8192, diff: async () => "",
+    readSource: async () => ({ content: "bounded source", truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: "source", truncated: false }),
+    provider: { name: "fixture", generate: async request => {
+      if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
+        const input = JSON.parse(request.messages[1].content);
+        const checks = input.contractSources.flatMap((source: { id: string }, sourceIndex: number) =>
+          Array.from({ length: sourceIndex === 0 ? 140 : 1 }, (_, i) => ({ sourceId: source.id,
+            quoteIndex: 0, expectedBehavior: "Check distinct obligation " + i })));
+        return { message: { role: "assistant", content: JSON.stringify({ checks }) } };
+      }
+      reviewed = true; assert.ok(JSON.stringify(request.messages).length <= 22_000);
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(input.contractChecklist.checks.length, 141);
+      assert.equal(Object.keys(input.contractChecklist.quotes).length, 2);
+      for (const [i, check] of input.contractChecklist.checks.entries()) {
+        const quote = input.contractChecklist.quotes[check.quoteId];
+        assert.equal(quote.sourceId, i < 140 ? "requirement:R1" : "constraint:0");
+        assert.equal(quote.contractQuote, i < 140 ? scope.goal : scope.constraints[0]);
+        assert.equal(check.expectedBehavior, "Check distinct obligation " + (i < 140 ? i : 0));
+      }
+      return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
+    } } });
+  assert.deepEqual(result, { passed: true, findings: [] }); assert.equal(reviewed, true);
+});
+
 test("large source reserves paging space without dropping original contract or source paths", async () => {
   const { task, scope, hashes } = fixture();
   let reviews = 0; let expectedOffset = -1;
