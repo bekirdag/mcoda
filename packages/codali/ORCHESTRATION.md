@@ -144,6 +144,14 @@ to decide correctness. Passing a test or obtaining reviewer approval alone does
 not establish a universal correctness guarantee; observed false completions
 remain release blockers and become regression fixtures.
 
+The reviewer can request additional source pages before deciding. Requests are
+read-only and restricted to the current review paths; each page rechecks the
+validated file hash. Four request rounds, eight pages per round and the smallest
+configured reviewer context bound the process. Every model call shares the
+session's usage and effort budget. Repeated requests, exhausted context, missing
+evidence or edits during review cannot establish acceptance. Secrets are redacted
+before paging, including credentials that cross page boundaries.
+
 Ordinary task review includes its assigned requirements, owned changes and diff,
 plus relevant read-only dependencies. Other tasks' pending deliverables remain
 in the canonical backlog. A task assigned the original whole-objective criterion

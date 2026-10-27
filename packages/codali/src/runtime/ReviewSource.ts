@@ -1,6 +1,8 @@
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { redactSecretValues } from './SecretRedaction.js';
+import type { ReviewSourcePage } from './TaskReview.js';
 
 /** Bounded review evidence; binary assets remain checksums, never prompt data. */
 export const readReviewSource = async (root: string, relative: string, expectedHash: string, maxChars: number): Promise<{ content: string; truncated: boolean }> => {
@@ -23,7 +25,20 @@ export const readReviewSource = async (root: string, relative: string, expectedH
     const content = bytes.subarray(0, length);
     if (createHash('sha256').update(content).digest('hex') !== expectedHash) throw new Error(`Review source changed before inspection: ${relative}`);
     if (content.includes(0) || /\.(?:png|jpe?g|gif|webp|ico|pdf|zip|tgz|gz|mp[34]|mov|webm|wav|flac|gguf|bin|exe)$/i.test(relative)) return { content: '[binary artifact omitted; checksum and tool receipt identify its content]', truncated: false };
-    const text = content.toString('utf8');
+    // Redact before slicing: a credential spanning a page boundary must never
+    // leave a raw prefix or suffix in either prompt.
+    const text = redactSecretValues(content.toString('utf8'));
     return { content: text.slice(0, maxChars), truncated: text.length > maxChars };
   } finally { await handle.close(); }
 };
+
+/** Page offsets refer to redacted text, so repeated reads cannot reconstruct a secret. */
+export async function readReviewSourcePage(root: string, relative: string, expectedHash: string, offset: number): Promise<ReviewSourcePage> {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid review source offset');
+  const source = await readReviewSource(root, relative, expectedHash, 128 * 1024);
+  if (source.truncated) return { path: relative, offset, content: source.content, truncated: true, unavailable: true };
+  if (offset > source.content.length) throw new Error(`Review source offset exceeds the file length: ${relative}`);
+  const content = source.content.slice(offset, offset + 8000);
+  const truncated = offset + content.length < source.content.length;
+  return { path: relative, offset, content, truncated, ...(truncated ? { nextOffset: offset + content.length } : {}) };
+}

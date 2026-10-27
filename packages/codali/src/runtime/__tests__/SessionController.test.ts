@@ -13,6 +13,54 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+for (const scenario of ["complete", "blocking-tail", "concurrent-edit"] as const) {
+  test(`reviewer can inspect truncated source without weakening acceptance: ${scenario}`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-page-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-page-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    const content = `${"Contract detail.\n".repeat(600)}${scenario === "blocking-tail" ? "TODO: acceptance missing" : "Acceptance complete"}\n`;
+    let step = 0; let attemptId = ""; let reviews = 0;
+    const events: SessionEvent[] = [];
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      if (request.responseFormat?.type === "json" && !request.tools?.length) {
+        const input = JSON.parse(request.messages.at(-1)!.content);
+        if (reviews++ === 0) {
+          assert.ok(input.sourceTruncatedPaths.includes("report.txt"));
+          assert.doesNotMatch(input.source["report.txt"], /Acceptance complete|acceptance missing/);
+          if (scenario === "concurrent-edit") await fs.writeFile(path.join(root, "report.txt"), "User edit must be preserved.\n");
+          return reply(JSON.stringify({ sourceRequests: [{ path: "report.txt", offset: 8000 }] }));
+        }
+        assert.equal(input.sourcePages[0].path, "report.txt");
+        assert.equal(input.sourcePages[0].offset, 8000);
+        assert.match(input.sourcePages[0].content, /Acceptance complete|acceptance missing/);
+        assert.equal(input.sourcePages[0].truncated, false);
+        return reply(JSON.stringify({ passed: scenario === "complete", findings: scenario === "complete" ? [] : ["Report ends with an unfinished acceptance section."] }));
+      }
+      const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+      switch (step++) {
+        case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["report.txt"] });
+        case 1: attemptId = JSON.parse(previous()).attemptId; return call("write_file", { path: "report.txt", content });
+        case 2: return call("work_verify", { taskId: "T1", attemptId, invocationIds: [], summary: "The report includes complete acceptance details." });
+        case 3:
+          if (scenario === "concurrent-edit") assert.match(previous(), /changed before inspection/);
+          else {
+            assert.equal(JSON.parse(previous()).verified, scenario === "complete");
+            if (scenario === "blocking-tail") assert.match(previous(), /unfinished acceptance/);
+          }
+          return scenario === "complete" ? call("work_complete", {}) : call("work_block", { taskId: "T1", reason: "Deliberate failed review fixture." });
+        default: return reply("The report still needs work.");
+      }
+    } };
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+      permissions: "workspace", onEvent: event => { events.push(event); } });
+    assert.equal((await controller.run("Write report.txt with detailed contract documentation and a complete acceptance section.")).completed, scenario === "complete");
+    assert.equal(reviews, scenario === "concurrent-edit" ? 1 : 2);
+    assert.equal(events.filter(event => event.type === "model_receipt" && event.data.binding === "reviewer").length, reviews);
+    assert.equal(controller.state!.evidence.filter(evidence => evidence.kind === "review").length, scenario === "complete" ? 1 : 0);
+    assert.equal(await fs.readFile(path.join(root, "report.txt"), "utf8"), scenario === "concurrent-edit" ? "User edit must be preserved.\n" : content);
+  });
+}
+
 test("core tool declarations survive released claims while execution remains fenced", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-handoff-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-handoff-state-"));
