@@ -1109,7 +1109,7 @@ export class SessionController {
       for (const owner of this.state!.tasks.filter(candidate => candidate.id !== task.id && candidate.status === "verified")) {
         const ownerScope = reviewScope(owner);
         const previous = [...this.state!.evidence].reverse().find(e => owner.evidenceIds.includes(e.id) && e.ok);
-        const assessment = await assess(owner, ownerScope, previous?.summary ?? "Reassess the assigned criteria against the final workspace.");
+        const assessment = await assess(owner, ownerScope, previous?.summary ?? "Reassess the assigned criteria against the final workspace.", assessments);
         if (!assessment.passed) return { verified: false, receiptRefs,
           findings: assessment.findings.map(finding => `Final assessment of ${owner.id}: ${finding}`) };
         assessments.push({ taskId: owner.id, criterionIds: [...owner.requirementIds],

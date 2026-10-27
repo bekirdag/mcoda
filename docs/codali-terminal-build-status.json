@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing unpublished .9: specification batches retain authority, and final integration now reassesses each completed task at the same final snapshot before bounded whole-goal review. Baseline whole-workspace suite passed (1696 Codali tests,3 skipped); new coordinator passes114 focused and1700 full Codali tests(3 optional skips); live diagnostic L is running. I passed all four known interval review checks with11 complete usage receipts. J/K failed whole-goal preparation and remain recorded. All four AE .7 workflows failed; multi-hour qualification and canary remain open.",
+  "currentTask": "Unpublished .9 coordinator commit511e4a7 passes1700 Codali tests and both CI/platform workflows. Live L passes all four repaired module reviews but delivery review re-requests sibling source and exceeds context. A one-regression correction now carries completed same-snapshot assessments into later scoped reviews, with1700 full Codali tests passing(3 skips) and continuation diagnostic M running. M reuses only L module assessments with exact matching hashes and complete canonical receipts; it is not a fresh whole workflow. No .9 publication, AF dispatch or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2115,9 +2115,27 @@
       "fullTestsPassed": 1700,
       "fullTestsSkipped": 3,
       "fullArtifact": "/home/wodo/.local/state/codali-review-coordinator-full.log"
+    },
+    {
+      "check": "Fresh scoped review diagnostic L",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027l/result.json",
+      "canonicalUsageReceipts": 11,
+      "moduleReviewsPassed": 4,
+      "limitation": "Header, async, locale and repaired interval modules pass. Delivery review asks for six sibling source pages and exceeds context. Failed scopes renew no proof. Final integration was not reached."
+    },
+    {
+      "check": "Carry fresh assessments into later scoped reviews",
+      "status": "regression_passed_live_pending",
+      "redArtifact": "/home/wodo/.local/state/codali-review-assessment-chain-red.log",
+      "redFailures": 1,
+      "limitation": "Before fix, final-snapshot B review did not receive already completed A assessment. Full suite passes; M continuation is pending.",
+      "testsPassed": 1700,
+      "testsSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-review-assessment-chain-full.log"
     }
   ],
-  "updatedAt": "2026-10-27T05:26:30.875717+00:00",
+  "updatedAt": "2026-10-27T05:42:13.922980+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",

@@ -200,7 +200,8 @@ Whole-goal integration also reviews every canonical refined criterion. When all
 other active tasks are already verified, the controller first reassesses each
 owner's criteria and read dependencies against the final files. It then supplies
 those successful assessments, bound to one full-workspace digest, to the final
-integration review. Assessed module source remains available for hash-checked
+integration review and to later scoped reassessments, such as delivery inventories.
+Assessed module source remains available for hash-checked
 paging; only remaining source and diff are loaded initially. Initial source
 allocation reserves context space for later pages. Original requirements,
 constraints, architecture decisions and cross-task interactions still govern

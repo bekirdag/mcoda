@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T05:26:30.875717+00:00",
+  "updatedAt": "2026-10-27T05:42:13.922980+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -805,7 +805,7 @@
     },
     {
       "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
-      "validation": "Batch baseline passes the entire workspace suite (1696 Codali tests,3 skips). Coordinator passes114 focused and1700 full Codali tests(3 skips); actual runtime L remains pending.",
+      "validation": "Coordinator commit511e4a7 passes114 focused and1700 full Codali tests, plus CI/platform. Live L passes4 module reviews but delivery re-requests sibling source and exceeds context. Follow-up cumulative-assessment regression fails before the fix; current full suite passes1700 tests(3 skips); diagnostic M is pending.",
       "candidatePublished": false
     }
   ],

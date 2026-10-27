@@ -409,6 +409,10 @@ for (const rejectFinalTask of [false, true]) test(`fresh whole-goal review reass
         assert.equal(input.source["b.txt"], "B\n", "reassessment uses the final dependency, not the old accepted snapshot");
         if (rejectFinalTask) return reply('{"passed":false,"findings":["Final dependency invalidates task A."]}');
       }
+      if (input.task.id === "B" && reviewed.filter(id => id === "B").length === 2) {
+        assert.deepEqual(input.taskAssessments.map((value: { taskId: string }) => value.taskId), ["A"],
+          "later scoped reviews can use already completed final-snapshot assessments");
+      }
       if (input.task.id === "integration") {
         assert.deepEqual(input.requirements.map((value: { id: string }) => value.id), ["R1", "R2", "R3"]);
         assert.equal(input.reviewScope, "whole_goal");
