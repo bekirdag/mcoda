@@ -2016,9 +2016,17 @@
       "artifact": "/home/wodo/.local/state/codali-review-cursor-full.log",
       "liveArtifact": "/home/wodo/.local/state/codali-terminal-deployment/review-contract-public-20261027b",
       "limitation": "Repeated saved failed workspaces, not independent quality evidence. Both rejected; Suku still missed the exact interval error-message violation and rejected an unsupported delivery claim. Original workspaces unchanged; known false acceptance remains open."
+    },
+    {
+      "check": "Workflow corpus v4 duplicate-submit citation oracle",
+      "status": "passed",
+      "testsPassed": 47,
+      "artifact": "/home/wodo/.local/state/codali-corpus-v4-green.log",
+      "correctionArtifact": "/home/wodo/.local/state/codali-terminal-deployment/ae-billing-citation-oracle-correction-v4.json",
+      "limitation": "One pre-fix false rejection reproduced. Accept correct sorted client/server citations with optional incident source; reject missing implementation evidence, unsorted/duplicate/unknown paths and wrong cause. Saved AE module passes corrected oracle without workspace changes; original v3 run remains failed for invoice,503 and incomplete goal."
     }
   ],
-  "updatedAt": "2026-10-27T03:38:47.771590+00:00",
+  "updatedAt": "2026-10-27T03:42:16.334520+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",

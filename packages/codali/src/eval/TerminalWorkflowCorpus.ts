@@ -95,7 +95,7 @@ const reports: ReportCase[] = [
     expected: { owner: "src/cache.mjs", callers: ["src/profile.mjs", "src/update.mjs"], isolation: "unsafe", cause: "tenant-omitted", remedy: "include-tenant-and-user" } },
 ];
 
-export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v3";
+export const TERMINAL_WORKFLOW_CORPUS_VERSION = "terminal-workflows-v4";
 export function terminalWorkflowCorpus(): TerminalCorpusTask[] {
   const common = (id: string) => ({ "package.json": JSON.stringify({ name: `workflow-${id}`, private: true, type: "module", scripts: { test: "node --test test/task.test.mjs" } }, null, 2) + "\n", "USER_NOTES.txt": `User-owned ${id} notes. Preserve byte for byte.\n` });
   const tasks: TerminalCorpusTask[] = coding.map(item => ({ id: item.id, family: "multi-file", variant: 1, split: "held-out",
@@ -106,12 +106,15 @@ export function terminalWorkflowCorpus(): TerminalCorpusTask[] {
   for (const item of reports) {
     const expected = JSON.stringify(item.expected);
     // v2 corrects unstated v1 oracle assumptions without changing task prompts.
-    // Only the unordered evidence field is normalized. Research may also cite
-    // v1 for the comparison, while v2 remains mandatory and citations sorted.
+    // Research may also cite v1 for the comparison, while v2 remains mandatory.
+    // v4 permits the duplicate-submit report to cite its two implementation
+    // sources without an incident citation that the prompt never required.
     const normalize = item.id === "investigate-cache-expiry"
       ? "assert.ok(Array.isArray(report.evidence));report.evidence.sort();"
       : item.id === "research-pinned-upgrade"
         ? "assert.ok(Array.isArray(report.citations));assert.deepEqual(report.citations,[...new Set(report.citations)].sort());assert.ok(report.citations.includes('vendor-docs/v2.md'));assert.ok(report.citations.every(p=>['vendor-docs/v1.md','vendor-docs/v2.md'].includes(p)));report.citations=['vendor-docs/v2.md'];"
+        : item.id === "investigate-duplicate-submit"
+          ? "assert.ok(Array.isArray(report.evidence));assert.deepEqual(report.evidence,[...new Set(report.evidence)].sort());assert.ok(['src/client.mjs','src/server.mjs'].every(p=>report.evidence.includes(p)));assert.ok(report.evidence.every(p=>['docs/incident.md','src/client.mjs','src/server.mjs'].includes(p)));report.evidence=['docs/incident.md','src/client.mjs','src/server.mjs'];"
         : "";
     tasks.push({ id: item.id, family: item.id.startsWith("research") ? "pinned-document-research" : "repository-investigation", variant: 1, split: "held-out",
       prompt: `${item.question}\nOnly docs/report.json may be created or changed. Preserve every existing file, including tests and user notes, exactly. Run the existing tests; do not add tests or dependencies. This is investigation/report delivery, not implementation.`,

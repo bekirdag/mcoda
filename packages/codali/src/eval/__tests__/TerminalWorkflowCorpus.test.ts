@@ -132,6 +132,26 @@ for (const citations of [
   });
 }
 
+for (const mutation of ["code-only", "all-sources", "empty", "incident-only", "missing-server", "unsorted", "duplicate", "unknown", "wrong-cause"] as const) {
+  test(`workflow v4 duplicate-submit evidence: ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+    const task = terminalWorkflowCorpus().find(t => t.id === "investigate-duplicate-submit")!;
+    await fixture(task, async workspace => {
+      const report = JSON.parse(task.reference["docs/report.json"]);
+      if (mutation === "code-only") report.evidence = ["src/client.mjs", "src/server.mjs"];
+      if (mutation === "empty") report.evidence = [];
+      if (mutation === "incident-only") report.evidence = ["docs/incident.md"];
+      if (mutation === "missing-server") report.evidence = ["docs/incident.md", "src/client.mjs"];
+      if (mutation === "unsorted") report.evidence.reverse();
+      if (mutation === "duplicate") report.evidence.unshift(report.evidence[0]);
+      if (mutation === "unknown") report.evidence.unshift("docs/invented.md");
+      if (mutation === "wrong-cause") report.cause = "missing-dedup";
+      await fs.writeFile(path.join(workspace, "docs/report.json"), JSON.stringify(report));
+      const result = await gradeTerminalTask(task, workspace);
+      assert.equal(result.passed, mutation === "code-only" || mutation === "all-sources", JSON.stringify(result));
+    });
+  });
+}
+
 for (const failure of ["sync-range", "sync-type", "resolve"] as const) {
   test(`workflow v2 pool invalid limit: ${failure}`, { ...isolated, timeout: 30000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "async-worker-pool")!;
