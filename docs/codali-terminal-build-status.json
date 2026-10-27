@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Source-paging correction 6b34f39 passes 75 focused and 1626 full CLI tests (3 skips), plus correct/defect review cases on both Strata hosts. Preparing .7 with receipt, mixed recovery, publisher and paging corrections; .6 published and all ten registry tarballs match CI, stable latest remains .134. AD first journeys failed; remaining data-delivery/localized-export remain frozen on bfeb86d. Fresh long-workflow qualification, global activation and 24-hour canary remain open.",
+  "currentTask": "Published .7 at aabcd63; all ten registry tarballs match exact CI artifacts, with six packaging and six installation jobs passing. Frozen .7 AE journeys started on both hosts02:22:35UTC and reached execution; AD remaining runs were deliberately stopped and preserved. Legacy .134/.7 session roundtrip passed. SERA8B passed6/6 initial planning drafts within resource guards, unloaded and not promoted. Broader release quality/coexistence gates, global activation and24-hour canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -520,7 +520,8 @@
         "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet.",
         "Offline AC terminal-workflows-v3 amendment preserves every original workspace/result hash and makes zero model calls: data-delivery4/4, billing-audit0/4, localized-export4/4(previous3/4), service-adapters3/4. Only undocumented TypeError grading restriction changed; all four overall completion gates remain failed.",
         "MixedMediaRecoveryJourney v1 adds a code/image integration fixture with five compactions, two actual process restarts, lost admission response, configuration upgrade/rollback, preserved concurrent notes and fixed final integration checks. Exactly one PUT, original route/hash retained and premature completion rejected. 65 focused controller/media/recovery tests pass; no production expiry or live-model quality claim.",
-        "AD billing-audit at bfeb86d ended01:20:51UTC after65.9min: all4 module grades pass, overall fails repeated work_claim and unfinishedR1/steering. Reviewer saw only the latest check despite four successful current suites. New automatic selection keeps up to10 distinct commands with identical input hashes in the current task/attempt, never older success behind a newer failed command; current-file and independent-review gates remain. Ownership/stale-attempt errors identify exact current IDs and release/verify recovery. Reproduced two regressions before fix; 60focused/1607full tests pass,3skips. Fresh live qualification remains pending."
+        "AD billing-audit at bfeb86d ended01:20:51UTC after65.9min: all4 module grades pass, overall fails repeated work_claim and unfinishedR1/steering. Reviewer saw only the latest check despite four successful current suites. New automatic selection keeps up to10 distinct commands with identical input hashes in the current task/attempt, never older success behind a newer failed command; current-file and independent-review gates remain. Ownership/stale-attempt errors identify exact current IDs and release/verify recovery. Reproduced two regressions before fix; 60focused/1607full tests pass,3skips. Fresh live qualification remains pending.",
+        "AD first journeys failed naturally; remaining two were gracefully stopped after fixes qualified, with checkpoints/partial failures retained and last20publicrequests settled. New frozen AE client installs exact .7CI artifacts, sourceaabcd63, manifest0b09234571007559065885331f412ff68e557d43696d41034a4d3f8952349491. Both hosts began02:22:35UTC with4.8Mtoken budgets and immutable native/config fingerprints. No complete multi-hour pass yet."
       ]
     },
     {
@@ -552,7 +553,7 @@
     {
       "id": "P8.3",
       "description": "Build reproducible package artifacts and install-test the tarballs on clean supported systems. Verify package files, executable permissions, version/help output, migration and uninstall behavior.",
-      "status": "in_progress",
+      "status": "completed",
       "evidence": [
         "Reproducibility check found nondeterministic pnpm dependency ordering. Packed manifests are now canonicalized; a real clean Linux x64 Node22 install passed executable/API/native SQLite/session/uninstall checks (codali-clean-install-local-2.json). Linux and both macOS architectures on Node20/22 are being qualified; package publication remains gated.",
         "2cd2aa1 passed all six Linux x64/macOS Intel/macOS ARM Node20/22 jobs in run 40276888399, including clean install/native SQLite/session/uninstall checks. Per-platform tarballs reproduce; cross-platform installation of the exact publication tarballs remains to be checked.",
@@ -569,7 +570,8 @@
         "4ebdefa expands reproducible producer and clean-install consumer to all ten packages. CI40406147220 and six Linux/macOS Node20/22 jobs40406147139 passed; no automatic Docdex npm peer installed. This catches and corrects the .4 full-CLI lifecycle side effect; corrected .5 artifacts require release qualification.",
         "6f8423a passed CI40414229416 including Windows and all six Linux/macOS Node20/22 jobs40414229382. fcf8831 full1600/3skip passed locally; CI40418128709/platform40418128658 running. No new package version published.",
         "3030361 platform40424262652 passed; generalCI40424262734 failed Windows day-grouping because now and now-2h crossed UTCmidnight. Locally reproduced and replaced only the test with fixed-date same-day/midnight assertions. a8b70c8 localbuild/7telemetrytests/stagedhook pass; CI40426491404/platform40426491443 pending. Version-only .6 preparation includes11manifests; fullbuild passed.",
-        "a8b70c8 CI40426491404 and six-platform40426491443 passed. Release40427999530 at498523b passed all six package jobs and six exact Linux-artifact clean installs across Linux/macOS Intel/ARM with Node20/22; publication remains in progress. Downloaded evidence: ~/.local/state/codali-terminal-deployment/prerelease6-release-artifacts."
+        "a8b70c8 CI40426491404 and six-platform40426491443 passed. Release40427999530 at498523b passed all six package jobs and six exact Linux-artifact clean installs across Linux/macOS Intel/ARM with Node20/22; publication remains in progress. Downloaded evidence: ~/.local/state/codali-terminal-deployment/prerelease6-release-artifacts.",
+        "0.1.135-codali.7 release40435839582 passed six reproducible package jobs and six exact Linux-artifact installs across Linux/macOS Intel/ARM, Node20/22. All ten npm tarballs match SHA256/SHA512/bytes; version/help/nativeSQLite/session/uninstall and privateDocdex reuse checked. Actual legacy SessionStore .134->.7->.134->.7 roundtrip preserved all notes in separate OS processes and left user files unchanged. New terminal-only work-state downgrade and simultaneous cross-version writers remain outside this legacy migration result (P8.5)."
       ]
     },
     {
@@ -596,7 +598,8 @@
         "Release .5 at858fff6 was cancelled before publish-npm after its exact-tag Mac ARM run exposed the session rename race; retain the failed tag. Fixed a1c26a7 passes six-platform qualification. Published next remains .4, global CLI .134, Logmira .2. New accounting client must follow additive receipt backend deployment.",
         "Native Strata recovery1 activated on both hosts after node drains/zero accepted jobs; native READY and direct/gateway/staged public route checks pass. Suku attempt1 OOM/rollback retained; attempt2 passed with idle media parked, media then restored. Backend L gateway78cdc956/proxyeed6247e deployed after accepted job finished and both HTTP listeners closed; previous K rollback images retained. Public usage settlement passes both hosts.",
         "Preparing fresh .6 prerelease including installer isolation, rename/accounting/validation fixes and packaged native-load guard. npm registry and Git tag .6 were absent at preflight. Preserve .5cancelled tag and .4published bytes; publish only after exact-artifact release checks. No global activation or24-hour canary started.",
-        "Release40427999530 .6 attempts1/2 stopped on post-publication ETARGET for agent-setup and Codali respectively; each became visible afterward with integrity identical to the qualified tarball. Failed job reruns preserve original release artifacts and skip identical already-published versions. Attempt3 is running; stablelatest remains.134. These are observed propagation failures, not successful complete publication yet."
+        "Release40427999530 .6 attempts1/2 stopped on post-publication ETARGET for agent-setup and Codali respectively; each became visible afterward with integrity identical to the qualified tarball. Failed job reruns preserve original release artifacts and skip identical already-published versions. Attempt3 is running; stablelatest remains.134. These are observed propagation failures, not successful complete publication yet.",
+        "Prerelease .7 aabcd63 published successfully in40435839582; exact ten registry artifacts independently verified. Stablelatest remains.134, activeglobalCLI remains.134. .7 includes multi-check review, active-owner guidance, bounded source pagination and install-propagation handling; publication does not establish stable release readiness."
       ]
     },
     {
@@ -608,8 +611,10 @@
     {
       "id": "P8.6",
       "description": "Publish the requirement-to-evidence report and failure taxonomy for the tested release. Exercise diagnosis from one user-visible stalled task to goal/plan versions, decisions, model/tool receipts and actionable recovery. Track architecture drift, scope changes, user corrections and false-completion incidents alongside latency/cost; gate optional stages/models on measured value.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Current requirement/evidence mapping and diagnosed failure taxonomy are captured in docs/codali-terminal-release-readiness.json. It explicitly marks releaseReady=false and links the actual AD billing goal/plan/attempt/receipt failure to its regression and correction. Final report remains gated on unresolved release criteria."
+      ]
     }
   ],
   "decisions": [
@@ -1942,12 +1947,55 @@
       "cases": 4,
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-source-pages-public-20261027/coverage-correction.json",
       "limitation": "Original diagnostic falsely required offset>=8000. Suku offset7440 page covered all omitted implementation and final rejection was correct. Original artifacts retained. Synthetic focused protocol checks, not held-out quality or multi-hour acceptance."
+    },
+    {
+      "check": "codali.7 publication, exact CI artifact installations and registry bytes",
+      "status": "passed",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40435839582",
+      "sourceCommit": "aabcd63b8686bc9bd33fde85b90657e1d7fbfea2",
+      "packagingJobs": 6,
+      "installationJobs": 6,
+      "registryPackages": 10,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease7-registry-artifacts/verification.json"
+    },
+    {
+      "check": "Legacy SessionStore client version roundtrip",
+      "status": "passed",
+      "versions": [
+        "0.1.134",
+        "0.1.135-codali.7",
+        "0.1.134",
+        "0.1.135-codali.7"
+      ],
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/session-version-roundtrip-20261027/result.json",
+      "limitation": "Separate OS processes with isolated legacy session data; not new terminal-only work-state rollback or concurrent cross-version writers."
+    },
+    {
+      "check": "SERA8B initial bounded planning screen",
+      "status": "passed_not_promoted",
+      "casesPassed": 6,
+      "cases": 6,
+      "allLayersOnGpu": "37/37",
+      "peakCandidateMiB": 5416,
+      "minFreeGpuMiB": 11049,
+      "minAvailableRamMiB": 30354,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/sera8b-screen-20261027c/result.json",
+      "limitation": "Initial six existing candidate-only planning drafts; no paired superiority, mixed-load or general coding qualification. Candidate unloaded and shared scheduler ready; earlier harness preflight/logging failures retained."
+    },
+    {
+      "check": "AD superseded-run cancellation and request settlement",
+      "status": "stopped_not_qualified",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/ad-superseded-stop-20261027.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/ad-stop-drain-20261027.json"
+      ],
+      "limitation": "Data-delivery/localized-export intentionally stopped; their partial grades cannot establish full-run quality or completion."
     }
   ],
-  "updatedAt": "2026-10-27T01:55:55.365678+00:00",
+  "updatedAt": "2026-10-27T02:37:29.061782+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.6 are published on next; stable mcoda latest remains .134. All ten .6 registry tarballs match the exact CI installation artifacts. .6 includes installer isolation and full CLI graph qualification, but excludes later multi-check review, mixed recovery, publisher and source-paging changes. No global CLI activation.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
@@ -1956,11 +2004,11 @@
     "Root deployment access is resolved by explicit user authorization. Backend K uses qualified current-image Fastify drain fixtures and zero accepted-invocation/gracefully closed HTTP checks. The first K attempt stopped on a stale qualification-file path and restored admission without replacing containers; the corrected attempt deployed successfully with original failure evidence retained.",
     "Backend K rejects malformed Unicode at all three public chat endpoints with HTTP 400 validation_failed before scheduling. Core and proxy regressions pass; actual public rejection checks passed after deployment. The configured CLI continues normalizing malformed input before transport.",
     "Core tool schemas remain visible after claim release, with authoritative execution fencing. AA still failed final budget completion. New 4ea5d61 removes model-generated receipt IDs from the normal verification path; nine deterministic cases pass. AB was stopped for installation interference, so no measured live improvement is claimed.",
-    "No additional specialist promoted: Thinking4B fits but underperforms resident4B on the six-case initial planning screen; SERA14B fails current reservation-plus-guard admission. Both smaller planners remain unqualified for general planning; Strata retains lead ownership.",
+    "No additional specialist promoted. Thinking4B underperformed resident4B on its initial six-case screen. SERA8B now fits measured Suku headroom and passes6/6 initial planning drafts, but still needs paired/repeated quality, integration and media coexistence qualification; Strata keeps lead ownership.",
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
-    "AD frozen client bfeb86d runs at4.8M tokens per journey, doubleAC; no same-budget efficiency claim. Billing-audit and service-adapters failed after stages1/2 passed; data-delivery and localized-export remain in stage3. Consumer/reconciliation probes ran concurrently, so latency is not an isolated benchmark.",
+    "AD used4.8Mtokens per journey. Billing/service-adapters failed; data-delivery/localized-export were intentionally stopped for superseding fixes. AE now runs exact .7artifacts at the same4.8Mbudget; no matched full-run comparison or new held-out quality claim.",
     "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
     "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures."
   ]
