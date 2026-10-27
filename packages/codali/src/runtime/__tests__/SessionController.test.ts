@@ -64,7 +64,7 @@ for (const scenario of ["complete", "blocking-tail", "concurrent-edit"] as const
     const events: SessionEvent[] = [];
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-      if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
         const input = JSON.parse(request.messages.at(-1)!.content);
         if (reviews++ === 0) {
           assert.ok(input.sourceTruncatedPaths.includes("report.txt"));
@@ -112,7 +112,7 @@ test("core tool declarations survive released claims while execution remains fen
   const events: SessionEvent[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     switch (step++) {
       case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["report.txt"] });
@@ -157,7 +157,7 @@ test("module-local shell receipts retain cwd and verify the actual workspace inp
   let step = 0; let attemptId = ""; let reviewed = false;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       const input = JSON.parse(request.messages.at(-1)!.content);
       assert.equal(input.receipts[0].args.cwd, "module");
       assert.equal(input.receipts[0].status, "success");
@@ -230,7 +230,7 @@ for (const scenario of ["fresh", "stale", "unobserved-change", "old-attempt", "o
     });
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-      if (request.responseFormat?.type === "json" && !request.tools?.length) {
+      if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
         reviews++; const review = JSON.parse(request.messages.at(-1)!.content);
         assert.equal(review.receipts.length, 1); assert.equal(review.receipts[0].tool, "run_shell");
         assert.deepEqual(review.receipts[0].args, { command: "node", args: ["--test", "check.test.mjs"] });
@@ -331,7 +331,7 @@ test("model receipts separate helper and review usage and link each completed ca
     assert.equal(request.requestId, events.filter(event => event.type === "model_intent").at(-1)?.data.clientRequestId);
     assert.ok(request.requestId); requestIds.push(request.requestId);
     const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length) {
       const payload = JSON.parse(request.messages.at(-1)!.content);
       return payload.task === "extract" ? reply('{"result":"four","sources":["provided-capsule"],"uncertainties":[]}') : reply('{"passed":true,"findings":[]}');
     }
@@ -458,7 +458,7 @@ test("task review isolates sibling code, preserves read dependencies, and still 
   let step = 0; let attemptId = ""; let validation = ""; const reviewed: string[] = []; const events: SessionEvent[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       const input = JSON.parse(request.messages.at(-1)!.content); reviewed.push(input.task.id);
       assert.equal(input.task.status, "running");
       if (input.task.id === "A") {
@@ -529,7 +529,7 @@ for (const changeBytes of [true, false]) {
     let step = 0; let attemptId = ""; const events: SessionEvent[] = [];
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-      if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+      if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
       const index = step++;
       if (index === 0) return call("work_claim", { taskId: "T1", allowedPaths: ["notes.txt"] });
       if (index === 1) attemptId = JSON.parse([...request.messages].reverse().find(message => message.role === "tool")!.content).attemptId;
@@ -603,7 +603,7 @@ test("successful npm --silent test receipts verify changed code and page newest-
   let step = 0; let attemptId = ""; let validationReceipt = ""; let reviews = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       reviews++; const input = JSON.parse(request.messages.at(-1)!.content);
       assert.match(input.source["test/value.test.mjs"], /updated value/);
       assert.deepEqual(input.changedPaths, ["src/value.mjs"]);
@@ -649,7 +649,7 @@ test("passing an existing test cannot bypass an explicit test-addition requireme
   let step = 0; let attemptId = ""; let receipt = ""; let reviews = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       reviews++; const review = JSON.parse(request.messages.at(-1)!.content);
       assert.ok(review.changedPaths.includes("test/value.test.mjs"));
       assert.match(review.source["test/value.test.mjs"], /numeric public value/);
@@ -689,7 +689,7 @@ test("a successful check that changes source cannot certify the changed bytes", 
   let step = 0; let attemptId = ""; let reviews = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) { reviews++; return reply('{"passed":true,"findings":[]}'); }
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) { reviews++; return reply('{"passed":true,"findings":[]}'); }
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     switch (step++) {
       case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src/value.mjs"] });
@@ -772,7 +772,7 @@ test("initial scoped claim retains criteria and rejects traversal or later scope
   let step = 0; let attemptId = ""; let controller: SessionController;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     switch (step++) {
       case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["../outside"] });
@@ -804,7 +804,7 @@ test("later findings reopen verified work and fence dependent tool attempts with
   let step = 0; let firstAttempt = ""; let repairAttempt = ""; let oldDependent = "";
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     switch (step++) {
       case 0: return call("work_refine", { requirements: [{ id: "R2", description: "Explain the arithmetic" }], constraints: [], nonGoals: [],
@@ -902,7 +902,7 @@ test("budget exhaustion can finalize verified work without another model call bu
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       modelCalls++;
       const contract = contractReviewFixture(request); if (contract) return contract;
-      if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+      if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
       switch (step++) {
         case 0: return call("read_file", { path: "notes.txt" });
         case 1:
@@ -1099,7 +1099,7 @@ test("project review handoff survives a lost response without duplicate status t
   const project = projectAuthorityFixture(true); let step = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     if (++step === 1) return call("work_claim", { taskId: "T1" });
     if (step === 2) return call("work_verify", { taskId: "T1", attemptId: JSON.parse(request.messages.at(-1)!.content).attemptId, invocationIds: [], summary: "Two plus two is four." });
     if (step === 3) return call("work_complete", {});
@@ -1191,7 +1191,7 @@ test("premature final answers cannot complete a goal and verified state survives
   const events: SessionEvent[] = []; let step = 0; let attemptId = "";
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     step++;
     if (step === 1) return reply("Done already!");
     if (step === 2) return call("work_claim", { taskId: "T1" });
@@ -1237,7 +1237,7 @@ test("stale completion explains changed inputs and revalidates the same task wit
   const events: SessionEvent[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       const context = JSON.parse(request.messages.at(-1)!.content);
       assert.equal(context.source["cache.mjs"], reviewCount++ ? after : before);
       return reply('{"passed":true,"findings":[]}');
@@ -1280,7 +1280,7 @@ for (const conflict of [false, true]) test(`final evidence delivery checks uncha
   let controller!: SessionController;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) {
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       reviewCount++;
       const context = JSON.parse(request.messages.at(-1)!.content);
       assert.equal(context.source["cache.mjs"], source);
@@ -1321,7 +1321,7 @@ test("duplicate completion delivery cannot submit the same project handoff twice
   const project = projectAuthorityFixture(); let step = 0; let controller!: SessionController;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
-    if (request.responseFormat?.type === "json" && !request.tools?.length) return reply('{"passed":true,"findings":[]}');
+    if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) return reply('{"passed":true,"findings":[]}');
     if (++step === 1) return call("work_claim", { taskId: "T1" });
     if (step === 2) return call("work_verify", { taskId: "T1", attemptId: controller.state!.tasks[0].attemptId, invocationIds: [], summary: "Two plus two is four." });
     if (step === 3) return { ...reply(""), toolCalls: [...call("work_complete", {}).toolCalls!, ...call("work_complete", {}).toolCalls!] };

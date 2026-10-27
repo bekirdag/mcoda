@@ -17,3 +17,12 @@ test("oversized error responses are cancelled without retaining their body", asy
   const error = await ModelServiceError.fromResponse(new Response(body, { status: 500 }));
   assert.equal(error.code, "service_unavailable"); assert.equal(cancelled, true);
 });
+
+test("native structured-output rejection is distinct from an unavailable service and never exposes response data", async () => {
+  const error = await ModelServiceError.fromResponse(new Response(JSON.stringify({ error: {
+    type: "structured_output_failed", code: "structured_output_failed", message: "Private model answer and credential must never be logged",
+  } }), { status: 502 }));
+  assert.equal(error.code, "invalid_response");
+  assert.doesNotMatch(error.message, /Private|credential|model answer/);
+  assert.equal((await ModelServiceError.fromResponse(new Response('{"error":{"code":"unknown_internal_error"}}', { status: 502 }))).code, "service_unavailable");
+});

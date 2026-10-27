@@ -7,10 +7,50 @@ const messages: ProviderMessage[] = [{ role: "system", content: "Independently r
 const response = (value: unknown): ProviderResponse => ({ message: { role: "assistant", content: JSON.stringify(value) } });
 const page = async (path: string, offset: number): Promise<ReviewSourcePage> => ({ path, offset, content: "acceptance detail", truncated: false });
 
+test("a malformed received review gets one accounted format repair with original authority and no native JSON validator", async () => {
+  let calls = 0;
+  const result = await runTaskReview({ messages, allowedPaths: [], maxInputChars: 10_000,
+    provider: { name: "fixture", generate: async request => {
+      assert.equal(request.responseFormat, undefined, "client validation must receive malformed output and its usage");
+      assert.deepEqual(request.messages.slice(0, 2), messages);
+      if (!calls++) return { message: { role: "assistant", content: '{"passed":false,"findings":["unescaped "literal""]}' }, usage: { totalTokens: 25 } };
+      assert.equal(request.messages.length, 4);
+      assert.match(request.messages.at(-1)!.content, /format/);
+      return response({ passed: false, findings: ["The exact literal violates the original contract."] });
+    } }, readSourcePage: page });
+  assert.equal(calls, 2); assert.equal(result.passed, false); assert.match(result.findings[0], /exact literal/);
+});
+
+test("review format repair is bounded, context checked, and never retries unknown transport outcomes", async () => {
+  for (const mode of ["invalid", "context", "transport"] as const) {
+    let calls = 0;
+    const run = () => runTaskReview({ messages, allowedPaths: [], maxInputChars: mode === "context" ? 1000 : 10_000,
+      provider: { name: "fixture", generate: async () => {
+        calls++; if (mode === "transport") throw new Error("Unknown remote outcome");
+        return { message: { role: "assistant", content: mode === "context" ? "x".repeat(5000) : "invalid JSON" } };
+      } }, readSourcePage: async () => { throw new Error("Malformed review cannot authorize reads"); } });
+    if (mode === "transport") await assert.rejects(run, /Unknown remote outcome/);
+    else assert.equal((await run()).passed, false);
+    assert.equal(calls, mode === "invalid" ? 2 : 1);
+  }
+});
+
+test("format repair does not widen the four-round source allowance", async () => {
+  let calls = 0; let reads = 0;
+  const result = await runTaskReview({ messages, allowedPaths: ["known.txt"], maxInputChars: 100_000,
+    provider: { name: "fixture", generate: async () => {
+      calls++;
+      return calls === 1 ? { message: { role: "assistant", content: "invalid JSON" } }
+        : response({ sourceRequests: [{ path: "known.txt", offset: calls * 8000 }] });
+    } }, readSourcePage: async (path, offset) => { reads++; return page(path, offset); } });
+  assert.equal(result.passed, false); assert.match(result.findings[0], /limit reached/);
+  assert.equal(calls, 6); assert.equal(reads, 4);
+});
+
 test("bounded review retains earlier evidence and returns only a final decision", async () => {
   let calls = 0; let reads = 0;
   const provider: Provider = { name: "fixture", generate: async request => {
-    assert.equal(request.tools, undefined); assert.equal(request.responseFormat?.type, "json");
+    assert.equal(request.tools, undefined); assert.equal(request.responseFormat, undefined);
     assert.equal(request.maxTokens, 6000, "paging retains the caller's configured review output budget");
     assert.deepEqual(request.messages.slice(0, 2), messages);
     if (calls++ === 0) return response({ sourceRequests: [{ path: "test/task.mjs", offset: 8000 }] });

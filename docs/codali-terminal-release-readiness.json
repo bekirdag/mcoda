@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T04:38:24.394951+00:00",
+  "updatedAt": "2026-10-27T04:57:47.389909+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -636,9 +636,9 @@
   "openGates": [
     {
       "id": "long-workflows",
-      "status": "running",
+      "status": "open",
       "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
-      "current": "AE billing-audit and service-adapters failed on transient discovery503; independent invoice/interval defects retained. AE data-delivery and localized-export continue on frozen .7. No successful multi-hour qualification."
+      "current": "All four AE .7 workflows failed. First cases ended on transient discovery503 plus invoice/interval defects. Second cases exhausted 4.8M shared tokens; Raijin passed all module grades, Suku failed endpoint-format contract. Neither completed the main goal or qualified the multi-hour gate. New integration proof renewal requires fresh live confirmation."
     },
     {
       "id": "broad-quality",
@@ -752,6 +752,13 @@
       "correction": "Whole-goal review now includes every canonical requirement and records new full-snapshot evidence for prior verified owners; ordinary reviews cannot renew siblings or certify unfinished work.",
       "state": "regression_passed_live_confirmation_pending",
       "evidence": "/home/wodo/.local/state/codali-integration-coverage-full.log"
+    },
+    {
+      "class": "native-structured-response-rejection",
+      "observation": "Saved review returned502 after native generation; installed Strata returns502 for structured-output validation failures, but the node ModelServiceError classified that native code as an outage. Original failure usage remains incomplete.",
+      "correction": "Safely classify structured_output_failed as invalid_response. Terminal reviewer owns JSON parsing so malformed received output retains usage and can receive one bounded format repair.",
+      "state": "regression_passed_live_confirmation_pending",
+      "evidence": "/home/wodo/.local/state/codali-review-json-full.log"
     }
   ],
   "diagnosedIncident": {
@@ -789,6 +796,11 @@
     {
       "description": "Review all canonical criteria at whole-goal integration; record fresh full-snapshot proofs for previously verified tasks while retaining original assessments. Reject missing inputs, partial coverage, unfinished tasks and stale revisions.",
       "validation": "Two pre-fix regressions reproduced; 133 focused and 1689 full tests pass. Frozen AE uses older .7; current long-task confirmation remains open.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Receive and strictly parse terminal review JSON in Codali, retaining model usage and allowing one bounded formatting repair. Classify native structured_output_failed separately from outages; no replay of unknown transport outcomes.",
+      "validation": "1692 full tests pass,3 skipped; added round-bound regression passes in27 focused tests. Live I/whole-goal J are pending.",
       "candidatePublished": false
     }
   ],

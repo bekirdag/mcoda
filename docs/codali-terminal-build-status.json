@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Prerelease 0.1.135-codali.8 is published on next; all 10 registry packages match CI-tested artifacts and all six installation jobs passed. New independent contract preparation, configured review output limits and comprehensive final-tree evidence renewal pass 1689 full tests (3 skipped), but live review and long-workflow qualification remain open. AE frozen .7 second journeys continue near their token limits; no stable promotion or 24-hour canary.",
+  "currentTask": "Preparing the next prerelease with comprehensive final-tree proof renewal and client-owned strict JSON review. Current full Codali suite passes 1692 tests (3 skipped), plus the added source-round repair regression passes in 27 focused tests. I catches the known Suku defect and accepts its repaired control with complete receipts; Raijin and whole-goal context diagnostics are running. All four frozen AE .7 journeys have failed; no successful multi-hour qualification or canary.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2068,9 +2068,20 @@
       "status": "failed",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-reasoning-20261027g/result.json",
       "limitation": "Both routes rejected the known message defect. Suku falsely treated an internal helper export as a public feature; Raijin repaired-control review hit upstream502. Request-only token overrides differed from then-current controller policy. Failed second request was not saved by the diagnostic wrapper; canonical successful preparation usage is retained. H fixes intent logging and tests the current configured runtime output policy."
+    },
+    {
+      "check": "Client-owned JSON review and native response-error classification",
+      "status": "regression_passed_live_qualification_pending",
+      "testsPassed": 1692,
+      "testsSkipped": 3,
+      "additionalFocusedTests": 27,
+      "artifact": "/home/wodo/.local/state/codali-review-json-full.log",
+      "focusedArtifact": "/home/wodo/.local/state/codali-review-json-final-focused.log",
+      "redArtifact": "/home/wodo/.local/state/codali-review-json-red.log",
+      "limitation": "Three pre-fix failures reproduced. Strict parsing permits one bounded formatting repair of received output while retaining original evidence and shared usage; unknown transport outcomes are not replayed. Native structured_output_failed maps to invalid_response without exposing upstream content."
     }
   ],
-  "updatedAt": "2026-10-27T04:38:24.394951+00:00",
+  "updatedAt": "2026-10-27T04:57:47.389909+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",

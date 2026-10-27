@@ -1,4 +1,4 @@
-export type ModelServiceErrorCode = "authentication_failed" | "entitlement_missing" | "quota_exhausted" | "rate_limited" | "service_unavailable" | "model_unavailable" | "invalid_request";
+export type ModelServiceErrorCode = "authentication_failed" | "entitlement_missing" | "quota_exhausted" | "rate_limited" | "service_unavailable" | "model_unavailable" | "invalid_request" | "invalid_response";
 
 /** Transport diagnostics contain stable classifications, never an upstream body. */
 export class ModelServiceError extends Error {
@@ -23,6 +23,7 @@ export class ModelServiceError extends Error {
       : ["quota_exceeded", "quota_exhausted", "insufficient_quota", "credits_exhausted", "insufficient_credits"].includes(serverCode) || response.status === 402 ? "quota_exhausted"
       : response.status === 429 ? "rate_limited"
       : response.status === 404 ? "model_unavailable"
+      : serverCode === "structured_output_failed" ? "invalid_response"
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
     return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : undefined);

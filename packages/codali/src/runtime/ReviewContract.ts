@@ -64,7 +64,9 @@ export async function prepareReviewContract(options: {
     if (JSON.stringify(messages).length > options.maxInputChars) {
       return reject("Required contract checks exceed the configured review context. Split the task or select a larger compatible reviewer; acceptance is not established.");
     }
-    const response = await options.provider.generate({ messages, signal: options.signal, maxTokens: options.maxOutputTokens ?? 4096, responseFormat: { type: "json" } });
+    // Parse the protocol here so malformed model output and its usage reach the
+    // accounted caller instead of becoming a native structured-output HTTP error.
+    const response = await options.provider.generate({ messages, signal: options.signal, maxTokens: options.maxOutputTokens ?? 4096 });
     options.signal?.throwIfAborted();
     if (response.toolCalls?.length || response.message.toolCalls?.length) return reject("Contract preparation returned an unsupported tool call; acceptance is not established.");
     try { return { checks: validate(JSON.parse(response.message.content), options.sources) }; }

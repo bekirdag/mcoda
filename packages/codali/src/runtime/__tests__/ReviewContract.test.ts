@@ -24,7 +24,7 @@ test("contract preparation receives only authoritative sources and retains exact
     provider: { name: "fixture", generate: async request => {
       calls++; assert.equal(request.tools, undefined); assert.equal(request.maxTokens, 4096);
       assert.deepEqual(JSON.parse(request.messages[1].content), { contractSources: sources });
-      assert.equal(request.messages.length, 2); assert.equal(request.responseFormat?.type, "json");
+      assert.equal(request.messages.length, 2); assert.equal(request.responseFormat, undefined);
       return response({ checks });
     } } });
   assert.deepEqual(result, { checks }); assert.equal(calls, 1); assert.equal(JSON.stringify(sources), before);

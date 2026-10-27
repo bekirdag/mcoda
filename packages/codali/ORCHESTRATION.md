@@ -164,6 +164,15 @@ contract and does not prove correctness. Both preparation and source review use
 the smaller of the configured effort output limit and reviewer model limits,
 reserving that output space in the smallest compatible context window. Native
 reasoning settings remain in the model configuration; no host defaults change.
+Terminal review requests plain model output and strictly parses the JSON protocol
+locally. This preserves the received response and usage when a model emits invalid
+JSON; a native structured-output validator would otherwise reject it before the
+controller can inspect it. Source review permits one format-only repair with the
+complete original authority retained, at most six calls including four source
+rounds and a verdict. This does not retry unknown transport failures or turn an
+invalid or contradictory approval into accepted evidence. Explicit native
+`structured_output_failed` errors elsewhere are classified as `invalid_response`
+without exposing upstream response content.
 
 The reviewer can request additional source pages before deciding. Requests are
 read-only and restricted to the current review paths; each page rechecks the
