@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "AE .7 second journeys continue; both first journeys failed on transient discovery503 with additional contract defects retained. Unpublished discovery retry and review cursor/context fixes pass1645fulltests (3skips); saved-artifact probes remain diagnostic. Complete live workflow, review-quality, context/failover, coexistence, auth/media and24-hourcanary gates before promotion.",
+  "currentTask": "Preparing prerelease0.1.135-codali.8 after whole-repository checks passed. It includes pre-dispatch accounting, discovery retries, exact review paging and corpusv4. AE frozen .7 second journeys continue at final integration. Scoped review still falsely approves an explicit message-contract defect; specification-first review remains a private experiment, not a shipped fix. Release gates and24-hourcanary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2024,9 +2024,21 @@
       "artifact": "/home/wodo/.local/state/codali-corpus-v4-green.log",
       "correctionArtifact": "/home/wodo/.local/state/codali-terminal-deployment/ae-billing-citation-oracle-correction-v4.json",
       "limitation": "One pre-fix false rejection reproduced. Accept correct sorted client/server citations with optional incident source; reject missing implementation evidence, unsorted/duplicate/unknown paths and wrong cause. Saved AE module passes corrected oracle without workspace changes; original v3 run remains failed for invoice,503 and incomplete goal."
+    },
+    {
+      "check": "Whole-repository prerelease8 build and test runner",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-prerelease8-all.log",
+      "completionMarker": "MCODA_RUN_ALL_TESTS_COMPLETE status=passed"
+    },
+    {
+      "check": "Scoped exact-contract live review diagnostic C",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-contract-20261027c/result.json",
+      "limitation": "Both Strata routes approve defective exact error message. Both correctly reject implementation-only repair whose generated test still expects the wrong message. These known fixtures are diagnostic, not held-out quality."
     }
   ],
-  "updatedAt": "2026-10-27T03:42:16.334520+00:00",
+  "updatedAt": "2026-10-27T03:58:05.020081+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",
