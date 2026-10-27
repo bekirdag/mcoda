@@ -7608,12 +7608,13 @@ describe("self-hosted node runtime", () => {
     const oldVendor = process.env.MSWARM_CODALI_VENDOR_ONLY;
     process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
     try {
-      for (const tools of [false, true]) for (const failure of ["context", "structured", "transport"]) {
+      for (const tools of [false, true]) for (const failure of ["context", "structured", "rate", "transport"]) {
         const contextRefused = failure === "context";
         let posts = 0;
         globalThis.fetch = async (_url, init) => {
           if (init?.method === "POST") posts++;
           if (failure === "transport") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+          if (failure === "rate") return Response.json({ error: { type: "rate_limit_error", code: "admission_full", message: "Private generated data" } }, { status: 429 });
           return Response.json({ error: contextRefused ? {
             type: "invalid_request_error",
             message: "request exceeds the context window: prompt (33012 tokens) leaves no room to answer in the context (32768); requests are never truncated",
@@ -7631,7 +7632,7 @@ describe("self-hosted node runtime", () => {
           },
         });
         assert.equal(result.status, "failed");
-        assert.equal(result.error?.code, contextRefused ? "context_length_exceeded" : failure === "structured" ? "invalid_response" : "upstream_error");
+        assert.equal(result.error?.code, contextRefused ? "context_length_exceeded" : failure === "structured" ? "invalid_response" : failure === "rate" ? "rate_limited" : "upstream_error");
         assert.deepEqual(result.usage, contextRefused ? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } : undefined);
         assert.notEqual(result.pre_start_failure, true, "A native refusal must not trigger reservation replay");
         assert.doesNotMatch(JSON.stringify(result), /Private generated data/);

@@ -2,6 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ModelServiceError } from "../ModelServiceError.js";
 
+test("a relay preserves throttling without exposing input or proving zero usage", () => {
+  const error = ModelServiceError.fromRelayError({ code: "rate_limited", message: "private prompt and token secret" });
+  assert.ok(error instanceof ModelServiceError);
+  assert.equal(error.code, "rate_limited");
+  assert.equal(error.status, 200);
+  assert.equal(error.nativeContextRefused, false);
+  assert.doesNotMatch(error.message, /private prompt|token secret/);
+  assert.equal(ModelServiceError.fromRelayError({ code: "unknown_code" }), undefined);
+});
+
 test("service failures distinguish authentication, entitlement, quota, throttling and outages", async () => {
   for (const [status, code] of [[401, "authentication_failed"], [403, "entitlement_missing"], [402, "quota_exhausted"], [429, "rate_limited"], [503, "service_unavailable"], [404, "model_unavailable"]] as const) {
     const error = await ModelServiceError.fromResponse(new Response('{"message":"secret data"}', { status, headers: { "retry-after": "3" } }));

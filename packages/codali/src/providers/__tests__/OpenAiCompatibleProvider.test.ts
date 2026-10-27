@@ -135,12 +135,12 @@ test("OpenAiCompatibleProvider diagnoses an empty successful envelope", { concur
   });
 });
 
-test("OpenAiCompatibleProvider preserves typed context rejection in JSON and SSE relay envelopes without replay", { concurrency: false }, async () => {
+test("OpenAiCompatibleProvider preserves typed refusals in JSON and SSE relay envelopes without replay", { concurrency: false }, async () => {
   const originalFetch = globalThis.fetch;
   try {
-    for (const stream of [false, true]) {
+    for (const stream of [false, true]) for (const code of ["context_length_exceeded", "rate_limited"]) {
       let posts = 0;
-      const error = { code: "context_length_exceeded", message: "Private upstream input" };
+      const error = { code, message: "Private upstream input" };
       globalThis.fetch = async () => {
         posts++;
         return stream
@@ -150,7 +150,7 @@ test("OpenAiCompatibleProvider preserves typed context rejection in JSON and SSE
       await assert.rejects(new OpenAiCompatibleProvider({ model: "test", retryTransient: false }).generate({ messages: [], stream }), (failure: unknown) => {
         assert.ok(failure instanceof Error);
         assert.equal(failure.name, "ModelServiceError");
-        assert.equal((failure as Error & { code: string }).code, "context_length_exceeded");
+        assert.equal((failure as Error & { code: string }).code, code);
         assert.doesNotMatch(failure.message, /Private upstream/);
         return true;
       });

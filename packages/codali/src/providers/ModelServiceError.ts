@@ -22,7 +22,7 @@ export class ModelServiceError extends Error {
   static fromRelayError(error: unknown): ModelServiceError | undefined {
     if (!error || typeof error !== "object") return undefined;
     const code = (error as Record<string, unknown>).code;
-    if (code === "context_length_exceeded" || code === "invalid_response") return new ModelServiceError(code, 200);
+    if (code === "context_length_exceeded" || code === "invalid_response" || code === "rate_limited") return new ModelServiceError(code, 200);
     return undefined;
   }
 

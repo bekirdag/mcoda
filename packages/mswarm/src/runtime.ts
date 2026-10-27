@@ -4039,7 +4039,7 @@ function selfHostedErrorCode(error: unknown): string | undefined {
   if (
     typeof code === "string" &&
     (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code)
-      || code === "context_length_exceeded" || code === "invalid_response")
+      || code === "context_length_exceeded" || code === "invalid_response" || code === "rate_limited")
   ) {
     return code;
   }
