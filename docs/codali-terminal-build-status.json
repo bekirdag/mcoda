@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Prerelease0.1.135-codali.9 is published and its10 registry artifacts match CI. Frozen AF workflows are running against both public Strata routes with high4096 reasoning; both first journeys passed stages1/2 and are in stage3. A real native context refusal exposed lost classification and unsettled usage. Client/node8f77fc2 passes1884 tests (3 skips); backendc5fa80b11 passes112 integration tests and typecheck. CandidateM isolated health/accounting checks passed;0.1.135-codali.10 is being prepared for publication. Keep production services unchanged during AF; no stable promotion or canary yet.",
+  "currentTask": "Prerelease0.1.135-codali.10 at60b2d733 is in release40471128022 after source CI40469812906 and platform40469812824 passed. Published.9 AF workflows continue unchanged. Correction: the harness uses effort=max, whose native budget is1024; high4096 is unused. Actual route receipts confirm1024. Client/node context/no-replay fixes pass1884 tests (3 skips), backendc5fa80b11 passes112 tests and typecheck, and candidateM images pass isolated health/accounting and graceful-drain checks. No production replacement during AF, stable promotion or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2262,7 +2262,8 @@
       "client": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261027af.manifest.json",
       "raijinLog": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-af-raijin-20261027.log",
       "sukuLog": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-af-suku-20261027.log",
-      "limitation": "Four scenarios reuse known contracts at nativehigh4096 and4.8M tokens per journey. Both clients run physically onRaijin while routes select different hosts. No fresh holdout, matched-latency, multi-hour completion or canary claim."
+      "limitation": "Four scenarios reuse known contracts at effort=max, nativehigh1024 and4.8M tokens per journey. The earlier4096 description was incorrect: it changed only the unused high profile. Both clients physically run onRaijin. No fresh holdout, matched-latency, multi-hour completion or canary claim.",
+      "correctionArtifact": "/home/wodo/.local/state/codali-terminal-deployment/af-reasoning-profile-correction-20261027.json"
     },
     {
       "check": "Actual native context overflow negative probe",
@@ -2293,9 +2294,15 @@
       "sourceCommit": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-image-qualification-m/result.json",
       "limitation": "Candidate images overlay2 source files on pinned deployedL bases. Isolated MySQL authenticated receipts preserve confirmed-zero context rejection and unknown usage. No production data or service replacement; live recheck pending."
+    },
+    {
+      "check": "AF effective reasoning profile audit",
+      "status": "configuration_assumption_corrected",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/af-reasoning-profile-correction-20261027.json",
+      "limitation": "134Raijin and158Suku route records show nativehigh1024. LongWorkflowJourney selects orchestration effort=max. Original frozen configs, environment labels and runs remain untouched; correction supersedes the inaccurate4096 description. Future cohorts must assert their effective max profile and validate recorded native parameters."
     }
   ],
-  "updatedAt": "2026-10-27T07:49:04.220841+00:00",
+  "updatedAt": "2026-10-27T08:09:07.937125+00:00",
   "openFindings": [
     "Actual native context refusal currently loses public error classification and leaves usage unsettled. Client/node8f77fc2 and backendc5fa80b11 fixes pass regressions, but need qualified deployment and live recheck after frozenAF drains.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
