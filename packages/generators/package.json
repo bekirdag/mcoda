@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/generators",
-  "version": "0.1.135-codali.6",
+  "version": "0.1.135-codali.7",
   "private": false,
   "description": "Internal generators and scaffolding for mcoda.",
   "type": "module",

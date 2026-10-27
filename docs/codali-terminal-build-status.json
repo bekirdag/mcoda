@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "AD billing-audit completed all four module grades but failed final goal completion after automatic review omitted three current test receipts and task ownership/attempt recovery stalled. A new selector retains up to ten distinct same-attempt/same-snapshot checks and reports the active owner on invalid claims/verification; 60 focused and 1607 full tests passed (3 skips). Remaining AD journeys stay frozen on bfeb86d. Prerelease .6 publication is resuming identical artifacts after npm propagation exceeded its retry window; .6 does not contain the new receipt fix. No global activation or 24-hour canary.",
+  "currentTask": "Source-paging correction 6b34f39 passes 75 focused and 1626 full CLI tests (3 skips), plus correct/defect review cases on both Strata hosts. Preparing .7 with receipt, mixed recovery, publisher and paging corrections; .6 published and all ten registry tarballs match CI, stable latest remains .134. AD first journeys failed; remaining data-delivery/localized-export remain frozen on bfeb86d. Fresh long-workflow qualification, global activation and 24-hour canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1890,7 +1890,7 @@
       "packagingJobs": 6,
       "installationJobs": 6,
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease6-release-artifacts",
-      "limitation": "npm publication and registry byte comparison remain pending. No global CLI activation or canary."
+      "limitation": "Published identical artifacts after npm propagation retries; registry byte comparison passed. No global CLI activation or canary; later source fixes are not in .6."
     },
     {
       "check": "Automatic multi-command verification evidence and actionable task ownership",
@@ -1904,12 +1904,50 @@
         "/home/wodo/.local/state/codali-multicheck-full.log"
       ],
       "limitation": "AD billing failure retained unchanged; remaining AD runs use the earlier frozen client, and live qualification of this correction remains pending."
+    },
+    {
+      "check": "codali.6 registry exact-byte verification",
+      "status": "passed",
+      "packages": 10,
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40427999530",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease6-registry-artifacts/verification.json",
+      "limitation": "Qualified revision498523b; later fixes require a new version."
+    },
+    {
+      "check": "Publish checked package batch before bounded registry installation verification",
+      "status": "passed",
+      "tests": 11,
+      "commit": "d94b4f4e6443976f17aa6c47a6067041c4f86963",
+      "artifact": "/home/wodo/.local/state/codali-publication-propagation-tests.log",
+      "ciRun": 40433276629,
+      "platformRun": 40433276618
+    },
+    {
+      "check": "Bounded hash-checked independent reviewer source pages",
+      "status": "passed",
+      "commit": "6b34f39",
+      "focusedTests": 75,
+      "fullPassed": 1626,
+      "fullSkipped": 3,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-review-pages-red.log",
+        "/home/wodo/.local/state/codali-review-pages-green2.log",
+        "/home/wodo/.local/state/codali-review-pages-full.log"
+      ],
+      "limitation": "Three pre-fix failures retained. Does not establish general reviewer correctness."
+    },
+    {
+      "check": "Public Strata source paging correct and defective tail cases on both hosts",
+      "status": "passed after diagnostic coverage-check correction",
+      "cases": 4,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-source-pages-public-20261027/coverage-correction.json",
+      "limitation": "Original diagnostic falsely required offset>=8000. Suku offset7440 page covered all omitted implementation and final rejection was correct. Original artifacts retained. Synthetic focused protocol checks, not held-out quality or multi-hour acceptance."
     }
   ],
-  "updatedAt": "2026-10-27T01:31:30.695351+00:00",
+  "updatedAt": "2026-10-27T01:55:55.365678+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.6 are published on next; stable mcoda latest remains .134. All ten .6 registry tarballs match the exact CI installation artifacts. .6 includes installer isolation and full CLI graph qualification, but excludes later multi-check review, mixed recovery, publisher and source-paging changes. No global CLI activation.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
@@ -1922,7 +1960,8 @@
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
-    "AD frozen client bfeb86d runs at4.8M tokens per journey, doubleAC; no same-budget efficiency claim. Both first journeys passed stages1/2; final completion and multi-hour duration are separate pending gates. Consumer/reconciliation probes ran concurrently, so latency is not an isolated benchmark.",
-    "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet."
+    "AD frozen client bfeb86d runs at4.8M tokens per journey, doubleAC; no same-budget efficiency claim. Billing-audit and service-adapters failed after stages1/2 passed; data-delivery and localized-export remain in stage3. Consumer/reconciliation probes ran concurrently, so latency is not an isolated benchmark.",
+    "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
+    "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures."
   ]
 }
