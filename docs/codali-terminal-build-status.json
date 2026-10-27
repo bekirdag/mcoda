@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Published .11 source6ecdedd is qualified and deployed as node N on both hosts, with backend M. All10 registry artifacts equal CI bytes and six installation jobs pass. Both-host public direct/gateway/staged-job and four native context-refusal receipt probes pass; Strata/Nomic processes unchanged. TNL and both Logmira tenants pass postdeploy checks. BDYA helpers pass, but its first large-model probe hit native429 and the relay obscured it as MCODA_EMPTY_RESPONSE; follow-up passes, original defect remains under investigation. Frozen AG long workflows started09:25UTC on exact .11 with both high/max4096 asserted. Do not update node/backend/native/pinned clients during these runs. Remaining quality, recovery, business/load and24-hour canary gates remain open.",
+  "currentTask": "Exact .11 node N and backend M remain deployed and frozen for AG workflows (high/max4096). Capacity429 classification fixes are source-only: mcoda d9a86c4, backend54753f5a2 and isolated BDYA relay e380a2b3. 1895 client/node tests and95 backend tests pass; BDYA relay five tests pass. Backend N images are being built/qualified without activation. Session migration/concurrent-process tests pass62 with one platform skip; actual published.11 task-state rollback and legacy.134 transcript roundtrips pass with explicit legacy task-resume limitations. AG final integration/review is running; one previously verified Raijin module was reopened for correction. Broad quality, actual smaller-context failover, production mixed load and24-hour canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -460,7 +460,8 @@
         "3f9e8c3 platform run40288983970 passed; general run40288983947 exposed missing sandbox precondition in new workflow tests on the non-Bubblewrap regression runner. 663ffef applies the existing explicit-skip policy; mandatory platform sandbox availability remains unchanged and all19 local workflow tests pass without skips.",
         "Public image/video/audio worker-SIGKILL recovery tests pass with original remote job IDs, one invocation, idempotent replay, conflicting409, verified artifact export and ACK expiration. Native video duration and full decode pass.",
         "179fd62 fixes POSIX atomic-rename nlink=0 races without accepting symlinks/hardlinks. Three regression fixtures reproduce old failure and pass; a1c26a7 platform40410934650 passes all six Linux/macOS jobs. General Windows CI rejected two POSIX-only test setups; those now explicitly skip there, with common file-safety tests retained.",
-        "fcf8831 preserves the last admitted validation result in model context alongside later rejected tool attempts; reproduced permission rejection previously hid the actual failed test. Plan-only progress guidance now stays in planning mode. 52focused/1600full tests pass, 3 full-suite skips."
+        "fcf8831 preserves the last admitted validation result in model context alongside later rejected tool attempts; reproduced permission rejection previously hid the actual failed test. Plan-only progress guidance now stays in planning mode. 52focused/1600full tests pass, 3 full-suite skips.",
+        "2026-10-27: added four-process optimistic-revision race, additive flat-v1 migration preserving goal/decisions/evidence/checkpoints/extensions, and future-work-schema no-write rejection. Session suite62pass/1Windows-onlyskip. Isolated actual.11 artifact task-state roundtrip and installed.134 transcript roundtrip pass; .134 cannot resume task orchestration or safely share concurrent writers. session-reader-qualification.json records exact reader hashes."
       ]
     },
     {
@@ -558,7 +559,8 @@
         "Legacy backend drain controller qualified on exact production Node20/Fastify gateway and proxy images: barriers preserve node result callbacks, reject new inference, close waits for accepted HTTP responses, idle connections are reaped without force-closing active responses. Three tests pass per image; full mSwarm170 plus drain3 pass. BackendI rollout completed with live quiescence proof.",
         "bfeb86d adds configurable host RAM admission around native initialization/recovery with shared durable media lease and sequential peer restoration. A pre-spawn rejection exposed a None-process wait in Strata restart; HostLoadRefused now returns without repeated load attempts.16guard scenarios/19bridge checks/386native regressions/23staged Suku checks and two actual systemd mock starts pass.",
         "Suku recovery2 cold deployment succeeded after node drain and canonical acceptedJobs=0: nativePID955257/node959125, video959009/image959053.23 sampled startup observations saw the native lease and both parked peers; minimum observed MemAvailable42842MiB, final ready/lease-empty/NRestarts0. This is not a reboot or complete mixed-load qualification.",
-        "Live active-render/reload qualification passes: image retained its lease and returned checksum-valid512x512 PNG, Strata reloaded under the shared lease and restored both media engines, mainPID955257/NRestarts0; node reopened as978233. Reload call97.48s; minimum observed MemAvailable43886MiB. Before this run, a newly accepted image job was allowed to finish draining; premature preflights correctly refused without unloading."
+        "Live active-render/reload qualification passes: image retained its lease and returned checksum-valid512x512 PNG, Strata reloaded under the shared lease and restored both media engines, mainPID955257/NRestarts0; node reopened as978233. Reload call97.48s; minimum observed MemAvailable43886MiB. Before this run, a newly accepted image job was allowed to finish draining; premature preflights correctly refused without unloading.",
+        "Native429 masked by BDYA empty-response handling is fixed in source: mcoda d9a86c4 preserves rate_limited, backend54753f5a2 returns sanitized429 in direct/outbound paths, BDYA relay e380a2b3 handlesHTTP429 and explicitHTTP200error envelopes. OnePOST/no automatic replay and unknownusage retained. Client/node1895pass+3skips, backend95pass+typecheck, relay5pass+focusedtypecheck. Not deployed; nodeN/backendM stay frozen forAG."
       ]
     },
     {
@@ -2396,9 +2398,27 @@
       "status": "running",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-ag-raijin-20261027.log",
       "limitation": "Started09:25UTC; both routes use exact .11 source6ecdedd and frozen profiles with high/max4096. Actual routes will be asserted. Existing known contracts reused, no untouched holdout or matched latency claim; AF failures preserved."
+    },
+    {
+      "check": "Capacity429 propagation source fixes",
+      "status": "passed_not_deployed",
+      "artifact": "/home/wodo/.local/state/codali-native429-codali-full.log",
+      "limitation": "Client1722+node173pass,3optional skips; backend95pass+typecheck; isolated BDYArelay5pass. Does not yet qualify production busy-load recovery or clear originalBDYA failure."
+    },
+    {
+      "check": "Session concurrency and migration",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-session-migration-full.log",
+      "limitation": "62pass/1Windows-onlyskip, including4realprocess CAS contention and schema preservation. No storage/power-failure universal claim."
+    },
+    {
+      "check": "Actual release reader roundtrips",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/session-reader-qualification.json",
+      "limitation": "Exact published.11 work-state rollback; installed.134 exclusive metadata/transcript compatibility only. Legacy.134 cannot resume task control and concurrent legacy writers are unsupported."
     }
   ],
-  "updatedAt": "2026-10-27T09:30:19.987760+00:00",
+  "updatedAt": "2026-10-27T10:16:09.999038+00:00",
   "openFindings": [
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
@@ -2419,6 +2439,7 @@
     "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
     "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures.",
     "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters.",
-    "Post-nodeN TNL story smoke and Logmira Wodo/Heka pass. BDYA first impact probe failed: exact invocationshi_4b920c5fae0f480ca228037202e95e92 records nativeHTTP429 as upstream_error; relay returnedMCODA_EMPTY_RESPONSE. Later same deployed-client impact probe passes via Suku Strata. Cause of concurrent native admission and lost classification must be fixed/qualified; a successful retry is not clearance. Evidence consumers-postdeploy-node-n.json and bdya-empty-exact-invocation.json."
+    "Post-nodeN TNL story smoke and Logmira Wodo/Heka pass. BDYA first impact probe failed: exact invocationshi_4b920c5fae0f480ca228037202e95e92 records nativeHTTP429 as upstream_error; relay returnedMCODA_EMPTY_RESPONSE. Later same deployed-client impact probe passes via Suku Strata. Cause of concurrent native admission and lost classification must be fixed/qualified; a successful retry is not clearance. Evidence consumers-postdeploy-node-n.json and bdya-empty-exact-invocation.json.",
+    "BDYA native429 root response is confirmed. Sanitized capacity propagation fixes are tested and committed across client, backend and isolated relay, but remain undeployed during frozenAG. Native queue pressure origin and mixed-load recovery remain unqualified; no uncertain request replay or zero-usage fabrication was added."
   ]
 }

@@ -70,10 +70,19 @@ intents survive restart and must be reconciled before another turn. A completed
 media receipt can prove an already-written artifact without rendering again.
 Fresh file hashes fence test evidence and project submissions.
 
-This is tested process/crash recovery, not a claim of recovery from every storage
-or power failure. Release downgrade readers, broad crash injection and retention
-qualification remain required. `SessionDurability.test.ts`, `SessionStore.test.ts`
-and media recovery tests are the executable references.
+Four independent Node processes have exercised a competing work revision: one
+update commits, three report conflicts, and all session/transcript records remain.
+Flat v1 records retain goal identity, decisions, evidence, checkpoints and unknown
+extensions when phases are added. Future work schemas are rejected without
+overwriting their records. `SessionDurability.test.ts` records these checks.
+
+An isolated release-reader check covers legacy 0.1.134 transcripts and task-aware
+rollback to the exact published 0.1.135-codali.11 artifact. Version 0.1.134 predates
+`WorkState`: it can read the transcript but cannot resume terminal task execution.
+Do not run that legacy writer concurrently against an upgraded session. Preserve
+the session files and use a compatible task-aware client for work continuation.
+Broader crash and retention qualification remains open; these checks do not cover
+every storage or power failure.
 
 ## ADR-004: one versioned model configuration
 
