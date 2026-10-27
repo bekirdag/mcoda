@@ -801,6 +801,7 @@ export class SessionController {
     const limits = effortBudget(this.options.resolved.config, this.effort);
     if (this.usage.toolCalls >= limits.maxToolCalls) throw new Error("Shared tool budget exhausted");
     this.usage.toolCalls += 1; // Rejected attempts consume budget and are auditable too.
+    await this.emit("usage", { usage: this.usageSnapshot() });
     if (!tool.name.startsWith("work_") && !["tools_discover", "tools_enable"].includes(tool.name) && (this.runContext?.deniedTools?.includes(tool.name) || this.runContext?.allowedTools && !this.runContext.allowedTools.includes(tool.name))) throw new ToolExecutionError("tool_permission_denied", "Tool excluded by the host or repository policy");
     try { await this.gate.authorize(tool, args, signal); }
     finally { await this.emit("authorization_state", { configHash: this.options.resolved.hash, grants: this.gate.exportGrants() }); }

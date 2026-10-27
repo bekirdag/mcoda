@@ -6,6 +6,39 @@ import os from "node:os";
 import { SessionController, type SessionEvent } from "../SessionController.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 
+for (const rejected of [false, true]) {
+  test(`tool attempts after the last model snapshot survive reconciliation and resume (rejected: ${rejected})`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-usage-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-usage-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    const config: OrchestrationConfig = { schemaVersion: 1, profile: "tool-usage",
+      providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } },
+      models: { large: { provider: "local", catalogId: "large", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } },
+      bindings: { lead: { candidates: ["large"] } }, effort: { medium: { maxModelCalls: 1 } } };
+    const events: SessionEvent[] = [];
+    const options = { workspaceRoot: root, storageRoot: storage,
+      resolved: { config, hash: orchestrationHash(config), source: "fixture" }, docdex: false, permissions: "workspace" as const };
+    let calls = 0;
+    const controller = new SessionController({ ...options, onEvent: event => { events.push(event); },
+      provider: { name: "fixture", supportsToolCalls: true, generate: async () => {
+        calls++;
+        return { message: { role: "assistant", content: "" }, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          toolCalls: [{ id: "last-call", name: rejected ? "run_shell" : "work_status",
+            args: rejected ? { command: "node", args: ["-e", "throw new Error('unclaimed shell must not execute')"] } : {} }] };
+      } } });
+    await assert.rejects(controller.run("Inspect the task status without changing the repository."), /Shared model\/token budget exhausted/);
+    assert.equal(calls, 1);
+    const receipts = events.filter(event => event.type === "tool_receipt");
+    assert.equal(receipts.length, 1);
+    assert.equal((receipts[0].data.receipt as { status: string }).status, rejected ? "failed" : "success");
+    const usage = controller.usageSnapshot(); assert.equal(usage.toolCalls, 1); assert.equal(usage.tokens, 15);
+    await controller.reconcileUsage(); assert.deepEqual(controller.usageSnapshot(), usage);
+    const resumed = new SessionController(options); await resumed.resume(controller.sessionId!);
+    assert.deepEqual(resumed.usageSnapshot(), usage);
+    await resumed.reconcileUsage(); assert.deepEqual(resumed.usageSnapshot(), usage);
+  });
+}
+
 for (const scenario of ["smaller-advertised-context", "no-eligible-model", "authentication", "malformed-catalog", "route-observer", "settlement-observer"] as const) {
   test(`undispatched ${scenario} failure releases accounting across resume`, { concurrency: false }, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-preflight-"));

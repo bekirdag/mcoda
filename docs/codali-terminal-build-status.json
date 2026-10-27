@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Exact .11 node N and backend M remain frozen for AG workflows (high/max4096). Capacity429 fixes remain source-only. Backend N images, image/drain fixtures and guarded rollout are qualified; BDYA HTTP drain and three rollback-fault cases pass, with deployment v2 prepared. Receipt-selection guidance4cf086c passed CI/platform. AG is still in final review: bounded source-page delivery passes96focused and1727full client tests with3optional skips. No production activation, broad quality pass or24-hour canary yet.",
+  "currentTask": "Exact .11 node N and backend M remain frozen for AG. Suku service-adapters passed all four module graders, final completion and restart after105minutes; all271 routes and environment audit pass, but the2h duration flag is false. OtherAG cases remain running. Prerelease.12 at9eae2e3 is building with CI/platform passed, not activated. Subsequent tool-attempt accounting persistence fix passes80focused and1729full client tests with3optional skips. Backend N and BDYA v2 remain qualified/staged. No broad quality pass or24-hour canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2442,9 +2442,21 @@
       "status": "passed_not_deployed",
       "artifact": "/home/wodo/.local/state/codali-review-page-full.log",
       "limitation": "Regression reproduced aggregate eight-page overflow. Candidate fits serialized source prefixes while retaining original authority, prior evidence, exact continuation offsets and unavailable markers;96focused and1727full client tests pass with3optional skips. Live qualification remains pending; frozenAG remains on.11."
+    },
+    {
+      "check": "AG Suku service-adapters completion",
+      "status": "passed_scoped_duration_short",
+      "artifact": "/home/wodo/.local/state/codali-long-workflow-public-ag-suku-20261027/service-adapters/result.json",
+      "limitation": "Ended11:10:43UTC after6330724ms. All four independent module graders pass, all six tasks verified and goal completed across process restart/steering. Route audit passes271calls with native4096 and post-run environmentStable=true. Duration105m31s is below2h; no padding or multi-hour gate claim. OtherAG journeys remain pending."
+    },
+    {
+      "check": "Tool-attempt usage persistence",
+      "status": "passed_not_deployed",
+      "artifact": "/home/wodo/.local/state/codali-tool-usage-full.log",
+      "limitation": "Live AG resume exposed386→385 tool calls. Two regressions reproduce loss of both successful and rejected attempts after the last model snapshot. Existing usage events now persist the reservation before authorization/execution. 80focused and1729full client tests pass,3optional skips. This subsequent fix is not included in the immutable.12 tag; historical missing snapshots are not fabricated."
     }
   ],
-  "updatedAt": "2026-10-27T11:03:00Z",
+  "updatedAt": "2026-10-27T11:20:00Z",
   "openFindings": [
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
