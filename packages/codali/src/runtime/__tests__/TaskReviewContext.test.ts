@@ -48,6 +48,7 @@ test("whole-objective review retains all changes and current steering despite a 
   const context = taskReviewContext(state, state.tasks[1], input);
   assert.equal(context.reviewScope, "whole_goal");
   assert.equal(context.goal, state.objective);
+  assert.deepEqual(context.requirements, state.requirements, "integration reviews every canonical criterion, including refinements");
   assert.deepEqual(context.changedPaths, input.changedPaths);
   assert.deepEqual(context.otherTaskChangedPaths, []);
   assert.ok(context.reviewPaths.includes("test/b.test.mjs"));

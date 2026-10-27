@@ -10,8 +10,9 @@ export function taskReviewContext(state: WorkState, task: WorkTask, input: {
   contextPaths: string[];
   currentHashes: Record<string, string>;
 }) {
-  const requirements = state.requirements.filter(requirement => task.requirementIds.includes(requirement.id));
-  const wholeGoal = requirements.some(requirement => requirement.description === state.originalObjective);
+  const assigned = state.requirements.filter(requirement => task.requirementIds.includes(requirement.id));
+  const wholeGoal = assigned.some(requirement => requirement.description === state.originalObjective);
+  const requirements = wholeGoal ? state.requirements : assigned;
   const inScope = (file: string) => wholeGoal || isWithinScope(file, task.allowedPaths);
   const changedPaths = input.changedPaths.filter(inScope);
   const reviewPaths = [...new Set([

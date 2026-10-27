@@ -210,6 +210,42 @@ export const verifyWorkTask = (state: WorkState, taskId: string, attemptId: stri
   task.status = "verified"; refreshReadyTasks(state);
 };
 
+/** Record a new assessment of every criterion at one final workspace snapshot.
+ * This does not reuse stale proofs: the controller must review the whole goal,
+ * all canonical criteria and current source after fresh validation. Ordinary
+ * task reviews cannot refresh another task, or resurrect reopened work. */
+export const recordIntegratedWorkEvidence = (state: WorkState, taskId: string, attemptId: string,
+  evidence: EvidenceReceipt, coverage: { goalRevision: number; planRevision: number; criterionIds: string[] }): void => {
+  const task = assertWorkAttempt(state, taskId, attemptId);
+  assert(state.requirements.some(r => task.requirementIds.includes(r.id) && r.description === state.originalObjective), "Integration review requires the whole-goal owner");
+  assert(coverage.goalRevision === state.goalRevision && coverage.planRevision === (state.planRevision ?? 1), "Integration review has a stale goal or plan revision");
+  assert(coverage.criterionIds.length === state.requirements.length && new Set(coverage.criterionIds).size === coverage.criterionIds.length
+    && state.requirements.every(r => coverage.criterionIds.includes(r.id)), "Integration review must cover every canonical criterion");
+  assert(evidence.taskId === taskId && evidence.kind === "review" && evidence.ok && !state.evidence.some(e => e.id === evidence.id)
+    && evidence.criterionIds.length === task.requirementIds.length && task.requirementIds.every(id => evidence.criterionIds.includes(id)), "Integration requires a new successful review of the owner's criteria");
+  const others = state.tasks.filter(t => t.id !== taskId && !["cancelled", "superseded"].includes(t.status));
+  for (const other of others) {
+    assert(other.status === "verified" && dependenciesVerified(state, other), `Integration cannot certify unfinished task ${other.id}`);
+    assert(other.requirementIds.every(id => state.evidence.some(e => other.evidenceIds.includes(e.id) && e.taskId === other.id && e.ok && e.criterionIds.includes(id))),
+      `Integration requires prior accepted evidence for task ${other.id}`);
+    assert(state.evidence.filter(e => other.evidenceIds.includes(e.id)).every(e => Object.keys(e.inputHashes).every(file =>
+      typeof evidence.inputHashes[file] === "string")), `Integration omitted a tracked input for task ${other.id}`);
+  }
+  // Validate all owners before changing any proof. Each new receipt keeps the
+  // complete current hash map, so later edits still invalidate completion.
+  const assessed = [task, ...others].map(owner => ({ ...evidence,
+    id: owner.id === taskId ? evidence.id : randomUUID(), taskId: owner.id, criterionIds: [...owner.requirementIds],
+    inputHashes: { ...evidence.inputHashes }, integrationReview: { id: evidence.id,
+      goalRevision: coverage.goalRevision, planRevision: coverage.planRevision,
+      criterionIds: [...coverage.criterionIds], priorEvidenceIds: [...owner.evidenceIds] },
+  }));
+  recordWorkEvidence(state, taskId, attemptId, assessed[0]);
+  for (const renewed of assessed.slice(1)) {
+    state.evidence.push(renewed);
+    state.tasks.find(owner => owner.id === renewed.taskId)!.evidenceIds.push(renewed.id);
+  }
+};
+
 /** Reopen stale proofs and their dependent tasks without discarding audit history. */
 export const refreshStaleEvidence = (state: WorkState, currentHashes: Record<string, string>): string[] => {
   const reopened: string[] = [];

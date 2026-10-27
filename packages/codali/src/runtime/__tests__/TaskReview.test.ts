@@ -11,13 +11,14 @@ test("bounded review retains earlier evidence and returns only a final decision"
   let calls = 0; let reads = 0;
   const provider: Provider = { name: "fixture", generate: async request => {
     assert.equal(request.tools, undefined); assert.equal(request.responseFormat?.type, "json");
+    assert.equal(request.maxTokens, 6000, "paging retains the caller's configured review output budget");
     assert.deepEqual(request.messages.slice(0, 2), messages);
     if (calls++ === 0) return response({ sourceRequests: [{ path: "test/task.mjs", offset: 8000 }] });
     assert.equal(request.messages.length, 4);
     assert.equal(JSON.parse(request.messages.at(-1)!.content).sourcePages[0].content, "acceptance detail");
     return response({ passed: false, findings: ["Missing required error handling."] });
   } };
-  const result = await runTaskReview({ provider, messages, allowedPaths: ["test/task.mjs"], maxInputChars: 10_000,
+  const result = await runTaskReview({ provider, messages, allowedPaths: ["test/task.mjs"], maxInputChars: 10_000, maxOutputTokens: 6000,
     readSourcePage: async (path, offset) => { reads++; return page(path, offset); } });
   assert.deepEqual(result, { passed: false, findings: ["Missing required error handling."] });
   assert.equal(calls, 2); assert.equal(reads, 1); assert.equal(messages.length, 2);

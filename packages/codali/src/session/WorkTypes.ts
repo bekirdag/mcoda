@@ -59,6 +59,14 @@ export interface EvidenceReceipt {
   invocationId?: string;
   inputHashes: Record<string, string>;
   at: string;
+  /** A fresh whole-goal assessment, with prior task proofs retained for audit. */
+  integrationReview?: {
+    id: string;
+    goalRevision: number;
+    planRevision: number;
+    criterionIds: string[];
+    priorEvidenceIds: string[];
+  };
 }
 
 export interface WorkCheckpoint {

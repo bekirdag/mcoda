@@ -1,10 +1,85 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeWorkContext, createWorkState, replaceWorkPlan, updateWorkPlan, claimWorkTask, assertWorkAttempt, recordWorkEvidence, verifyWorkTask, completeWorkGoal, amendWorkGoal, recordDecision, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask } from "../WorkState.js";
-import type { WorkState } from "../WorkTypes.js";
+import { activeWorkContext, createWorkState, replaceWorkPlan, updateWorkPlan, claimWorkTask, assertWorkAttempt, recordIntegratedWorkEvidence, recordWorkEvidence, verifyWorkTask, completeWorkGoal, amendWorkGoal, recordDecision, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask } from "../WorkState.js";
+import type { EvidenceReceipt, WorkState } from "../WorkTypes.js";
 
 const task = (id: string, dependsOn: string[] = []) => ({ id, title: id, requirementIds: ["R1"], dependsOn, allowedPaths: ["src"] });
 const evidence = (state: WorkState, attempt: string) => recordWorkEvidence(state, "T1", attempt, { id: "E1", taskId: "T1", criterionIds: ["R1"], kind: "tool", ok: true, summary: "Regression check passed", invocationId: "I1", inputHashes: { "src/a.ts": "old" }, at: new Date().toISOString() });
+
+function integrationFixture() {
+  const state = createWorkState("Deliver A and B together.");
+  state.requirements.push({ id: "A", description: "Deliver A", required: true }, { id: "B", description: "Deliver B", required: true });
+  replaceWorkPlan(state, [
+    { id: "A", title: "A", requirementIds: ["A"], dependsOn: [], allowedPaths: ["a.txt"] },
+    { id: "B", title: "B", requirementIds: ["B"], dependsOn: ["A"], allowedPaths: ["b.txt"] },
+    { id: "integration", title: "Final integration", requirementIds: ["R1"], dependsOn: ["B"], allowedPaths: [] },
+  ]);
+  for (const id of ["A", "B"]) {
+    const attempt = claimWorkTask(state, id).attemptId!;
+    const inputHashes = { "a.txt": "A", "b.txt": id === "A" ? "old B" : "B" };
+    recordWorkEvidence(state, id, attempt, { id: `old-${id}`, taskId: id, criterionIds: [id], kind: "review", ok: true,
+      summary: `Accepted ${id}`, inputHashes, at: new Date().toISOString() });
+    verifyWorkTask(state, id, attempt, inputHashes);
+  }
+  const attempt = claimWorkTask(state, "integration").attemptId!;
+  const proof: EvidenceReceipt = { id: "integrated", taskId: "integration", criterionIds: ["R1"], kind: "review", ok: true,
+    summary: "Every criterion was independently reviewed at the final tree", inputHashes: { "a.txt": "A", "b.txt": "B" }, at: new Date().toISOString() };
+  const coverage = { goalRevision: state.goalRevision, planRevision: state.planRevision!, criterionIds: state.requirements.map(r => r.id) };
+  return { state, attempt, proof, coverage };
+}
+
+test("whole-goal review records new final-tree proofs while retaining stale assessments for audit", () => {
+  const { state, attempt, proof, coverage } = integrationFixture();
+  const historical = structuredClone(state.evidence);
+  recordIntegratedWorkEvidence(state, "integration", attempt, proof, coverage);
+  verifyWorkTask(state, "integration", attempt, proof.inputHashes);
+  assert.deepEqual(refreshStaleEvidence(state, proof.inputHashes), []);
+  assert.deepEqual(state.evidence.slice(0, 2), historical);
+  assert.equal(state.evidence.length, 5);
+  for (const id of ["A", "B"]) {
+    const renewed = state.evidence.filter(e => e.taskId === id).at(-1)!;
+    assert.equal(renewed.integrationReview?.id, proof.id);
+    assert.deepEqual(renewed.integrationReview?.priorEvidenceIds, [`old-${id}`]);
+    assert.deepEqual(renewed.inputHashes, proof.inputHashes);
+    assert.deepEqual(renewed.criterionIds, [id]);
+  }
+  completeWorkGoal(state, proof.inputHashes);
+  assert.equal(state.status, "completed");
+  assert.deepEqual(refreshStaleEvidence(state, { ...proof.inputHashes, "a.txt": "later edit" }), ["A", "B", "integration"]);
+  assert.equal(state.status, "active");
+  assert.throws(() => completeWorkGoal(state, { ...proof.inputHashes, "a.txt": "later edit" }), /Required task work remains/);
+});
+
+for (const invalid of ["partial", "duplicate", "stale-goal", "stale-plan", "failed-review", "tool-receipt", "unfinished", "missing-proof", "omitted-input"] as const) {
+  test(`whole-goal evidence rejects ${invalid} without changing existing proofs`, () => {
+    const { state, attempt, proof, coverage } = integrationFixture();
+    switch (invalid) {
+      case "partial": coverage.criterionIds.pop(); break;
+      case "duplicate": coverage.criterionIds[2] = coverage.criterionIds[1]; break;
+      case "stale-goal": coverage.goalRevision--; break;
+      case "stale-plan": coverage.planRevision--; break;
+      case "failed-review": proof.ok = false; break;
+      case "tool-receipt": proof.kind = "tool"; proof.invocationId = "check"; break;
+      case "unfinished": state.tasks[0].status = "ready"; break;
+      case "missing-proof": state.tasks[0].evidenceIds = []; break;
+      case "omitted-input": delete proof.inputHashes["a.txt"]; break;
+    }
+    const before = structuredClone(state);
+    assert.throws(() => recordIntegratedWorkEvidence(state, "integration", attempt, proof, coverage));
+    assert.deepEqual(state, before);
+  });
+}
+
+test("an assigned task cannot renew sibling proofs even with an all-criteria claim", () => {
+  const { state, coverage, proof } = integrationFixture();
+  const owner = state.tasks.find(t => t.id === "integration")!;
+  releaseWorkTask(state, owner.id, owner.attemptId!, "Inspect B again");
+  reopenVerifiedTask(state, "B", "New evidence needs review");
+  const attempt = claimWorkTask(state, "B").attemptId!;
+  const before = structuredClone(state);
+  assert.throws(() => recordIntegratedWorkEvidence(state, "B", attempt, { ...proof, taskId: "B", criterionIds: ["B"] }, coverage), /whole-goal owner/);
+  assert.deepEqual(state, before);
+});
 
 test("plans reject cycles and missing prerequisites without replacing the current plan", () => {
   const state = createWorkState("Fix parser");

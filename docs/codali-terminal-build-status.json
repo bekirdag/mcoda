@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing prerelease0.1.135-codali.8 after whole-repository checks passed. It includes pre-dispatch accounting, discovery retries, exact review paging and corpusv4. AE frozen .7 second journeys continue at final integration. Scoped review still falsely approves an explicit message-contract defect; specification-first review remains a private experiment, not a shipped fix. Release gates and24-hourcanary remain open.",
+  "currentTask": "Prerelease 0.1.135-codali.8 is published on next; all 10 registry packages match CI-tested artifacts and all six installation jobs passed. New independent contract preparation, configured review output limits and comprehensive final-tree evidence renewal pass 1689 full tests (3 skipped), but live review and long-workflow qualification remain open. AE frozen .7 second journeys continue near their token limits; no stable promotion or 24-hour canary.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2036,12 +2036,44 @@
       "status": "failed",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-contract-20261027c/result.json",
       "limitation": "Both Strata routes approve defective exact error message. Both correctly reject implementation-only repair whose generated test still expects the wrong message. These known fixtures are diagnostic, not held-out quality."
+    },
+    {
+      "check": "Prerelease8 publication and exact registry artifact verification",
+      "status": "passed",
+      "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40447102955",
+      "packages": 10,
+      "installationJobs": 6,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease8-registry-artifacts/verification.json",
+      "limitation": "Published to next only; stable latest and global CLI remain 0.1.134."
+    },
+    {
+      "check": "Independent contract preparation and final-tree integration proof renewal",
+      "status": "regression_passed_live_qualification_pending",
+      "testsPassed": 1689,
+      "testsSkipped": 3,
+      "focusedTestsPassed": 133,
+      "artifact": "/home/wodo/.local/state/codali-integration-coverage-full.log",
+      "redArtifact": "/home/wodo/.local/state/codali-integration-coverage-red.log",
+      "limitation": "Whole-goal review covers every canonical criterion and refreshes only previously verified tasks with new audited full-snapshot proofs. Partial coverage, stale revisions, unfinished work and later edits remain rejected. Model review quality is not established by scripted providers."
+    },
+    {
+      "check": "Actual runtime contract preparation diagnostic F",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-runtime-20261027f/result.json",
+      "limitation": "Suku falsely approved the exact-message defect; Raijin rejected it. Both repaired controls passed. Known artifacts are diagnostic only."
+    },
+    {
+      "check": "Larger native reasoning diagnostic G",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-reasoning-20261027g/result.json",
+      "limitation": "Both routes rejected the known message defect. Suku falsely treated an internal helper export as a public feature; Raijin repaired-control review hit upstream502. Request-only token overrides differed from then-current controller policy. Failed second request was not saved by the diagnostic wrapper; canonical successful preparation usage is retained. H fixes intent logging and tests the current configured runtime output policy."
     }
   ],
-  "updatedAt": "2026-10-27T03:58:05.020081+00:00",
+  "updatedAt": "2026-10-27T04:38:24.394951+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",

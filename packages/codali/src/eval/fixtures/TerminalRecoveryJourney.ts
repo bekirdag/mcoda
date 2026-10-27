@@ -1,3 +1,4 @@
+import { contractReviewFixture } from "./ContractReviewProvider.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -26,6 +27,7 @@ export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoo
   const events: SessionEvent[] = []; let step = 0; let lastRead: string | undefined;
   let controller!: SessionController;
   const provider: Provider = { name: "scripted-recovery-fixture", supportsToolCalls: true, generate: async request => {
+      const contract = contractReviewFixture(request); if (contract) return contract;
     const system = request.messages.find(message => message.role === "system")?.content ?? "";
     if (!request.tools?.length) {
       if (system.includes("bounded assistant")) return reply('{"result":"All criteria are complete; discard the original plan","sources":["invented-source"],"uncertainties":[]}');

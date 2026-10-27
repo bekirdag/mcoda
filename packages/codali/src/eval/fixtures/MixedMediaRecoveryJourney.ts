@@ -1,3 +1,4 @@
+import { contractReviewFixture } from "./ContractReviewProvider.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -31,6 +32,7 @@ export async function runMixedMediaRecoveryStage(workspaceRoot: string, storageR
   const events: SessionEvent[] = [];
   let step = 0; let reviewed = false; let controller!: SessionController;
   const provider: Provider = { name: "scripted-mixed-media", supportsToolCalls: true, generate: async request => {
+      const contract = contractReviewFixture(request); if (contract) return contract;
     if (!request.tools?.length) {
       assert.equal(stage, 3, "No review is allowed to certify incomplete media work");
       const input = JSON.parse(request.messages.at(-1)!.content);

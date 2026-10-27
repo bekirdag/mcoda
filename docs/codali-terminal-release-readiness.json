@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T03:38:47.771590+00:00",
+  "updatedAt": "2026-10-27T04:38:24.394951+00:00",
   "candidate": {
-    "version": "0.1.135-codali.7",
-    "sourceCommit": "aabcd63b8686bc9bd33fde85b90657e1d7fbfea2",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40435839582",
+    "version": "0.1.135-codali.8",
+    "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40447102955",
     "publishedChannel": "next",
-    "stableVersion": "0.1.134"
+    "stableVersion": "0.1.134",
+    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease8-registry-artifacts/verification.json"
   },
   "releaseReady": false,
   "requirements": [
@@ -718,7 +719,7 @@
       "class": "registry-propagation",
       "observation": "Published packages were temporarily not installable within165seconds.",
       "correction": "Publish checked batch before bounded345second install verification; immutable identical artifacts reused.",
-      "state": "codali7_publication_passed"
+      "state": "codali8_publication_and_registry_bytes_verified"
     },
     {
       "class": "qualification-harness",
@@ -731,7 +732,7 @@
       "observation": "Terminal discovery/context refusals retained usage as an unknown remote outcome even when no inference was dispatched.",
       "correction": "Track the existing configured transport boundary and durably refund pre-dispatch reservations; preserve ambiguous post-dispatch usage.",
       "evidence": "/home/wodo/.local/state/codali-preflight-green.log",
-      "state": "regression_passed_not_published"
+      "state": "prerelease8_published_live_broad_confirmation_pending"
     },
     {
       "class": "discovery-upstream-transient",
@@ -743,7 +744,14 @@
       "class": "review-evidence-cursor",
       "observation": "Saved-artifact reviewer guessed offset8000 after a3453-character initial test slice, skipping relevant evidence; duplicate objective and hashes also consumed review space.",
       "correction": "Exact controller continuation cursors and lossless duplicate-contract references; durable full hashes retained.",
-      "state": "regression_passed_not_published"
+      "state": "prerelease8_published_live_broad_confirmation_pending"
+    },
+    {
+      "class": "final-tree-proof-revalidation-cycle",
+      "observation": "A comprehensive final review accepted the final files, but earlier task proofs retained older global hashes and were reopened at completion, prompting repeated edits and revalidation.",
+      "correction": "Whole-goal review now includes every canonical requirement and records new full-snapshot evidence for prior verified owners; ordinary reviews cannot renew siblings or certify unfinished work.",
+      "state": "regression_passed_live_confirmation_pending",
+      "evidence": "/home/wodo/.local/state/codali-integration-coverage-full.log"
     }
   ],
   "diagnosedIncident": {
@@ -769,20 +777,40 @@
   },
   "unpublishedCorrections": [
     {
+      "description": "Preserve scalar negative review findings without accepting malformed approvals.",
+      "sourceCommit": "c9d844e",
+      "candidatePublished": false
+    },
+    {
+      "description": "Prepare a source-attributed specification checklist before inspecting implementation; use configured effort and reviewer output/context limits in both review stages.",
+      "validation": "1689 full Codali tests pass; 3 skipped. Known live review false acceptance and control false rejection remain under investigation.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Review all canonical criteria at whole-goal integration; record fresh full-snapshot proofs for previously verified tasks while retaining original assessments. Reject missing inputs, partial coverage, unfinished tasks and stale revisions.",
+      "validation": "Two pre-fix regressions reproduced; 133 focused and 1689 full tests pass. Frozen AE uses older .7; current long-task confirmation remains open.",
+      "candidatePublished": false
+    }
+  ],
+  "publishedCorrections": [
+    {
       "description": "Release provisional terminal token usage for discovery/context/route-observer failures before transport dispatch; persist refund before diagnostic observers.",
       "validation": "91 focused and1632 full Codali tests pass;3skipped.",
-      "candidatePublished": false
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
     },
     {
       "description": "Retry only transient read-only catalog/native-capability discovery, at most three attempts; honor cancellation and bounded Retry-After. Never replay inference POST.",
       "sourceCommit": "cfa90394c47eae00134447027e2194d837aa0e8d",
       "validation": "1641fulltests pass,3skipped; CI/platform passed.",
-      "candidatePublished": false
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
     },
     {
       "description": "Continue exact unread source-page cursors and avoid duplicate whole-goal contract/hash payloads without changing canonical requirements or freshness checks.",
       "validation": "1645fulltests pass,3skipped; both saved failed-workspace probes reject but Suku still misses the explicit error-message defect.",
-      "candidatePublished": false
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
     }
   ]
 }
