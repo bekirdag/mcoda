@@ -389,7 +389,7 @@ for (const outcome of ["cancel_after_response", "transport_failure"] as const) {
   });
 }
 
-test("fresh whole-goal review covers earlier tasks at the final tree without a revalidation cycle", async t => {
+for (const rejectFinalTask of [false, true]) test(`fresh whole-goal review reassesses earlier tasks at the final tree (reject=${rejectFinalTask})`, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-integration-coverage-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-integration-coverage-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
@@ -405,10 +405,17 @@ test("fresh whole-goal review covers earlier tasks at the final tree without a r
     const contract = contractReviewFixture(request); if (contract) return contract;
     if (!request.tools?.length) {
       const input = JSON.parse(request.messages.at(-1)!.content); reviewed.push(input.task.id);
+      if (input.task.id === "A" && reviewed.filter(id => id === "A").length === 2) {
+        assert.equal(input.source["b.txt"], "B\n", "reassessment uses the final dependency, not the old accepted snapshot");
+        if (rejectFinalTask) return reply('{"passed":false,"findings":["Final dependency invalidates task A."]}');
+      }
       if (input.task.id === "integration") {
         assert.deepEqual(input.requirements.map((value: { id: string }) => value.id), ["R1", "R2", "R3"]);
         assert.equal(input.reviewScope, "whole_goal");
-        assert.equal(input.source["a.txt"], "A\n"); assert.equal(input.source["b.txt"], "B\n");
+        assert.deepEqual(input.taskAssessments.map((value: { taskId: string }) => value.taskId), ["A", "B"]);
+        assert.ok(input.taskAssessments.every((value: { workspaceSnapshotHash: string }) => value.workspaceSnapshotHash === input.workspaceSnapshotHash));
+        assert.equal(input.source["a.txt"], undefined); assert.equal(input.source["b.txt"], undefined);
+        assert.ok(input.sourceRoles["a.txt"] && input.sourceRoles["b.txt"], "freshly assessed sources remain available for integration paging");
       }
       return reply('{"passed":true,"findings":[]}');
     }
@@ -430,13 +437,25 @@ test("fresh whole-goal review covers earlier tasks at the final tree without a r
       case 9: return call("work_verify", { taskId: "B", attemptId, invocationIds: [], summary: "B is written." });
       case 10: assert.equal(JSON.parse(previous()).verified, true); return call("work_claim", { taskId: "integration" });
       case 11: attemptId = JSON.parse(previous()).attemptId; return call("work_verify", { taskId: "integration", attemptId, invocationIds: [], summary: "Both documents meet all final criteria." });
-      case 12: assert.equal(JSON.parse(previous()).verified, true); return call("work_complete", {});
-      default: return call("work_block", { taskId: "integration", reason: "The final integrated evidence did not establish completion." });
+      case 12:
+        assert.equal(JSON.parse(previous()).verified, !rejectFinalTask);
+        if (rejectFinalTask) {
+          assert.match(previous(), /Final dependency invalidates task A/);
+          return call("work_block", { taskId: "integration", reason: "The final dependency needs a repair." });
+        }
+        return call("work_complete", {});
+      default: return rejectFinalTask ? reply("Final dependency repair remains open.")
+        : call("work_block", { taskId: "integration", reason: "The final integrated evidence did not establish completion." });
     }
   } };
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: reviewResolved, effort: "high", provider, docdex: false, permissions: "workspace" });
-  assert.equal((await controller.run(objective)).completed, true);
-  assert.deepEqual(reviewed, ["A", "B", "integration"]);
+  assert.equal((await controller.run(objective)).completed, !rejectFinalTask);
+  assert.deepEqual(reviewed, rejectFinalTask ? ["A", "B", "A"] : ["A", "B", "A", "B", "integration"]);
+  if (rejectFinalTask) {
+    assert.equal(controller.state!.evidence.length, 2, "failed final assessment cannot renew any prior proof");
+    assert.ok(controller.state!.evidence.every(e => !e.integrationReview));
+    return;
+  }
   const first = controller.state!.evidence.find(e => e.taskId === "A")!;
   const latest = controller.state!.evidence.filter(e => e.taskId === "A").at(-1)!;
   assert.notEqual(latest.inputHashes["b.txt"], first.inputHashes["b.txt"]);
@@ -460,7 +479,7 @@ test("task review isolates sibling code, preserves read dependencies, and still 
       const contract = contractReviewFixture(request); if (contract) return contract;
     if (!request.tools?.length && request.messages[0]?.content.startsWith("Review this task")) {
       const input = JSON.parse(request.messages.at(-1)!.content); reviewed.push(input.task.id);
-      assert.equal(input.task.status, "running");
+      assert.equal(input.task.status, reviewed.filter(id => id === input.task.id).length > 1 ? "verified" : "running");
       if (input.task.id === "A") {
         assert.match(input.receipts[0].output, /# pass 1/);
         assert.match(input.receipts[0].output, /# fail 0/);
@@ -478,7 +497,9 @@ test("task review isolates sibling code, preserves read dependencies, and still 
       if (input.task.id === "integration") {
         assert.equal(input.reviewScope, "whole_goal"); assert.equal(input.goal, objective);
         assert.deepEqual(input.changedPaths, ["value.mjs", "notes.txt"]);
-        assert.match(input.source["value.test.mjs"], /value is two/);
+        assert.ok(input.taskAssessments.find((value: { taskId: string; sourcePaths: string[] }) => value.taskId === "A")
+          .sourcePaths.includes("value.test.mjs"));
+        assert.ok(input.sourceRoles["value.test.mjs"], "test source remains requestable for integration checks");
         return reply('{"passed":false,"findings":["DELIVERY.md is still missing."]}');
       }
       return reply('{"passed":true,"findings":[]}');
@@ -513,7 +534,7 @@ test("task review isolates sibling code, preserves read dependencies, and still 
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
   if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
   assert.equal((await controller.run(objective)).completed, false);
-  assert.deepEqual(reviewed, ["A", "B", "integration"]);
+  assert.deepEqual(reviewed, ["A", "B", "A", "B", "integration"]);
   const reads = events.filter(event => event.type === "tool_intent").map(event => event.data.receipt as { tool: string; args: { path?: string }; taskId?: string; attemptId?: string });
   const dependencyRead = reads.find(receipt => receipt.tool === "read_file" && receipt.args.path === "api.mjs");
   assert.equal(dependencyRead?.taskId, "B"); assert.ok(dependencyRead?.attemptId);

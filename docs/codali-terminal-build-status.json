@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing the next prerelease with comprehensive final-tree proof renewal and client-owned strict JSON review. Current full Codali suite passes 1692 tests (3 skipped), plus the added source-round repair regression passes in 27 focused tests. I catches the known Suku defect and accepts its repaired control with complete receipts; Raijin and whole-goal context diagnostics are running. All four frozen AE .7 journeys have failed; no successful multi-hour qualification or canary.",
+  "currentTask": "Preparing unpublished .9: specification batches retain authority, and final integration now reassesses each completed task at the same final snapshot before bounded whole-goal review. Baseline whole-workspace suite passed (1696 Codali tests,3 skipped); new coordinator passes114 focused and1700 full Codali tests(3 optional skips); live diagnostic L is running. I passed all four known interval review checks with11 complete usage receipts. J/K failed whole-goal preparation and remain recorded. All four AE .7 workflows failed; multi-hour qualification and canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2079,9 +2079,45 @@
       "focusedArtifact": "/home/wodo/.local/state/codali-review-json-final-focused.log",
       "redArtifact": "/home/wodo/.local/state/codali-review-json-red.log",
       "limitation": "Three pre-fix failures reproduced. Strict parsing permits one bounded formatting repair of received output while retaining original evidence and shared usage; unknown transport outcomes are not replayed. Native structured_output_failed maps to invalid_response without exposing upstream content."
+    },
+    {
+      "check": "Batched specification baseline whole-workspace suite",
+      "status": "passed",
+      "codaliTestsPassed": 1696,
+      "codaliTestsSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-prerelease9-all.log",
+      "limitation": "Before the new review coordinator; does not establish live model quality."
+    },
+    {
+      "check": "Actual runtime interval diagnostic I",
+      "status": "passed_diagnostic_only",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-interval-runtime-20261027i/result.json",
+      "checksPassed": 4,
+      "canonicalUsageReceipts": 11,
+      "limitation": "Both routes reject the known exact-message defect and accept repaired controls. Reused known artifacts; not held-out coding quality or long-workflow completion."
+    },
+    {
+      "check": "Whole-goal preparation diagnostics J/K",
+      "status": "failed",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027j/result.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/review-whole-goal-runtime-20261027k/result.json"
+      ],
+      "limitation": "J exhausted JSON output; K twice misattributed steering from current goal to original R1. Original whole-goal input exceeded context even before its generated checklist."
+    },
+    {
+      "check": "Fresh scoped assessments before bounded integration review",
+      "status": "regression_passed_live_pending",
+      "focusedTestsPassed": 114,
+      "artifact": "/home/wodo/.local/state/codali-review-coordinator-green2.log",
+      "redArtifact": "/home/wodo/.local/state/codali-review-coordinator-red.log",
+      "limitation": "Three red regressions reproduced. Tests preserve dependency reads, reject a failed final reassessment without renewing proofs, retain paging, and reject mismatched snapshot assessments. Full suite passes; live L pending.",
+      "fullTestsPassed": 1700,
+      "fullTestsSkipped": 3,
+      "fullArtifact": "/home/wodo/.local/state/codali-review-coordinator-full.log"
     }
   ],
-  "updatedAt": "2026-10-27T04:57:47.389909+00:00",
+  "updatedAt": "2026-10-27T05:26:30.875717+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",

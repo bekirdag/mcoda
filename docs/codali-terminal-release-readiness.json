@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T04:57:47.389909+00:00",
+  "updatedAt": "2026-10-27T05:26:30.875717+00:00",
   "candidate": {
     "version": "0.1.135-codali.8",
     "sourceCommit": "77070f5c7625d04c6fee9064c4790569d413369b",
@@ -800,7 +800,12 @@
     },
     {
       "description": "Receive and strictly parse terminal review JSON in Codali, retaining model usage and allowing one bounded formatting repair. Classify native structured_output_failed separately from outages; no replay of unknown transport outcomes.",
-      "validation": "1692 full tests pass,3 skipped; added round-bound regression passes in27 focused tests. Live I/whole-goal J are pending.",
+      "validation": "1692 full tests and27 additional focused tests passed; known diagnostic I passes4/4 with11 complete canonical receipts. J/K expose separate whole-goal size and attribution failures; no broad qualification.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
+      "validation": "Batch baseline passes the entire workspace suite (1696 Codali tests,3 skips). Coordinator passes114 focused and1700 full Codali tests(3 skips); actual runtime L remains pending.",
       "candidatePublished": false
     }
   ],

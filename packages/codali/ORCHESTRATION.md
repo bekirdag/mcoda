@@ -155,10 +155,13 @@ If a provider returns an explicit rejection with one finding as a string, the
 controller retains that finding as a one-item list so the agent can repair the
 defect. This normalization cannot turn a malformed approval into acceptance.
 
-Review begins with a separate specification-only call, before implementation,
+Review begins with separate specification-only calls, before implementation,
 tests, diffs or claimed results are supplied. Its checklist must quote the
-identified authoritative source exactly and cover every supplied source. One
-format repair is permitted; invalid source attribution or missing coverage
+identified authoritative source exactly and cover every supplied source. Large
+contracts use at most sixteen bounded source groups, with every original source
+retained as context in every call. Text already contained verbatim in the current
+goal is supplied once; all canonical criterion IDs remain in the actual review.
+One format repair per group is permitted; invalid source attribution or missing coverage
 cannot establish acceptance. The checklist supplements the full original
 contract and does not prove correctness. Both preparation and source review use
 the smaller of the configured effort output limit and reviewer model limits,
@@ -194,7 +197,15 @@ in the canonical backlog. A task assigned the original whole-objective criterion
 receives the complete current goal and all changes for integration review.
 Both review scopes retain the same global validation and source-freshness checks.
 Whole-goal integration also reviews every canonical refined criterion. When all
-other active tasks are already verified, an accepted final-tree review records
+other active tasks are already verified, the controller first reassesses each
+owner's criteria and read dependencies against the final files. It then supplies
+those successful assessments, bound to one full-workspace digest, to the final
+integration review. Assessed module source remains available for hash-checked
+paging; only remaining source and diff are loaded initially. Initial source
+allocation reserves context space for later pages. Original requirements,
+constraints, architecture decisions and cross-task interactions still govern
+integration acceptance. A failed scoped assessment stops the sequence without
+renewing any proof. Only an accepted final-tree integration review records
 new full-snapshot proofs for those owners, linked to the shared integration
 assessment and their prior evidence. Original proofs remain in the audit trail.
 An assigned-task review cannot renew siblings; partial coverage, unfinished or

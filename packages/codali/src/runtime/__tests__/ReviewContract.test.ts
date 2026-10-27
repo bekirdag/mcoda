@@ -15,7 +15,11 @@ test("whole-goal preparation retains current steering without duplicating an ide
   assert.equal(reviewContractSources(context).length, 1);
   const current = { ...context, goal: "Original objective\nUser steering: deliver a manifest." };
   const values = reviewContractSources(current);
-  assert.deepEqual(values, [{ id: "goal", text: current.goal }, { id: "requirement:R1", text: "Original objective" }]);
+  assert.deepEqual(values, [{ id: "goal", text: current.goal }]);
+  assert.deepEqual(reviewContractSources({ ...current, requirements: [...current.requirements,
+    { id: "R2", description: "A distinct requirement." }] }), [
+    { id: "goal", text: current.goal }, { id: "requirement:R2", text: "A distinct requirement." },
+  ]);
 });
 
 test("contract preparation receives only authoritative sources and retains exact source attribution", async () => {
@@ -64,6 +68,42 @@ test("one successful format repair keeps every original source and does not appr
       return response({ checks, passed: true });
     } } });
   assert.deepEqual(result, { checks }); assert.equal(calls, 2); assert.ok(!("passed" in result));
+});
+
+test("large contracts prepare bounded source groups while retaining all authoritative context in every call", async () => {
+  const large = Array.from({ length: 4 }, (_, index) => ({ id: `requirement:R${index}`, text: `Exact contract ${index}. ${"Preserve original behavior. ".repeat(70)}` }));
+  const targets: string[][] = [];
+  const result = await prepareReviewContract({ sources: large, maxInputChars: 25_000, maxOutputTokens: 4096,
+    provider: { name: "fixture", generate: async request => {
+      const payload = JSON.parse(request.messages[1].content);
+      assert.deepEqual(payload.contractSources, large, "other sources still qualify and constrain the targeted checks");
+      assert.equal(payload.targetSourceIds.length, 1);
+      targets.push(payload.targetSourceIds);
+      const source = large.find(s => payload.targetSourceIds.includes(s.id))!;
+      return response({ checks: [{ sourceId: source.id, contractQuote: `Exact contract ${targets.length - 1}.`, expectedBehavior: "Preserve the quoted behavior." }] });
+    } } });
+  assert.ok("checks" in result);
+  assert.deepEqual(targets.flat(), large.map(s => s.id));
+  assert.deepEqual(result.checks.map(c => c.sourceId), large.map(s => s.id));
+});
+
+test("an invalid preparation batch cannot silently discard remaining contract sources", async () => {
+  const large = [{ id: "first", text: "A".repeat(3000) }, { id: "second", text: "B".repeat(3000) }];
+  let calls = 0;
+  const result = await prepareReviewContract({ sources: large, maxInputChars: 25_000, maxOutputTokens: 4096,
+    provider: { name: "fixture", generate: async request => {
+      calls++;
+      const payload = JSON.parse(request.messages[1].content);
+      return response({ checks: [{ sourceId: "first", contractQuote: "A", expectedBehavior: "Only the first requirement is checked." }] });
+    } } });
+  assert.ok("findings" in result); assert.equal(calls, 3);
+});
+
+test("excessive preparation batches fail before spending the model budget", async () => {
+  const result = await prepareReviewContract({ sources: Array.from({ length: 17 }, (_, i) => ({ id: String(i), text: "x".repeat(3000) })),
+    maxInputChars: 100_000, maxOutputTokens: 4096,
+    provider: { name: "fixture", generate: async () => { throw new Error("Oversized batch plan must not dispatch"); } } });
+  assert.ok("findings" in result && /batch/.test(result.findings[0]));
 });
 
 test("empty, duplicate or oversized contract inputs fail before inference", async () => {
