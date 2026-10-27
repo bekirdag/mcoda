@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T02:37:29.061782+00:00",
+  "updatedAt": "2026-10-27T03:04:19.944251+00:00",
   "candidate": {
     "version": "0.1.135-codali.7",
     "sourceCommit": "aabcd63b8686bc9bd33fde85b90657e1d7fbfea2",
@@ -553,7 +553,7 @@
     {
       "id": "P7.5",
       "description": "Run longer coding sessions against each selected model's actual context limit, including cross-host failover to a smaller compatible context window. Verify compaction preserves task constraints, pending work and validation evidence, and resume retains the pinned embedding-space identity.",
-      "status": "pending",
+      "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
         "jsonPointer": "/tasks/60/evidence"
@@ -648,7 +648,8 @@
     {
       "id": "context-and-failover",
       "status": "open",
-      "required": "Actual context limit and cross-host smaller compatible context failover with pinned embeddings."
+      "required": "Actual context limit and cross-host smaller compatible context failover with pinned embeddings.",
+      "current": "Both current Strata native windows are32768; smaller resident helpers do not advertise tool calls. Live context/failover remains open; deterministic preflight refund regression now passes."
     },
     {
       "id": "tenant-coexistence",
@@ -666,7 +667,7 @@
       "id": "media-lifecycle-quality",
       "status": "open",
       "required": "Human prompt/quality review and remaining lifecycle/expiry/coexistence contracts.",
-      "current": "Real image/audio/video bytes and recovery decode passed; acknowledged remote results have expired and local artifacts remain available."
+      "current": "Real generation and recovery decode passed. All three acknowledged artifacts remain exportable/hash-valid/decodable locally after remote expiry, with zero requests. Human review and broader lifecycle/coexistence remain open."
     },
     {
       "id": "canary-and-promotion",
@@ -724,6 +725,13 @@
       "observation": "Initial SERA preflight used unsupported Python API; source-page diagnostic assumed a specific offset.",
       "correction": "Bounded portable hashing and actual page coverage assertions; original failures retained.",
       "state": "corrected_no_retroactive_model_claim"
+    },
+    {
+      "class": "undispatched-usage-reservation",
+      "observation": "Terminal discovery/context refusals retained usage as an unknown remote outcome even when no inference was dispatched.",
+      "correction": "Track the existing configured transport boundary and durably refund pre-dispatch reservations; preserve ambiguous post-dispatch usage.",
+      "evidence": "/home/wodo/.local/state/codali-preflight-green.log",
+      "state": "regression_passed_not_published"
     }
   ],
   "diagnosedIncident": {
@@ -746,5 +754,12 @@
     "evidenceDirectory": "/home/wodo/.local/state/codali-long-workflow-public-ad-raijin-20261027/billing-audit",
     "diagnosis": "Missing validation receipts in review and an already-active steering attempt prevented claiming a different integration owner. Four module grades did not establish final goal completion.",
     "recovery": "Inspect canonical active ownership, retain the saved worktree, rerun fresh checks, and verify the actual task/attempt using the corrected client. Preserve failed evidence; never mark completion from test output alone."
-  }
+  },
+  "unpublishedCorrections": [
+    {
+      "description": "Release provisional terminal token usage for discovery/context/route-observer failures before transport dispatch; persist refund before diagnostic observers.",
+      "validation": "91 focused and1632 full Codali tests pass;3skipped.",
+      "candidatePublished": false
+    }
+  ]
 }

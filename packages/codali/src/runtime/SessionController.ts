@@ -7,7 +7,7 @@ import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
 import { activeWorkContext, amendWorkGoal, assertWorkAttempt, claimWorkTask, completeWorkGoal, recordDecision, recordWorkEvidence, refreshReadyTasks, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask, replaceWorkPlan, updateWorkPlan, verifyWorkTask } from "../session/WorkState.js";
 import type { WorkState, WorkTask } from "../session/WorkTypes.js";
 import { formatInstructionBlocks, loadInstructionBlocks } from "../session/InstructionLoader.js";
-import { ConfiguredProvider, ModelServiceClient, NativeReasoningTransportError, type ModelInvocation } from "../providers/ConfiguredProvider.js";
+import { ConfiguredProvider, ModelServiceClient, type ModelInvocation } from "../providers/ConfiguredProvider.js";
 import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
@@ -673,6 +673,7 @@ export class SessionController {
   private provider(binding = "lead", addGoal = true): Provider {
     const lead = binding === "lead" && addGoal;
     const turn = this.active;
+    const dispatchReady = new Set<string>();
     const ownsTurn = () => !!turn && this.active === turn && this.closingModelTurn !== turn;
     const persistSettlement = async (operation: () => Promise<void>) => {
       const pending = operation(); this.modelSettlements.add(pending);
@@ -682,6 +683,7 @@ export class SessionController {
       if (!ownsTurn()) throw new Error("Model turn has closed");
       turn?.signal.throwIfAborted();
       await this.emit("model_route", { ...invocation });
+      dispatchReady.add(invocation.id);
     } });
     return { name: configured.name, supportsToolCalls: configured.supportsToolCalls, generate: async request => {
       await this.checkProjectTask();
@@ -754,12 +756,16 @@ export class SessionController {
       const response = await configured.generate({ ...request, requestId: id }).catch(async error => {
         if (!ownsTurn()) throw error;
         await persistSettlement(async () => {
-          if (!this.options.provider && error instanceof NativeReasoningTransportError && this.reservations.has(id)) {
+          // Discovery, capability/context checks and route observers run before
+          // the configured provider hands this request to its transport. A
+          // refusal there cannot have incurred remote inference usage. Once
+          // that boundary is crossed, retain the reservation on any failure.
+          if (!this.options.provider && !dispatchReady.has(id) && this.reservations.has(id)) {
             this.usage.tokens -= this.reservations.get(id)!;
             this.usage.modelCalls--;
             this.reservations.delete(id);
-            await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error.message });
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error instanceof Error ? error.message : String(error) });
             await this.emit("usage", { usage: this.usage });
           } else {
             // A failed transport may have executed remotely. Keep its reservation
@@ -768,7 +774,7 @@ export class SessionController {
           }
         });
         throw error;
-      }).finally(() => ownsTurn() ? this.flushOutputStreams("token") : undefined);
+      }).finally(() => { dispatchReady.delete(id); return ownsTurn() ? this.flushOutputStreams("token") : undefined; });
       // An abort-ignoring provider can resolve after run() returned or another
       // session opened. Its outcome remains unknown; it cannot write new state.
       if (!ownsTurn()) { request.signal?.throwIfAborted(); throw new Error("Model turn has closed"); }

@@ -6,6 +6,50 @@ import os from "node:os";
 import { SessionController, type SessionEvent } from "../SessionController.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 
+for (const scenario of ["smaller-advertised-context", "no-eligible-model", "authentication", "malformed-catalog", "route-observer", "settlement-observer"] as const) {
+  test(`undispatched ${scenario} failure releases accounting across resume`, { concurrency: false }, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-preflight-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-preflight-state-"));
+    t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    const config: OrchestrationConfig = { schemaVersion: 1, profile: "preflight",
+      providers: { service: { adapter: "openai-compatible", baseUrl: "https://preflight.test/v1" } },
+      models: { large: { provider: "service", catalogId: "large", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } },
+      bindings: { lead: { candidates: ["large"] } } };
+    const events: SessionEvent[] = []; let dispatches = 0;
+    t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "POST") { dispatches++; throw new Error("Inference must not be dispatched"); }
+      if (scenario === "authentication") return Response.json({ error: { code: "unauthorized" } }, { status: 401 });
+      if (scenario === "malformed-catalog") return Response.json({ data: "invalid" });
+      return Response.json({ data: ["no-eligible-model", "settlement-observer"].includes(scenario) ? [] : [{ id: "large", context_window: scenario === "smaller-advertised-context" ? 1024 : 32768 }] });
+    });
+    const options = { workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "fixture" }, docdex: false };
+    const controller = new SessionController({ ...options, onEvent: event => {
+      events.push(event);
+      if (scenario === "route-observer" && event.type === "model_route") throw new Error("Route observer stopped before dispatch");
+      if (scenario === "settlement-observer" && event.type === "model_preflight_failed") throw new Error("Observer stopped after durable refund");
+    } });
+    const failure = {
+      "smaller-advertised-context": /Context budget exceeded/,
+      "no-eligible-model": /No eligible configured/,
+      authentication: /authentication_failed/,
+      "malformed-catalog": /Invalid model catalog/,
+      "route-observer": /Route observer stopped/,
+      "settlement-observer": /Observer stopped after durable refund/,
+    }[scenario];
+    await assert.rejects(controller.run("Inspect the repository and preserve the user's original objective."), failure);
+    assert.equal(dispatches, 0);
+    assert.equal(controller.usageSnapshot().tokens, 0);
+    assert.equal(controller.usageSnapshot().modelCalls, 0);
+    assert.equal(controller.usageSnapshot().estimated, false);
+    assert.ok(events.some(event => event.type === "model_receipt" && event.data.status === "not_dispatched"));
+    assert.equal(events.some(event => event.type === "model_receipt" && event.data.status === "outcome_unknown"), false);
+    const resumed = new SessionController(options); await resumed.resume(controller.sessionId!);
+    assert.deepEqual(resumed.usageSnapshot(), controller.usageSnapshot());
+    assert.equal((await resumed.reconcileUsage()).attempted, 0);
+    assert.equal(resumed.state?.status, "active");
+  });
+}
+
 for (const scenario of ["older-unknown-call", "settlement-before-usage-snapshot"] as const) {
   test(`resume restores accounting across ${scenario}`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-usage-replay-"));

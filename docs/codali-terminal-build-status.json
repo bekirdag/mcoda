@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Published .7 at aabcd63; all ten registry tarballs match exact CI artifacts, with six packaging and six installation jobs passing. Frozen .7 AE journeys started on both hosts02:22:35UTC and reached execution; AD remaining runs were deliberately stopped and preserved. Legacy .134/.7 session roundtrip passed. SERA8B passed6/6 initial planning drafts within resource guards, unloaded and not promoted. Broader release quality/coexistence gates, global activation and24-hour canary remain open.",
+  "currentTask": "AE frozen published .7 workflows continue on both Strata hosts. Pre-dispatch accounting correction passes91focused/1632fullchecks (3skips); preserve .7 evidence and qualify the correction before next packaging. Actual context/failover, broad quality, coexistence, auth lifecycle, media review and24-hourcanary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -176,7 +176,8 @@
       "description": "Add a shared budget object and usage accumulator at the controller boundary. Every nested model/tool call reserves from it before starting.",
       "status": "in_progress",
       "evidence": [
-        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain."
+        "Configured run/ask, public API, runtime and job paths share pinned model scope, nested tool reservations, deadline/cancellation and actual route accounting. Authenticated caller context is pinned; concurrent Wodo/Heka mock API tests pass. Production consumers/node executor migration and live qualification remain.",
+        "Context/discovery preflight audit reproduced five terminal token-reservation leaks before any inference POST. SessionController now records not_dispatched refunds at the configured transport boundary and persists settlement before observer diagnostics. Six new failure/resume regressions,91focusedchecks and fullCodali1632PASS/3SKIP; lost-response reservations remain retained. Private AE .7 clients and deployed services are unchanged."
       ]
     },
     {
@@ -434,7 +435,9 @@
       "id": "P6.6",
       "description": "Add /artifacts and media-job detail to /tasks, with artifact paths/provenance, separate render usage and explicit download/open actions. Surface effective model bindings/configuration version, pending configuration updates and modality-specific unsupported-operation errors.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "B/expired-media-local-export-20261027/result.json proves .7 can reconcile/export all three previously acknowledged image/audio/video artifacts after server results expire, with unchanged original job records, zero network requests or new renders, matching SHA256 and successful full decode. B/public-media-expiry-readonly-20261027.json confirms expired remote status. Unacknowledged retention expiry and signed-URL refresh are not established by this check."
+      ]
     },
     {
       "id": "P6.7",
@@ -489,8 +492,10 @@
     {
       "id": "P7.5",
       "description": "Run longer coding sessions against each selected model's actual context limit, including cross-host failover to a smaller compatible context window. Verify compaction preserves task constraints, pending work and validation evidence, and resume retains the pinned embedding-space identity.",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Read-only native status and authenticated catalogs confirm both current Strata hosts have actual32768context; resident Raijin helpers expose16384but do not advertise tool calls, so they are not compatible lead fallbacks. Actual-limit/live smaller-compatible-window qualification is still open. A deterministic smaller-advertised-context rejection exposed and now tests the pre-dispatch accounting fix; this is not a live context pass."
+      ]
     },
     {
       "id": "P7.6",
@@ -1992,7 +1997,7 @@
       "limitation": "Data-delivery/localized-export intentionally stopped; their partial grades cannot establish full-run quality or completion."
     }
   ],
-  "updatedAt": "2026-10-27T02:37:29.061782+00:00",
+  "updatedAt": "2026-10-27T03:04:19.944251+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",
