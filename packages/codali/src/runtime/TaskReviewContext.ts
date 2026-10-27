@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { WorkState, WorkTask } from "../session/WorkTypes.js";
 import { isTestSourcePath } from "./RequestedTestEvidence.js";
 import { isWithinScope } from "./StructuralEvidence.js";
@@ -38,4 +39,18 @@ export function taskReviewContext(state: WorkState, task: WorkTask, input: {
     sourceRoles: Object.fromEntries(reviewPaths.map(file => [file, changedPaths.includes(file) ? "reviewed_change"
       : inScope(file) ? "scope_context" : "read_only_context"])),
   };
+}
+
+/** Preserve every contract byte while avoiding duplicate objective/hash payloads.
+ * The controller retains and verifies the full hashes before and after review. */
+export function reviewPromptContext(context: ReturnType<typeof taskReviewContext>, hashes: Record<string, string>) {
+  const { reviewPaths, ...input } = context;
+  const requirements = context.requirements.map(requirement => {
+    if (!requirement.description || !context.goal?.startsWith(requirement.description)) return requirement;
+    const referenced = { ...requirement, description: undefined,
+      descriptionReference: { field: "goal", offset: 0, length: requirement.description.length } };
+    return JSON.stringify(referenced).length < JSON.stringify(requirement).length ? referenced : requirement;
+  });
+  const snapshot = Object.fromEntries([...reviewPaths].sort().map(file => [file, hashes[file] ?? "missing"]));
+  return { ...input, requirements, reviewSnapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex") };
 }

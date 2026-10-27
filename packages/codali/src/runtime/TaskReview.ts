@@ -16,12 +16,14 @@ export async function runTaskReview(options: {
   provider: Provider;
   messages: ProviderMessage[];
   allowedPaths: readonly string[];
+  initialSourceOffsets?: Readonly<Record<string, number>>;
   readSourcePage: (file: string, offset: number) => Promise<ReviewSourcePage>;
   maxInputChars: number;
   signal?: AbortSignal;
 }): Promise<TaskReviewResult> {
   const messages = [...options.messages];
   const requested = new Set<string>();
+  const nextOffsets = new Map(Object.entries(options.initialSourceOffsets ?? {}));
   const reject = (finding: string): TaskReviewResult => ({ passed: false, findings: [finding] });
   // Four evidence rounds followed by a final decision. No execution tool or
   // permission widening is available through this protocol.
@@ -56,7 +58,7 @@ export async function runTaskReview(options: {
       if (!request || typeof request !== "object" || typeof request.path !== "string" || !options.allowedPaths.includes(request.path)) {
         return reject("Review requested a file outside the current review evidence scope.");
       }
-      const offset = request.offset ?? 0;
+      const offset = request.offset ?? nextOffsets.get(request.path) ?? 0;
       if (!Number.isSafeInteger(offset) || offset < 0) return reject("Review source offsets must be nonnegative safe integers.");
       const key = JSON.stringify([request.path, offset]);
       if (requested.has(key)) return reject("Review repeated a source page request without progress; acceptance is not established.");
@@ -65,7 +67,9 @@ export async function runTaskReview(options: {
     const pages: ReviewSourcePage[] = [];
     for (const request of requests) {
       options.signal?.throwIfAborted();
-      pages.push(await options.readSourcePage(request.path, request.offset));
+      const page = await options.readSourcePage(request.path, request.offset);
+      pages.push(page);
+      if (page.truncated && page.nextOffset !== undefined) nextOffsets.set(request.path, page.nextOffset);
     }
     messages.push({ role: "assistant", content: response.message.content });
     messages.push({ role: "user", content: JSON.stringify({ sourcePages: pages,

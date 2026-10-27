@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "AE frozen published .7 workflows continue on both Strata hosts. Pre-dispatch accounting correction passes91focused/1632fullchecks (3skips); preserve .7 evidence and qualify the correction before next packaging. Actual context/failover, broad quality, coexistence, auth lifecycle, media review and24-hourcanary remain open.",
+  "currentTask": "AE .7 second journeys continue; both first journeys failed on transient discovery503 with additional contract defects retained. Unpublished discovery retry and review cursor/context fixes pass1645fulltests (3skips); saved-artifact probes remain diagnostic. Complete live workflow, review-quality, context/failover, coexistence, auth/media and24-hourcanary gates before promotion.",
   "tasks": [
     {
       "id": "P0.1",
@@ -1995,9 +1995,30 @@
         "/home/wodo/.local/state/codali-terminal-deployment/ad-stop-drain-20261027.json"
       ],
       "limitation": "Data-delivery/localized-export intentionally stopped; their partial grades cannot establish full-run quality or completion."
+    },
+    {
+      "check": "Bounded discovery retry without inference replay",
+      "status": "passed_not_published",
+      "sourceCommit": "cfa90394c47eae00134447027e2194d837aa0e8d",
+      "testsPassed": 1641,
+      "testsSkipped": 3,
+      "ciRuns": [
+        40443738537,
+        40443738634
+      ],
+      "artifact": "/home/wodo/.local/state/codali-discovery-full.log"
+    },
+    {
+      "check": "Review exact source cursors and duplicate-contract prompt reduction",
+      "status": "regression_passed_not_published",
+      "testsPassed": 1645,
+      "testsSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-review-cursor-full.log",
+      "liveArtifact": "/home/wodo/.local/state/codali-terminal-deployment/review-contract-public-20261027b",
+      "limitation": "Repeated saved failed workspaces, not independent quality evidence. Both rejected; Suku still missed the exact interval error-message violation and rejected an unsupported delivery claim. Original workspaces unchanged; known false acceptance remains open."
     }
   ],
-  "updatedAt": "2026-10-27T03:04:19.944251+00:00",
+  "updatedAt": "2026-10-27T03:38:47.771590+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.7 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .7registrytarballs match exact CI installation artifacts; no stable promotion or canary.",

@@ -23,6 +23,32 @@ test("bounded review retains earlier evidence and returns only a final decision"
   assert.equal(calls, 2); assert.equal(reads, 1); assert.equal(messages.length, 2);
 });
 
+test("omitted page offsets continue exact partial-source cursors without skipping evidence", async () => {
+  let calls = 0; const reads: number[] = [];
+  const result = await runTaskReview({ messages, allowedPaths: ["test/task.mjs"],
+    initialSourceOffsets: { "test/task.mjs": 3453 }, maxInputChars: 10_000,
+    provider: { name: "fixture", generate: async request => {
+      assert.deepEqual(request.messages.slice(0, 2), messages);
+      if (calls++ < 2) return response({ sourceRequests: [{ path: "test/task.mjs" }] });
+      return response({ passed: false, findings: ["The newly supplied middle section violates the contract."] });
+    } }, readSourcePage: async (path, offset) => {
+      reads.push(offset);
+      return { path, offset, content: offset === 3453 ? "missing middle evidence" : "tail evidence", truncated: offset === 3453,
+        ...(offset === 3453 ? { nextOffset: 11453 } : {}) };
+    } });
+  assert.deepEqual(reads, [3453, 11453]);
+  assert.equal(calls, 3); assert.equal(result.passed, false);
+});
+
+test("explicit offsets still permit focused reads within the declared source scope", async () => {
+  let calls = 0;
+  const result = await runTaskReview({ messages, allowedPaths: ["known.txt"], initialSourceOffsets: { "known.txt": 3453 }, maxInputChars: 10_000,
+    provider: { name: "fixture", generate: async () => calls++ === 0
+      ? response({ sourceRequests: [{ path: "known.txt", offset: 20 }] }) : response({ passed: true, findings: [] }) },
+    readSourcePage: async (path, offset) => { assert.equal(offset, 20); return page(path, offset); } });
+  assert.equal(result.passed, true);
+});
+
 for (const value of [
   { sourceRequests: [{ path: "../private.env", offset: 0 }] },
   { sourceRequests: [{ path: "known.txt", offset: -1 }] },

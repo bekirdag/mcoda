@@ -159,6 +159,12 @@ configured reviewer context bound the process. Every model call shares the
 session's usage and effort budget. Repeated requests, exhausted context, missing
 evidence or edits during review cannot establish acceptance. Secrets are redacted
 before paging, including credentials that cross page boundaries.
+Omitting a source-request offset continues at the controller's exact unread
+cursor, including an initial page shorter than 8,000 characters. Whole-goal
+reviews reference repeated requirement text by its exact position in the intact
+goal and identify the checked snapshot with one digest. Full per-file hashes
+remain in controller validation and durable evidence; this saves prompt space
+without summarizing the contract or relaxing freshness checks.
 
 Ordinary task review includes its assigned requirements, owned changes and diff,
 plus relevant read-only dependencies. Other tasks' pending deliverables remain

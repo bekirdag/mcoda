@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { taskReviewContext } from "../TaskReviewContext.js";
+import { reviewPromptContext, taskReviewContext } from "../TaskReviewContext.js";
 import { createWorkState, replaceWorkPlan } from "../../session/WorkState.js";
 
 function fixture() {
@@ -63,4 +63,45 @@ test("read context never makes another task's changes count as this task's imple
   assert.equal(context.sourceRoles["test/b.test.mjs"], "read_only_context");
   assert.equal(context.sourceRoles["src/b/value.mjs"], "read_only_context");
   assert.ok(context.decisions.some(value => value.id === "unrelated"), "a read dependency's contract remains relevant");
+});
+
+test("large whole-goal review references duplicate text without losing original requirements or steering", () => {
+  const objective = "Preserve exact decimal values and every public API boundary. ".repeat(120);
+  const state = createWorkState(objective);
+  state.objective += "\nUser steering: add DELIVERY.md without removing any original requirement.";
+  const input = { changedPaths: ["task.mjs"], observedPaths: ["task.mjs"], contextPaths: [], currentHashes: { "task.mjs": "a".repeat(64) } };
+  const context = taskReviewContext(state, state.tasks[0], input);
+  const before = JSON.stringify(context);
+  const prompt = reviewPromptContext(context, input.currentHashes);
+  assert.equal(prompt.goal, state.objective);
+  assert.equal(prompt.requirements.length, context.requirements.length);
+  for (let i = 0; i < prompt.requirements.length; i++) {
+    const requirement = prompt.requirements[i];
+    const ref = "descriptionReference" in requirement ? requirement.descriptionReference : undefined;
+    const description: string | undefined = ref ? prompt.goal!.slice(ref.offset, ref.offset + ref.length) : requirement.description;
+    assert.equal(description, context.requirements[i].description);
+    assert.equal(requirement.id, context.requirements[i].id);
+    assert.equal(requirement.required, context.requirements[i].required);
+  }
+  assert.ok(JSON.stringify(prompt).length < before.length - 6000);
+  assert.equal(JSON.stringify(context), before);
+  assert.deepEqual(prompt.sourceRoles, context.sourceRoles);
+  assert.match(prompt.reviewSnapshotHash, /^[a-f0-9]{64}$/);
+  assert.notEqual(reviewPromptContext(context, { "task.mjs": "b".repeat(64) }).reviewSnapshotHash, prompt.reviewSnapshotHash);
+});
+
+test("review compression preserves distinct criteria and binds only the reviewable snapshot", () => {
+  const { state, input } = fixture();
+  const context = taskReviewContext(state, state.tasks[0], input);
+  const prompt = reviewPromptContext(context, input.currentHashes);
+  assert.deepEqual(prompt.requirements, context.requirements);
+  assert.deepEqual(prompt.constraints, context.constraints);
+  assert.deepEqual(prompt.decisions, context.decisions);
+  assert.deepEqual(prompt.deferredRequirements, context.deferredRequirements);
+  const extra = { ...input.currentHashes, "outside.txt": "outside" };
+  assert.equal(reviewPromptContext(context, extra).reviewSnapshotHash, prompt.reviewSnapshotHash);
+  const reordered = { ...context, reviewPaths: [...context.reviewPaths].reverse() };
+  assert.equal(reviewPromptContext(reordered, input.currentHashes).reviewSnapshotHash, prompt.reviewSnapshotHash);
+  const alternate = { ...context, goal: "Different objective. " + "details ".repeat(120) };
+  assert.deepEqual(reviewPromptContext(alternate, input.currentHashes).requirements, context.requirements);
 });

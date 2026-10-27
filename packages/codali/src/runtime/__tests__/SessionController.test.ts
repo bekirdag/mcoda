@@ -28,7 +28,7 @@ for (const scenario of ["complete", "blocking-tail", "concurrent-edit"] as const
           assert.ok(input.sourceTruncatedPaths.includes("report.txt"));
           assert.doesNotMatch(input.source["report.txt"], /Acceptance complete|acceptance missing/);
           if (scenario === "concurrent-edit") await fs.writeFile(path.join(root, "report.txt"), "User edit must be preserved.\n");
-          return reply(JSON.stringify({ sourceRequests: [{ path: "report.txt", offset: 8000 }] }));
+          return reply(JSON.stringify({ sourceRequests: [{ path: "report.txt" }] }));
         }
         assert.equal(input.sourcePages[0].path, "report.txt");
         assert.equal(input.sourcePages[0].offset, 8000);

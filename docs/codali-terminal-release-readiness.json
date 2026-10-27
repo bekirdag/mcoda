@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T03:04:19.944251+00:00",
+  "updatedAt": "2026-10-27T03:38:47.771590+00:00",
   "candidate": {
     "version": "0.1.135-codali.7",
     "sourceCommit": "aabcd63b8686bc9bd33fde85b90657e1d7fbfea2",
@@ -637,7 +637,7 @@
       "id": "long-workflows",
       "status": "running",
       "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
-      "current": "AE first journeys executing on both hosts; AD failures and cancellations preserved."
+      "current": "AE billing-audit and service-adapters failed on transient discovery503; independent invoice/interval defects retained. AE data-delivery and localized-export continue on frozen .7. No successful multi-hour qualification."
     },
     {
       "id": "broad-quality",
@@ -732,6 +732,18 @@
       "correction": "Track the existing configured transport boundary and durably refund pre-dispatch reservations; preserve ambiguous post-dispatch usage.",
       "evidence": "/home/wodo/.local/state/codali-preflight-green.log",
       "state": "regression_passed_not_published"
+    },
+    {
+      "class": "discovery-upstream-transient",
+      "observation": "Two AE first journeys ended on public native-preflight503. Service logs also contain upstream auth/usage synchronization failures.",
+      "correction": "Bounded client retries pass regressions; upstream cause and broader lifecycle remain open.",
+      "state": "client_regression_fixed_upstream_unqualified"
+    },
+    {
+      "class": "review-evidence-cursor",
+      "observation": "Saved-artifact reviewer guessed offset8000 after a3453-character initial test slice, skipping relevant evidence; duplicate objective and hashes also consumed review space.",
+      "correction": "Exact controller continuation cursors and lossless duplicate-contract references; durable full hashes retained.",
+      "state": "regression_passed_not_published"
     }
   ],
   "diagnosedIncident": {
@@ -759,6 +771,17 @@
     {
       "description": "Release provisional terminal token usage for discovery/context/route-observer failures before transport dispatch; persist refund before diagnostic observers.",
       "validation": "91 focused and1632 full Codali tests pass;3skipped.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Retry only transient read-only catalog/native-capability discovery, at most three attempts; honor cancellation and bounded Retry-After. Never replay inference POST.",
+      "sourceCommit": "cfa90394c47eae00134447027e2194d837aa0e8d",
+      "validation": "1641fulltests pass,3skipped; CI/platform passed.",
+      "candidatePublished": false
+    },
+    {
+      "description": "Continue exact unread source-page cursors and avoid duplicate whole-goal contract/hash payloads without changing canonical requirements or freshness checks.",
+      "validation": "1645fulltests pass,3skipped; both saved failed-workspace probes reject but Suku still misses the explicit error-message defect.",
       "candidatePublished": false
     }
   ]
