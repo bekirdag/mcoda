@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MswarmCodaliExecutor, type MswarmCodaliInvocationInput, type CodaliGatewayResult } from "../codali-executor.js";
+import { MswarmCodaliExecutor, MswarmInvocationRejectedError, type MswarmCodaliInvocationInput, type CodaliGatewayResult } from "../codali-executor.js";
 
 const fixture = async (t: { after(fn: () => Promise<void>): void }, maxModelCalls = 8) => {
   const root = await mkdtemp(join(tmpdir(), "mswarm-node-orchestration-"));
@@ -35,6 +35,26 @@ const fakeRunner = (answers: string[]) => {
   };
   return { routes, bodies, restore: () => { globalThis.fetch = original; } };
 };
+
+for (const uncertain of [false, true]) test(`configured first native refusal reports zero only with proof: uncertain=${uncertain}`, async t => {
+  const input = await fixture(t); const original = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async url => {
+    if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "strata" }] });
+    calls++;
+    if (uncertain) throw Object.assign(new Error("Native connection lost"), { code: "ECONNRESET" });
+    return Response.json({ error: { type: "invalid_request_error", message: "request exceeds the context window: prompt (33000 tokens) leaves no room to answer in the context (32768); requests are never truncated" } }, { status: 400 });
+  };
+  try {
+    await assert.rejects(new MswarmCodaliExecutor().invoke(input), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error instanceof MswarmInvocationRejectedError, !uncertain);
+      if (!uncertain) assert.deepEqual((error as MswarmInvocationRejectedError).usage, { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+      else assert.equal((error as Error & { usage?: unknown }).usage, undefined);
+      return true;
+    });
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = original; }
+});
 
 test("configured node direct inference uses the admitted runner and reports shared usage", async t => {
   const input = await fixture(t); const mock = fakeRunner(["Local answer"]);

@@ -35,14 +35,18 @@ test("native context refusals retain a safe classification without quoting the u
   for (const message of messages) {
     const error = await ModelServiceError.fromResponse(Response.json({ error: { type: "invalid_request_error", message } }, { status: 400 }));
     assert.equal(error.code, "context_length_exceeded");
+    assert.equal(error.nativeContextRefused, true);
     assert.doesNotMatch(error.message, /33012|32000|strata-/);
   }
   for (const [status, message] of [[500, messages[0]], [400, `Private user text: ${messages[0]}`], [400, "request exceeds the context window: private prompt"]] as const) {
     const error = await ModelServiceError.fromResponse(Response.json({ error: { type: "invalid_request_error", message } }, { status }));
     assert.notEqual(error.code, "context_length_exceeded");
+    assert.equal(error.nativeContextRefused, false);
     assert.doesNotMatch(error.message, /Private|private prompt/);
   }
   const explicit = await ModelServiceError.fromResponse(Response.json({ error: { code: "context_length_exceeded", message: "secret" } }, { status: 400 }));
   assert.equal(explicit.code, "context_length_exceeded");
+  assert.equal(explicit.nativeContextRefused, false, "a code alone does not prove native pre-generation refusal");
+  assert.equal(ModelServiceError.fromRelayError({ code: "context_length_exceeded" })?.nativeContextRefused, false);
   assert.doesNotMatch(explicit.message, /secret/);
 });

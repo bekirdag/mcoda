@@ -15,6 +15,44 @@ const configuration = (maxModelCalls = 2) => {
 };
 const request = { messages: [{ role: "user" as const, content: "Hello" }] };
 
+for (const prior of ["none", "success", "uncertain"]) test(`native context refusal settles only its reservation after ${prior}`, async () => {
+  const original = globalThis.fetch; let calls = 0;
+  const events: ScopedModelEvent[] = [];
+  const scope = new ConfiguredModelScope(configuration(), { effort: "low", onEvent: event => { events.push(event); } });
+  globalThis.fetch = async url => {
+    if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "large" }] });
+    if (++calls === 1 && prior !== "none") {
+      if (prior === "uncertain") throw new Error("Connection lost after dispatch");
+      return Response.json({ choices: [{ message: { role: "assistant", content: "OK" } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+    }
+    return Response.json({ error: { type: "invalid_request_error", message: "request exceeds the context window: prompt (33000 tokens) leaves no room to answer in the context (32768); requests are never truncated" } }, { status: 400 });
+  };
+  try {
+    if (prior === "success") await scope.provider("lead").generate(request);
+    if (prior === "uncertain") await assert.rejects(scope.provider("lead").generate(request), /Connection lost/);
+    const before = scope.snapshot();
+    await assert.rejects(scope.provider("lead").generate(request), { code: "context_length_exceeded" });
+    assert.equal(calls, prior === "none" ? 1 : 2);
+    assert.deepEqual(scope.snapshot(), { ...before, modelCalls: before.modelCalls + 1 });
+    assert.equal(events.at(-1)?.status, "failed"); assert.deepEqual(events.at(-1)?.usage, scope.snapshot());
+  } finally { scope.close(); globalThis.fetch = original; }
+});
+
+for (const kind of ["remote", "relay"]) test(`context code does not settle uncertain ${kind} accounting`, async () => {
+  const original = globalThis.fetch; const resolved = configuration();
+  if (kind === "remote") { resolved.config.providers.local.baseUrl = "https://example.invalid/v1"; resolved.hash = orchestrationHash(resolved.config); }
+  const scope = new ConfiguredModelScope(resolved, { effort: "low" }); let calls = 0;
+  globalThis.fetch = async url => {
+    if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "large" }] });
+    calls++; return Response.json({ error: { code: "context_length_exceeded" } }, { status: kind === "relay" ? 200 : 400 });
+  };
+  try {
+    await assert.rejects(scope.provider("lead").generate(request), { code: "context_length_exceeded" });
+    assert.equal(calls, 1); assert.equal(scope.snapshot().pendingCalls, 1);
+    assert.equal(scope.snapshot().estimated, true); assert.ok(scope.snapshot().totalTokens > 0);
+  } finally { scope.close(); globalThis.fetch = original; }
+});
+
 test("trusted credentials are pinned per scope for both discovery and inference", async () => {
   const original = globalThis.fetch; const seen: string[] = [];
   const credentials = { local: "fixture-node-private-credential" };

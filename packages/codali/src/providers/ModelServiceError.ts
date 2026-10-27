@@ -12,7 +12,8 @@ function nativeContextRefusal(error: Record<string, unknown>): boolean {
 export class ModelServiceError extends Error {
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
-  constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number) {
+  constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
+    readonly nativeContextRefused = false) {
     super(`Model service HTTP ${status}: ${code}${code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
     this.name = "ModelServiceError";
   }
@@ -28,14 +29,15 @@ export class ModelServiceError extends Error {
   static async fromResponse(response: Response): Promise<ModelServiceError> {
     let serverCode = "";
     let contextRefused = false;
+    let nativeRefused = false;
     if (response.body) {
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {
         while (true) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 8192) break; chunks.push(part.value); }
         const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { error?: Record<string, unknown>; code?: unknown };
         if (typeof (payload.error?.code ?? payload.code) === "string") serverCode = String(payload.error?.code ?? payload.code);
-        contextRefused = response.status === 400 && (serverCode === "context_length_exceeded"
-          || !!payload.error && nativeContextRefusal(payload.error));
+        nativeRefused = response.status === 400 && !!payload.error && nativeContextRefusal(payload.error);
+        contextRefused = response.status === 400 && (serverCode === "context_length_exceeded" || nativeRefused);
       } catch { /* The status still supplies a safe classification. */ }
       finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
     }
@@ -48,6 +50,6 @@ export class ModelServiceError extends Error {
       : serverCode === "structured_output_failed" ? "invalid_response"
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
-    return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : undefined);
+    return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : undefined, nativeRefused);
   }
 }

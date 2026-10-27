@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { ConfiguredProvider, normalizeModelCaller, type ModelCallerContext, type ModelInvocation } from "./ConfiguredProvider.js";
+import { ModelServiceError } from "./ModelServiceError.js";
 import type { Provider, ProviderRequest, ProviderResponse, ProviderUsage } from "./ProviderTypes.js";
 
 export interface ScopedModelUsage {
@@ -116,7 +117,16 @@ export class ConfiguredModelScope {
     } catch (error) {
       // A submitted request is never replayed; an unknown bill keeps its reservation.
       if (invocation && this.pending.has(invocation.id)) {
-        this.usage.estimated = true;
+        const configured = this.resolved.config.providers[this.resolved.config.models[invocation.modelId].provider];
+        const nativeRefusal = configured.adapter === "openai-compatible"
+          && ["127.0.0.1", "localhost", "[::1]"].includes(new URL(configured.baseUrl).hostname)
+          && error instanceof ModelServiceError && error.status === 400 && error.nativeContextRefused;
+        if (nativeRefusal) {
+          // This exact native response precedes generation. Settle only this
+          // reservation; earlier usage and uncertain concurrent calls survive.
+          this.usage.totalTokens -= this.pending.get(invocation.id)!;
+          this.pending.delete(invocation.id);
+        } else this.usage.estimated = true;
         await this.options.onEvent?.({ type: "receipt", id: invocation.id, binding, configHash: this.resolved.hash, route: invocation, status: "failed", usage: this.snapshot() });
       }
       throw error;

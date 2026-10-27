@@ -2300,6 +2300,16 @@ export class MswarmCodaliExecutor {
       const usage = scope.snapshot();
       return { ...result, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
         metadata: { ...result.metadata, orchestration: { configHash: resolved.hash, sourceConfigHash: resolved.sourceHash ?? resolved.hash, nativeReasoning, effort: "high", usage } } };
+    } catch (error) {
+      const usage = scope.snapshot();
+      // The shared scope can prove the first native call was refused before
+      // generation. An HTTP code alone cannot erase earlier or uncertain work.
+      if (!input.codaliGateway && !input.codaliJob && codali.ModelServiceError
+        && error instanceof codali.ModelServiceError && error.code === "context_length_exceeded"
+        && error.status === 400 && error.completedModelCalls === 0 && usage.modelCalls === 1
+        && !usage.estimated && usage.pendingCalls === 0 && usage.inputTokens === 0
+        && usage.outputTokens === 0 && usage.totalTokens === 0) throw new MswarmInvocationRejectedError();
+      throw error;
     } finally { scope.close(); }
   }
 
