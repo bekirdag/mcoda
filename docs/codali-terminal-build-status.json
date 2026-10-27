@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Backend request-accounting L is deployed and live lost-response settlement passes on both hosts without replay. Native Strata recovery1 is activated on Raijin/Suku with three public routes passing per host; Suku needed idle media parked during startup after an OOM rollback, then media restored. Postdeploy image/audio/video checks are running. fcf8831 fixes planning-mode recovery guidance and keeps executed test failures visible after rejected retries; full1600/3skip passes. Next: RAM admission hardening, remaining quality/context/consumer/load gates, fresh prerelease and 24-hour canary. No stable promotion.",
+  "currentTask": "Suku native recovery2 host-RAM guard is deployed and verified: cold start and active-image/reload pass, zero native restarts, both public three-route matrices pass; native955257/node978233. BackendL usage recovery and image/audio/video smoke pass. bfeb86d generalCI and all six platform jobs pass. AC v3 offline amendment corrects localized-export modules to4/4 while preserving its overall failed goal. Next: freeze the corrected client for fresh long workflows and remaining quality/context/consumer/mixed-load gates, then qualified prerelease/client rollout and24-hour canary. No stable promotion.",
   "tasks": [
     {
       "id": "P0.1",
@@ -513,7 +513,8 @@
         "Frozen Z completed four failed journeys; billing-audit also exhausted its budget and left required work unfinished. Frozen AA at976ae76 now runs on both hosts. AA localized-export passed all four module grades but exhausted2.4M tokens before R1/final goal verification, five compactions and the fourth process. The handoff fix prevents the earlier plain-text-tool stall; no long-journey qualification is claimed.",
         "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open.",
         "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained.",
-        "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet."
+        "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet.",
+        "Offline AC terminal-workflows-v3 amendment preserves every original workspace/result hash and makes zero model calls: data-delivery4/4, billing-audit0/4, localized-export4/4(previous3/4), service-adapters3/4. Only undocumented TypeError grading restriction changed; all four overall completion gates remain failed."
       ]
     },
     {
@@ -521,7 +522,8 @@
       "description": "Run the release matrix across text, smaller, embedding, image, audio and video services on both hosts, including newly qualified specialists, background indexing and peak render allocations. Measure existing tenants under mixed CLI traffic, cold model loads and either-host failure; prove no OOM-driven eviction or starvation.",
       "status": "in_progress",
       "evidence": [
-        "Suku native cold restart with resident image/video engines hit systemd-oomd and rolled back; parking idle engines under the GPU1 lease allowed recovery1 startup, then engines restored and Strata remained ready. This is a real RAM-admission gap; no OOM-free coexistence or canary claim. Postdeploy media regeneration is in progress."
+        "Suku native cold restart with resident image/video engines hit systemd-oomd and rolled back; parking idle engines under the GPU1 lease allowed recovery1 startup, then engines restored and Strata remained ready. This is a real RAM-admission gap; no OOM-free coexistence or canary claim. Postdeploy media regeneration is in progress.",
+        "Backend-L postdeploy image/audio/video jobs pass artifact hash/decode/dimension/duration and Strata health checks. Video took918597ms; host RAM availability fell to about7.6GiB, so mixed-load admission still needs qualification. Native-load policy bfeb86d passes isolated and staged tests; rollout pending."
       ]
     },
     {
@@ -535,7 +537,10 @@
         "Both production nodes upgraded toH88c7a744 after local admission drain and empty active-invocation DB proofs. Native isolated5-case and public compatibility3-case pass per host; both main Strata agent catalogs expose the native transport marker. Proxy backendH remains undeployed; public native settings are not qualified.",
         "CandidateK231d2e0 replacedJ on both hosts with verified process drains and empty canonical active-job inventories. Both-host five native and three public compatibility scenarios passed. TNL deployed story-intelligence smoke passed publicly onSuku in30.2s with6 model calls,4 Docdex calls,8 sources and no warnings. CI40322705039 and platform40322705026 passed. Root backend rollout remains pending.",
         "Suku media bridge owner-death test physically killed private bridge while native video generated; all media lanes quarantined, new image request rejected, cancellation409 retained lease until exact native job completed; matching receipt reconciled. Suku node reopenedPID3451368 and direct/gateway/staged public checks passed.",
-        "Legacy backend drain controller qualified on exact production Node20/Fastify gateway and proxy images: barriers preserve node result callbacks, reject new inference, close waits for accepted HTTP responses, idle connections are reaped without force-closing active responses. Three tests pass per image; full mSwarm170 plus drain3 pass. BackendI rollout completed with live quiescence proof."
+        "Legacy backend drain controller qualified on exact production Node20/Fastify gateway and proxy images: barriers preserve node result callbacks, reject new inference, close waits for accepted HTTP responses, idle connections are reaped without force-closing active responses. Three tests pass per image; full mSwarm170 plus drain3 pass. BackendI rollout completed with live quiescence proof.",
+        "bfeb86d adds configurable host RAM admission around native initialization/recovery with shared durable media lease and sequential peer restoration. A pre-spawn rejection exposed a None-process wait in Strata restart; HostLoadRefused now returns without repeated load attempts.16guard scenarios/19bridge checks/386native regressions/23staged Suku checks and two actual systemd mock starts pass.",
+        "Suku recovery2 cold deployment succeeded after node drain and canonical acceptedJobs=0: nativePID955257/node959125, video959009/image959053.23 sampled startup observations saw the native lease and both parked peers; minimum observed MemAvailable42842MiB, final ready/lease-empty/NRestarts0. This is not a reboot or complete mixed-load qualification.",
+        "Live active-render/reload qualification passes: image retained its lease and returned checksum-valid512x512 PNG, Strata reloaded under the shared lease and restored both media engines, mainPID955257/NRestarts0; node reopened as978233. Reload call97.48s; minimum observed MemAvailable43886MiB. Before this run, a newly accepted image job was allowed to finish draining; premature preflights correctly refused without unloading."
       ]
     },
     {
@@ -1789,9 +1794,51 @@
         "https://github.com/bekirdag/mcoda/actions/runs/40418128709",
         "https://github.com/bekirdag/mcoda/actions/runs/40418128658"
       ]
+    },
+    {
+      "check": "Backend L postdeploy image/audio/video artifacts and Strata health",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/public-media-backend-l/result.json"
+    },
+    {
+      "check": "bfeb86d host RAM/shared media load admission",
+      "status": "isolated and staged checks passed; production rollout pending",
+      "guardScenarios": 16,
+      "bridgeTests": 19,
+      "nativeRegressions": 386,
+      "sukuStagedTests": 23,
+      "realSystemdMockStarts": 2,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-native-load-native-regressions-final.log",
+        "/home/wodo/.local/state/codali-terminal-deployment/native-load-systemd-qualification/result.json"
+      ],
+      "limitation": "Native fake-process tests use STRATA_KEEP_LEFTOVERS=1 to avoid host orphan cleanup; production retains default cleanup. Original broad attempt was interrupted during that unrelated process scan."
+    },
+    {
+      "check": "bfeb86d general CI",
+      "status": "passed",
+      "run": "https://github.com/bekirdag/mcoda/actions/runs/40422531788"
+    },
+    {
+      "check": "Suku native recovery2 cold start and active-render reload",
+      "status": "passed",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/strata-resource-rollout2/suku-cold-load-summary.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/strata-resource-rollout2/suku-active-render-reload-result.json"
+      ]
+    },
+    {
+      "check": "bfeb86d six-platform clean-install qualification",
+      "status": "passed",
+      "run": "https://github.com/bekirdag/mcoda/actions/runs/40422531841"
+    },
+    {
+      "check": "AC v3 offline grader correction",
+      "status": "correction verified; no overall workflow pass",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/ac-workflow-grader-correction-v3/report.json"
     }
   ],
-  "updatedAt": "2026-10-26T23:24:21.007320+00:00",
+  "updatedAt": "2026-10-27T00:05:57.918792+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
@@ -1806,6 +1853,6 @@
     "No additional specialist promoted: Thinking4B fits but underperforms resident4B on the six-case initial planning screen; SERA14B fails current reservation-plus-guard admission. Both smaller planners remain unqualified for general planning; Strata retains lead ownership.",
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
-    "Suku cold Strata loading with idle media resident triggered systemd-oomd. Rollback restored service; retry passed after parking media engines, and media was restored. Add measured host-RAM admission/load ordering and qualify cold restart/recovery with media before canary. Do not treat GPU headroom alone as sufficient."
+    "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient."
   ]
 }
