@@ -78,6 +78,7 @@ export interface CodaliRuntimeProviderInput {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  retryTransient?: boolean;
   localRunner?: LocalOpenAiCompatibleRunnerConfig;
   runnerKind?: LocalRunnerKind;
   authMode?: LocalRunnerAuthMode;
@@ -1449,6 +1450,7 @@ const createRuntimeProvider = (input: CodaliRuntimeProviderInput): Provider => {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
     timeoutMs: input.timeoutMs,
+    retryTransient: input.retryTransient,
     localRunner: input.localRunner,
     runnerKind: input.runnerKind,
     authMode: input.authMode,

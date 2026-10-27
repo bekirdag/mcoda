@@ -4,6 +4,7 @@ export type { SessionControllerOptions, SessionEvent } from "./runtime/SessionCo
 export { loadOrchestrationConfig, validateOrchestrationConfig, resolveBinding, orchestrationHash, effortBudget, EFFORT_BUDGETS } from "./config/OrchestrationConfig.js";
 export type { OrchestrationConfig, ResolvedOrchestrationConfig, OrchestrationModel, OrchestrationProvider, ModelBinding, EffortLevel, EffortBudget } from "./config/OrchestrationConfig.js";
 export { ConfiguredProvider, ModelServiceClient } from "./providers/ConfiguredProvider.js";
+export { ModelServiceError } from "./providers/ModelServiceError.js";
 export { ConfiguredModelScope } from "./providers/ConfiguredModelScope.js";
 export { loadNodeOrchestrationConfig } from "./config/NodeOrchestration.js";
 export type { ModelCallerContext } from "./providers/ConfiguredProvider.js";

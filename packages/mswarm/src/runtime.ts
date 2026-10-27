@@ -9,6 +9,8 @@ import { nativeReasoningRequest } from "./native-reasoning.js";
 import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
+  MswarmInvocationRejectedError,
+  readLocalModelResponseError,
   type LocalOpenAiCompatibleRunnerConfig,
   type MswarmCodaliAgent,
   type MswarmCodaliDocdex,
@@ -4036,7 +4038,8 @@ function selfHostedErrorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown }).code;
   if (
     typeof code === "string" &&
-    (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code))
+    (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code)
+      || code === "context_length_exceeded" || code === "invalid_response")
   ) {
     return code;
   }
@@ -7087,6 +7090,7 @@ export class SelfHostedNodeRuntime {
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const response = await this.fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
+    if (!response.ok) throw await readLocalModelResponseError(response);
     const text = await response.text();
     let payload: unknown = null;
     try {
@@ -8326,6 +8330,7 @@ export class SelfHostedNodeRuntime {
         operation,
         status: "failed",
         ...(!jobStarted ? { pre_start_failure: true } : {}),
+        ...(error instanceof MswarmInvocationRejectedError ? { usage: error.usage } : {}),
         error: {
           code,
           message

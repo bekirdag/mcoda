@@ -135,6 +135,30 @@ test("OpenAiCompatibleProvider diagnoses an empty successful envelope", { concur
   });
 });
 
+test("OpenAiCompatibleProvider preserves typed context rejection in JSON and SSE relay envelopes without replay", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const stream of [false, true]) {
+      let posts = 0;
+      const error = { code: "context_length_exceeded", message: "Private upstream input" };
+      globalThis.fetch = async () => {
+        posts++;
+        return stream
+          ? new Response(`data: ${JSON.stringify({ error })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
+          : Response.json({ error });
+      };
+      await assert.rejects(new OpenAiCompatibleProvider({ model: "test", retryTransient: false }).generate({ messages: [], stream }), (failure: unknown) => {
+        assert.ok(failure instanceof Error);
+        assert.equal(failure.name, "ModelServiceError");
+        assert.equal((failure as Error & { code: string }).code, "context_length_exceeded");
+        assert.doesNotMatch(failure.message, /Private upstream/);
+        return true;
+      });
+      assert.equal(posts, 1);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("OpenAiCompatibleProvider preserves the initial system policy for prompt-only schemas", { concurrency: false }, async () => {
   const messages: ProviderRequest["messages"] = [
     { role: "system", content: "Read-only tenant policy." },

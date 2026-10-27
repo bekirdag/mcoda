@@ -4,6 +4,7 @@ import { Runner, RunnerBudgetError } from "../Runner.js";
 import { ToolRegistry } from "../../tools/ToolRegistry.js";
 import { ToolExecutionError } from "../../tools/ToolTypes.js";
 import { OpenAiCompatibleProvider } from "../../providers/OpenAiCompatibleProvider.js";
+import { ModelServiceError } from "../../providers/ModelServiceError.js";
 import type { AgentEvent, Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 
 class StubProvider implements Provider {
@@ -21,6 +22,23 @@ class StubProvider implements Provider {
     return response;
   }
 }
+
+test("Runner identifies first-call context refusals without erasing earlier generation", async () => {
+  for (const priorCalls of [0, 1]) {
+    let calls = 0;
+    const failure = new ModelServiceError("context_length_exceeded", 400);
+    const runner = new Runner({
+      provider: { name: "fixture", generate: async () => {
+        if (calls++ < priorCalls) return { message: { role: "assistant", content: "Continue" }, usage: { totalTokens: 9 } };
+        throw failure;
+      } },
+      tools: new ToolRegistry(), context: { workspaceRoot: process.cwd() }, maxSteps: 3, maxToolCalls: 0,
+      continueAfterFinal: () => "Next step",
+    });
+    await assert.rejects(runner.run([{ role: "user", content: "Work" }]), error => error === failure);
+    assert.equal((failure as Error & { completedModelCalls?: number }).completedModelCalls, priorCalls);
+  }
+});
 
 test("Runner executes tool calls", { concurrency: false }, async () => {
   const tools = new ToolRegistry();

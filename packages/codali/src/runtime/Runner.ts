@@ -12,6 +12,7 @@ import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolContext } from "../tools/ToolTypes.js";
 import type { RunLogger } from "./RunLogger.js";
 import { truncateToolResult } from "../tools/TruncateResult.js";
+import { ModelServiceError } from "../providers/ModelServiceError.js";
 
 export interface RunnerOptions {
   signal?: AbortSignal;
@@ -269,7 +270,10 @@ export class Runner {
           streamFlushMs: this.streamFlushMs,
         }),
         "provider",
-      );
+      ).catch((error: unknown) => {
+        if (error instanceof ModelServiceError) error.completedModelCalls = step;
+        throw error;
+      });
 
       recordUsage(response.usage);
       signal.throwIfAborted();

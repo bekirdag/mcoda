@@ -92,6 +92,7 @@ export interface CodaliRuntimeProviderInput {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  retryTransient?: boolean;
   localRunner?: LocalOpenAiCompatibleRunnerConfig;
   runnerKind?: LocalRunnerKind;
   authMode?: LocalRunnerAuthMode;
@@ -578,6 +579,10 @@ interface NodeModelScope {
   close(): void;
 }
 interface CodaliModule {
+  ModelServiceError?: {
+    new (...args: any[]): Error & { code: string; status: number; completedModelCalls?: number };
+    fromResponse(response: Response): Promise<Error & { code: string; status: number }>;
+  };
   loadNodeOrchestrationConfig?(file: string, agent: MswarmCodaliAgent, nativeReasoning?: NativeReasoningRequest): Promise<NodeOrchestrationConfig>;
   ConfiguredModelScope?: new (resolved: NodeOrchestrationConfig, options: { effort: "high"; signal?: AbortSignal; credentials?: Record<string, string> }) => NodeModelScope;
   runConfiguredGateway?(request: MswarmCodaliGateway, options: {
@@ -2246,6 +2251,24 @@ function openAIStopChunk(input: MswarmCodaliInvocationInput): Record<string, unk
   };
 }
 
+/** A confirmed native refusal, promoted only across a complete invocation scope. */
+export class MswarmInvocationRejectedError extends Error {
+  readonly code = "context_length_exceeded";
+  readonly usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  constructor() {
+    super("Model context limit exceeded; checkpoint and reduce context before continuing");
+    this.name = "MswarmInvocationRejectedError";
+  }
+}
+
+/** Tool pass-through is exactly one native request, with no preceding model calls. */
+export async function readLocalModelResponseError(response: Response): Promise<Error> {
+  const codali = await loadCodaliModule();
+  if (!codali.ModelServiceError) return new Error(`Local model HTTP ${response.status}`);
+  const error = await codali.ModelServiceError.fromResponse(response);
+  return error.code === "context_length_exceeded" && error.status === 400 ? new MswarmInvocationRejectedError() : error;
+}
+
 export class MswarmCodaliExecutor {
   async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
     const nativeReasoning = nativeReasoningRequest({ ...input.nativeReasoning });
@@ -2253,7 +2276,17 @@ export class MswarmCodaliExecutor {
     input = { ...input, nativeReasoning };
     const codali = await loadCodaliModule();
     const file = input.agent.orchestrationConfigPath;
-    if (!file) return this.invokeWithinScope(input, codali);
+    if (!file) {
+      try { return await this.invokeWithinScope(input, codali); }
+      catch (error) {
+        // Job/gateway scopes can already have spent tokens in other runners.
+        // Likewise, custom runtimes and configured orchestration own their receipts.
+        if (!input.codaliGateway && !input.codaliJob && !input.runCodali && codali.ModelServiceError
+          && error instanceof codali.ModelServiceError && error.code === "context_length_exceeded"
+          && error.status === 400 && error.completedModelCalls === 0) throw new MswarmInvocationRejectedError();
+        throw error;
+      }
+    }
     if (input.runCodaliGateway || input.runCodali || input.runCodaliJob) throw new Error("Configured node execution cannot accept legacy runtime overrides");
     if (!codali.loadNodeOrchestrationConfig || !codali.ConfiguredModelScope || !codali.runConfiguredGateway) {
       throw new Error("Installed Codali lacks configured node orchestration support");
@@ -2306,6 +2339,9 @@ export class MswarmCodaliExecutor {
         baseUrl: input.agent.baseUrl,
         apiKey: input.agent.apiKey,
         timeoutMs: runtimePolicy.timeoutMs,
+        // A disconnected inference may already have generated tokens. The node
+        // must preserve that uncertain outcome instead of replaying the POST.
+        retryTransient: false,
         localRunner: input.agent.localRunner,
         runnerKind: input.agent.runnerKind,
         authMode: input.agent.authMode,

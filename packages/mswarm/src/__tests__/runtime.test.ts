@@ -7603,6 +7603,46 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("settles only confirmed first-generation context refusals, including tool pass-through", async () => {
+    const originalFetch = globalThis.fetch;
+    const oldVendor = process.env.MSWARM_CODALI_VENDOR_ONLY;
+    process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
+    try {
+      for (const tools of [false, true]) for (const failure of ["context", "structured", "transport"]) {
+        const contextRefused = failure === "context";
+        let posts = 0;
+        globalThis.fetch = async (_url, init) => {
+          if (init?.method === "POST") posts++;
+          if (failure === "transport") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+          return Response.json({ error: contextRefused ? {
+            type: "invalid_request_error",
+            message: "request exceeds the context window: prompt (33012 tokens) leaves no room to answer in the context (32768); requests are never truncated",
+          } : { code: "structured_output_failed", message: "Private generated data" } }, { status: contextRefused ? 400 : 502 });
+        };
+        const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+          mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "strata-local", config: { baseUrl: "http://runner.test/v1", authMode: "none" } })]),
+        });
+        const result = await runtime.executeJob({
+          job_id: `context-${tools}-${failure}`, request_id: `context-${tools}-${failure}`, node_id: "shn_service",
+          agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+          policy: { allow_tools: false },
+          openai_request: { model: "mcoda-qwen-reviewer", messages: [{ role: "user", content: "Work" }],
+            ...(tools ? { tools: [{ type: "function", function: { name: "inspect", parameters: { type: "object" } } }] } : {}),
+          },
+        });
+        assert.equal(result.status, "failed");
+        assert.equal(result.error?.code, contextRefused ? "context_length_exceeded" : failure === "structured" ? "invalid_response" : "upstream_error");
+        assert.deepEqual(result.usage, contextRefused ? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } : undefined);
+        assert.notEqual(result.pre_start_failure, true, "A native refusal must not trigger reservation replay");
+        assert.doesNotMatch(JSON.stringify(result), /Private generated data/);
+        assert.equal(posts, 1);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (oldVendor === undefined) delete process.env.MSWARM_CODALI_VENDOR_ONLY; else process.env.MSWARM_CODALI_VENDOR_ONLY = oldVendor;
+    }
+  });
+
   it("reports an uninstall in prose rather than a JSON dump", () => {
     const layout = {
       manager: "systemd" as const,

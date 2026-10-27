@@ -354,6 +354,8 @@ export class OpenAiCompatibleProvider implements Provider {
             if (data === "[DONE]") { ended = true; return; }
             const chunk = JSON.parse(data) as { error?: unknown; choices?: Array<{ delta?: any; finish_reason?: string }>; usage?: typeof usage };
             if (chunk.error) {
+              const classified = ModelServiceError.fromRelayError(chunk.error);
+              if (classified) throw classified;
               const detail = typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error);
               throw new Error(`OpenAI-compatible stream error: ${this.config.apiKey ? detail.split(this.config.apiKey).join("[redacted]").slice(0, 600) : detail.slice(0, 600)}`);
             }
@@ -416,6 +418,8 @@ export class OpenAiCompatibleProvider implements Provider {
       // A relay can send HTTP 200 keepalives before inference fails. Inspect
       // the final envelope instead of treating those headers as success.
       if (raw?.error) {
+        const classified = ModelServiceError.fromRelayError(raw.error);
+        if (classified) throw classified;
         const error = raw.error;
         const record = typeof error === "object" && error !== null
           ? error as Record<string, unknown>
