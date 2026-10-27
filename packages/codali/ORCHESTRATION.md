@@ -420,6 +420,12 @@ the grader before live runs. Retain the frozen installed client and configuratio
 with every result. First attempts are qualification observations; corrective
 reruns must be labeled diagnostic, with the original failures preserved.
 
+Workflow corpus v5 additionally checks immediate dispatch stopping on synchronous
+worker throws, waiting for already-started workers, and preserving falsy thrown
+values. This closes a gap found by live review: public async-only coverage had
+accepted a faulty pool. Earlier frozen runs retain their original version, hash
+and outcomes; regrading known artifacts is diagnostic evidence.
+
 `eval/LongWorkflowJourney.runLongWorkflowJourney` composes four module contracts
 into one durable goal. Select `data-delivery`, `service-adapters`, `billing-audit`
 or `localized-export`, and supply `configPath` and a new `outputRoot`. Four child

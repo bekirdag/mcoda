@@ -166,3 +166,19 @@ for (const failure of ["sync-range", "sync-type", "resolve"] as const) {
     });
   });
 }
+
+test("workflow v5 pool rejects dispatch after an observed synchronous worker throw", { ...isolated, timeout: 30000 }, async () => {
+  const task = terminalWorkflowCorpus().find(t => t.id === "async-worker-pool")!;
+  await fixture(task, async workspace => {
+    await reference(task, workspace);
+    const original = task.reference["src/pool.mjs"].replace("export async function mapPool", "async function inner");
+    // Promisifying the worker hides its immediate throw until a microtask,
+    // allowing the remaining lanes to invoke additional workers first.
+    await fs.writeFile(path.join(workspace, "src/pool.mjs"), original +
+      "export const mapPool=(items,limit,worker)=>inner(items,limit,async(...args)=>worker(...args));\n");
+    const result = await gradeTerminalTask(task, workspace);
+    assert.equal(result.passed, false, JSON.stringify(result));
+    assert.equal(result.contractPassed, false);
+    assert.equal(result.publicTestsPassed, true, "the independent oracle must detect this missing public case");
+  });
+});

@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Unpublished .9 coordinator commit511e4a7 passes1700 Codali tests and both CI/platform workflows. Live L passes all four repaired module reviews but delivery review re-requests sibling source and exceeds context. A one-regression correction now carries completed same-snapshot assessments into later scoped reviews, with1700 full Codali tests passing(3 skips) and continuation diagnostic M running. M reuses only L module assessments with exact matching hashes and complete canonical receipts; it is not a fresh whole workflow. No .9 publication, AF dispatch or canary yet.",
+  "currentTask": "Unpublished .9 review coordinator and assessment chain are committed through 23701e5 with passing CI/platform. M/N correctly reject unsupported delivery claims; O falsely rejects a Unicode case, and P accepts its actual runtime counterevidence before identifying a real synchronous pool dispatch bug. Workflow corpus v5 now detects that bug, with 1701 Codali tests passing (3 skipped). Fresh controlled diagnostic Q uses a repaired pool and accurate delivery inventory; no .9 publication, AF dispatch or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2133,9 +2133,33 @@
       "testsPassed": 1700,
       "testsSkipped": 3,
       "artifact": "/home/wodo/.local/state/codali-review-assessment-chain-full.log"
+    },
+    {
+      "check": "Assessment-chain commit CI and platform",
+      "status": "passed",
+      "sourceCommit": "23701e5812dce8489913cc197fe7380aa5617ddd",
+      "ciRun": 40456827519,
+      "platformRun": 40456827425
+    },
+    {
+      "check": "Whole-goal diagnostics M/N/O/P",
+      "status": "failed",
+      "artifactDirectory": "/home/wodo/.local/state/codali-terminal-deployment",
+      "limitation": "M correctly rejects an unobserved root-test claim; N correctly rejects claims about nonexistent protected files. O falsely says U+0130 lowercases to ASCII i; an isolated runtime assertion disproves that. P accepts this concrete counterevidence and finds a real synchronous pool dispatch bug. No final integration pass or fresh coding quality is established."
+    },
+    {
+      "check": "Workflow v5 synchronous pool dispatch oracle",
+      "status": "passed",
+      "testsPassed": 1701,
+      "testsSkipped": 3,
+      "redFailures": 1,
+      "redArtifact": "/home/wodo/.local/state/codali-workflow-v5-red.log",
+      "artifact": "/home/wodo/.local/state/codali-workflow-v5-full.log",
+      "regradeArtifact": "/home/wodo/.local/state/codali-terminal-deployment/review-p-pool-regrade-v5.json",
+      "limitation": "Independent grader rejects the known faulty pool despite its 15 passing public tests. Added coverage stops dispatch immediately on synchronous throw, waits for existing work and preserves falsy thrown values. Original frozen runs retain their original corpus version/hash/results."
     }
   ],
-  "updatedAt": "2026-10-27T05:42:13.922980+00:00",
+  "updatedAt": "2026-10-27T06:16:00.784836+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
@@ -2151,7 +2175,7 @@
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
-    "AD used4.8Mtokens per journey. Billing/service-adapters failed; data-delivery/localized-export were intentionally stopped for superseding fixes. AE now runs exact .7artifacts at the same4.8Mbudget; no matched full-run comparison or new held-out quality claim.",
+    "AD used4.8Mtokens per journey. Billing/service-adapters failed; data-delivery/localized-export were intentionally stopped for superseding fixes. All four AE runs on exact .7 artifacts ended failed: billing/service-adapters failed early; data-delivery/localized-export exhausted the 4.8M budget. No matched full-run comparison or new held-out quality claim.",
     "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet.",
     "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures."
   ]
