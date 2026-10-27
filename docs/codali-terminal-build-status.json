@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Release40463853473 is qualifying0.1.135-codali.9 at tagd20ec48; source CI/platform both pass and1710 full Codali tests pass (3 skips). Known-workspace continuation S now passes final integration with5 complete canonical receipts and unchanged snapshot. Real unacknowledged audio expiry recovery passes with one GET, no replay and no export. Waiting for exact-artifact release installation/publication before freezing and starting AF workflows; no stable promotion or canary yet.",
+  "currentTask": "Prerelease0.1.135-codali.9 is published and its10 registry artifacts match CI. Frozen AF workflows are running against both public Strata routes with high4096 reasoning; both first journeys passed stages1/2 and are in stage3. A real native context refusal exposed lost classification and unsettled usage. Client/node8f77fc2 passes1884 tests (3 skips); backendc5fa80b11 passes112 integration tests and typecheck. CandidateM is being qualified in isolation. Keep production services unchanged during AF; no stable promotion or canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2204,12 +2204,12 @@
     },
     {
       "check": "Deduplicate exact review quotations without dropping checks",
-      "status": "regression_passed_live_pending",
+      "status": "passed_regression_and_diagnostic",
       "redFailures": 1,
       "focusedTestsPassed": 4,
       "redArtifact": "/home/wodo/.local/state/codali-checklist-quotes-red.log",
       "artifact": "/home/wodo/.local/state/codali-checklist-quotes-green.log",
-      "limitation": "A141-check regression formerly exceeded22000 input characters; all141 checks now retain their exact source quotation references and reach review within that bound. Full suite and known-workspace continuation S pending.",
+      "limitation": "All141 checks retain their exact source quotation references within the input bound; full suite and known-workspace continuationS pass. This is not a fresh workflow or independent coding-quality result.",
       "fullTestsPassed": 1710,
       "fullTestsSkipped": 3,
       "fullArtifact": "/home/wodo/.local/state/codali-checklist-quotes-full.log"
@@ -2245,10 +2245,52 @@
       "status": "passed_scoped",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/review-contract-refreshed-private-impact.json",
       "limitation": "Targeted private index refresh succeeds and returns ReviewCoordinator/test inbound imports plus ProviderTypes outbound. Main MCP graph remains empty; no claim of full-repository coverage repair."
+    },
+    {
+      "check": "Prerelease9 publication and exact registry artifact verification",
+      "status": "passed",
+      "sourceCommit": "d20ec48f7b275b521a58c10c73eacd01eda36f6b",
+      "releaseRun": 40463853473,
+      "packagesVerified": 10,
+      "installationJobsPassed": 6,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease9-registry-artifacts/verification.json",
+      "limitation": "Stablelatest and global CLI remain0.1.134. AF uses a frozen private installation of exact publication artifacts."
+    },
+    {
+      "check": "AF frozen public workflow runs",
+      "status": "in_progress",
+      "client": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261027af.manifest.json",
+      "raijinLog": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-af-raijin-20261027.log",
+      "sukuLog": "/home/wodo/.local/state/codali-terminal-deployment/long-workflow-af-suku-20261027.log",
+      "limitation": "Four scenarios reuse known contracts at nativehigh4096 and4.8M tokens per journey. Both clients run physically onRaijin while routes select different hosts. No fresh holdout, matched-latency, multi-hour completion or canary claim."
+    },
+    {
+      "check": "Actual native context overflow negative probe",
+      "status": "failed_classification_and_accounting",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/native-context-boundary-20261027a/result.json",
+      "limitation": "Native32K server rejects33000-digit prompt before generation. Public200 envelope loses classification and canonical receipt remains incomplete. Exactly1 inference POST; native stays loaded. Original failure retained."
+    },
+    {
+      "check": "Context rejection propagation, known-zero accounting and no uncertain inference replay",
+      "status": "passed_local_deployment_pending",
+      "sourceCommit": "8f77fc2",
+      "fullTestsPassed": 1884,
+      "fullTestsSkipped": 3,
+      "artifact": "/home/wodo/.local/state/codali-context-final-full.log",
+      "redArtifacts": [
+        "/home/wodo/.local/state/codali-context-classification-red.log",
+        "/home/wodo/.local/state/codali-context-node-red.log",
+        "/home/wodo/.local/state/codali-context-transport-red.log"
+      ],
+      "backendCommit": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
+      "backendTestsPassed": 112,
+      "backendArtifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-context-suite.log",
+      "limitation": "Zero only for explicit pre-generation refusal in a proven complete invocation scope. Validation failures and lost transport retain unknown usage. Native node POST retries disabled; discovered3attempts become1. Candidate deployment and actual public boundary recheck remain."
     }
   ],
-  "updatedAt": "2026-10-27T07:06:26.597401+00:00",
+  "updatedAt": "2026-10-27T07:49:04.220841+00:00",
   "openFindings": [
+    "Actual native context refusal currently loses public error classification and leaves usage unsettled. Client/node8f77fc2 and backendc5fa80b11 fixes pass regressions, but need qualified deployment and live recheck after frozenAF drains.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.8 are published on next; stable mcoda/latest and globalCLI remain.134. All ten .8 registry tarballs match exact CI installation artifacts; no stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
