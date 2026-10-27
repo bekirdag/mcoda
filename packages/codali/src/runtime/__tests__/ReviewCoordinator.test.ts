@@ -103,6 +103,37 @@ test("assessment snapshot mismatch fails before inference or source inspection",
   assert.notEqual(reviewWorkspaceHash(hashes), reviewWorkspaceHash({ ...hashes, "extra.mjs": "extra" }));
 });
 
+for (const requested of ["a.mjs", "unassessed.mjs"]) test(`later scoped reviews can inspect only declared or freshly assessed source: ${requested}`, async () => {
+  const { task, scope: original, hashes: originalHashes } = fixture();
+  const hashes = { ...originalHashes, "unassessed.mjs": "present-in-snapshot" };
+  const scope = { ...original, reviewScope: "assigned_task", changedPaths: ["b.mjs"], otherTaskChangedPaths: ["a.mjs"],
+    reviewPaths: ["b.mjs"], sourceRoles: { "b.mjs": "reviewed_change" } };
+  const assessments = [{ taskId: "module", criterionIds: ["R1"], sourcePaths: ["a.mjs"], workspaceSnapshotHash: reviewWorkspaceHash(hashes) }];
+  const reads: string[] = []; let reviews = 0; let initial: Record<string, any> = {};
+  const result = await reviewTaskScope({ task, scope, hashes, assessments, receipts: [], summary: "Check the report's module claim.",
+    maxInputChars: 30_000, maxOutputTokens: 2048, diff: async files => { assert.deepEqual(files, ["b.mjs"]); return "report diff"; },
+    readSource: async file => { assert.equal(file, "b.mjs"); return { content: "Report claims module value is two.", truncated: false }; },
+    readSourcePage: async (file, offset) => { reads.push(file); assert.equal(file, "a.mjs"); assert.equal(offset, 0);
+      return { path: file, offset, content: "export const value = 1;", truncated: false }; },
+    provider: { name: "fixture", generate: async request => {
+      const prepared = contractReviewFixture(request); if (prepared) return prepared;
+      if (!reviews++) { initial = JSON.parse(request.messages.at(-1)!.content);
+        return { message: { role: "assistant", content: JSON.stringify({ sourceRequests: [{ path: requested }] }) } }; }
+      assert.equal(JSON.parse(request.messages.at(-1)!.content).sourcePages[0].content, "export const value = 1;");
+      return { message: { role: "assistant", content: '{"passed":false,"findings":["The report contradicts the current module value."]}' } };
+    } } });
+  assert.equal(result.passed, false);
+  assert.deepEqual(scope.reviewPaths, ["b.mjs"]);
+  assert.deepEqual(initial.changedPaths, ["b.mjs"]);
+  assert.deepEqual(initial.otherTaskChangedPaths, ["a.mjs"]);
+  if (requested === "a.mjs") {
+    assert.equal(reviews, 2); assert.deepEqual(reads, ["a.mjs"]);
+    assert.deepEqual(result.findings, ["The report contradicts the current module value."]);
+    assert.equal(initial.sourceRoles["a.mjs"], "read_only_context");
+    assert.equal(initial.source["a.mjs"], undefined, "Freshly assessed source should be paged only when needed");
+  } else { assert.equal(reviews, 1); assert.deepEqual(reads, []); assert.match(result.findings[0], /outside.*scope/); }
+});
+
 for (const rejectLast of [false, true]) test(`oversized checklists retain every obligation across bounded reviews (reject last: ${rejectLast})`, async () => {
   const { task, scope, hashes } = fixture();
   const behaviors = Array.from({ length: 80 }, (_, i) => `Obligation ${i}: ${"Check a distinct boundary and its observable result. ".repeat(10)}`);

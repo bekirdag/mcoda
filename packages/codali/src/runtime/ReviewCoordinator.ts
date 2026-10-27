@@ -66,12 +66,18 @@ export async function reviewTaskScope(options: {
     return { quoteId, expectedBehavior };
   });
   const assessedPaths = new Set(assessments.flatMap(value => value.sourcePaths));
+  // A later report/integration review can inspect an already assessed module
+  // without attributing its edits or requirements to the current task.
+  const reviewPaths = [...new Set([...options.scope.reviewPaths, ...assessedPaths])];
+  const reviewScope = { ...options.scope, reviewPaths, sourceRoles: {
+    ...Object.fromEntries([...assessedPaths].map(file => [file, "read_only_context"])), ...options.scope.sourceRoles,
+  } };
   const initialPaths = options.scope.reviewPaths.filter(file => !assessedPaths.has(file));
   const checklist = (selected: typeof checks) => ({
     quotes: Object.fromEntries([...new Set(selected.map(check => check.quoteId))].map(id => [id, quotes[id]])),
     checks: selected,
   });
-  const input = { ...reviewPromptContext(options.scope, options.hashes), workspaceSnapshotHash,
+  const input = { ...reviewPromptContext(reviewScope, options.hashes), workspaceSnapshotHash,
     ...(assessments.length ? { taskAssessments: assessments } : {}),
     contractChecklist: checklist(checks), task: options.task,
     checklistBatch: undefined as { index: number; count: number; totalChecks: number } | undefined,
@@ -124,7 +130,7 @@ export async function reviewTaskScope(options: {
       else { truncated.delete(file); delete input.sourceNextOffsets[file]; }
     }
     input.sourceTruncatedPaths = [...truncated];
-    const result = await runTaskReview({ provider: options.provider, allowedPaths: options.scope.reviewPaths,
+    const result = await runTaskReview({ provider: options.provider, allowedPaths: reviewPaths,
       initialSourceOffsets: input.sourceNextOffsets, readSourcePage: options.readSourcePage,
       maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens,
       messages: messages(), signal: options.signal });

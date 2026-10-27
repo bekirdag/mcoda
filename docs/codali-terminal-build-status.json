@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Exact .11 node N and backend M remain frozen for AG. Suku service-adapters passed all four module graders, final completion and restart after105minutes; all271 routes and environment audit pass, but the2h duration flag is false. OtherAG cases remain running. Prerelease.12 at9eae2e3 is building with CI/platform passed, not activated. Subsequent tool-attempt accounting persistence fix passes80focused and1729full client tests with3optional skips. Backend N and BDYA v2 remain qualified/staged. No broad quality pass or24-hour canary yet.",
+  "currentTask": "Exact .11 node N/backend M remain frozen for AG data-delivery and localized-export. Suku service-adapters passed after105minutes; Raijin billing passed4/4module grades but exhausted its4.8M budget before final completion after133minutes. Prerelease.12 is published and all10registry artifacts match CI; not activated. Subsequent tool-budget persistence and assessed-source paging fixes pass focused/full tests (1731client pass,3optional skips); preparing their next prerelease. Backend N and BDYA v2 remain qualified/staged. No broad quality pass or24-hour canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2454,9 +2454,35 @@
       "status": "passed_not_deployed",
       "artifact": "/home/wodo/.local/state/codali-tool-usage-full.log",
       "limitation": "Live AG resume exposed386→385 tool calls. Two regressions reproduce loss of both successful and rejected attempts after the last model snapshot. Existing usage events now persist the reservation before authorization/execution. 80focused and1729full client tests pass,3optional skips. This subsequent fix is not included in the immutable.12 tag; historical missing snapshots are not fabricated."
+    },
+    {
+      "check": "Prerelease.12 exact publication and registry bytes",
+      "status": "passed",
+      "sourceCommit": "9eae2e3e4156da0e37d6d722be9d2b3afe4e6fd7",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease12-registry-artifacts/verification.json",
+      "limitation": "Release40493844277 passed all6package and6installation jobs. All10published packages match CI bytes; next=.12 and latest=.134. Production remains.11; later fixes are not in this immutable tag."
+    },
+    {
+      "check": "Tool usage downgrade readers",
+      "status": "passed_scoped",
+      "sourceCommit": "749089c21e88fa896788e708c76e6c97f47e626f",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/tool-usage-reader-qualification.json",
+      "limitation": "Current and exactpublished.11 readers preserve newly persisted successful/rejected tool-attempt counts across resume/reconciliation. No production inference. Old missing snapshots are not reconstructed."
+    },
+    {
+      "check": "AG Raijin billing-audit completion",
+      "status": "failed",
+      "artifact": "/home/wodo/.local/state/codali-long-workflow-public-ag-raijin-20261027/billing-audit/result.json",
+      "limitation": "Ended11:38:13UTC after7980526ms:4/4 independent module graders pass, but the4.8M budget was exhausted during final review, R1unverified and goal incomplete. Duration exceeded2h without success. Route/environment audits pass; original failure retained."
+    },
+    {
+      "check": "Fresh assessed sources remain available to later reviews",
+      "status": "passed_not_deployed",
+      "artifact": "/home/wodo/.local/state/codali-assessed-source-full.log",
+      "limitation": "Reproduced a later review being denied source from a fresh same-snapshot assessment. ReviewCoordinator now exposes those paths as read_only_context for hash-checked paging while preserving edit/requirement scope and blocking unrelated snapshot files. 103focused and1731fullclient tests pass,3optional skips. Live requalification remains pending."
     }
   ],
-  "updatedAt": "2026-10-27T11:20:00Z",
+  "updatedAt": "2026-10-27T11:49:00Z",
   "openFindings": [
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
