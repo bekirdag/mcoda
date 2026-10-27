@@ -64,6 +64,53 @@ test("bounded review retains earlier evidence and returns only a final decision"
   assert.equal(calls, 2); assert.equal(reads, 1); assert.equal(messages.length, 2);
 });
 
+test("a batch of large source pages fits remaining context and retains exact continuation offsets", async () => {
+  const paths = Array.from({ length: 8 }, (_, i) => `module-${i}.mjs`);
+  const source = 'const value = "quoted";\n'.repeat(400);
+  const offsets = Object.fromEntries(paths.map((file, i) => [file, 100 + i]));
+  let calls = 0;
+  const result = await runTaskReview({ messages, allowedPaths: paths, initialSourceOffsets: offsets,
+    maxInputChars: 12_000, provider: { name: "fixture", generate: async request => {
+      assert.ok(JSON.stringify(request.messages).length <= 12_000);
+      assert.deepEqual(request.messages.slice(0, messages.length), messages);
+      if (!calls++) return response({ sourceRequests: paths.map(path => ({ path })) });
+      const pages: ReviewSourcePage[] = JSON.parse(request.messages.at(-1)!.content).sourcePages;
+      assert.deepEqual(pages.map(page => page.path), paths);
+      for (const page of pages) {
+        assert.equal(page.offset, offsets[page.path]);
+        assert.ok(page.content.length > 0 && page.content.length < 8000);
+        assert.equal(page.content, source.slice(page.offset, page.offset + page.content.length));
+        assert.equal(page.truncated, true);
+        assert.equal(page.nextOffset, page.offset + page.content.length);
+      }
+      return response({ passed: false, findings: ["The supplied declarations violate the required default."] });
+    } }, readSourcePage: async (path, offset) => ({ path, offset, content: source.slice(offset, offset + 8000),
+      truncated: true, nextOffset: offset + 8000 }) });
+  assert.equal(calls, 2);
+  assert.deepEqual(result, { passed: false, findings: ["The supplied declarations violate the required default."] });
+});
+
+test("context fitting preserves complete small pages and unavailable evidence markers", async () => {
+  const small: ReviewSourcePage = { path: "small.txt", offset: 0, content: "exact contract", truncated: false };
+  const unavailable: ReviewSourcePage = { path: "large.bin", offset: 0,
+    content: "[large source omitted]", truncated: true, unavailable: true };
+  let calls = 0;
+  const result = await runTaskReview({ messages, maxInputChars: 2000,
+    allowedPaths: ["source.mjs", small.path, unavailable.path],
+    readSourcePage: async path => path === small.path ? small : path === unavailable.path ? unavailable
+      : { path, offset: 0, content: "x".repeat(8000), truncated: false },
+    provider: { name: "fixture", generate: async request => {
+      assert.ok(JSON.stringify(request.messages).length <= 2000);
+      if (!calls++) return response({ sourceRequests: ["source.mjs", small.path, unavailable.path].map(path => ({ path })) });
+      const pages: ReviewSourcePage[] = JSON.parse(request.messages.at(-1)!.content).sourcePages;
+      assert.deepEqual(pages[1], small); assert.deepEqual(pages[2], unavailable);
+      assert.equal(pages[0].truncated, true); assert.equal(pages[0].nextOffset, pages[0].content.length);
+      return response({ passed: false, findings: ["Required binary evidence remains unavailable."] });
+    } } });
+  assert.equal(calls, 2); assert.equal(result.passed, false);
+  assert.deepEqual(result.findings, ["Required binary evidence remains unavailable."]);
+});
+
 test("omitted page offsets continue exact partial-source cursors without skipping evidence", async () => {
   let calls = 0; const reads: number[] = [];
   const result = await runTaskReview({ messages, allowedPaths: ["test/task.mjs"],
@@ -126,13 +173,14 @@ for (const value of [
 test("review evidence loops and context growth are bounded without a fabricated pass", async () => {
   for (const mode of ["repeat", "rounds", "context"] as const) {
     let calls = 0; let reads = 0;
-    const result = await runTaskReview({ provider: { name: "fixture", generate: async () => {
+    const result = await runTaskReview({ provider: { name: "fixture", generate: async request => {
+      assert.ok(JSON.stringify(request.messages).length <= (mode === "context" ? 1000 : 100_000));
       calls++; return response({ sourceRequests: [{ path: "known.txt", offset: mode === "repeat" ? 0 : calls * 8000 }] });
     } }, messages, allowedPaths: ["known.txt"], maxInputChars: mode === "context" ? 1000 : 100_000,
     readSourcePage: async (path, offset) => { reads++; return { path, offset, content: "x".repeat(8000), truncated: true, nextOffset: offset + 8000 }; } });
     assert.equal(result.passed, false);
-    assert.equal(calls, mode === "repeat" ? 2 : mode === "rounds" ? 5 : 1);
-    assert.equal(reads, mode === "rounds" ? 4 : 1);
+    assert.equal(calls, mode === "rounds" ? 5 : 2);
+    assert.equal(reads, mode === "rounds" ? 4 : mode === "context" ? 2 : 1);
     assert.match(result.findings[0], mode === "repeat" ? /repeated/ : mode === "rounds" ? /limit reached/ : /configured model context/);
   }
 });

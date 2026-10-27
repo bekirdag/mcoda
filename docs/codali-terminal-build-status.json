@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Exact .11 node N and backend M remain deployed and frozen for AG workflows (high/max4096). Capacity429 classification fixes are source-only: mcoda d9a86c4, backend54753f5a2 and isolated BDYA relay e380a2b3. 1895 client/node tests and95 backend tests pass; BDYA relay five tests pass. Backend N images are being built/qualified without activation. Session migration/concurrent-process tests pass62 with one platform skip; actual published.11 task-state rollback and legacy.134 transcript roundtrips pass with explicit legacy task-resume limitations. AG final integration/review is running; one previously verified Raijin module was reopened for correction. Broad quality, actual smaller-context failover, production mixed load and24-hour canary gates remain open.",
+  "currentTask": "Exact .11 node N and backend M remain frozen for AG workflows (high/max4096). Capacity429 fixes remain source-only. Backend N images, image/drain fixtures and guarded rollout are qualified; BDYA HTTP drain and three rollback-fault cases pass, with deployment v2 prepared. Receipt-selection guidance4cf086c passed CI/platform. AG is still in final review: bounded source-page delivery passes96focused and1727full client tests with3optional skips. No production activation, broad quality pass or24-hour canary yet.",
   "tasks": [
     {
       "id": "P0.1",
@@ -2416,9 +2416,35 @@
       "status": "passed_scoped",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/session-reader-qualification.json",
       "limitation": "Exact published.11 work-state rollback; installed.134 exclusive metadata/transcript compatibility only. Legacy.134 cannot resume task control and concurrent legacy writers are unsupported."
+    },
+    {
+      "check": "Backend N staged image and graceful-drain qualification",
+      "status": "passed_not_deployed",
+      "sourceCommit": "54753f5a22a9b93d11e2671b37e8350a75ba33b0",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-rollout-n-qualified.json",
+      "limitation": "Both candidate images passed isolated image and four current/candidate drain fixtures. Rollout pins19evidence files and refuses activation during frozen workflows. Current backend remainsM."
+    },
+    {
+      "check": "BDYA capacity HTTP drain and rollback faults",
+      "status": "passed_not_deployed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/bdya-capacity-rollout-v2-qualified.json",
+      "limitation": "Actual Node24 HTTP fixture validates both legacy and candidate graceful admission/close/restore plus capacity responses. Three isolated tests execute v2 rollback AST for failed startup, unhealthy candidate and surviving old runtime; original source restored and accepted requests drain before restart. Production main.ts remains unchanged. Use v2 only; clean source patch is draft PR bdyacapital/be#4."
+    },
+    {
+      "check": "Automatic receipt-selection guidance",
+      "status": "passed_not_deployed",
+      "sourceCommit": "4cf086cdefc9ffe9b71b9c501d88d6e3154fe83f",
+      "artifact": "/home/wodo/.local/state/codali-receipt-guidance-test.log",
+      "limitation": "64focused tests, CI40490801532 and platform40490801376 pass. Prompt/error guidance recommends automatic current-attempt checks; explicit ID, freshness and review acceptance gates are unchanged."
+    },
+    {
+      "check": "Reviewer source-page context bounds",
+      "status": "passed_not_deployed",
+      "artifact": "/home/wodo/.local/state/codali-review-page-full.log",
+      "limitation": "Regression reproduced aggregate eight-page overflow. Candidate fits serialized source prefixes while retaining original authority, prior evidence, exact continuation offsets and unavailable markers;96focused and1727full client tests pass with3optional skips. Live qualification remains pending; frozenAG remains on.11."
     }
   ],
-  "updatedAt": "2026-10-27T10:16:09.999038+00:00",
+  "updatedAt": "2026-10-27T11:03:00Z",
   "openFindings": [
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
