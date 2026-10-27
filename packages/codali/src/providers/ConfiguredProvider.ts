@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { CryptoHelper, PathHelper, mswarmClientProductHeaders } from "@mcoda/shared";
 import { resolveCredential } from "../runcontext/CredentialFile.js";
 import { resolveBinding, type OrchestrationProvider, type ResolvedOrchestrationConfig, type ModelOperation, type EffortLevel } from "../config/OrchestrationConfig.js";
@@ -89,13 +90,29 @@ export class ModelServiceClient {
     } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); }
   }
 
+  /** Retry only read-only discovery on explicit temporary service failures.
+   * Never reuse this for submission, reconciliation mutations or auth denials. */
+  private async discoveryJson(url: string, signal?: AbortSignal): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
+      try { return await this.json(url, { signal }); }
+      catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof ModelServiceError) || error.code !== "service_unavailable" || attempt >= 2) throw error;
+        const retryAfterMs = (error.retryAfterSeconds ?? 0) * 1000;
+        if (retryAfterMs > 5000) throw error;
+        await delay(Math.max(attempt === 0 ? 250 : 750, retryAfterMs), undefined, { signal });
+      }
+    }
+  }
+
   async catalog(signal?: AbortSignal, refresh = false): Promise<CatalogEntry[]> {
     const credential = await this.credential();
     const key = createHash("sha256").update(credential ?? "anonymous").digest("hex");
     if (!refresh && this.cache?.key === key && this.cache.expires > Date.now()) return this.cache.entries;
     const base = new URL(this.provider.baseUrl);
     const url = this.provider.catalogUrl ?? (this.provider.adapter === "mswarm" ? new URL("/v1/swarm/self-hosted/agents", base).toString() : `${this.provider.baseUrl.replace(/\/$/, "")}/models`);
-    const payload = record(await this.json(url, { signal }));
+    const payload = record(await this.discoveryJson(url, signal));
     const items = payload.agents ?? payload.data;
     if (!Array.isArray(items)) throw new Error("Invalid model catalog response");
     const entries = items.map(item => {
@@ -130,7 +147,7 @@ export class ModelServiceClient {
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "");
     endpoint.pathname = ["", "/v1"].includes(endpoint.pathname)
       ? "/v1/swarm/self-hosted/openai/models" : `${endpoint.pathname}/models`;
-    const payload = record(await this.json(endpoint.href, { signal }).catch(error => {
+    const payload = record(await this.discoveryJson(endpoint.href, signal).catch(error => {
       throw new NativeReasoningTransportError(`Native reasoning preflight failed before inference: ${error instanceof Error ? error.message : String(error)}`);
     }));
     const models = Array.isArray(payload.data) ? payload.data.map(record) : [];

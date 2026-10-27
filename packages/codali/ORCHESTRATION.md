@@ -60,6 +60,11 @@ The CLI checks the proxy's authenticated model catalog before dispatching infere
 Discovery, authentication, capability and context refusals release provisional
 token reservations and persist a `not_dispatched` receipt across resume. Failures
 after the transport handoff retain provisional usage until server reconciliation.
+Read-only model and native-capability discovery may retry an explicit temporary
+service failure twice, with bounded backoff. Authentication, entitlement, quota
+and malformed-response failures are not retried. Server backoff longer than five
+seconds is returned to the caller; inference submissions are never replayed by
+this discovery policy.
 The selected model must advertise `native_reasoning.transport_version: 1`
 and every requested parameter. The proxy publishes this contract for pinned nodes
 advertising `native_reasoning_transport_version: 1`, and rejects native requests to older
