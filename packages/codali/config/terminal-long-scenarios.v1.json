@@ -27,7 +27,7 @@
     {
       "id": "L05-scope-and-user-edits",
       "invariant": "Pre-existing and concurrent user edits survive bounded writes, cancellation and recovery.",
-      "tests": ["runtime/__tests__/WorkspaceLedger.test.ts", "runtime/__tests__/SessionController.test.ts", "eval/__tests__/TerminalRecoveryJourney.test.ts"]
+      "tests": ["runtime/__tests__/WorkspaceLedger.test.ts", "runtime/__tests__/SessionController.test.ts", "eval/__tests__/TerminalRecoveryJourney.test.ts", "eval/__tests__/MixedMediaRecoveryJourney.test.ts"]
     },
     {
       "id": "L06-bad-helper-handoff",
@@ -63,7 +63,8 @@
     {
       "id": "L12-media-crash-boundaries",
       "invariant": "Lost admission or acknowledgement, corrupt payloads and incomplete local receipts never silently resubmit or claim success.",
-      "tests": ["connectors/media/__tests__/RemoteMediaJob.test.ts", "connectors/media/__tests__/MediaJobStore.test.ts"],
+      "tests": ["connectors/media/__tests__/RemoteMediaJob.test.ts", "connectors/media/__tests__/MediaJobStore.test.ts", "eval/__tests__/MixedMediaRecoveryJourney.test.ts"],
+      "integrationCoverage": "A code-and-image goal keeps its admitted job/model/endpoint through configuration upgrade/rollback, five compactions and two process restarts. A lost admission response is recovered with one PUT; artifact delivery alone cannot complete unverified code, and concurrent user notes are preserved.",
       "remainingLiveCase": "Mixed code/media journey against the deployed durable API, including server expiry and tenant isolation."
     }
   ]

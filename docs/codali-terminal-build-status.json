@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Fresh frozen AD workflows are running on both hosts with predeclared4.8M-token budgets; billing-audit and service-adapters passed stages1/2, final completion remains pending. BackendL/Suku recovery2 postdeploy TNL/BDYA/Wodo/Heka probes pass; queued-response-loss accounting passes both hosts without replay. Preparing prerelease0.1.135-codali.6 after fixing a midnight-dependent telemetry test (a8b70c8). Native/backend identities remain frozen during AD. Stable/global CLI remain.134; next remains.4 until publication. Remaining quality/context/mixed-load/rollout and24-hour canary gates stay open.",
+  "currentTask": "Frozen AD live journeys continue on both hosts at predeclared 4.8M tokens; both first cases have verified all four implementation modules and are completing steering/integration. Release v0.1.135-codali.6 at 498523b passed six packaging and six exact-artifact installation jobs; npm publication is running. New deterministic mixed code/media recovery passes 65 focused tests. Native/backend identities remain frozen during AD. Global CLI activation, live quality/context/mixed-load gates and the 24-hour canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -496,7 +496,8 @@
       "description": "Recover a render completed while the CLI was disconnected, refresh an expired artifact reference and migrate/roll back a model configuration without resubmitting active jobs. Preserve media provenance, accounting and artifact integrity across resume/export.",
       "status": "in_progress",
       "evidence": [
-        "Public durable-image disconnected-worker recovery qualified on backendJ; normal audio/video and expired-reference/model-revision migration still pending."
+        "Public durable-image disconnected-worker recovery qualified on backendJ; normal audio/video and expired-reference/model-revision migration still pending.",
+        "MixedMediaRecoveryJourney v1 adds a code/image integration fixture with five compactions, two actual process restarts, lost admission response, configuration upgrade/rollback, preserved concurrent notes and fixed final integration checks. Exactly one PUT, original route/hash retained and premature completion rejected. 65 focused controller/media/recovery tests pass; no production expiry or live-model quality claim."
       ]
     },
     {
@@ -516,7 +517,8 @@
         "AA data-delivery Raijin ended 19:07:23 UTC with 4/4 module grades PASS but budget exhaustion before final integration; original failure retained. Real isolated-shell regression reproduced a reserve guard rejecting git diff/status. Separate inspection eligibility passes 44 focused tests and retains test-evidence and write fences; live qualification remains open.",
         "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained.",
         "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet.",
-        "Offline AC terminal-workflows-v3 amendment preserves every original workspace/result hash and makes zero model calls: data-delivery4/4, billing-audit0/4, localized-export4/4(previous3/4), service-adapters3/4. Only undocumented TypeError grading restriction changed; all four overall completion gates remain failed."
+        "Offline AC terminal-workflows-v3 amendment preserves every original workspace/result hash and makes zero model calls: data-delivery4/4, billing-audit0/4, localized-export4/4(previous3/4), service-adapters3/4. Only undocumented TypeError grading restriction changed; all four overall completion gates remain failed.",
+        "MixedMediaRecoveryJourney v1 adds a code/image integration fixture with five compactions, two actual process restarts, lost admission response, configuration upgrade/rollback, preserved concurrent notes and fixed final integration checks. Exactly one PUT, original route/hash retained and premature completion rejected. 65 focused controller/media/recovery tests pass; no production expiry or live-model quality claim."
       ]
     },
     {
@@ -564,7 +566,8 @@
         "v0.1.135-codali.4 atc275ce1 passed all six package jobs and six Linux/macOS Node20/22 clean-install qualification jobs. Independent Linux install of exact artifact tarballs passed nativeSQLite,privateDocdex,session persistence,version/help and data-preserving uninstall;10artifact manifest hashes verified.",
         "4ebdefa expands reproducible producer and clean-install consumer to all ten packages. CI40406147220 and six Linux/macOS Node20/22 jobs40406147139 passed; no automatic Docdex npm peer installed. This catches and corrects the .4 full-CLI lifecycle side effect; corrected .5 artifacts require release qualification.",
         "6f8423a passed CI40414229416 including Windows and all six Linux/macOS Node20/22 jobs40414229382. fcf8831 full1600/3skip passed locally; CI40418128709/platform40418128658 running. No new package version published.",
-        "3030361 platform40424262652 passed; generalCI40424262734 failed Windows day-grouping because now and now-2h crossed UTCmidnight. Locally reproduced and replaced only the test with fixed-date same-day/midnight assertions. a8b70c8 localbuild/7telemetrytests/stagedhook pass; CI40426491404/platform40426491443 pending. Version-only .6 preparation includes11manifests; fullbuild passed."
+        "3030361 platform40424262652 passed; generalCI40424262734 failed Windows day-grouping because now and now-2h crossed UTCmidnight. Locally reproduced and replaced only the test with fixed-date same-day/midnight assertions. a8b70c8 localbuild/7telemetrytests/stagedhook pass; CI40426491404/platform40426491443 pending. Version-only .6 preparation includes11manifests; fullbuild passed.",
+        "a8b70c8 CI40426491404 and six-platform40426491443 passed. Release40427999530 at498523b passed all six package jobs and six exact Linux-artifact clean installs across Linux/macOS Intel/ARM with Node20/22; publication remains in progress. Downloaded evidence: ~/.local/state/codali-terminal-deployment/prerelease6-release-artifacts."
       ]
     },
     {
@@ -1866,9 +1869,28 @@
         "/home/wodo/.local/state/codali-telemetry-midnight-red.log",
         "/home/wodo/.local/state/codali-telemetry-midnight-green.log"
       ]
+    },
+    {
+      "check": "Mixed code/media process recovery and configuration upgrade/rollback",
+      "status": "passed",
+      "focusedTests": 65,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-mixed-recovery-tests2.log",
+        "/home/wodo/.local/state/codali-mixed-recovery-focused.log"
+      ],
+      "limitation": "Deterministic local service and scripted provider. Original harness parse failure and TypeScript compile failure retained; production expiry, mixed-load quality and live multi-hour acceptance remain separate."
+    },
+    {
+      "check": "codali.6 exact publication artifacts on supported terminal platforms",
+      "status": "passed",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40427999530",
+      "packagingJobs": 6,
+      "installationJobs": 6,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease6-release-artifacts",
+      "limitation": "npm publication and registry byte comparison remain pending. No global CLI activation or canary."
     }
   ],
-  "updatedAt": "2026-10-27T00:34:25.387001+00:00",
+  "updatedAt": "2026-10-27T01:12:47.557606+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
