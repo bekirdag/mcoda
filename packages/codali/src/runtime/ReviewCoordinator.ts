@@ -24,6 +24,7 @@ const reviewInstructions: ProviderMessage[] = [
   { role: "system", content: 'A requirement descriptionReference points to its exact unchanged text in goal at offset/length; review that text as the requirement, not as a summary. reviewSnapshotHash identifies the controller-verified source snapshot. All sourceRoles paths remain available for hash-checked paging. Treat explicit error messages, literal values, schema fields and specified defaults as exact contracts; do not approve altered values merely because the supplied tests accept them. contractChecklist was derived before seeing source or tests. Compare each check directly with the implementation, preserving the complete original contract as authority if a generated expectedBehavior is mistaken. Tests and docstrings are implementation artifacts: a passing test that requires behavior incompatible with the user contract is itself a blocking defect. The checklist never removes an original obligation. Distinguish internal implementation helpers shared between source files from public API changes: identify the violated public entry-point contract rather than treating every internal export as a new public feature.' },
   { role: "system", content: "taskAssessments are controller-recorded successful reviews of the identified task criteria at this exact workspaceSnapshotHash during this verification. Their sourcePaths were reviewed in those task scopes and remain available for sourceRequests. Use these assessments for already-reviewed criteria in later scoped reviews as well as integration; inspect the source needed for this task's own behavior and cross-task interactions. For integration, check the complete original goal, global constraints, architecture, cross-task interactions and remaining deliverables using these fresh assessments plus the current evidence. Do not demand an already assessed module's entire source merely to repeat its scoped review; request the specific files needed to investigate an integration defect. An assessment never certifies a different criterion, snapshot or missing deliverable. Empty findings still require sufficient evidence for every obligation." },
   { role: "system", content: "contractChecklist.checks preserves every prepared check. Each check's quoteId refers to the exact sourceId and contractQuote in contractChecklist.quotes. Identical quotations from the same source are stored once; every expectedBehavior remains separate. Follow those references when comparing a check to its authoritative text." },
+  { role: "system", content: "When checklistBatch is present, this is one bounded portion of the prepared checklist, with the complete original contract and current evidence retained. Scrutinize every check in this portion and its interactions with the original contract. Other prepared checks are reviewed separately against this same snapshot; the controller requires every portion to pass. Your verdict covers this portion, never acceptance of an unreviewed portion. Do not reject solely because other checklist portions are absent; reject any actual defect or insufficient evidence for the checks you are reviewing. The complete original requirements remain authoritative in every portion." },
 ];
 
 /** Review one scope without loading every sibling's source into the prompt.
@@ -66,34 +67,68 @@ export async function reviewTaskScope(options: {
   });
   const assessedPaths = new Set(assessments.flatMap(value => value.sourcePaths));
   const initialPaths = options.scope.reviewPaths.filter(file => !assessedPaths.has(file));
-  const source: Record<string, string> = {};
-  const truncated = new Set(initialPaths);
-  const sourceNextOffsets: Record<string, number> = Object.fromEntries(initialPaths.map(file => [file, 0]));
+  const checklist = (selected: typeof checks) => ({
+    quotes: Object.fromEntries([...new Set(selected.map(check => check.quoteId))].map(id => [id, quotes[id]])),
+    checks: selected,
+  });
   const input = { ...reviewPromptContext(options.scope, options.hashes), workspaceSnapshotHash,
     ...(assessments.length ? { taskAssessments: assessments } : {}),
-    contractChecklist: { quotes, checks }, task: options.task,
+    contractChecklist: checklist(checks), task: options.task,
+    checklistBatch: undefined as { index: number; count: number; totalChecks: number } | undefined,
     receipts: options.receipts.map(r => ({ id: r.id, tool: r.tool, args: r.args, status: r.status,
       output: r.output ? r.tool === "run_shell" ? validationOutputExcerpt(r.output, 2400) : r.output.slice(0, 2000) : undefined, taskId: r.taskId })),
     validatedInputCount: Object.keys(options.hashes).length, preExistingDirtyPaths: options.preExistingDirtyPaths,
-    source, sourceTruncatedPaths: [...truncated], sourceNextOffsets,
+    source: {} as Record<string, string>, sourceTruncatedPaths: [...initialPaths],
+    sourceNextOffsets: Object.fromEntries(initialPaths.map(file => [file, 0])),
     diff: (await options.diff(options.scope.changedPaths.filter(file => !assessedPaths.has(file)))).slice(0, 12_000),
     claimedSummary: options.summary };
   const messages = (): ProviderMessage[] => [...reviewInstructions, { role: "user", content: JSON.stringify(input) }];
-  // Reserve room for missing source pages rather than exhausting the context
-  // with the first source block. Every omitted path remains requestable.
-  let remaining = Math.min(32_000, Math.max(0, Math.floor((options.maxInputChars - JSON.stringify(messages()).length) * 0.6)));
-  for (const file of initialPaths) {
-    if (remaining <= 0) break;
-    const evidence = await options.readSource(file, Math.min(8000, Math.floor(remaining / 2)));
-    const addedChars = JSON.stringify({ [file]: evidence.content }).length + 32;
-    if (addedChars > remaining) continue;
-    source[file] = evidence.content; remaining -= addedChars;
-    if (evidence.truncated) sourceNextOffsets[file] = evidence.content.length;
-    else { truncated.delete(file); delete sourceNextOffsets[file]; }
+  // Bound generated aids independently of authoritative requirements. Every
+  // batch retains the full contract and requires its own successful verdict;
+  // a large checklist cannot crowd out all source or silently lose checks.
+  const checklistLimit = options.maxInputChars - Math.min(16_000, Math.floor(options.maxInputChars / 4));
+  const batches: (typeof checks)[] = [];
+  if (JSON.stringify(messages()).length <= checklistLimit) batches.push(checks);
+  else {
+    input.checklistBatch = { index: 15, count: 16, totalChecks: checks.length };
+    let batch: typeof checks = [];
+    for (const check of checks) {
+      input.contractChecklist = checklist([...batch, check]);
+      if (JSON.stringify(messages()).length > checklistLimit) {
+        if (batch.length) { batches.push(batch); batch = []; }
+        input.contractChecklist = checklist([check]);
+        if (JSON.stringify(messages()).length > checklistLimit) return { passed: false,
+          findings: ["Required review authority and one checklist item exceed the configured evidence budget. Split the task or select a larger compatible reviewer; acceptance is not established."] };
+      }
+      batch.push(check);
+    }
+    if (batch.length) batches.push(batch);
+    if (batches.length > 16) return { passed: false,
+      findings: ["Review requires too many bounded checklist batches. Split the task or select a larger compatible reviewer; acceptance is not established."] };
   }
-  input.sourceTruncatedPaths = [...truncated];
-  return runTaskReview({ provider: options.provider, allowedPaths: options.scope.reviewPaths,
-    initialSourceOffsets: sourceNextOffsets, readSourcePage: options.readSourcePage,
-    maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens,
-    messages: messages(), signal: options.signal });
+  for (const [index, batch] of batches.entries()) {
+    options.signal?.throwIfAborted();
+    input.contractChecklist = checklist(batch);
+    input.checklistBatch = batches.length > 1 ? { index, count: batches.length, totalChecks: checks.length } : undefined;
+    input.source = {}; input.sourceNextOffsets = Object.fromEntries(initialPaths.map(file => [file, 0]));
+    const truncated = new Set(initialPaths); input.sourceTruncatedPaths = [...truncated];
+    // Every omitted path remains available through hash-checked paging.
+    let remaining = Math.min(32_000, Math.max(0, Math.floor((options.maxInputChars - JSON.stringify(messages()).length) * 0.6)));
+    for (const file of initialPaths) {
+      if (remaining <= 0) break;
+      const evidence = await options.readSource(file, Math.min(8000, Math.floor(remaining / 2)));
+      const addedChars = JSON.stringify({ [file]: evidence.content }).length + 32;
+      if (addedChars > remaining) continue;
+      input.source[file] = evidence.content; remaining -= addedChars;
+      if (evidence.truncated) input.sourceNextOffsets[file] = evidence.content.length;
+      else { truncated.delete(file); delete input.sourceNextOffsets[file]; }
+    }
+    input.sourceTruncatedPaths = [...truncated];
+    const result = await runTaskReview({ provider: options.provider, allowedPaths: options.scope.reviewPaths,
+      initialSourceOffsets: input.sourceNextOffsets, readSourcePage: options.readSourcePage,
+      maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens,
+      messages: messages(), signal: options.signal });
+    if (!result.passed) return result;
+  }
+  return { passed: true, findings: [] };
 }

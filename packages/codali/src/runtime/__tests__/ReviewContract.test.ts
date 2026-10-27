@@ -8,7 +8,7 @@ const sources = reviewContractSources({
   constraints: ["Run the existing tests."], nonGoals: ["Do not add dependencies."],
 });
 const checks = sources.map(source => ({ sourceId: source.id, contractQuote: source.text, expectedBehavior: source.text }));
-const restoreSources = (values: { id: string; excerpts: string[] }[]) => values.map(source => ({ id: source.id, text: source.excerpts.join("") }));
+const restoreSources = (values: { id: string; excerpts: { quoteIndex: number; text: string }[] }[]) => values.map(source => ({ id: source.id, text: source.excerpts.map(excerpt => excerpt.text).join("") }));
 const response = (value: unknown): ProviderResponse => ({ message: { role: "assistant", content: JSON.stringify(value) } });
 
 test("indexed excerpts resolve similar sources without model-copied quotation changes", async () => {
@@ -30,13 +30,14 @@ test("source excerpts preserve every character, Unicode boundary and authoritati
     provider: { name: "fixture", generate: async request => {
       const payload = JSON.parse(request.messages[1].content);
       const excerpts = payload.contractSources[0].excerpts;
-      assert.ok(Array.isArray(excerpts)); assert.equal(excerpts.join(""), original[0].text);
+      assert.ok(Array.isArray(excerpts)); assert.equal(excerpts.map((excerpt: { text: string }) => excerpt.text).join(""), original[0].text);
       assert.ok(excerpts.length > 1);
-      for (const text of excerpts) {
+      for (const [index, { text, quoteIndex }] of excerpts.entries()) {
+        assert.equal(quoteIndex, index, "each excerpt identifies its exact index without model counting");
         assert.ok(text.length > 0 && text.length <= 512);
         assert.doesNotMatch(text, /[\uD800-\uDBFF]$/); assert.doesNotMatch(text, /^[\uDC00-\uDFFF]/);
       }
-      return response({ checks: excerpts.map((text: string, quoteIndex: number) => ({
+      return response({ checks: excerpts.map(({ quoteIndex }: { quoteIndex: number }) => ({
         sourceId: "goal", quoteIndex, expectedBehavior: "Preserve this obligation.",
       })) });
     } } });

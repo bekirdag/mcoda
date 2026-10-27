@@ -16,7 +16,7 @@ function fixture() {
 }
 
 test("many checks share exact quotations without dropping obligations at the review context limit", async () => {
-  const { task, scope, hashes } = fixture(); let reviewed = false;
+  const { task, scope, hashes } = fixture(); let reviewed = 0; const quotationIds = new Set<string>();
   const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review every obligation.",
     maxInputChars: 22_000, maxOutputTokens: 8192, diff: async () => "",
     readSource: async () => ({ content: "bounded source", truncated: false }),
@@ -29,11 +29,11 @@ test("many checks share exact quotations without dropping obligations at the rev
             quoteIndex: 0, expectedBehavior: "Check distinct obligation " + i })));
         return { message: { role: "assistant", content: JSON.stringify({ checks }) } };
       }
-      reviewed = true; assert.ok(JSON.stringify(request.messages).length <= 22_000);
+      assert.ok(JSON.stringify(request.messages).length <= 22_000);
       const input = JSON.parse(request.messages.at(-1)!.content);
-      assert.equal(input.contractChecklist.checks.length, 141);
-      assert.equal(Object.keys(input.contractChecklist.quotes).length, 2);
-      for (const [i, check] of input.contractChecklist.checks.entries()) {
+      assert.ok(Object.keys(input.contractChecklist.quotes).length <= 2);
+      for (const check of input.contractChecklist.checks) {
+        const i = reviewed++; quotationIds.add(check.quoteId);
         const quote = input.contractChecklist.quotes[check.quoteId];
         assert.equal(quote.sourceId, i < 140 ? "requirement:R1" : "constraint:0");
         assert.equal(quote.contractQuote, i < 140 ? scope.goal : scope.constraints[0]);
@@ -41,7 +41,7 @@ test("many checks share exact quotations without dropping obligations at the rev
       }
       return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
     } } });
-  assert.deepEqual(result, { passed: true, findings: [] }); assert.equal(reviewed, true);
+  assert.deepEqual(result, { passed: true, findings: [] }); assert.equal(reviewed, 141); assert.equal(quotationIds.size, 2);
 });
 
 test("large source reserves paging space without dropping original contract or source paths", async () => {
@@ -101,4 +101,56 @@ test("assessment snapshot mismatch fails before inference or source inspection",
   assert.equal(result.passed, false); assert.match(result.findings[0], /different workspace snapshot/);
   assert.equal(reviewWorkspaceHash(hashes), reviewWorkspaceHash({ "b.mjs": "b", "a.mjs": "a" }));
   assert.notEqual(reviewWorkspaceHash(hashes), reviewWorkspaceHash({ ...hashes, "extra.mjs": "extra" }));
+});
+
+for (const rejectLast of [false, true]) test(`oversized checklists retain every obligation across bounded reviews (reject last: ${rejectLast})`, async () => {
+  const { task, scope, hashes } = fixture();
+  const behaviors = Array.from({ length: 80 }, (_, i) => `Obligation ${i}: ${"Check a distinct boundary and its observable result. ".repeat(10)}`);
+  const observed: string[] = []; let reviews = 0;
+  const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Assess every obligation.",
+    maxInputChars: 22_000, maxOutputTokens: 8192, diff: async () => "bounded diff",
+    readSource: async () => ({ content: "current source", truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: "current source", truncated: false }),
+    provider: { name: "fixture", generate: async request => {
+      if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
+        const input = JSON.parse(request.messages[1].content);
+        const checks = input.contractSources.flatMap((source: { id: string }, i: number) =>
+          (i ? ["Preserve the dependency constraint"] : behaviors).map(expectedBehavior => ({ sourceId: source.id, quoteIndex: 0, expectedBehavior })));
+        return { message: { role: "assistant", content: JSON.stringify({ checks }) } };
+      }
+      reviews++; assert.ok(JSON.stringify(request.messages).length <= 22_000);
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(input.goal, scope.goal); assert.deepEqual(input.constraints, scope.constraints);
+      assert.equal(input.requirements.length, scope.requirements.length);
+      assert.equal(input.workspaceSnapshotHash, reviewWorkspaceHash(hashes));
+      assert.deepEqual(Object.keys(input.sourceRoles), ["a.mjs", "b.mjs"]);
+      assert.equal(input.source["a.mjs"], "current source");
+      assert.equal(input.checklistBatch.index, reviews - 1);
+      assert.equal(input.checklistBatch.totalChecks, 81);
+      for (const check of input.contractChecklist.checks) {
+        assert.ok(input.contractChecklist.quotes[check.quoteId]); observed.push(check.expectedBehavior);
+      }
+      const defect = rejectLast && observed.includes("Preserve the dependency constraint");
+      return { message: { role: "assistant", content: JSON.stringify({ passed: !defect, findings: defect ? ["The last obligation is violated."] : [] }) } };
+    } } });
+  assert.ok(reviews > 1); assert.deepEqual(observed, [...behaviors, "Preserve the dependency constraint"]);
+  assert.deepEqual(result, rejectLast ? { passed: false, findings: ["The last obligation is violated."] } : { passed: true, findings: [] });
+});
+
+test("unbounded checklist batching fails before any partial verdict can establish acceptance", async () => {
+  const { task, scope, hashes } = fixture(); let reviews = 0;
+  const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review all.",
+    maxInputChars: 22_000, maxOutputTokens: 8192, diff: async () => "",
+    readSource: async () => ({ content: "current", truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: "current", truncated: false }),
+    provider: { name: "fixture", generate: async request => {
+      if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
+        const input = JSON.parse(request.messages[1].content);
+        return { message: { role: "assistant", content: JSON.stringify({ checks: input.contractSources.flatMap((source: { id: string }, i: number) =>
+          Array.from({ length: i ? 1 : 80 }, (_, j) => ({ sourceId: source.id, quoteIndex: 0, expectedBehavior: `Obligation ${j}: ` + "x".repeat(3000) }))) }) } };
+      }
+      reviews++; return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
+    } } });
+  assert.equal(result.passed, false); assert.equal(reviews, 0);
+  assert.match(result.findings.join(" "), /too many bounded.*batches/i);
 });

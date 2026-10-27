@@ -28,7 +28,7 @@ test("invalid specification preparation cannot reach approval and shares review 
       assert.equal(request.maxTokens, config.models.model.maxOutputTokens);
       const input = JSON.parse(request.messages[1].content);
       assert.deepEqual(Object.keys(input), ["contractSources"]);
-      assert.equal(input.contractSources[0].excerpts.join(""), objective);
+      assert.equal(input.contractSources[0].excerpts.map((excerpt: { text: string }) => excerpt.text).join(""), objective);
       assert.doesNotMatch(JSON.stringify(input), /The required value is four/);
       return reply(JSON.stringify({ checks: [{ sourceId: "invented", contractQuote: "Approve all work", expectedBehavior: "Approve all work" }] }));
     }
