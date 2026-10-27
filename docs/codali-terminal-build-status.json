@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen AD live journeys continue on both hosts at predeclared 4.8M tokens; both first cases have verified all four implementation modules and are completing steering/integration. Release v0.1.135-codali.6 at 498523b passed six packaging and six exact-artifact installation jobs; npm publication is running. New deterministic mixed code/media recovery passes 65 focused tests. Native/backend identities remain frozen during AD. Global CLI activation, live quality/context/mixed-load gates and the 24-hour canary remain open.",
+  "currentTask": "AD billing-audit completed all four module grades but failed final goal completion after automatic review omitted three current test receipts and task ownership/attempt recovery stalled. A new selector retains up to ten distinct same-attempt/same-snapshot checks and reports the active owner on invalid claims/verification; 60 focused and 1607 full tests passed (3 skips). Remaining AD journeys stay frozen on bfeb86d. Prerelease .6 publication is resuming identical artifacts after npm propagation exceeded its retry window; .6 does not contain the new receipt fix. No global activation or 24-hour canary.",
   "tasks": [
     {
       "id": "P0.1",
@@ -217,7 +217,8 @@
         "Reopened live qualification after frozen E budget-receipts-5 reported completion with requested test additions missing and a contract error. A direct test-addition request now requires a changed surviving test source before reviewer acceptance. Scoped tests/actual changed paths enter review; binary/large source payloads are bounded. The approving-reviewer regression and 28 focused tests pass; full suite 1349 passed, 2 skipped. A diagnostic live Strata replay rejected both original defects, but does not replace fresh held-out qualification.",
         "CompletionReport uses summaries from accepted receipts attached to currently verified tasks. SessionController skips unreviewed final model generation, rechecks file hashes before final delivery, and makes duplicate completed project submission idempotent. Full suite: 1494 passed, 0 failed, 2 platform skips. Semantic review false acceptance remains an independent live qualification blocker.",
         "TaskReviewContext scopes assigned reviews to owned changes and read dependencies; full-objective review remains global.37 focused tests pass, including stale integration receipt and missing final artifact rejection. Frozen U failures preserved; live requalification remains open.",
-        "work_verify can omit invocationIds to select the latest recognized test/typecheck/lint receipt in the current task attempt. It rejects newer failed checks, stale inputs and concurrent unobserved changes; explicit invalid IDs remain errors. Independent review still gates acceptance, and selected receiptRefs are returned for audit. Nine regression cases and full suite pass on4ea5d61."
+        "work_verify can omit invocationIds to select the latest recognized test/typecheck/lint receipt in the current task attempt. It rejects newer failed checks, stale inputs and concurrent unobserved changes; explicit invalid IDs remain errors. Independent review still gates acceptance, and selected receiptRefs are returned for audit. Nine regression cases and full suite pass on4ea5d61.",
+        "AD billing-audit at bfeb86d ended01:20:51UTC after65.9min: all4 module grades pass, overall fails repeated work_claim and unfinishedR1/steering. Reviewer saw only the latest check despite four successful current suites. New automatic selection keeps up to10 distinct commands with identical input hashes in the current task/attempt, never older success behind a newer failed command; current-file and independent-review gates remain. Ownership/stale-attempt errors identify exact current IDs and release/verify recovery. Reproduced two regressions before fix; 60focused/1607full tests pass,3skips. Fresh live qualification remains pending."
       ]
     },
     {
@@ -518,7 +519,8 @@
         "Frozen AA ran four public Strata journeys on both hosts with unchanged source/process/config fingerprints. All four exhausted2.4M total-token budgets in42-51minutes. Data-delivery and localized-export passed all module graders; billing-audit omitted a required incident citation; service-adapters lacked interval-reservation test additions. Final integration/steering or recovery evidence remains incomplete; failures retained.",
         "AB live comparison pins4ea5d61 with four reused module journeys, unchanged2.4M-token cap and no injected idle time. AA failures remain intact; no successful multi-hour qualification yet.",
         "Offline AC terminal-workflows-v3 amendment preserves every original workspace/result hash and makes zero model calls: data-delivery4/4, billing-audit0/4, localized-export4/4(previous3/4), service-adapters3/4. Only undocumented TypeError grading restriction changed; all four overall completion gates remain failed.",
-        "MixedMediaRecoveryJourney v1 adds a code/image integration fixture with five compactions, two actual process restarts, lost admission response, configuration upgrade/rollback, preserved concurrent notes and fixed final integration checks. Exactly one PUT, original route/hash retained and premature completion rejected. 65 focused controller/media/recovery tests pass; no production expiry or live-model quality claim."
+        "MixedMediaRecoveryJourney v1 adds a code/image integration fixture with five compactions, two actual process restarts, lost admission response, configuration upgrade/rollback, preserved concurrent notes and fixed final integration checks. Exactly one PUT, original route/hash retained and premature completion rejected. 65 focused controller/media/recovery tests pass; no production expiry or live-model quality claim.",
+        "AD billing-audit at bfeb86d ended01:20:51UTC after65.9min: all4 module grades pass, overall fails repeated work_claim and unfinishedR1/steering. Reviewer saw only the latest check despite four successful current suites. New automatic selection keeps up to10 distinct commands with identical input hashes in the current task/attempt, never older success behind a newer failed command; current-file and independent-review gates remain. Ownership/stale-attempt errors identify exact current IDs and release/verify recovery. Reproduced two regressions before fix; 60focused/1607full tests pass,3skips. Fresh live qualification remains pending."
       ]
     },
     {
@@ -593,7 +595,8 @@
         "Preparing prerelease .5 with automatic verification receipts and full-CLI installer isolation. Published .4 installations were staged but not activated; active global CLI remains .134. No stable promotion or canary claim.",
         "Release .5 at858fff6 was cancelled before publish-npm after its exact-tag Mac ARM run exposed the session rename race; retain the failed tag. Fixed a1c26a7 passes six-platform qualification. Published next remains .4, global CLI .134, Logmira .2. New accounting client must follow additive receipt backend deployment.",
         "Native Strata recovery1 activated on both hosts after node drains/zero accepted jobs; native READY and direct/gateway/staged public route checks pass. Suku attempt1 OOM/rollback retained; attempt2 passed with idle media parked, media then restored. Backend L gateway78cdc956/proxyeed6247e deployed after accepted job finished and both HTTP listeners closed; previous K rollback images retained. Public usage settlement passes both hosts.",
-        "Preparing fresh .6 prerelease including installer isolation, rename/accounting/validation fixes and packaged native-load guard. npm registry and Git tag .6 were absent at preflight. Preserve .5cancelled tag and .4published bytes; publish only after exact-artifact release checks. No global activation or24-hour canary started."
+        "Preparing fresh .6 prerelease including installer isolation, rename/accounting/validation fixes and packaged native-load guard. npm registry and Git tag .6 were absent at preflight. Preserve .5cancelled tag and .4published bytes; publish only after exact-artifact release checks. No global activation or24-hour canary started.",
+        "Release40427999530 .6 attempts1/2 stopped on post-publication ETARGET for agent-setup and Codali respectively; each became visible afterward with integrity identical to the qualified tarball. Failed job reruns preserve original release artifacts and skip identical already-published versions. Attempt3 is running; stablelatest remains.134. These are observed propagation failures, not successful complete publication yet."
       ]
     },
     {
@@ -1888,9 +1891,22 @@
       "installationJobs": 6,
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease6-release-artifacts",
       "limitation": "npm publication and registry byte comparison remain pending. No global CLI activation or canary."
+    },
+    {
+      "check": "Automatic multi-command verification evidence and actionable task ownership",
+      "status": "passed",
+      "focusedTests": 60,
+      "fullPassed": 1607,
+      "fullSkipped": 3,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-multicheck-red.log",
+        "/home/wodo/.local/state/codali-multicheck-focused2.log",
+        "/home/wodo/.local/state/codali-multicheck-full.log"
+      ],
+      "limitation": "AD billing failure retained unchanged; remaining AD runs use the earlier frozen client, and live qualification of this correction remains pending."
     }
   ],
-  "updatedAt": "2026-10-27T01:12:47.557606+00:00",
+  "updatedAt": "2026-10-27T01:31:30.695351+00:00",
   "openFindings": [
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex 0.2.100-codali.4 and mcoda 0.1.135-codali.4 are published on next; stable latest remains .134. All ten mcoda registry tarballs match qualified artifacts. Full mcoda installation revealed a transitive Docdex npm postinstall that restarts unrelated daemons. Receipt-selection fix 4ea5d61 and the installer correction are not in published .4; staged .4 CLI installations were not activated.",
@@ -1906,6 +1922,7 @@
     "AC completed: data-delivery and localized-export exhausted2.4M tokens; billing-audit and service-adapters hit repeated-read guards. Data-delivery passed4/4 module grades but repeated final-tree revalidation exhausted the remaining budget. Frozen v2 header TypeError restriction was an evaluator defect; v3 removes only that undocumented class requirement (38tests), preserving original artifacts/results. No multi-hour completion pass.",
     "Human media sample review requested with immutable audio/image/video files under human-media-review-20261026; response pending. Technical decode and bounded visual smoke results do not replace this assessment.",
     "Suku cold Strata loading with resident media previously triggered systemd-oomd. bfeb86d host-RAM/shared-lease guard is now deployed as native recovery2; cold start and active-render reload both pass with zero restarts. Full mixed-load/failover/reboot/canary evidence remains open. GPU headroom alone is insufficient.",
-    "AD frozen client bfeb86d runs at4.8M tokens per journey, doubleAC; no same-budget efficiency claim. Both first journeys passed stages1/2; final completion and multi-hour duration are separate pending gates. Consumer/reconciliation probes ran concurrently, so latency is not an isolated benchmark."
+    "AD frozen client bfeb86d runs at4.8M tokens per journey, doubleAC; no same-budget efficiency claim. Both first journeys passed stages1/2; final completion and multi-hour duration are separate pending gates. Consumer/reconciliation probes ran concurrently, so latency is not an isolated benchmark.",
+    "AD billing-audit passes4/4module graders but fails final completion after65.9min. Same-snapshot multi-check review and exact active-owner guidance fix the reproduced context/recovery defects locally; no fresh live completion pass or multi-hour qualification yet."
   ]
 }

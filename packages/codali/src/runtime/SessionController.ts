@@ -31,6 +31,7 @@ import { ConfiguredEmbeddings } from "../providers/ConfiguredEmbeddings.js";
 import { runCodaliTask } from "./CodaliRuntime.js";
 import { WorkspaceLock } from "./WorkspaceLock.js";
 import { isVerificationCommand, isVerificationInspectionCommand } from "./VerificationCommand.js";
+import { automaticVerificationReceipts } from "./VerificationReceiptSelection.js";
 import { assertRequestedTestEvidence } from "./RequestedTestEvidence.js";
 import { readReviewSource } from "./ReviewSource.js";
 import { taskReviewContext } from "./TaskReviewContext.js";
@@ -995,9 +996,10 @@ export class SessionController {
         await this.update(state => {
           if (args.allowedPaths !== undefined) {
             const task = state.tasks[0];
-            if (state.tasks.length !== 1 || task.id !== args.taskId || task.status !== "ready" || task.allowedPaths.length || (state.planRevision ?? 1) !== 1) throw new Error("Inline scope is only available for the initial unscoped task; use work_release/work_plan for later changes");
+            if (state.tasks.length !== 1 || task.id !== args.taskId || task.status !== "ready" || task.allowedPaths.length || (state.planRevision ?? 1) !== 1) throw new Error(`Inline scope is only available for the initial unscoped task; use work_release/work_plan for later changes. ${this.activeAttemptGuidance()}`);
             replaceWorkPlan(state, [{ id: task.id, title: "Complete requested work and validation", requirementIds: [...task.requirementIds], dependsOn: [], allowedPaths: args.allowedPaths }], [], "Initial localized task scope");
           }
+          if (state.tasks.some(task => ["running", "review_pending"].includes(task.status))) throw new Error(`A task already owns this workspace. ${this.activeAttemptGuidance()}`);
           claimWorkTask(state, args.taskId, effortBudget(this.options.resolved.config, this.effort).timeoutMs);
         }); return this.state?.tasks.find(t => t.id === args.taskId);
       }),
@@ -1015,7 +1017,7 @@ export class SessionController {
       tool("work_checkpoint", "Save a concise handoff including blockers and next action.", { note: str }, ["note"], async args => { await this.checkpoint(args.note); return { saved: true }; }),
       tool("work_decision", "Record an architecture decision and why it satisfies the task constraints.", { id: str, title: str, rationale: str, alternatives: strings, paths: strings, supersedes: str }, ["id", "title", "rationale", "alternatives", "paths"], async args => { await this.update(state => recordDecision(state, args)); return { saved: true }; }),
       tool("work_block", "Record a concrete blocker that prevents the goal from progressing. Include the needed user action or external change.", { taskId: str, reason: str }, ["taskId", "reason"], async args => { if (!args.reason.trim()) throw new Error("A concrete blocker is required"); await this.update(state => { const task = state.tasks.find(t => t.id === args.taskId); if (!task) throw new Error("Unknown task"); task.status = "blocked"; task.blocker = args.reason; state.status = "blocked"; }); return { blocked: true }; }),
-      tool("work_verify", "Request separate review. Normally omit invocationIds to use the latest successful test/typecheck/lint receipt from this task attempt; stale or failed checks cannot verify work. Optionally select at most ten distinct actual receiptRef handles or full invocation IDs. Source and diff are included automatically. Returns findings and selected receiptRefs.", { taskId: str, attemptId: str, invocationIds: { ...strings, maxItems: 10, uniqueItems: true }, summary: str }, ["taskId", "attemptId", "summary"], async args => this.verify(args)),
+      tool("work_verify", "Request separate review. Normally omit invocationIds to use up to ten distinct successful test/typecheck/lint checks from this task attempt against the latest checked workspace snapshot. Stale or failed checks cannot verify work. Optionally select at most ten distinct actual receiptRef handles or full invocation IDs. Source and diff are included automatically. Returns findings and selected receiptRefs.", { taskId: str, attemptId: str, invocationIds: { ...strings, maxItems: 10, uniqueItems: true }, summary: str }, ["taskId", "attemptId", "summary"], async args => this.verify(args)),
       tool("work_complete", "Complete the main goal only after all required work has fresh verification evidence. Attached project tasks are handed to mcoda review.", {}, [], async () => this.completeGoal()),
     ];
   }
@@ -1033,15 +1035,19 @@ export class SessionController {
     };
   }
 
+  private activeAttemptGuidance(): string {
+    const task = this.state?.tasks.find(item => ["running", "review_pending"].includes(item.status));
+    if (!task?.attemptId) return "No task is currently claimed. Inspect work_status and work_claim a ready task before verification.";
+    return `Current owner: taskId=${JSON.stringify(task.id)}, attemptId=${JSON.stringify(task.attemptId)}. Continue and verify that attempt, or call work_release with these exact IDs and a note before claiming another task. A rejected review leaves this owner active; work_claim does not replace it.`;
+  }
+
   private async verify(args: { taskId: string; attemptId: string; invocationIds?: string[]; summary: string }): Promise<unknown> {
-    const task = assertWorkAttempt(this.state!, args.taskId, args.attemptId);
+    let task: WorkTask;
+    try { task = assertWorkAttempt(this.state!, args.taskId, args.attemptId); }
+    catch (error) { throw new Error(`${error instanceof Error ? error.message : String(error)}. ${this.activeAttemptGuidance()}`); }
     let invocationIds = args.invocationIds;
     if (invocationIds === undefined) {
-      const latest = [...this.receipts.values()].reverse().find(receipt => receipt.taskId === task.id && receipt.attemptId === args.attemptId
-        && receipt.tool === "run_shell" && isVerificationCommand(receipt.args));
-      // Never skip a newer failed check to select an older passing result.
-      if (latest && latest.status !== "success") throw new Error("The latest check in this task attempt did not succeed. Resolve its failure and rerun the check before verification.");
-      invocationIds = latest ? [latest.id] : [];
+      invocationIds = automaticVerificationReceipts([...this.receipts.values()], task.id, args.attemptId).map(receipt => receipt.id);
     }
     if (invocationIds.length > 10 || new Set(invocationIds).size !== invocationIds.length) throw new Error("Choose up to ten distinct relevant validation receipts");
     const receipts = invocationIds.map(id => this.resolveReceipt(id));

@@ -157,6 +157,75 @@ for (const scenario of ["fresh", "stale", "unobserved-change", "old-attempt", "o
   });
 }
 
+test("claim and stale-verification failures identify the owner without replacing its attempt", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-owner-guidance-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-owner-guidance-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  let step = 0; let attemptId = ""; let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.ok(request.tools?.length, "Rejected ownership cannot trigger review inference");
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    const assertOwner = () => {
+      assert.ok(previous().includes(`taskId="T1", attemptId="${attemptId}"`));
+      assert.match(previous(), /work_release/);
+      assert.equal(controller.state!.tasks[0].attemptId, attemptId);
+      assert.equal(controller.state!.tasks[0].status, "running");
+    };
+    switch (++step) {
+      case 1: return call("work_claim", { taskId: "T1", allowedPaths: [] });
+      case 2: attemptId = JSON.parse(previous()).attemptId; return call("work_claim", { taskId: "T1" });
+      case 3: assert.match(previous(), /already owns/); assertOwner(); return call("work_verify", { taskId: "T1", attemptId: "stale-attempt", summary: "Unverified claim" });
+      case 4: assert.match(previous(), /Stale task attempt/); assertOwner(); return call("work_release", { taskId: "T1", attemptId, note: "Recover the existing task without changing its contract." });
+      case 5: assert.equal(JSON.parse(previous()).released, true); return call("work_block", { taskId: "T1", reason: "Fixture ends with verification still pending." });
+      default: return reply("The goal remains unverified.");
+    }
+  } };
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  assert.equal((await controller.run("Inspect this workspace and report evidence.")).completed, false);
+  assert.equal(controller.state!.tasks[0].attemptId, undefined); assert.equal(controller.state!.evidence.length, 0);
+});
+
+for (const concurrentEdit of [false, true]) test(`automatic review includes all distinct module checks from the current tree: concurrent edit ${concurrentEdit}`, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-multi-check-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-multi-check-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "USER_NOTES.txt"), "original notes\n");
+  for (const name of ["a", "b", "c", "d"]) {
+    await fs.mkdir(path.join(root, name));
+    await fs.writeFile(path.join(root, name, "module.mjs"), `export const name = ${JSON.stringify(name)};\n`);
+    await fs.writeFile(path.join(root, name, "check.test.mjs"), `import assert from 'node:assert/strict'; import {name} from './module.mjs'; assert.equal(name,${JSON.stringify(name)});\n`);
+  }
+  let previous = ""; let attemptId = ""; let reviews = 0;
+  const check = (cwd: string) => call("run_shell", { command: "node", args: ["--test", "check.test.mjs"], cwd });
+  const verify = () => call("work_verify", { taskId: "T1", attemptId, summary: "All four existing module suites passed against the final tree." });
+  const actions: Array<() => ProviderResponse | Promise<ProviderResponse>> = [
+    () => call("work_claim", { taskId: "T1", allowedPaths: [] }),
+    () => { attemptId = JSON.parse(previous).attemptId; return check("a"); },
+    () => check("a"), // Repeated execution contributes one latest receipt.
+    async () => { if (concurrentEdit) await fs.appendFile(path.join(root, "USER_NOTES.txt"), "concurrent user edit\n"); return check("b"); },
+    () => check("c"), () => check("d"), verify,
+  ];
+  if (concurrentEdit) actions.push(() => { assert.equal(JSON.parse(previous).verified, false); return check("a"); }, verify);
+  actions.push(() => { const result = JSON.parse(previous); assert.equal(result.verified, true); assert.equal(result.receiptRefs.length, 4); return call("work_complete", {}); });
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (!request.tools?.length) {
+      reviews++;
+      const review = JSON.parse(request.messages.at(-1)!.content);
+      const expected = concurrentEdit && reviews === 1 ? ["b", "c", "d"] : ["a", "b", "c", "d"];
+      assert.deepEqual(review.receipts.map((r: { args: { cwd: string } }) => r.args.cwd).sort(), expected);
+      assert.ok(review.receipts.every((r: { status: string; output: string }) => r.status === "success" && /# pass 1/.test(r.output)));
+      return reply(expected.length === 4 ? '{"passed":true,"findings":[]}' : '{"passed":false,"findings":["Module a lacks a check against the final tree."]}');
+    }
+    previous = [...request.messages].reverse().find(message => message.role === "tool")?.content ?? "";
+    const action = actions.shift(); assert.ok(action, "Unexpected inference after the scripted checks"); return action();
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  assert.equal((await controller.run("Run the four existing module test suites and report their observed results. Preserve user notes.")).completed, true);
+  assert.equal(reviews, concurrentEdit ? 2 : 1); assert.equal(actions.length, 0);
+  assert.equal(await fs.readFile(path.join(root, "USER_NOTES.txt"), "utf8"), `original notes\n${concurrentEdit ? "concurrent user edit\n" : ""}`);
+});
+
 test("model receipts separate helper and review usage and link each completed call to its intent", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-role-usage-state-"));
