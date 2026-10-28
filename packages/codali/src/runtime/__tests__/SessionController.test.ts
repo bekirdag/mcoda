@@ -14,6 +14,28 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("a fresh prompt preserves the old session and creates a distinct resumable objective", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-reset-")));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-reset-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "notes.txt"), "User notes stay unchanged");
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false });
+  await controller.start("Original objective");
+  const originalId = controller.sessionId!;
+  await controller.clearSession();
+  assert.equal(controller.sessionId, undefined); assert.equal(controller.state, undefined);
+  assert.equal(controller.usageSnapshot().tokens, 0);
+  assert.equal((await controller.store.readSession(originalId)).task, "Original objective");
+  const saved = await controller.store.readTranscript(originalId);
+  assert.ok(saved.some(item => (item.data.event as SessionEvent)?.type === "checkpoint"));
+  await controller.start("Next objective");
+  assert.notEqual(controller.sessionId, originalId);
+  assert.equal((await controller.store.listSessions()).length, 2);
+  await controller.resume(originalId);
+  assert.equal(controller.status().goal, "Original objective");
+  assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "User notes stay unchanged");
+});
+
 test("invalid specification preparation cannot reach approval and shares review accounting", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-contract-preparation-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-contract-preparation-state-"));

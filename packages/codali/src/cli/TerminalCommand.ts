@@ -20,7 +20,7 @@ import { TerminalTui } from "./tui/TerminalTui.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
-const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/tools", "/mcp", "/docdex", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/steer", "/continue", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/quit"];
+const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/model", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/tools", "/mcp", "/docdex", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/clear", "/steer", "/continue", "/stop", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/exit", "/quit"];
 const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH] [--docdex-binary PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nInteractive terminals open the TUI; --plain selects line-oriented output.\nEnter sends/queues; Alt-Enter or Ctrl-J inserts a newline; Ctrl-S steers.\nCtrl-P commands; Ctrl-R history; Tab completes commands and @files.\nPage Up/Down scroll; Ctrl-O expands tools; Escape closes views or cancels.\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
 
 interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; docdexBinary?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
@@ -216,8 +216,8 @@ export class TerminalCommand {
     const command = async (line: string): Promise<void> => {
       const [name, ...parts] = line.trim().split(/\s+/); const value = parts.join(" ");
       outputTitle = name.slice(1);
-      if (name === "/cancel") { cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; return; }
-      if (name === "/quit") { closed = true; queued.length = 0; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); tui?.stop(); return; }
+      if (name === "/cancel" || name === "/stop") { queued.length = 0; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; tui?.notice("Stopping the turn and clearing queued instructions; waiting for owned work to settle."); return; }
+      if (name === "/quit" || name === "/exit") { closed = true; queued.length = 0; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); tui?.stop(); return; }
       if (name === "/help") output(HELP);
       else if (name === "/status") output(controller.status());
       else if (name === "/usage") {
@@ -237,7 +237,7 @@ export class TerminalCommand {
         } else if (value) throw new Error("Usage: /config [reload|validate PATH|diff PATH]");
         output({ source: resolved.source, hash: resolved.hash, configuration: resolved.config });
       }
-      else if (name === "/models") output(resolved.config.bindings);
+      else if (name === "/models" || name === "/model") { if (value) throw new Error("Use /config validate PATH, /config diff PATH and /config reload to change configured model bindings"); output({ bindings: resolved.config.bindings, models: resolved.config.models }); }
       else if (name === "/goal") output(controller.state ? { original: controller.state.originalObjective, objective: controller.state.objective, requirements: controller.state.requirements, amendments: controller.state.amendments } : {});
       else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
       else if (name === "/plan") {
@@ -260,7 +260,13 @@ export class TerminalCommand {
       else if (name === "/resume") { await controller.resume(value); if (tui) { tui.restore((await controller.store.readTranscript(value)).map(item => item.data.event as SessionEvent).filter(Boolean)); showPrompt(); } else output(controller.status()); }
       else if (name === "/fork") { output({ sessionId: await controller.fork(), verification: "Fresh verification required; permissions were reset" }); }
       else if (name === "/delete-session") { await controller.deleteSession(value); output({ deleted: value }); }
-      else if (name === "/new") { if (!value) throw new Error("Provide the new objective"); run(value, true); }
+      else if (name === "/new" || name === "/clear") {
+        await controller.clearSession();
+        tui?.restore([]); tui?.update({ activity: "Ready" });
+        if (value) { tui?.user(value); run(value, true); }
+        else if (tui) tui.notice("Fresh session. Enter an objective to begin; previous sessions remain available through /sessions and /resume.");
+        else output("Fresh session. Enter an objective to begin; previous sessions are preserved.");
+      }
       else if (name === "/steer") { if (!value) throw new Error("Provide the correction"); await controller.steer(value); output(controller.state); }
       else if (name === "/continue") run();
       else if (name === "/checkpoint") { await controller.checkpoint(value || "User checkpoint"); output("Checkpoint saved."); }
@@ -295,8 +301,11 @@ export class TerminalCommand {
         tui = new TerminalTui({ workspace: controller.workspaceRoot, profile: resolved.config.profile, version: packageInfo.version, effort: args.effort, permissions: args.permissions, history,
           commands: COMMANDS.map(name => ({ name, description: descriptions[name.slice(1)] ?? name.slice(1).replace(/-/g, " ") })),
           cancel: onSignal, close: onTerminate,
-          submit: (line, intent) => { chain = chain.then(async () => {
-            if (closed) return;
+          submit: (line, intent) => {
+            if (/^\/(stop|cancel|exit|quit)\s*$/.test(line)) { void command(line).then(showPrompt).catch(error => tui!.error(String(error))); return; }
+            const inputEpoch = cancelEpoch;
+            chain = chain.then(async () => {
+            if (closed || inputEpoch !== cancelEpoch) return;
             if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); return; }
             tui!.user(line);
             if (activeRun || controller.busy) { if (intent === "steer") { queued.unshift(line); cancelTurn(); tui!.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); } else { queued.push(line); tui!.notice("Message queued for the next turn."); } }
@@ -319,7 +328,11 @@ export class TerminalCommand {
       rl.on("history", values => { history = values.map(value => redactSecretValues(value)); });
       rl.on("SIGINT", onSignal);
       let chain = Promise.resolve();
-      rl.on("line", line => { chain = chain.then(async () => {
+      rl.on("line", line => {
+        if (/^\/(stop|cancel|exit|quit)\s*$/.test(line)) { void command(line).then(showPrompt).catch(error => process.stderr.write(`${terminalText(String(error))}\n`)); return; }
+        const inputEpoch = cancelEpoch;
+        chain = chain.then(async () => {
+        if (closed || inputEpoch !== cancelEpoch) return;
         if (pendingApproval) { const response = line.trim().toLowerCase(); if (!["once", "session", "deny"].includes(response)) { process.stderr.write("Enter once, session or deny.\n"); return; } const resolve = pendingApproval; pendingApproval = undefined; resolve(response as "once" | "session" | "deny"); return; }
         if (!line.trim()) { showPrompt(); return; }
         if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); }

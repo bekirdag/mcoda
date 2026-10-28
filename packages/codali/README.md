@@ -80,13 +80,14 @@ runtime versions remain available for existing profiles.
 | `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
 | `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
 | `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
-| `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
+| `/model`, `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
 | `/plan [show\|history\|edit TEXT\|mode plan\|execute]` | Inspect or revise the plan; execute mode uses the approval policy |
 | `/tools`, `/mcp`, `/docdex` | Inspect available tools, connectors and indexing configuration |
 | `/context`, `/diff`, `/review` | Inspect retained context/changes or request a new review task |
 | `/checkpoint`, `/compact` | Save progress or reduce conversation context while preserving canonical work state |
-| `/cancel`, `/continue`, `/steer TEXT` | Interrupt, continue, or apply an explicit goal amendment |
-| `/sessions`, `/resume ID`, `/fork`, `/new TEXT` | Manage sessions; forks require fresh verification and reset grants |
+| `/stop`, `/cancel`, `/continue`, `/steer TEXT` | Stop the turn and discard queued instructions, continue, or apply an explicit goal amendment |
+| `/sessions`, `/resume ID`, `/fork`, `/new [TEXT]`, `/clear [TEXT]` | Start a fresh prompt or objective without deleting previous sessions; forks require fresh verification and reset grants |
+| `/exit`, `/quit` | Cancel owned work, discard queued instructions and close after cleanup |
 | `/artifacts` | Inspect durable image, audio and video jobs and artifact checksums |
 | `/reconcile ID success\|failed NOTE` | Record an observed outcome for an interrupted tool invocation |
 | `/export`, `/retention DAYS`, `/delete-session ID` | Export redacted events, preview retention candidates, or delete an inactive session |

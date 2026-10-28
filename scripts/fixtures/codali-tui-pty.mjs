@@ -17,17 +17,17 @@ if (mode === "resume") {
   await controller.emit("turn_result", { content: "Saved assistant response", completed: false });
   SessionController.prototype.run = async function () { record({ executionStarted: true }); return { content: "Continued only by explicit input", completed: false }; };
   await TerminalCommand.run(["resume", controller.sessionId, "--workspace-root", workspace, "--config", configuration]);
-} else if (mode === "queue") {
+} else if (mode === "queue" || mode === "commands") {
   let turn = 0;
   SessionController.prototype.run = async function () {
     const current = ++turn;
     this.active = new AbortController(); const signal = this.active.signal;
     try {
-      record({ turn: current, objective: this.state.objective });
+      record({ turn: current, objective: this.state.objective, ...(mode === "commands" ? { sessionId: this.sessionId } : {}) });
       await this.emit("turn_started", {});
       if (signal.aborted) throw new Error("Cancelled by user");
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(resolve, 500);
+        const timeout = setTimeout(resolve, mode === "commands" && current === 1 ? 30000 : 500);
         signal.addEventListener("abort", () => { clearTimeout(timeout); reject(new Error("Cancelled by user")); }, { once: true });
       });
       await this.update(state => { state.status = "completed"; });

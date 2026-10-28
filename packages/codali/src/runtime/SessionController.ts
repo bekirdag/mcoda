@@ -506,6 +506,13 @@ export class SessionController {
 
   cancel(): void { this.active?.abort(new Error("Cancelled by user")); }
 
+  async clearSession(): Promise<void> {
+    if (this.busy || this.currentReceipt) throw new Error("Stop and wait for the current turn before starting a fresh session");
+    await this.checkpoint("Left session for a fresh prompt; transcript and unresolved outcomes retained");
+    this.sessionId = undefined; this.state = undefined;
+    this.resetSessionState();
+  }
+
   async steer(instruction: string): Promise<void> {
     if (!this.state) throw new Error("No active goal");
     if (this.busy) throw new Error("Cancel and wait for the active turn before applying steering");

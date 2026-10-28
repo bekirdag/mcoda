@@ -43,9 +43,9 @@ class Terminal:
     def events(self): return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
     def event(self, expected): self.wait(lambda: expected in self.events())
 
-    def finish(self, terminate=False):
+    def finish(self, terminate=False, command='/quit'):
         if terminate: self.process.send_signal(signal.SIGTERM)
-        else: self.send('/quit\r')
+        else: self.send(command + '\r')
         self.wait(lambda: self.process.poll() is not None)
         self.pump()
         assert self.process.returncode == 0
@@ -118,5 +118,28 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.event({'turn': 4, 'objective': 'Third objective\n\nUser steering: Correction'})
         ui.contains('Fixture turn 4 complete'); ui.finish()
         checks.append('queued messages start after completed goals; steering cancels and amends the active goal')
+    finally: ui.cleanup()
+    ui = Terminal('commands', base)
+    try:
+        ui.contains('Ask Codali anything'); ui.send('/new\r'); ui.contains('Fresh session')
+        assert not ui.events(), 'An empty /new started inference'
+        ui.send('Preserved objective\r'); ui.wait(lambda: len(ui.events()) == 1)
+        original = ui.events()[0]['sessionId']
+        ui.send('/clear\r'); ui.contains('requires an idle turn')
+        ui.send('Queued but cancelled\r'); ui.contains('Message queued')
+        ui.send('/stop\r'); ui.contains('Cancelled by user')
+        ui.send('/clear\r'); ui.pump(.2)
+        ui.send('Fresh objective\r'); ui.wait(lambda: len(ui.events()) == 2)
+        assert ui.events()[1]['objective'] == 'Fresh objective', 'Stopped queued work was executed'
+        assert ui.events()[1]['sessionId'] != original
+        ui.contains('Fixture turn 2 complete')
+        ui.send('/new\r'); ui.pump(.2)
+        ui.send('/resume ' + original + '\r'); ui.pump(.2)
+        assert len(ui.events()) == 2, 'Resume unexpectedly started execution'
+        ui.send('/continue\r'); ui.wait(lambda: len(ui.events()) == 3)
+        assert ui.events()[2]['sessionId'] == original
+        assert ui.events()[2]['objective'] == 'Preserved objective'
+        ui.finish(command='/exit')
+        checks.append('new/clear preserve resumable sessions; stop discards queued work; exit restores the terminal')
     finally: ui.cleanup()
 print(json.dumps({'passed': True, 'checks': checks}))
