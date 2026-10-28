@@ -107,6 +107,44 @@ requires the receipt endpoint and the original configured provider/key; older
 servers return an explicit unavailable result. During a turn it is deferred.
 Accounting settlement does not mark the coding task complete or replay inference.
 
+### Persistent instructions and Docdex
+
+The terminal loads the packaged [Codali operating guide](config/AGENTS.md),
+including the actual Docdex tool argument names, repository scope, evidence
+requirements and permission boundaries. A greeting does not start repository
+indexing. Repository inspection starts the private Docdex runtime lazily and
+exposes additional read tools when needed.
+
+Add your own instructions in these files, listed from general defaults to the
+most specific overrides:
+
+1. `~/.codali/AGENTS.md`: your preferences across workspaces.
+2. `<workspace>/.codali/instructions.md`: shared workspace guidance.
+3. `<workspace>/AGENTS.md` and `AGENTS.md` files along the focused file's directory
+   ancestry: repository and component guidance.
+4. `<workspace>/.codali/local.md`: local workspace overrides.
+
+For example, a repository `AGENTS.md` can specify the test command, component
+boundaries and documentation conventions. Keep it concise and link supporting
+documents. Each file is limited to 64 KiB; the combined formatted instruction
+bundle is limited to 24,000 characters and 64 sources. Oversized or unreadable
+instructions produce an explicit error rather than being silently truncated.
+Symlinks must stay inside the permitted instruction directory. Source hashes
+are retained with the session's instruction metadata.
+
+Instructions guide model behavior; the host still enforces permissions. A file
+cannot grant shell networking, writes or access to another repository. Docdex
+memory writes and web research require their corresponding permissions. If
+Docdex is unavailable, Codali must report the limitation and use permitted file
+reads without claiming that structural analysis succeeded.
+
+The [1,000-prompt benchmark](../../docs/benchmarks/codali-1000/README.md) compares
+the real controller with direct and tool-equipped model baselines. Its
+[validation selection](../../docs/benchmarks/codali-1000/validation-selection.json)
+records quality, critical failures, latency and tokens. The selected experimental
+profile is not a production recommendation: validation found critical failures,
+and the full comparison is still in progress.
+
 `plan` permits reads; `ask` asks before side effects; `workspace` permits scoped
 file edits and isolated shell commands. Web research, memory writes and media
 generation have separate approval categories. Automation can explicitly enable

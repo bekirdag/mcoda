@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-28T23:15:50.182387+00:00",
+  "selectedCandidate": "c6-flash-v9-review",
+  "qualification": "Experimental full comparison only; no quality-qualified release candidate exists because both finalists have critical failures.",
+  "selectionRule": "Frozen plan: strict correctness first, critical failures second, then latency and tokens.",
+  "validationMetrics": {
+    "c4-flash-v9": {
+      "attempts": 200,
+      "uniqueCases": 200,
+      "passed": 149,
+      "failed": 51,
+      "liveResponseCases": 200,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 0,
+      "needsReview": 0,
+      "errors": 0,
+      "criticalFailures": 3,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.745,
+      "latencyMs": {
+        "p50": 7527,
+        "p95": 27741,
+        "known": 200
+      },
+      "tokens": {
+        "p50": 1544,
+        "p95": 8642,
+        "sum": 405197,
+        "known": 200,
+        "estimated": 0
+      }
+    },
+    "c6-flash-v9-review": {
+      "attempts": 200,
+      "uniqueCases": 200,
+      "passed": 150,
+      "failed": 50,
+      "liveResponseCases": 199,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 1,
+      "needsReview": 0,
+      "errors": 1,
+      "criticalFailures": 1,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.75,
+      "latencyMs": {
+        "p50": 11846,
+        "p95": 30282,
+        "known": 200
+      },
+      "tokens": {
+        "p50": 2540,
+        "p95": 8254,
+        "sum": 535936,
+        "known": 200,
+        "estimated": 1
+      }
+    }
+  },
+  "pairedValidation": {
+    "cases": 200,
+    "families": 20,
+    "c6MinusC4": 0.005,
+    "familyBootstrap95": [
+      -0.025,
+      0.04
+    ],
+    "interpretation": "Selection evidence, not an independent generalization claim; uncertainty includes zero."
+  },
+  "evidenceHashes": {
+    "report": "f274ace9f2fa3dfc8cdbf654fd9c05be3c9e103ff7d3e445c6b63ab6c158d877",
+    "scores": "585e5942fa1a2cd4d8aaaf4172ab0773c334f62958d52aaa542be86faecaca78",
+    "allRubricReviews": "d13f5f834c808a4bf821cd62d43430916b0b7902fe4ea37852beb58c52ccf11d",
+    "eligibleRubricReviews": "b75e6b0fe6b788e84d34aa037641d596853ccade990e4b52d99f272411feb326",
+    "criticalReviews": "7c30232532c856bd9bc480ffdd9467db84e9f1073bdb74b15f69fc66b6be90c6"
+  },
+  "limitations": [
+    "Family-correlated synthetic tasks; not a representative user workload.",
+    "Primary Codex reviewer is separate from answering model but is also benchmark author; no human-review-equivalence claim.",
+    "Shared production hosts, not isolated latency measurement.",
+    "One retained invalid-response failure has unmeasured usage reservation; first failure remains primary.",
+    "Five rubric outputs fail automatic word limits; qualitative reviews retained but cannot override these failures."
+  ],
+  "fullComparison": {
+    "status": "running",
+    "frozenAt": "2026-10-28T23:15:50.405Z",
+    "clientFingerprint": "fb98481a3e973adaf7d3d278db4dbec07f07f7d70679f95b57a54791fe85c4cb",
+    "corpusHash": "2dde4b4457589311ebf643555a29461472e7805a647128bc2774460a9fce4c8a",
+    "sourceCommit": "ecf7369a6c63bd3e86d5062b17d9197404e50f37",
+    "runtimeDeltaFromValidation": "Usage snapshot presentation only in product controller. Prompts, budgets, permissions and model requests unchanged. Harness strict argument/retry provenance and host-only grader fixes recorded separately.",
+    "requiredAttempts": {
+      "raw_direct": 1000,
+      "codali_selected": 1000,
+      "raw_tools": 100
+    },
+    "hostPartitions": {
+      "raijin": 480,
+      "suku": 520
+    },
+    "configHashes": {
+      "raijin": "25eacc6d6e6c29e7b63ff3b130373c6f5a32021c73a4d4023708a96bfc0bd314",
+      "suku": "c41e3bb120741d723c8701ee12e25cf156ca3eeb7a03dbf3c1d4d7137d7fbd29"
+    },
+    "nativeFingerprint": "2082ec749149ce9f48ef1638c6744e9851fa93db6fa2c9030c9e743827003f6e",
+    "evaluationProtocol": "trust-opaque-paths-v2",
+    "results": "No final superiority result is available yet."
+  }
+}

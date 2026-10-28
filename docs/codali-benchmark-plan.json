@@ -86,7 +86,7 @@
     {
       "id": "B4",
       "title": "Select models and tune configuration",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "B3"
       ],
@@ -100,12 +100,13 @@
         "Only training/development traces used to propose changes; validation selects candidates",
         "Mutations cannot alter permission gates, graders, corpus, hidden answers or evaluation protocol",
         "Correctness and critical-error rates determine selection before speed/cost"
-      ]
+      ],
+      "outcome": "Completed experimental selection: C6 150/200 vs C4 149/200, one vs three critical secret echoes. Neither is release-qualified. Frozen C6 for mandatory full comparison; no held-out results used to tune."
     },
     {
       "id": "B5",
       "title": "Execute every prompt and measure improvement",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "B4"
       ],
@@ -119,7 +120,8 @@
         "Coverage1000/1000 for each required arm, including failures/timeouts in denominators",
         "Every result links request, final output/error, config/model/tool provenance and grade",
         "Promote only if predeclared quality rules pass; otherwise retain baseline and continue development without retuning on the sealed test"
-      ]
+      ],
+      "outcome": "Final 2100-attempt comparison started 2026-10-28T23:15:50Z with frozen runtime/config/corpus on both host partitions. Outcomes and independent reviews pending."
     },
     {
       "id": "B6",
@@ -504,6 +506,33 @@
       "type": "rescore_after_grader_audit",
       "artifact": "/home/wodo/.local/state/codali-trust-benchmark/graded-v4-{candidate}/report.json",
       "finding": "C4 remains30/40 and C6 remains28/40 in development. All earlier outputs retained; rubric/critical review state explicit."
+    },
+    {
+      "phase": "B4",
+      "type": "completed_validation_selection",
+      "artifact": "docs/benchmarks/codali-1000/validation-selection.json",
+      "attempts": 400,
+      "rubricReviews": 100,
+      "eligibleRubricReviews": 95,
+      "automaticWordLimitFailures": 5,
+      "criticalReviews": 20,
+      "pendingReviews": 0,
+      "selectedCandidate": "c6-flash-v9-review",
+      "releaseQualified": false,
+      "privateReport": "/home/wodo/.local/state/codali-trust-benchmark/validation-final-v4-reviewed/report.json",
+      "note": "All original review records retained. Automatically failed word-limit answers cannot be overridden by qualitative reviews. C6-C4 paired gain 0.5pp, family-bootstrap95% -2.5pp to +4.0pp."
+    },
+    {
+      "phase": "B5",
+      "type": "frozen_run_started",
+      "freeze": "/home/wodo/.local/state/codali-trust-benchmark/final-selection-v3.json",
+      "clientFingerprint": "fb98481a3e973adaf7d3d278db4dbec07f07f7d70679f95b57a54791fe85c4cb",
+      "requiredAttempts": 2100,
+      "services": [
+        "codali-trust-final-v3-raijin.service",
+        "codali-trust-final-v3-suku.service"
+      ],
+      "status": "running_not_complete"
     }
   ],
   "remaining": [
