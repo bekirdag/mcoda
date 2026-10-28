@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-27T12:10:55.329011+00:00",
+  "updatedAt": "2026-10-28T14:24:15.114152+00:00",
   "candidate": {
-    "version": "0.1.135-codali.12",
-    "sourceCommit": "9eae2e3e4156da0e37d6d722be9d2b3afe4e6fd7",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40493844277",
+    "version": "0.1.135-codali.13",
+    "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
     "publishedChannel": "next",
     "stableVersion": "0.1.134",
-    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease12-registry-artifacts/verification.json"
+    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease13-registry-artifacts/verification.json"
   },
   "releaseReady": false,
   "requirements": [
@@ -454,7 +454,7 @@
     },
     {
       "id": "P6.1",
-      "description": "Implement interactive TTY entry, prompt editor, history, paste, completion, streamed transcript and plain mode. Support resize and recovery of terminal state.",
+      "description": "Implement the required default TUI: structured scrollable transcript, persistent multiline prompt editor, workspace/session/status area, searchable commands, history search and @file completion; preserve plain/JSONL modes, resize and terminal restoration.",
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
@@ -516,12 +516,21 @@
       }
     },
     {
+      "id": "P6.8",
+      "description": "Qualify the required TUI with deterministic visual/input tests and real Linux/macOS PTY flows covering stream/redraw, Unicode, narrow resize, paste, completion, approval, busy steering/queueing, signals and resume; inspect exact-version visual fixtures.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/56/evidence"
+      }
+    },
+    {
       "id": "P7.1",
       "description": "Complete resume/fork/compaction and storage migration. Reconcile uncertain tool outcomes before continuing. Test stale repository state and multiple clients opening the same session.",
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/56/evidence"
+        "jsonPointer": "/tasks/57/evidence"
       }
     },
     {
@@ -530,7 +539,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/57/evidence"
+        "jsonPointer": "/tasks/58/evidence"
       }
     },
     {
@@ -539,7 +548,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/58/evidence"
+        "jsonPointer": "/tasks/59/evidence"
       }
     },
     {
@@ -548,7 +557,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/59/evidence"
+        "jsonPointer": "/tasks/60/evidence"
       }
     },
     {
@@ -557,7 +566,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/60/evidence"
+        "jsonPointer": "/tasks/61/evidence"
       }
     },
     {
@@ -566,7 +575,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/61/evidence"
+        "jsonPointer": "/tasks/62/evidence"
       }
     },
     {
@@ -575,7 +584,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/62/evidence"
+        "jsonPointer": "/tasks/63/evidence"
       }
     },
     {
@@ -584,7 +593,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/63/evidence"
+        "jsonPointer": "/tasks/64/evidence"
       }
     },
     {
@@ -593,7 +602,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/64/evidence"
+        "jsonPointer": "/tasks/65/evidence"
       }
     },
     {
@@ -602,7 +611,7 @@
       "status": "completed",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/65/evidence"
+        "jsonPointer": "/tasks/66/evidence"
       }
     },
     {
@@ -611,7 +620,7 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/66/evidence"
+        "jsonPointer": "/tasks/67/evidence"
       }
     },
     {
@@ -620,7 +629,7 @@
       "status": "pending",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/67/evidence"
+        "jsonPointer": "/tasks/68/evidence"
       }
     },
     {
@@ -629,16 +638,22 @@
       "status": "in_progress",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
-        "jsonPointer": "/tasks/68/evidence"
+        "jsonPointer": "/tasks/69/evidence"
       }
     }
   ],
   "openGates": [
     {
+      "id": "interactive-tui",
+      "status": "open",
+      "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
+      "current": "Full default TUI implemented; source suite1758pass3skip, Linux real PTY/tmux and clean tarball installation pass. Candidate.14 prepared; macOS, SSH and exact published-version qualification pending."
+    },
+    {
       "id": "long-workflows",
       "status": "open",
       "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
-      "current": "AG exact .11 service-adapters passed4/4 independent module grades and canonical completion/restarts after105m31s, below2h. Billing-audit passed4/4 module grades but exhausted4.8M budget after133m; final goal incomplete. Routes validated271Suku/326Raijin with native4096 and stable environments. Followons localized-export/data-delivery active; no four successful multi-hour journeys."
+      "current": "AG exact.11: service-adapters passes105m31s (duration below2h); billing and localized-export fail budgets despite4/4module grades; data-delivery stage3 marks goal complete at13:10Oct27 but has no final result/independent grade. No active runners; four qualified journeys remain open."
     },
     {
       "id": "broad-quality",
@@ -803,22 +818,7 @@
     "diagnosis": "Missing validation receipts in review and an already-active steering attempt prevented claiming a different integration owner. Four module grades did not establish final goal completion.",
     "recovery": "Inspect canonical active ownership, retain the saved worktree, rerun fresh checks, and verify the actual task/attempt using the corrected client. Preserve failed evidence; never mark completion from test output alone."
   },
-  "unpublishedCorrections": [
-    {
-      "description": "Persist each attempted tool call before permission and execution so restart cannot reset the shared tool budget.",
-      "sourceCommit": "749089c21e88fa896788e708c76e6c97f47e626f",
-      "validation": "80focused and1729full tests pass; old .11/current readers retain successful and denied tool counts in four independent compatibility cases.",
-      "candidatePublished": false,
-      "pendingVersion": "0.1.135-codali.13"
-    },
-    {
-      "description": "Allow later narrow reviews to page freshly assessed source as read-only context; retain snapshot checks, attribution and rejection of unassessed files.",
-      "sourceCommit": "977e6325ed57abe0a2b91a26b6c14fe6e3de2f3e",
-      "validation": "Red regression reproduced;103focused and1731full Codali tests pass,3optional skips.",
-      "candidatePublished": false,
-      "pendingVersion": "0.1.135-codali.13"
-    }
-  ],
+  "unpublishedCorrections": [],
   "publishedCorrections": [
     {
       "description": "Release provisional terminal token usage for discovery/context/route-observer failures before transport dispatch; persist refund before diagnostic observers.",
@@ -907,14 +907,22 @@
       "validation": "96 focused and1727 full Codali tests pass,3optional skips.",
       "candidatePublished": true,
       "publishedVersion": "0.1.135-codali.12"
+    },
+    {
+      "description": "Persist each attempted tool call before permission and execution so restart cannot reset the shared tool budget.",
+      "sourceCommit": "749089c21e88fa896788e708c76e6c97f47e626f",
+      "validation": "80focused and1729full tests pass; old .11/current readers retain successful and denied tool counts in four independent compatibility cases.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.13"
+    },
+    {
+      "description": "Allow later narrow reviews to page freshly assessed source as read-only context; retain snapshot checks, attribution and rejection of unassessed files.",
+      "sourceCommit": "977e6325ed57abe0a2b91a26b6c14fe6e3de2f3e",
+      "validation": "Red regression reproduced;103focused and1731full Codali tests pass,3optional skips.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.13"
     }
   ],
-  "pendingCandidate": {
-    "version": "0.1.135-codali.13",
-    "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
-    "status": "building_not_yet_verified"
-  },
   "deployedEnvironment": {
     "backend": "M",
     "backendSource": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
@@ -924,5 +932,10 @@
     "plannedNode": "O/.13",
     "stagedBackend": "N",
     "canaryStarted": false
+  },
+  "pendingCandidate": {
+    "version": "0.1.135-codali.14",
+    "status": "prepared_for_cross_platform_qualification",
+    "changes": "Required full interactive TUI, startup cancellation, safe queue/steer/resume, real terminal and installed artifact tests"
   }
 }

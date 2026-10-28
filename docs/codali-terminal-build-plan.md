@@ -362,6 +362,22 @@ Ctrl+C cancels active work first; when idle it follows the documented exit behav
 
 Codex's [official command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli) and Claude Code's [interactive-mode documentation](https://code.claude.com/docs/en/interactive-mode) support these interaction patterns. Codali should implement a coherent subset and its own stable semantics rather than promise complete compatibility.
 
+### 6.1 Required interactive TUI (accepted 2026-10-28)
+
+The first release must provide a polished terminal UI comparable in usability to Codex CLI and Claude Code. A readline prompt with streamed log lines does not satisfy Phase 6. The TUI is the default for interactive input/output terminals; explicit `--plain`, redirected output and JSONL automation retain their documented interfaces.
+
+The UI must provide:
+
+- A responsive, resize-aware screen with a clearly separated conversation viewport, multiline prompt editor, current workspace/session and compact status area. Show actual activity, model route, effort, permissions, usage and queued input without presenting internal implementation details as product controls.
+- Distinct user, assistant, tool, error and approval presentation; readable Markdown/code blocks and diffs; scrollback navigation and expandable tool results. Streaming must preserve the draft and cursor rather than interleave output into input.
+- A searchable command palette, slash-command descriptions, history search, workspace-scoped `@file` completion and discoverable keyboard hints. Unicode/grapheme editing, wide characters, bracketed paste and multiline insertion must work without accidentally executing pasted commands.
+- Keyboard-navigable approval dialogs showing the complete sanitized action, paths and grant scope, with explicit allow-once/session/deny choices. Approval cannot be inferred from paste, focus changes or an unrelated queued prompt.
+- Navigable inspection views for goals, tasks, decisions, sessions, models, tools, context, artifacts and actual diffs. Keep deterministic inspection separate from model work. Configuration validation/diff and plan controls must report unsupported actions explicitly.
+- Explicit steer-versus-queue behavior while busy, cancellation that remains responsive during output, and reliable restoration of cursor, raw mode, bracketed paste and screen state on normal exit, SIGINT, SIGTERM or exceptions.
+- Accessible plain mode, `NO_COLOR`, narrow-terminal layouts, Linux/macOS support and verified SSH/tmux behavior. The TUI remains an adapter over the existing controller, permission, accounting and session contracts; it must not introduce a second execution loop or backlog.
+
+Acceptance requires deterministic screen/input tests plus real PTY flows covering stream/redraw, scroll, resize, completion, approval, cancellation, reconnect/session resume and terminal restoration. Keep visual fixtures at normal and narrow sizes and inspect their rendered output. Release evidence must identify the exact client version and supported terminals. Passing the older readline smoke does not close this requirement.
+
 ## 7. Permissions, credentials and workspace trust
 
 | Profile | Default behavior |
@@ -639,7 +655,7 @@ Coordination gate: dead/stale/duplicate workers cannot create duplicate accepted
 
 Dependencies: the stable controller/policy contracts from Phases 2–5. UI prototyping can start after Phase 0. Effort: 5–8 days.
 
-- P6.1: Implement interactive TTY entry, prompt editor, history, paste, completion, streamed transcript and plain mode. Support resize and recovery of terminal state.
+- P6.1: Implement the default interactive TUI specified in Section 6.1: structured scrollable transcript, persistent multiline editor, status area, command palette, history search and @file completion. Preserve plain/JSONL modes and terminal restoration.
 - P6.2: Implement the alpha command set from Section 6 against controller state. Status and permission inspection must not trigger an inference call.
 - P6.3: Build approval cards with concrete operation, paths/command, reason and grant scope. Build actual-diff and tool-output views with truncation/expansion controls.
 - P6.4: Make steering, queued messages, cancellation and busy-state slash commands explicit. Display phase, actual model/node route, effort, context and queue state without flooding the screen.
@@ -652,6 +668,8 @@ Exit gate: a developer can authenticate, investigate a fixture bug, approve/edit
 Usability gate: at any interruption, the user can inspect the main goal, current task, why it matters, what is verified, what is blocked and what happens next. Viewing a plan never changes execution mode, permissions or goal state.
 
 Milestone: internal alpha. Install from a package tarball on Raijin and Suku, plus a separate macOS client. Use isolated fixture workspaces and scoped keys, with no routine writes to production application checkouts.
+
+- P6.8: Qualify the TUI through deterministic screen/input fixtures and real Linux/macOS PTYs, including streaming/redraw, Unicode, narrow resize, paste, completion, approval, busy steering/queueing, signals and resumed sessions. Inspect visual fixtures and record exact-version evidence; a readline-only interface cannot pass.
 
 ### Phase 7 — Long sessions, accounting and beta
 

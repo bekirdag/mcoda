@@ -11,6 +11,31 @@ codali doctor
 codali chat --permissions ask --effort medium
 ```
 
+Interactive `codali` and `codali chat` open the terminal UI with a scrollable
+conversation, multiline editor, tool cards, approval dialogs and persistent
+model, effort, permission and usage status. `codali resume SESSION_ID` restores
+the conversation and waits for input; `/continue` resumes execution. JSONL and
+noninteractive resume retain their automation behavior.
+
+| Key | Action |
+| --- | --- |
+| Enter | Send, or queue a message while work is running |
+| Alt+Enter or Ctrl+J | Insert a newline |
+| Ctrl+S | Submit a correction; cancel current work and apply it at the next safe checkpoint |
+| Ctrl+P / Ctrl+R | Search commands / input history |
+| Tab | Complete a slash command or an `@workspace/path` reference |
+| Page Up / Page Down | Scroll conversation or inspect a dialog |
+| Ctrl+O | Expand or collapse tool output |
+| Escape | Close a view, deny an approval, or cancel active work |
+| Ctrl+C | Cancel work; press again within one second to exit |
+| Ctrl+D | Exit with an empty editor |
+
+Approvals start on **Deny**. Use Left/Right to choose, then Enter to confirm;
+Page Up/Down exposes the complete arguments. Pasted text remains editable and
+cannot select an approval. Use `NO_COLOR=1` for a monochrome TUI or `--plain`
+for a line-oriented interface. Redirected output and `TERM=dumb` use plain mode.
+The UI restores terminal modes and the original screen when it closes.
+
 For automation, inject `MCODA_MSWARM_API_KEY` through your secret manager, or pipe
 the key to `codali login --stdin`. Keys are never command-line arguments. Existing
 encrypted mcoda credentials are reused when their service origin matches.
@@ -55,7 +80,9 @@ runtime versions remain available for existing profiles.
 | `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
 | `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
 | `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
-| `/models`, `/config [reload]` | Inspect configured routes and the effective configuration hash |
+| `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
+| `/plan [show\|history\|edit TEXT\|mode plan\|execute]` | Inspect or revise the plan; execute mode uses the approval policy |
+| `/tools`, `/mcp`, `/docdex` | Inspect available tools, connectors and indexing configuration |
 | `/context`, `/diff`, `/review` | Inspect retained context/changes or request a new review task |
 | `/checkpoint`, `/compact` | Save progress or reduce conversation context while preserving canonical work state |
 | `/cancel`, `/continue`, `/steer TEXT` | Interrupt, continue, or apply an explicit goal amendment |

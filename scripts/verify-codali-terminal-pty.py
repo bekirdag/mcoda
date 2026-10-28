@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded POSIX terminal smoke; build @mcoda/codali first. Optional argv[1]: Node executable."""
 import os,pty,subprocess,tempfile,pathlib,json,time,select,fcntl,termios,struct,signal,hashlib,shutil,sys
+package_root=pathlib.Path(os.environ.get('CODALI_PACKAGE_ROOT',str(pathlib.Path(__file__).resolve().parent.parent/'packages/codali')))
 base=pathlib.Path(tempfile.mkdtemp(prefix='codali-pty-')); workspace=base/'workspace';workspace.mkdir()
 config={'schemaVersion':1,'profile':'pty-fixture','providers':{'local':{'adapter':'openai-compatible','baseUrl':'http://127.0.0.1:1/v1'}},'models':{'fixture':{'provider':'local','catalogId':'fixture','revision':'v1','operations':['chat.completions'],'contextWindow':32768,'maxOutputTokens':2048,'supportsTools':True}},'bindings':{'lead':{'candidates':['fixture']},'reviewer':{'useBinding':'lead'}}}
 configuration=base/'configuration.json';configuration.write_text(json.dumps(config));configuration.chmod(0o600)
@@ -19,7 +20,7 @@ def read_until(predicate,seconds=5):
  raise AssertionError('Terminal expectation failed: '+captured[-1200:].decode(errors='replace'))
 def check_masked_login(node,cancel=False):
  key='synthetic-login-key-12'; secret_prefix=b'synthetic-login-key-1'
- module=(pathlib.Path(__file__).resolve().parent.parent/'packages/codali/dist/cli/TerminalCredentials.js').as_uri()
+ module=(package_root/'dist/cli/TerminalCredentials.js').as_uri()
  source="import assert from 'node:assert/strict';import {readTerminalCredential} from "+json.dumps(module)+";"
  if cancel:
   source+="await assert.rejects(readTerminalCredential(false),/Login cancelled/);"
@@ -54,20 +55,23 @@ def check_masked_login(node,cancel=False):
   if auth_slave is not None:os.close(auth_slave)
 try:
  fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,90,0,0))
- p=subprocess.Popen([sys.argv[1] if len(sys.argv)>1 else 'node',str(pathlib.Path(__file__).resolve().parent.parent/'packages/codali/dist/cli.js'),'chat','--config',str(configuration),'--workspace-root',str(workspace),'--permissions','plan'],stdin=slave,stdout=slave,stderr=slave,close_fds=True)
+ p=subprocess.Popen([sys.argv[1] if len(sys.argv)>1 else 'node',str(package_root/'dist/cli.js'),'chat','--config',str(configuration),'--workspace-root',str(workspace),'--permissions','plan'],stdin=slave,stdout=slave,stderr=slave,close_fds=True,env={**os.environ,'TERM':'xterm-256color'})
  os.close(slave);slave=None
- read_until(lambda data:b'codali> ' in data)
- assert b'\x1b[?2004h' in captured
- os.write(master,b'/status\r');read_until(lambda data:b'"busy": false' in data)
+ read_until(lambda data:b'Ask Codali anything' in data)
+ assert b'\x1b[?2004h' in captured and b'\x1b[?1049h' in captured
+ os.write(master,b'/status\r');read_until(lambda data:b'Busy: false' in data)
+ os.write(master,b'\x1b');time.sleep(0.2)
  fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',18,45,0,0));os.kill(p.pid,signal.SIGWINCH)
  os.write(master,'\x1b[200~alpha\n/quit\nβeta\x1b[201~'.encode());time.sleep(0.2)
  assert p.poll() is None,'Pasted /quit executed before submission'
- os.write(master,b'\x15/effort high\r');read_until(lambda data:b'"requested": "high"' in data or b'"effort": "high"' in data)
+ os.write(master,b'\x15/effort high\r');read_until(lambda data:b'Effort: high' in data)
+ os.write(master,b'\x1b');time.sleep(0.2)
  os.write(master,b'/quit\r');read_until(lambda data:b'\x1b[?2004l' in data)
  p.wait(timeout=5);assert p.returncode==0
  node=sys.argv[1] if len(sys.argv)>1 else 'node'
  check_masked_login(node);check_masked_login(node,cancel=True)
- print(json.dumps({'passed':True,'checks':['interactive status','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','effort command','clean quit restores bracketed paste','masked login input and backspace','login cancellation restores terminal']}))
+ assert b'\x1b[?1049l' in captured and b'\x1b[?25h' in captured
+ print(json.dumps({'passed':True,'checks':['default TUI screen','interactive status view','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','effort command','clean quit restores screen, cursor and bracketed paste','masked login input and backspace','login cancellation restores terminal']}))
 finally:
  if p and p.poll() is None:p.terminate();p.wait(timeout=5)
  os.close(master)

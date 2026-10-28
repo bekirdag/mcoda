@@ -80,6 +80,16 @@ try {
   assert.deepEqual(readdirSync(workspace), ['user-notes.txt']);
   report.checks.push('executable version/help, JSON failure, configuration and user-file preservation');
 
+  // Exercise the installed publication bytes, including the TUI's transitive
+  // dependencies. Source-checkout terminal tests alone cannot qualify a tarball.
+  env.CODALI_PACKAGE_ROOT = codaliRoot;
+  for (const script of ['verify-codali-terminal-pty.py', 'verify-codali-tui-pty.py']) {
+    const terminal = JSON.parse(run('python3', [path.join(root, 'scripts', script), process.execPath], 0, 60_000));
+    assert.equal(terminal.passed, true);
+    report.checks.push(...terminal.checks.map(check => `installed TUI: ${check}`));
+  }
+  delete env.CODALI_PACKAGE_ROOT;
+
   const probe = path.join(project, 'probe.mjs');
   writeFileSync(probe, `
     import assert from 'node:assert/strict';

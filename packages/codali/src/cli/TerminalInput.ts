@@ -17,7 +17,9 @@ export class TerminalInput extends Transform {
   private pasted = "";
   private bytes = 0;
   private overflow = false;
-  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number }) { super(); }
+  private escapeTimer?: NodeJS.Timeout;
+  private escapeNotified = false;
+  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number; onEscape?: () => void }) { super(); }
   private append(text: string): void {
     this.bytes += Buffer.byteLength(text);
     if (this.bytes > (this.options.maxPasteBytes ?? 262144)) { this.overflow = true; this.pasted = ""; }
@@ -43,15 +45,29 @@ export class TerminalInput extends Transform {
     }
   }
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
-    try { this.consume(this.decoder.write(chunk)); callback(); } catch (error) { callback(error as Error); }
+    try {
+      if (this.escapeTimer) clearTimeout(this.escapeTimer);
+      const text = this.decoder.write(chunk);
+      // Notify a standalone Escape promptly, but retain its prefix so a delayed
+      // bracketed-paste marker still cannot turn pasted newlines into commands.
+      if (this.escapeNotified && this.pending === "\u001b" && !text.startsWith("[")) this.pending = "";
+      this.escapeNotified = false;
+      this.consume(text);
+      if (!this.pasting && this.pending === "\u001b" && this.options.onEscape) {
+        this.escapeTimer = setTimeout(() => { this.escapeNotified = true; this.options.onEscape?.(); }, 100);
+      }
+      callback();
+    } catch (error) { callback(error as Error); }
   }
   override _flush(callback: TransformCallback): void {
     try {
+      if (this.escapeTimer) clearTimeout(this.escapeTimer);
       this.consume(this.decoder.end());
       if (this.pasting) this.options.onRejected("Incomplete paste discarded"); else if (this.pending) this.push(this.pending);
       callback();
     } catch (error) { callback(error as Error); }
   }
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void { if (this.escapeTimer) clearTimeout(this.escapeTimer); callback(error); }
 }
 
 /** readline exposes the current editable line and cursor; refresh preserves multiline content. */

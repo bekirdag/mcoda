@@ -140,11 +140,17 @@ prerequisites explicitly. Passing a unit mock does not qualify an OS boundary.
 
 ## ADR-007: deterministic terminal inspection, bounded model work
 
-Use the existing Node terminal input/renderer modules and plain text/JSONL output.
+Interactive terminals use the dedicated `cli/tui` screen, input editor and event
+renderer. The accepted 2026-10-28 requirement replaces the initial readline-only
+presentation with a full TUI. Explicit plain mode and JSONL remain available.
+The UI is an adapter over the existing SessionController, permission gate and
+canonical work state; it owns no execution loop, credentials or task authority.
 Status, usage, permissions, goal, decisions, tasks and effective configuration
 read controller state without inference. Steering updates canonical state;
 cancellation distinguishes a request from a confirmed remote stop. The renderer
 restores terminal mode and escapes untrusted terminal control sequences.
+Approval dialogs keep the full arguments scrollable, default to denial and take
+priority over late inspection results. Pasted content never accepts an approval.
 
 Effort selects explicit shared call/tool/token/time limits. Native model reasoning
 parameters are enabled only for qualified adapters. Unknown usage remains marked

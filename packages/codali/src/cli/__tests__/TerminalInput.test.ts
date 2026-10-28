@@ -4,6 +4,18 @@ import { PassThrough } from "node:stream";
 import { createInterface, type Interface } from "node:readline";
 import { TerminalInput, insertTerminalPaste } from "../TerminalInput.js";
 
+test("standalone Escape is responsive without losing a delayed paste marker", async () => {
+  let escaped = 0; const pasted: string[] = []; const raw: string[] = [];
+  const input = new TerminalInput({ onEscape: () => { escaped++; }, onPaste: value => pasted.push(value), onRejected: reason => assert.fail(reason) });
+  input.on("data", chunk => raw.push(chunk.toString()));
+  input.write(Buffer.from("\x1b")); await new Promise(resolve => setTimeout(resolve, 140));
+  assert.equal(escaped, 1);
+  input.write(Buffer.from("[200~hello\n/quit\x1b[201~"));
+  assert.deepEqual(pasted, ["hello\n/quit"]); assert.equal(raw.join(""), "");
+  input.write(Buffer.from("\x1b")); await new Promise(resolve => setTimeout(resolve, 140)); input.write(Buffer.from("a"));
+  assert.equal(escaped, 2); assert.equal(raw.join(""), "a"); input.destroy();
+});
+
 test("bracketed paste remains one input across every byte boundary", async () => {
   const bytes = Buffer.from("before\u001b[200~日本語\r\n/quit\u001b[201~after");
   for (let split = 0; split <= bytes.length; split++) {

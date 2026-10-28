@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/codali",
-  "version": "0.1.135-codali.13",
+  "version": "0.1.135-codali.14",
   "description": "Standalone tool-runner adapter for mcoda.",
   "type": "module",
   "main": "dist/index.js",
@@ -44,6 +44,7 @@
     "@mcoda/db": "workspace:*",
     "@mcoda/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "string-width": "8.3.0",
     "zod": "4.5.2"
   }
 }
