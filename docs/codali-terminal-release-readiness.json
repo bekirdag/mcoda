@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T14:24:15.114152+00:00",
+  "updatedAt": "2026-10-28T16:10:19.354633+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -455,7 +455,7 @@
     {
       "id": "P6.1",
       "description": "Implement the required default TUI: structured scrollable transcript, persistent multiline prompt editor, workspace/session/status area, searchable commands, history search and @file completion; preserve plain/JSONL modes, resize and terminal restoration.",
-      "status": "in_progress",
+      "status": "completed",
       "evidenceLedger": {
         "path": "docs/codali-terminal-build-status.json",
         "jsonPointer": "/tasks/49/evidence"
@@ -647,7 +647,7 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "Full default TUI implemented; source suite1758pass3skip, Linux real PTY/tmux and clean tarball installation pass. Candidate.14 prepared; macOS, SSH and exact published-version qualification pending."
+      "current": "Full TUI implemented; all six Linux/macOS Node 20/22 source and installed-tarball jobs passed in run 40718355640 after the Escape ordering correction. Release .14 failed before publication due to missing mSwarm vendored-runtime dependencies. Corrected .15 publication and SSH checks are pending."
     },
     {
       "id": "long-workflows",
@@ -671,7 +671,7 @@
       "id": "tenant-coexistence",
       "status": "open",
       "required": "Matched mixed-load latency/error bounds, starvation, media peak residency and host failure.",
-      "current": "Node N TNL and both Logmira tenant smokes passed. BDYA first impact probe exposed a native429 hidden as empty output; exact capacity classification fixes are qualified but staged. Later successful probe is not clearance. Resource observer7tests and initial both-host snapshot pass; matched load, starvation and host-failure gates remain open."
+      "current": "Backend N and BDYA capacity classification fixes are deployed after qualified graceful drains. Both-host direct/gateway/staged routes and BDYA bulk/translation/impact smokes pass. Matched mixed load, starvation, media residency and host failure remain open; normal-load success is not busy-load clearance."
     },
     {
       "id": "auth-lifecycle",
@@ -924,18 +924,30 @@
     }
   ],
   "deployedEnvironment": {
-    "backend": "M",
-    "backendSource": "c5fa80b1110c6831b6d26c06ae5481fb932491fc",
+    "backend": "N",
+    "backendSource": "54753f5a22a9b93d11e2671b37e8350a75ba33b0",
     "node": "N",
     "nodeVersion": "0.1.135-codali.11",
     "globalStableCli": "0.1.134",
-    "plannedNode": "O/.13",
-    "stagedBackend": "N",
-    "canaryStarted": false
+    "plannedNode": "P/.15 after exact publication and qualification",
+    "stagedBackend": null,
+    "canaryStarted": false,
+    "backendRollout": "n2 request-preserving rollback",
+    "bdyaCapacityPatch": "deployed v2",
+    "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4"
   },
   "pendingCandidate": {
+    "version": "0.1.135-codali.15",
+    "status": "local_runtime_and_packaging_validation",
+    "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe"
+  },
+  "failedCandidate": {
     "version": "0.1.135-codali.14",
-    "status": "prepared_for_cross_platform_qualification",
-    "changes": "Required full interactive TUI, startup cancellation, safe queue/steer/resume, real terminal and installed artifact tests"
+    "status": "not_published",
+    "changes": "Required full interactive TUI, startup cancellation, safe queue/steer/resume, real terminal and installed artifact tests",
+    "sourceCommit": "670298a4a6f11506a3b771a3cd56cbe6d7186e4f",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40718355640",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
+    "reason": "Release tests found missing TUI dependency in the separately vendored mSwarm runtime. Failed tag.14 retained; no public packages published by this run."
   }
 }

@@ -94,6 +94,7 @@ jobs:
         run: |
           pnpm install
           pnpm --filter '@mcoda/codali...' run build
+          pnpm --filter '@mcoda/mswarm...' run build
       - name: Require isolation backend
         run: |
           node --input-type=module <<'JS'
@@ -125,7 +126,9 @@ jobs:
           } finally { await rm(root, {recursive: true, force: true}); }
           JS
       - name: Codali regression and real shell boundary
-        run: node scripts/run-node-tests.js packages/codali/dist
+        run: |
+          node scripts/run-node-tests.js packages/codali/dist
+          node scripts/run-node-tests.js packages/mswarm/dist
       - name: Homebrew Python native libraries and media bridge fixtures
         if: runner.os == 'macOS'
         run: |

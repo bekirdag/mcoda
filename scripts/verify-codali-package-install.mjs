@@ -95,10 +95,12 @@ try {
     import assert from 'node:assert/strict';
     import { createRequire } from 'node:module';
     import * as api from '@mcoda/codali';
+    import * as embeddedApi from './node_modules/@mcoda/mswarm/dist/vendor/codali/index.js';
     import { SessionStore } from './node_modules/@mcoda/codali/dist/session/SessionStore.js';
     const require = createRequire(import.meta.url);
     const sqlite3 = require('sqlite3');
     assert.equal(typeof api.runCodaliTask, 'function');
+    assert.equal(typeof embeddedApi.runCodaliTask, 'function');
     const database = new sqlite3.Database(':memory:');
     await new Promise((resolve, reject) => database.get('SELECT 7 AS result', (error, row) => { if (error) reject(error); else { assert.equal(row.result, 7); resolve(); } }));
     await new Promise((resolve, reject) => database.close(error => error ? reject(error) : resolve()));

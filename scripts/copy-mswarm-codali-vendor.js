@@ -1,11 +1,21 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "packages", "codali", "dist");
 const destination = path.join(root, "packages", "mswarm", "dist", "vendor", "codali");
+
+// The copied runtime resolves dependencies from @mcoda/mswarm, not from the
+// source Codali package. Refuse an incomplete runtime before replacing output.
+const codali = JSON.parse(readFileSync(path.join(root, "packages", "codali", "package.json"), "utf8"));
+const mswarm = JSON.parse(readFileSync(path.join(root, "packages", "mswarm", "package.json"), "utf8"));
+for (const [name, version] of Object.entries(codali.dependencies ?? {})) {
+  if (mswarm.dependencies?.[name] !== version) {
+    throw new Error(`Vendored Codali requires @mcoda/mswarm dependency ${name}@${version}; keep runtime dependency declarations aligned.`);
+  }
+}
 
 if (!existsSync(source)) {
   throw new Error("packages/codali/dist is missing; build @mcoda/codali before packaging mswarm.");

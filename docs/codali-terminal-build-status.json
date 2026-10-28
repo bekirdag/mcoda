@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Full TUI implemented and Linux-qualified in the working tree; completing exact installed-artifact and Linux/macOS qualification, then remaining deployment, reliability, live-quality and release gates. Published .13 remains the prior runtime candidate; new TUI candidate is not yet published. Live nodes remain .11; stable CLI .134. Four successful multi-hour journeys and a 24h canary remain open.",
+  "currentTask": "The TUI passed all six platform jobs at 670298a. Release .14 failed before publication because the mSwarm vendor package omitted runtime dependencies. Candidate .15 adds matching dependencies, a build-time guard, and mSwarm platform checks; its 173 runtime tests pass. Backend N/n2 and the BDYA v2 capacity fix are live, with passing public-route and consumer smokes. Nodes remain .11; the global stable CLI remains .134. Exact-release rollout, live quality, long workflows, context, authentication, media, mixed-load and 24-hour canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -406,11 +406,12 @@
     {
       "id": "P6.1",
       "description": "Implement the required default TUI: structured scrollable transcript, persistent multiline prompt editor, workspace/session/status area, searchable commands, history search and @file completion; preserve plain/JSONL modes, resize and terminal restoration.",
-      "status": "in_progress",
+      "status": "completed",
       "evidence": [
         "2026-10-28 user explicitly rejected the readline-only presentation as insufficient. Full TUI is now required by build plan Section 6.1; implementation and new qualification remain open.",
         "cli/tui implements a default alternate-screen TUI with scrollback, multiline grapheme-aware editing, commands/history/file pickers, status and session replay. Explicit plain/JSONL fallbacks retained.",
-        "2026-10-28 Raijin PTY and tmux checks passed, including resize and mode restoration. Normal color previews inspected; Linux/macOS CI and exact published-version checks pending."
+        "2026-10-28 Raijin PTY and tmux checks passed, including resize and mode restoration. Normal color previews inspected; Linux/macOS CI and exact published-version checks pending.",
+        "670298a: full default TUI implemented and six source/installed-package Linux/macOS Node20/22 jobs pass at https://github.com/bekirdag/mcoda/actions/runs/40718355640. Initial macOS failure40705834363 retained; coalesced Escape ordering corrected and regression-tested."
       ]
     },
     {
@@ -461,7 +462,8 @@
       "status": "in_progress",
       "evidence": [
         "2026-10-28 source suite: 1758 passed, 3 skipped, 0 failed. Expanded real PTY checks pass for approvals/paste/completion/multiline input/cancel/resume/queue/steer; existing status/resize/login/restoration smoke passes. Evidence: /home/wodo/.local/state/codali-terminal-deployment/tui-20261028",
-        "Linux tmux 45x18 approval/choice/close passed. Workflow now qualifies source and exact installed TUI bytes across Linux/macOS Node20/22. Cross-platform results pending."
+        "Linux tmux 45x18 approval/choice/close passed. Workflow now qualifies source and exact installed TUI bytes across Linux/macOS Node20/22. Cross-platform results pending.",
+        "Cross-platform run 40718355640 passed all six jobs at 670298a, including installed-package PTYs. Release .14 subsequently failed due to missing mSwarm vendored dependencies and was not published. Corrected .15 publication and SSH checks remain pending."
       ]
     },
     {
@@ -2526,11 +2528,37 @@
       "result": "passed",
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/tui-20261028",
       "details": "Source suite1758pass3skip; real PTY and tmux pass. Final renderer receipt-output change has focused regression coverage. Exact installed artifact and cross-platform runs pending."
+    },
+    {
+      "check": "Full TUI cross-platform qualification",
+      "status": "passed",
+      "sourceCommit": "670298a4a6f11506a3b771a3cd56cbe6d7186e4f",
+      "artifact": "https://github.com/bekirdag/mcoda/actions/runs/40718355640",
+      "limitation": "Linux/macOS Intel/ARM Node 20/22 source and installed-tarball tests pass. Release .14 failed separately before publication; corrected .15 and SSH qualification remain pending."
+    },
+    {
+      "check": "Backend N request-preserving rollout",
+      "status": "passed_scoped",
+      "sourceCommit": "54753f5a22a9b93d11e2671b37e8350a75ba33b0",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/backend-rollout-n2-20261028/events.jsonl",
+      "limitation": "New n2 rollback passed9fault tests and actual current/candidate image drain/restore qualification. Live replacement proved zero accepted jobs and completed HTTP closes; both-host direct/gateway/staged routes pass. Do not use older deploy-backend-n.sh rollback path."
+    },
+    {
+      "check": "BDYA capacity patch v2 rollout and consumer smoke",
+      "status": "passed_scoped",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/bdya-capacity-rollout-v2/success.json",
+      "limitation": "Pinned main.ts ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4 deployed after graceful drain; bulk triage, translation and impact consumer smokes passed. Matched busy-load error recovery remains open."
+    },
+    {
+      "check": "Prerelease.14 failure retained",
+      "status": "failed_not_published",
+      "artifact": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
+      "limitation": "Separate mSwarm vendor lacked new string-width dependency; standalone Codali TUI/platform tests passed. Candidate.15 adds complete matching runtime dependency declarations, build guard and node-runtime qualification."
     }
   ],
-  "updatedAt": "2026-10-28T14:24:15.114152+00:00",
+  "updatedAt": "2026-10-28T16:10:44.267728+00:00",
   "openFindings": [
-    "The user requires a full Codex/Claude-style TUI. The new full TUI is implemented and locally qualified; Section6.1/P6.8 remain open until exact-artifact and cross-platform qualification completes. All prior runtime and release gates remain required.",
+    "The user requires a full Codex/Claude-style TUI. The full TUI is implemented and cross-platform qualified; P6.8 still needs exact public release and SSH qualification. All prior runtime and release gates remain required.",
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
     "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.11 are published on next. All ten .11 registry tarballs match exact CI artifacts and six installation jobs passed. Nodes run isolated .11; stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
