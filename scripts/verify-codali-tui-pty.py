@@ -149,6 +149,22 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.finish(command='/exit')
         checks.append('new/clear preserve resumable sessions; stop discards queued work; exit restores the terminal')
     finally: ui.cleanup()
+    ui = Terminal('artifacts', base)
+    try:
+        ui.contains('Inspect generated artifacts without inference')
+        ui.send('/artifacts export pixel cancelled.png\r'); ui.contains('Permission · media_export_artifact')
+        ui.send(b'\x03'); ui.contains('Cancelled by user')
+        assert not (ui.workspace / 'cancelled.png').exists()
+        ui.send('/artifacts export pixel user export.png\r'); ui.pump(.2)
+        ui.send(b'\x1b[C\r'); ui.wait(lambda: (ui.workspace / 'user export.png').exists())
+        assert (ui.workspace / 'user export.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+        ui.send(b'\x1b'); ui.pump(.2)
+        ui.send('/tasks cancel render\r'); ui.contains('Cancel Requested: true')
+        ui.send(b'\x1b'); ui.pump(.2); ui.finish(command='/exit')
+        assert not any('executionStarted' in event for event in ui.events())
+        assert {'cancelRequested': True, 'status': 'running'} in ui.events(), 'Cancellation request was falsely reported as complete'
+        checks.append('artifact export supports cancellation and explicit approval; media cancellation retains its pending outcome')
+    finally: ui.cleanup()
     ui = Terminal('new-startup', base)
     try:
         ui.contains('Ask Codali anything'); ui.send('/new Cancelled fresh objective\r')

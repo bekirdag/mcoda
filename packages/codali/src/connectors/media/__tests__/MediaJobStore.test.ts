@@ -92,7 +92,7 @@ test("media worker persists artifacts independently of the submitting client and
     assert.deepEqual(await fs.readFile(path.join(workspace, "pixel.png")), png);
     await assert.rejects(reopened.exportArtifact(job.id, workspace, "pixel.png"), /EEXIST/);
     await fs.writeFile(current.artifact!.path, "corrupt");
-    await assert.rejects(reopened.exportArtifact(job.id, workspace, "second.png"), /checksum/);
+    await assert.rejects(reopened.exportArtifact(job.id, workspace, "second.png"), /checksum|receipt size/);
     await assert.rejects(new MediaJobStore(root, "another-session").read(job.id), /another session/);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(root, { recursive: true, force: true }); await fs.rm(workspace, { recursive: true, force: true }); }
 });

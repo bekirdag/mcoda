@@ -328,6 +328,25 @@ export class SessionController {
   }
   async artifacts(): Promise<Record<string, unknown>[]> { return this.sessionId ? (await this.mediaStore().list()).map(mediaJobSummary) : []; }
 
+  /** Explicit user export, never model execution or task verification evidence. */
+  async exportArtifact(jobId: string, destination: string) {
+    if (this.busy || this.currentReceipt) throw new Error("Stop and wait for the current turn before exporting an artifact");
+    const store = this.mediaStore();
+    const active = new AbortController(); this.active = active;
+    const lock = new WorkspaceLock(path.dirname(this.store.storageDir), this.sessionId!);
+    try {
+      await lock.acquire();
+      try { await fs.access(this.fencePath); throw new Error("Reconcile the unresolved workspace operation before exporting an artifact"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const artifact = await store.exportArtifact(jobId, this.workspaceRoot, destination, async target => {
+        await this.gate.authorize({ name: "media_export_artifact", description: "Export a media artifact", capability: "workspace", readOnly: false }, { jobId, path: target }, active.signal);
+        active.signal.throwIfAborted();
+      }, active.signal);
+      await this.emit("artifact_exported", { source: "user", artifact });
+      return artifact;
+    } finally { if (this.active === active) this.active = undefined; await lock.release(); }
+  }
+
   private async flushOutputStreams(type?: string): Promise<void> {
     for (const [key, stream] of this.outputStreams) {
       if (type && stream.type !== type) continue;

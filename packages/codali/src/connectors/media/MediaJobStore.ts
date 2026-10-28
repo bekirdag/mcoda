@@ -100,9 +100,16 @@ export class MediaJobStore {
     });
     return recovery.acquired ? recovery.value : job;
   }
-  async exportArtifact(id: string, workspaceRoot: string, destination: string, checkPath?: (resolvedPath: string) => Promise<void>): Promise<MediaArtifact> {
-    const job = await this.read(id); const artifact = job.artifact;
-    if (job.status !== "succeeded" || !artifact) throw new Error("Media artifact is not ready");
+  async verifiedArtifact(id: string): Promise<MediaArtifact> {
+    const job = await this.read(id);
+    if (job.status !== "succeeded" || !job.artifact) throw new Error("Media artifact is not ready");
+    const artifact = await recoverMediaArtifact(path.dirname(this.file(id)), job);
+    if (!artifact || Object.entries(artifact).some(([key, value]) => job.artifact![key as keyof MediaArtifact] !== value)) throw new Error("Media artifact does not match its durable receipt");
+    return artifact;
+  }
+  async exportArtifact(id: string, workspaceRoot: string, destination: string, checkPath?: (resolvedPath: string) => Promise<void>, signal?: AbortSignal): Promise<MediaArtifact> {
+    signal?.throwIfAborted();
+    const artifact = await this.verifiedArtifact(id);
     const target = path.resolve(workspaceRoot, destination);
     const root = await fs.realpath(workspaceRoot);
     const parent = await fs.realpath(path.dirname(target));
@@ -112,6 +119,7 @@ export class MediaJobStore {
     await checkPath?.(canonicalTarget);
     const bytes = await fs.readFile(artifact.path);
     if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("Artifact checksum mismatch");
+    signal?.throwIfAborted();
     await fs.writeFile(canonicalTarget, bytes, { flag: "wx", mode: 0o600 });
     return { ...artifact, path: canonicalTarget };
   }

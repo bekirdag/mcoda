@@ -18,6 +18,8 @@ import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
 import { ensureManagedDocdexRuntime, inspectManagedDocdexRuntime, type ManagedRuntimeIdentity } from "../docdex/ManagedRuntime.js";
 import { TerminalTui } from "./tui/TerminalTui.js";
 import { inspectPlanDiff } from "./TerminalPlan.js";
+import { openTerminalArtifact } from "./TerminalArtifacts.js";
+import { mediaJobSummary } from "../connectors/media/ConfiguredMediaTools.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
@@ -174,7 +176,7 @@ export class TerminalCommand {
     if (args.command === "config") { output({ valid: true, source: resolved.source, hash: resolved.hash }); return; }
     const interactive = ["chat", "resume"].includes(args.command) && !!process.stdin.isTTY && !args.json;
     let rl: Interface | undefined; let pendingApproval: ((decision: "once" | "session" | "deny") => void) | undefined;
-    let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; const queued: string[] = [];
+    let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; let commandAbort: AbortController | undefined; const queued: string[] = [];
     const approve: PermissionPrompt = async (request, signal) => {
       if (!interactive || closed) return { allow: false };
       const reviewableArgs = redactSecretValues(JSON.stringify(request.args, (key, value: unknown) => /authorization|api[_-]?key|password|credential|secret|signature|token/i.test(key) ? "[redacted]" : value, 2));
@@ -201,7 +203,7 @@ export class TerminalCommand {
         else if (event.type === "index_progress") process.stderr.write(`[Docdex: ${terminalText(String(event.data.status))}]\n`);
       },
     });
-    const cancelTurn = (): void => { cancelEpoch++; controller.cancel(); };
+    const cancelTurn = (): void => { cancelEpoch++; commandAbort?.abort(new Error("Cancelled by user")); controller.cancel(); };
     const showPrompt = (): void => { if (tui) { tui.update({ busy: !!activeRun || controller.busy, effort: controller.effort, permissions: controller.gate.profile, tokens: controller.usageSnapshot().tokens, queued: queued.length, session: controller.sessionId }); return; } if (!closed && !controller.busy && !pendingApproval) { rl?.setPrompt("codali> "); rl?.prompt(); } };
     const run = (prompt?: string, newSession = false, epoch = cancelEpoch): void => {
       if (closed || epoch !== cancelEpoch) { showPrompt(); return; }
@@ -250,7 +252,12 @@ export class TerminalCommand {
         else if (value && value !== "show") throw new Error("Usage: /goal [show|amend INSTRUCTION]");
         output(controller.state ? { original: controller.state.originalObjective, objective: controller.state.objective, revision: controller.state.goalRevision, constraints: controller.state.constraints, nonGoals: controller.state.nonGoals, requirements: controller.state.requirements, amendments: controller.state.amendments } : {});
       }
-      else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
+      else if (name === "/tasks") {
+        if (!value) output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
+        else if (parts[0] === "media" && parts[1] && parts.length === 2) output(mediaJobSummary(await controller.mediaStore().read(parts[1])));
+        else if (parts[0] === "cancel" && parts[1] && parts.length === 2) output(mediaJobSummary(await controller.mediaStore().cancel(parts[1])));
+        else throw new Error("Usage: /tasks [media JOB_ID|cancel JOB_ID]. Cancellation is a request until the media worker confirms it.");
+      }
       else if (name === "/plan") {
         if (parts[0] === "diff") { if (!controller.state) throw new Error("Start a goal before inspecting its plan"); if (parts.length > 3) throw new Error("Usage: /plan diff [FROM [TO]]"); output(inspectPlanDiff(controller.state, parts[1] === undefined ? undefined : Number(parts[1]), parts[2] === undefined ? undefined : Number(parts[2]))); return; }
         else if (parts[0] === "mode") { if (controller.busy) throw new Error("Cancel the active turn before changing plan mode"); if (!["plan", "execute"].includes(parts[1])) throw new Error("Usage: /plan mode plan|execute"); controller.gate.setProfile(parts[1] === "plan" ? "plan" : "ask"); }
@@ -265,7 +272,17 @@ export class TerminalCommand {
       else if (name === "/mcp") output({ connectors: controller.status().connectors, tools: controller.registry.list().filter(tool => tool.name.startsWith("mcp")).map(tool => ({ name: tool.name, description: tool.description })) });
       else if (name === "/docdex") output({ configuredRuntime: resolved.config.docdex, embedding: resolved.config.bindings.embedding, availableTools: controller.registry.list().filter(tool => tool.name.startsWith("docdex")).map(tool => tool.name), initialization: "Private repository indexing starts with the first session" });
       else if (name === "/sessions") output(await controller.store.listSessions());
-      else if (name === "/artifacts") output(await controller.artifacts());
+      else if (name === "/artifacts") {
+        if (!value) output(await controller.artifacts());
+        else if (parts[0] === "export" && parts[1] && parts.length >= 3) {
+          if (activeRun || controller.busy) throw new Error("Stop and wait for the current turn before exporting an artifact");
+          output(await controller.exportArtifact(parts[1], parts.slice(2).join(" ")));
+        } else if (parts[0] === "open" && parts[1] && parts.length === 2) {
+          const active = new AbortController(); commandAbort = active;
+          try { output({ opened: await openTerminalArtifact(controller.mediaStore(), parts[1], active.signal) }); }
+          finally { if (commandAbort === active) commandAbort = undefined; }
+        } else throw new Error("Usage: /artifacts [export JOB_ID PATH|open JOB_ID]");
+      }
       else if (name === "/steer" && (activeRun || controller.busy)) { if (!value) throw new Error("Provide the correction"); queued.unshift(value); cancelTurn(); tui?.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); }
       else if (name === "/retention") { const days = value ? Number(value) : 30; if (!Number.isFinite(days) || days < 0) throw new Error("Retention days must be nonnegative"); output({ dryRun: true, days, candidates: (await controller.store.listSessions()).filter(s => s.status === "completed" && Date.parse(s.updatedAt) < Date.now() - days * 86_400_000).map(s => ({ id: s.sessionId, updatedAt: s.updatedAt })), action: "Use /delete-session ID to remove a reviewed session and its local artifacts" }); }
       else if (activeRun || controller.busy) throw new Error("This command requires an idle turn; use /cancel or queue an instruction");

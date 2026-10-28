@@ -91,6 +91,9 @@ runtime versions remain available for existing profiles.
 | `/sessions`, `/resume ID`, `/fork`, `/new [TEXT]`, `/clear [TEXT]` | Start a fresh prompt or objective without deleting previous sessions; forks require fresh verification and reset grants |
 | `/exit`, `/quit` | Cancel owned work, discard queued instructions and close after cleanup |
 | `/artifacts` | Inspect durable image, audio and video jobs and artifact checksums |
+| `/artifacts export JOB_ID PATH` | Copy a verified result to a new workspace file, subject to permissions; existing files are preserved |
+| `/artifacts open JOB_ID` | Verify the result and launch the Linux/macOS desktop viewer; over SSH, export and download it if no display is available |
+| `/tasks media JOB_ID`, `/tasks cancel JOB_ID` | Inspect an owned media job or request cancellation; the worker must confirm the final outcome |
 | `/reconcile ID success\|failed NOTE` | Record an observed outcome for an interrupted tool invocation |
 | `/export`, `/retention DAYS`, `/delete-session ID` | Export redacted events, preview retention candidates, or delete an inactive session |
 

@@ -11,7 +11,23 @@ const [{ TerminalTui }, { TerminalCommand }, { SessionController }, { loadOrches
 ]);
 const [mode, workspace, log, configuration] = process.argv.slice(2);
 const record = value => appendFileSync(log, JSON.stringify(value) + "\n");
-if (mode === "resume") {
+if (mode === "artifacts") {
+  const [{ atomicWriteJson }, { persistMediaArtifact }] = await Promise.all([
+    import(new URL("dist/session/AtomicState.js", packageRoot)), import(new URL("dist/connectors/media/MediaArtifactReceipt.js", packageRoot)),
+  ]);
+  const resolved = await loadOrchestrationConfig(configuration);
+  const controller = new SessionController({ workspaceRoot: workspace, resolved, permissions: "ask" });
+  await controller.start("Inspect generated artifacts without inference");
+  const store = controller.mediaStore(); const now = new Date().toISOString();
+  const job = { schemaVersion: 1, id: "pixel", sessionId: controller.sessionId, operation: "images.generations", binding: "image", modelId: "fixture", catalogId: "fixture", providerId: "local", configHash: resolved.hash, resolved, request: { prompt: "Pixel" }, status: "succeeded", createdAt: now, updatedAt: now };
+  await atomicWriteJson(store.file(job.id), job);
+  job.artifact = await persistMediaArtifact(path.dirname(store.file(job.id)), job, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6DNsAAAAASUVORK5CYII=", "base64"));
+  await atomicWriteJson(store.file(job.id), job);
+  await atomicWriteJson(store.file("render"), { ...job, id: "render", status: "running", artifact: undefined });
+  SessionController.prototype.run = async function () { record({ executionStarted: true }); throw new Error("Artifact commands must not start inference"); };
+  await TerminalCommand.run(["resume", controller.sessionId, "--workspace-root", workspace, "--config", configuration]);
+  record({ cancelRequested: (await store.read("render")).cancelRequested, status: (await store.read("render")).status });
+} else if (mode === "resume") {
   const controller = new SessionController({ workspaceRoot: workspace, resolved: await loadOrchestrationConfig(configuration), effort: "medium", permissions: "ask" });
   await controller.start("Saved user objective");
   await controller.emit("turn_result", { content: "Saved assistant response", completed: false });
