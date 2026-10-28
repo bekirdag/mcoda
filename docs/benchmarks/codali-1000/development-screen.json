@@ -1,0 +1,132 @@
+{
+  "createdAt": "2026-10-28T22:31:03.601473+00:00",
+  "corpusHash": "2dde4b4457589311ebf643555a29461472e7805a647128bc2774460a9fce4c8a",
+  "candidates": [
+    {
+      "candidate": "c1-4b-v9",
+      "attempts": 40,
+      "passed": 12,
+      "needsReview": 0,
+      "errors": 5,
+      "optimisticPasses": 12,
+      "decision": "eliminated on development",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/c1-score-reviewed-v3/report.json",
+      "qualification": "Diagnostic labelled-path protocol; pending rubrics are unscored."
+    },
+    {
+      "candidate": "c2-1-7b-v9",
+      "attempts": 40,
+      "passed": 1,
+      "needsReview": 11,
+      "errors": 5,
+      "optimisticPasses": 12,
+      "decision": "eliminated on development",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/c2-1-7b-v9-score-v2/report.json",
+      "qualification": "Diagnostic labelled-path protocol; pending rubrics are unscored."
+    },
+    {
+      "candidate": "c3-0-6b-v9",
+      "attempts": 40,
+      "passed": 0,
+      "needsReview": 12,
+      "errors": 14,
+      "optimisticPasses": 12,
+      "decision": "eliminated on development",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/c3-0-6b-v9-score-v2/report.json",
+      "qualification": "Diagnostic labelled-path protocol; pending rubrics are unscored."
+    },
+    {
+      "candidate": "c5-4b-v9-review",
+      "attempts": 40,
+      "passed": 6,
+      "needsReview": 9,
+      "errors": 3,
+      "optimisticPasses": 15,
+      "decision": "eliminated on development",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/c5-4b-v9-review-score-v2/report.json",
+      "qualification": "Diagnostic labelled-path protocol; pending rubrics are unscored."
+    },
+    {
+      "candidate": "c7-4b-social-v10-review",
+      "attempts": 40,
+      "passed": 13,
+      "needsReview": 9,
+      "errors": 2,
+      "optimisticPasses": 22,
+      "decision": "eliminated on development",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/c7-score-v3/report.json",
+      "qualification": "Diagnostic labelled-path protocol; pending rubrics are unscored."
+    },
+    {
+      "candidate": "c4-flash-v9",
+      "attempts": 40,
+      "passed": 30,
+      "needsReview": 0,
+      "errors": 2,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "latencyMs": {
+        "p50": 7809,
+        "p95": 42804,
+        "known": 40
+      },
+      "tokens": {
+        "p50": 947,
+        "p95": 11208,
+        "sum": 87765,
+        "known": 40,
+        "estimated": 0
+      },
+      "optimisticPasses": 30,
+      "decision": "advance to identical opaque-path validation",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/finalist-pilot-score-reviewed-v6/report.json",
+      "qualification": "Diagnostic labelled-path protocol; independently reviewed rubric and critical cases."
+    },
+    {
+      "candidate": "c6-flash-v9-review",
+      "attempts": 40,
+      "passed": 28,
+      "needsReview": 0,
+      "errors": 1,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "latencyMs": {
+        "p50": 12209,
+        "p95": 32932,
+        "known": 40
+      },
+      "tokens": {
+        "p50": 905,
+        "p95": 6661,
+        "sum": 90959,
+        "known": 40,
+        "estimated": 0
+      },
+      "optimisticPasses": 28,
+      "decision": "advance to identical opaque-path validation",
+      "evidence": "/home/wodo/.local/state/codali-trust-benchmark/finalist-pilot-score-reviewed-v6/report.json",
+      "qualification": "Diagnostic labelled-path protocol; independently reviewed rubric and critical cases."
+    }
+  ],
+  "initialV8": "Early eliminated after observed repeated scope misrouting; smaller actual denominator retained in private initial-development and transport ledgers.",
+  "validation": {
+    "status": "running",
+    "protocol": "trust-opaque-paths-v2",
+    "casesPerCandidate": 200,
+    "familyAllocation": {
+      "raijin": 90,
+      "suku": 110
+    },
+    "nativeEnvironmentFingerprint": "2082ec749149ce9f48ef1638c6744e9851fa93db6fa2c9030c9e743827003f6e"
+  },
+  "heldOut": {
+    "evaluated": 0,
+    "total": 200
+  },
+  "conclusions": [
+    "Flash routing leads these development diagnostics; a small model is not automatically the efficient choice when it changes scope or breaks output contracts.",
+    "Optional model revision did not improve the development score and sometimes introduced unsupported details.",
+    "No claim of improvement over raw Qwen: full paired evaluation remains outstanding.",
+    "Adestool is not enabled: entity extraction has no measured benefit for the observed scope/format/evidence failures."
+  ]
+}

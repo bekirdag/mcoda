@@ -110,6 +110,33 @@ embedding-space identity, and are reused on restart. The session also pins its
 space; an incompatible upgrade requires a separate index and session. Query and
 document receipts retain purpose, model, configuration hash and reported usage.
 
+The terminal loads its packaged `config/AGENTS.md` guide, optional
+`~/.codali/AGENTS.md` user instructions, `.codali/instructions.md`, workspace
+`AGENTS.md` files from the root through focused directories, then
+`.codali/local.md`. More specific instructions take precedence within their
+scope; none can widen host permissions or authorize unrelated actions. These
+instructions also apply to ordinary conversation and explanations. The
+dispatcher receives the short general part of the packaged guide; investigation
+and execution receive its Docdex recipes. User/workspace instructions remain
+intact. Sources, scopes and content hashes are recorded in `instructions_loaded`
+events and shown in session status. Instructions reload at turn boundaries and
+when execution changes its focused paths.
+
+Instruction files must stay within their source directory boundary, be regular
+files of at most 64 KiB, and fit a combined 24,000-character prompt budget.
+Oversized bundles fail explicitly before inference; move supporting material
+into linked documents instead of relying on silent truncation. Repository
+instruction symlinks cannot disclose files outside the workspace.
+
+Read-only investigations can use permitted Docdex search, source, structural and
+continuity tools. The managed daemon starts only when the model requests a
+Docdex tool; greetings and direct file reads do not start it. Indexing and
+embedding usage share the turn budget. Host-denied calls cannot start the daemon.
+An unavailable index leaves permitted ordinary file reads usable and is reported
+as missing evidence. Inspection never exposes indexing commands, memory writes,
+shell execution, delegation or work mutations. External research requires an
+advertised tool and the existing web permission.
+
 The managed daemon must advertise workspace-metadata control, query/document
 embedding input types, strict repository embeddings and deterministic profile
 embeddings. An older daemon fails startup with an explicit compatibility error.
@@ -495,6 +522,22 @@ The optional `interaction` object accepts:
 ```
 
 Optional `routerPrompt` and `answerPrompt` strings replace the built-in prompts.
+`routerResponseFormat: "json_schema"` optionally sends a native schema for the
+five decision modes and a bounded string brief. The default remains JSON-object
+mode for adapter compatibility. The selected endpoint must support the schema;
+there is no automatic downgrade or replay after a rejected request. Output is
+still parsed and validated because a schema does not establish correct intent,
+and a response can be truncated or an endpoint can ignore the constraint.
+
+`answerReview: { "enabled": true, "binding": "reviewer", "maxOutputTokens": 2048 }`
+adds one revision pass to `reason` answers. It sees the original request,
+conversation, applicable instructions and untrusted draft, and has no tools.
+The pass shares the existing call/token/deadline limits; it is skipped when
+there is insufficient budget. A failed optional check records its failure and
+returns the original draft unless the user cancelled. It never changes a
+greeting, claims independent verification, or runs automatically by default.
+Use measured quality and latency results before enabling it.
+
 The router must return exactly `{"mode":"answer","text":"Hello!"}` with mode
 one of `answer`, `reason`, `inspect`, `execute`, `clarify`. For delegated modes,
 text is a task brief of at most 500 characters, not a proposed solution. Invalid
@@ -513,3 +556,8 @@ credentials and recognizable token formats are redacted; files have private
 permissions and stay outside the repository. No training or log upload is enabled.
 Cancellation may leave a remote model outcome unknown; the log preserves that
 reservation rather than inventing a response or zero usage.
+
+The reproducible conversation, code-answer and repository-inspection study is
+documented in [`docs/benchmarks/codali-1000/README.md`](../../docs/benchmarks/codali-1000/README.md).
+Its independent code checks and rubric reviews supplement the existing terminal
+editing and long-workflow suites; they do not replace those release gates.

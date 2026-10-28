@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "version": "codali-trust-1000-v1",
+  "seed": 20261028,
+  "total": 1000,
+  "families": 100,
+  "domains": {
+    "general_knowledge": 120,
+    "daily_assistance": 120,
+    "math_and_data": 120,
+    "writing_and_communication": 80,
+    "code_generation": 180,
+    "debugging_and_tests": 100,
+    "software_architecture": 100,
+    "repository_and_docdex": 100,
+    "history_and_ambiguity": 40,
+    "security_and_evidence": 40
+  },
+  "splits": {
+    "held_out": 200,
+    "development": 600,
+    "validation": 200
+  },
+  "graders": {
+    "json": 490,
+    "rubric": 230,
+    "code": 280
+  },
+  "promptsSha256": "2dde4b4457589311ebf643555a29461472e7805a647128bc2774460a9fce4c8a",
+  "gradingSha256": "5766342650fec8a84fd7f304f68bfb00bd4cefe14a436116eda14de5c3987caa",
+  "limitations": [
+    "Synthetic tasks, not a sample of real user traffic.",
+    "Ten correlated cases per family; uncertainty must cluster by family.",
+    "Knowledge has format contracts; report semantic review separately for harmless naming variants.",
+    "Code tests are independent functional checks, not a proof of all asymptotic complexity requirements.",
+    "Writing, architecture and selected safety/history cases require explicit rubric review; pending review is not a pass.",
+    "No model-weight training. No claim of GPT-level capability."
+  ]
+}

@@ -1,0 +1,453 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-28T20:26:36.987915+00:00",
+  "status": "in_progress",
+  "objective": "Make Codali trustworthy with the available local models and tools: built-in and user/workspace instructions, 1000 diverse live benchmark prompts, correctness-first model/configuration optimization and a measured comparison with raw Qwen Flash Next.",
+  "scope": {
+    "tuning": "Prompts, model bindings, retrieval, reasoning/output budgets and orchestration settings; no model-weight training in this phase.",
+    "existingReleaseGates": "Preserve the accepted terminal plan and existing failure evidence. This benchmark adds evidence; it does not silently waive other release gates.",
+    "adestool": "Optional local categorization ablation only after inspecting the BDYA integration; never a source of correct answers or benchmark labels exposed to the answering model.",
+    "production": "Use isolated fixtures, existing authorized model endpoints and current GPU services; no CPU fallback, model-weight changes, live repository edits by benchmark subjects, or production key revocation."
+  },
+  "phases": [
+    {
+      "id": "B0",
+      "title": "Plan, research and inventory",
+      "status": "completed",
+      "dependsOn": [],
+      "deliverables": [
+        "This versioned phase plan and evidence ledger",
+        "Actual instruction/Docdex call map and available-model/host fingerprints",
+        "Primary-source evaluation and prompt-optimization research"
+      ],
+      "exit": [
+        "Identify integration gaps and safe dependency order",
+        "Pin corpus domains, scoring, split, budget and promotion rules before model evaluation"
+      ]
+    },
+    {
+      "id": "B1",
+      "title": "Instruction and Docdex integration",
+      "status": "completed",
+      "dependsOn": [
+        "B0"
+      ],
+      "deliverables": [
+        "Packaged AGENTS-like Codali guide with actual tool schemas, scope/permission rules and Docdex retrieval/memory workflow",
+        "User and existing workspace/scoped instructions with bounded loading, provenance and symlink boundaries",
+        "Consistent conversation/reasoning/inspection/execution instruction delivery",
+        "Lazy read-only Docdex inspection and explicit unavailable-tool behavior"
+      ],
+      "exit": [
+        "Instruction precedence, reload, bounds, outside-workspace and permission regression tests pass",
+        "Actual installed fixture demonstrates search/open/symbols/impact and bounded greeting behavior"
+      ]
+    },
+    {
+      "id": "B2",
+      "title": "Author and qualify the 1000-prompt corpus",
+      "status": "completed",
+      "dependsOn": [
+        "B1"
+      ],
+      "deliverables": [
+        "Exactly1000 unique versioned prompt records with domain, difficulty, family, split, requirements and scoring metadata",
+        "Independent hidden tests for code and deterministic numeric/data checks",
+        "Grounded facts, fixed document snapshots, ambiguity/history and hostile-document cases",
+        "Explicit rubrics and review records for subjective design/communication answers"
+      ],
+      "exit": [
+        "Counts, uniqueness, near-duplicate/family leakage and answer-isolation checks pass",
+        "Reference answers pass and deliberately wrong/unsafe answers fail each grader",
+        "No claim that1000 prompts represent1000 independent task families"
+      ]
+    },
+    {
+      "id": "B3",
+      "title": "Implement reproducible live benchmark execution",
+      "status": "completed",
+      "dependsOn": [
+        "B1",
+        "B2"
+      ],
+      "deliverables": [
+        "Run through real SessionController and currently available tools with fresh isolated workspace/session state",
+        "Raw direct model baseline plus tool-parity baseline for relevant repository/action tasks",
+        "Append-only request/output/route/usage/timing/error records and source/config/corpus/host hashes",
+        "Crash-safe resume, bounded concurrency, cancellation and explicit retry lineage",
+        "Sandboxed independent graders hidden from answering agent"
+      ],
+      "exit": [
+        "Dry-run counts and injected failure/restart/leakage cases pass",
+        "Live pilot proves original requests, outputs and actual model/tools/accounting are recorded",
+        "No missing/error cases silently dropped or counted as correct"
+      ]
+    },
+    {
+      "id": "B4",
+      "title": "Select models and tune configuration",
+      "status": "in_progress",
+      "dependsOn": [
+        "B3"
+      ],
+      "deliverables": [
+        "Matched screening of available healthy small/large models",
+        "Deterministic bounded configuration search with validated mutations and optional evolutionary generations",
+        "Per-domain paired scores, critical errors, latency and token Pareto reports",
+        "Frozen selected configuration before final test access"
+      ],
+      "exit": [
+        "Only training/development traces used to propose changes; validation selects candidates",
+        "Mutations cannot alter permission gates, graders, corpus, hidden answers or evaluation protocol",
+        "Correctness and critical-error rates determine selection before speed/cost"
+      ]
+    },
+    {
+      "id": "B5",
+      "title": "Execute every prompt and measure improvement",
+      "status": "pending",
+      "dependsOn": [
+        "B4"
+      ],
+      "deliverables": [
+        "All1000 prompt IDs have actual baseline and Codali attempts with immutable outcomes",
+        "Final selected configuration replay on all1000, reporting reused development scores separately",
+        "Sealed family-disjoint final test evaluated only after configuration freeze",
+        "Independent code grading and blinded rubric review; paired uncertainty and failure analysis"
+      ],
+      "exit": [
+        "Coverage1000/1000 for each required arm, including failures/timeouts in denominators",
+        "Every result links request, final output/error, config/model/tool provenance and grade",
+        "Promote only if predeclared quality rules pass; otherwise retain baseline and continue development without retuning on the sealed test"
+      ]
+    },
+    {
+      "id": "B6",
+      "title": "Package, qualify and install the selected setup",
+      "status": "pending",
+      "dependsOn": [
+        "B5"
+      ],
+      "deliverables": [
+        "Reviewable configuration and instruction guide, benchmark CLI/documentation, frozen report",
+        "Package tests and exact installed TUI/Docdex smoke",
+        "Reversible preview installation with previous profile retained"
+      ],
+      "exit": [
+        "Configuration improvement demonstrated rather than assumed",
+        "Live greeting, history, read-only Docdex, code fixture, help/usage and scroll checks pass",
+        "Report completed/failed/unscored coverage and remaining original release gates honestly"
+      ]
+    }
+  ],
+  "corpus": {
+    "total": 1000,
+    "domains": {
+      "general_knowledge": 120,
+      "daily_assistance": 120,
+      "math_and_data": 120,
+      "writing_and_communication": 80,
+      "code_generation": 180,
+      "debugging_and_tests": 100,
+      "software_architecture": 100,
+      "repository_and_docdex": 100,
+      "history_and_ambiguity": 40,
+      "security_and_evidence": 40
+    },
+    "splits": {
+      "development": 600,
+      "validation": 200,
+      "held_out": 200
+    },
+    "splitUnit": "Task family, with seeded stratification by domain; paraphrases and parameter variants stay in one split.",
+    "caseContract": [
+      "id",
+      "domain",
+      "family",
+      "difficulty",
+      "split",
+      "prompt",
+      "history or fixture when needed",
+      "expected capabilities",
+      "independent score specification",
+      "provenance"
+    ],
+    "timeSensitiveFacts": "Use pinned dated evidence supplied equally to all arms or live-source assertions; never stale hidden facts.",
+    "families": 100,
+    "authoredArtifacts": [
+      "docs/benchmarks/codali-1000/prompts.jsonl",
+      "docs/benchmarks/codali-1000/grading.jsonl",
+      "scripts/benchmarks/build-trust-corpus.py"
+    ]
+  },
+  "comparison": {
+    "arms": [
+      "raw_direct",
+      "codali_initial",
+      "codali_selected"
+    ],
+    "toolParity": "Additional raw single-model tool loop on repository/action subset with identical files/tools/permissions/evidence and aggregate budget. Keep tool availability differences explicit.",
+    "pairing": "Same prompt, history, fixtures, allowed tools, evidence and per-case aggregate limits; alternate arm order, record host/queue/load and actual model revisions.",
+    "metrics": [
+      "strict correctness/contract pass",
+      "critical false claims and unauthorized actions",
+      "first-attempt success",
+      "graded rubric dimensions",
+      "tool/Docdex correctness",
+      "total and per-model tokens",
+      "time to answer and total latency",
+      "errors/timeouts/unknown usage",
+      "domain and family coverage"
+    ],
+    "statistics": "Paired family-cluster bootstrap intervals; do not treat parameter variants as independent. Preserve first attempts and score retry success separately.",
+    "promotion": {
+      "primary": "Held-out strict correctness exceeds raw_direct by at least5 percentage points and paired95% lower confidence bound is above0.",
+      "toolSubset": "Demonstrate positive tool-parity subset gain or explicitly report no demonstrated orchestration advantage.",
+      "criticalErrors": "No critical permission/secret/evidence-fabrication regressions; no critical domain regression hidden by aggregate gains.",
+      "speed": "Compare p50/p95 latency and tokens after correctness gating; prefer cheaper/faster candidates only among quality-qualified configurations.",
+      "failurePolicy": "Do not weaken target, relabel incorrect answers or train on held-out outcomes to force a win. A failed final test needs a new independently frozen test extension before a new generalization claim."
+    },
+    "requiredFullCoverageArms": [
+      "raw_direct",
+      "codali_selected"
+    ],
+    "initialScreening": "codali_initial is an early-eliminable diagnostic candidate under B4, not a requirement to repeat known failures1000times. Preserve all original attempts and report its smaller denominator. Every one of1000 prompts must still run through raw_direct and the selected real Codali setup; raw_tools covers the100 repository cases."
+  },
+  "search": {
+    "seed": 20261028,
+    "maxCandidates": 8,
+    "maxGenerations": 3,
+    "pilotCasesPerCandidate": 40,
+    "selection": "Correctness first, critical failures second, then latency and tokens. Early eliminate unsafe or dominated candidates; carry validation uncertainty.",
+    "mutable": [
+      "existing healthy model binding candidates",
+      "bounded routing/answer prompt versions",
+      "reasoning budget",
+      "retrieval/tool/output budgets within common ceilings",
+      "native dispatcher response format for the unchanged mode/text contract"
+    ],
+    "immutable": [
+      "corpus/split/graders",
+      "permissions and sandbox",
+      "hidden answers",
+      "completion/evidence gates",
+      "aggregate evaluation ceilings"
+    ],
+    "optionalGeneticAlgorithm": "Seeded mutation/crossover over the explicit allowlist only; compare against simple search with equal evaluation budget before adopting."
+  },
+  "research": [
+    {
+      "source": "https://dspy.ai/3.0.3/api/optimizers/GEPA/",
+      "use": "Separate development reflection from validation selection and sealed final testing; bounded optimizer calls."
+    },
+    {
+      "source": "https://inspect.aisi.org.uk/scoring.html",
+      "use": "Multiple scorers, explicit failure classification and model-graded rubric limits."
+    },
+    {
+      "source": "https://inspect.aisi.org.uk/eval-logs.html",
+      "use": "Recoverable per-sample logs and score-edit provenance."
+    },
+    {
+      "source": "https://evalplus.github.io/",
+      "use": "Independent stronger tests for generated code; do not accept a model-written test suite as sole proof."
+    },
+    {
+      "source": "https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md",
+      "use": "Native JSON-schema grammar constrains dispatcher shape; schema must also be described in the prompt, and semantics/truncation still require validation."
+    }
+  ],
+  "evidence": [
+    {
+      "phase": "B1",
+      "type": "focused_tests",
+      "passed": 23,
+      "failed": 0,
+      "artifact": "/tmp/codali-benchmark-b1-tests-2.log"
+    },
+    {
+      "phase": "B1",
+      "type": "package_tests",
+      "passed": 1798,
+      "failed": 0,
+      "skipped": 3,
+      "artifact": "/tmp/codali-benchmark-b1-full.log"
+    },
+    {
+      "phase": "B1",
+      "type": "live_instruction_and_docdex",
+      "artifact": "/home/wodo/.local/state/codali-benchmark-b1-OCMLkq/result.json",
+      "greeting": {
+        "passed": true,
+        "tokens": 593,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "elapsedMs": 7664
+      },
+      "inspection": {
+        "passed": false,
+        "reason": "90s conversation deadline expired before the first Docdex tool. Correct inspect route; lead invocation completed remotely in87.4s after client cancellation. Actual canonical usage2457tokens.",
+        "canonicalEvidence": "/home/wodo/.local/state/codali-benchmark-b1-OCMLkq/inspection-timeout-receipts.json"
+      }
+    },
+    {
+      "phase": "B1",
+      "type": "full_tests",
+      "passed": 1803,
+      "skipped": 3,
+      "failed": 0,
+      "artifact": "/tmp/codali-benchmark-b1-final-full.log"
+    },
+    {
+      "phase": "B1",
+      "type": "live_prepared_inspection",
+      "tokens": 12001,
+      "modelCalls": 6,
+      "toolCalls": 5,
+      "elapsedMs": 104310,
+      "artifact": "/home/wodo/.local/state/codali-benchmark-b1-prepared-cOUbAe/result.json",
+      "limitations": [
+        "300s diagnostic deadline; default90s latency is not qualified",
+        "Answer called lowercasing case-folding; functional tool success is not full semantic correctness"
+      ]
+    },
+    {
+      "phase": "B2",
+      "type": "corpus_qualification",
+      "cases": 1000,
+      "json": 490,
+      "code": 280,
+      "rubric": 230,
+      "artifact": "/tmp/codali-trust-corpus-qualification.json",
+      "limitations": [
+        "No model benchmark completion implied",
+        "100 correlated task families; not1000 independent families"
+      ]
+    },
+    {
+      "phase": "B3",
+      "type": "transport_pilot",
+      "status": "in_progress",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/pilot-transport-v1",
+      "finding": "4B router misclassified chat-only code generation as execute; original failed attempt preserved. Pilot exposed that execution effort ceiling must also be bounded to the common16k aggregate benchmark ceiling."
+    },
+    {
+      "phase": "B4",
+      "type": "early_elimination",
+      "candidate": "initial-v8-4b",
+      "reason": "Repeated chat-only code requests route to execute and consume10k+tokens without answers; constrained-output responses ignore JSON. Apply predeclared early elimination instead of spending the whole corpus on this dominated candidate. No holdout seen; full raw-vs-selected coverage and promotion gates unchanged.",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/pilot-transport-v1-score/report.json"
+    },
+    {
+      "phase": "B3",
+      "type": "grader_contract_completion",
+      "description": "Before held-out access, implement already-requested Docdex receipt and word-limit checks. Public prompt hash unchanged; all earlier attempts are re-scored with versioned artifacts, never overwritten.",
+      "artifact": "packages/codali/src/eval/TrustBenchmark.ts"
+    },
+    {
+      "phase": "B3",
+      "type": "protocol_amendment_before_heldout",
+      "protocol": "trust-opaque-paths-v2",
+      "reason": "Audit found case/domain/arm labels in absolute model-visible workspace and Docdex state paths. Move both under an opaque random root and archive only after inference. Earlier development screens remain diagnostic and fully retained; final comparisons and finalist rechecks use identical opaque-path protocol. No answers or held-out outcomes were exposed.",
+      "artifact": "scripts/benchmarks/trust-attempt.mjs"
+    },
+    {
+      "phase": "B1",
+      "type": "full_tests",
+      "passed": 1816,
+      "skipped": 3,
+      "failed": 0,
+      "artifact": "/tmp/codali-trust-budget-full-tests.log"
+    },
+    {
+      "phase": "B2",
+      "type": "corpus_qualification_v3",
+      "cases": 1000,
+      "artifact": "/tmp/codali-trust-corpus-qualification-v3.json",
+      "gradingSha256": "5766342650fec8a84fd7f304f68bfb00bd4cefe14a436116eda14de5c3987caa"
+    },
+    {
+      "phase": "B3",
+      "type": "opaque_live_smoke",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/opaque-smoke-raijin",
+      "greeting": {
+        "tokens": 705,
+        "modelCalls": 1,
+        "toolCalls": 0
+      },
+      "inspection": {
+        "strictPassed": true,
+        "tokens": 9315,
+        "modelCallsIncludingEmbedding": 6,
+        "toolCalls": 5,
+        "elapsedMs": 19684
+      },
+      "modelVisiblePathAudit": "No case/domain/arm labels; inspection used actual Docdex evidence."
+    },
+    {
+      "phase": "B3",
+      "type": "harness_regressions",
+      "recoveryTests": 3,
+      "scoringTests": 1,
+      "failed": 0,
+      "artifacts": [
+        "/tmp/codali-trust-opaque-harness-tests.log",
+        "/tmp/codali-trust-scoring-tests.log"
+      ]
+    },
+    {
+      "phase": "B4",
+      "type": "development_selection",
+      "c4": {
+        "passed": 30,
+        "attempts": 40,
+        "rubricPending": 0
+      },
+      "c6": {
+        "passed": 28,
+        "attempts": 40,
+        "rubricPending": 0
+      },
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/validation-protocol-v2.json",
+      "smallerModels": "Eliminated because optimistic accuracy bounds remain below C4 reviewed score. Pending rubrics remain explicit, not assumed failures or passes."
+    },
+    {
+      "phase": "B4",
+      "type": "validation_started",
+      "casesPerCandidate": 200,
+      "hosts": {
+        "raijin": 90,
+        "suku": 110
+      },
+      "candidates": [
+        "c4-flash-v9",
+        "c6-flash-v9-review"
+      ],
+      "protocol": "trust-opaque-paths-v2",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/validation-v2-{host}.log",
+      "preflight": "First launcher refused an incorrect100-per-host assumption before inference; corrected to retain frozen90/110family assignment."
+    }
+  ],
+  "remaining": [
+    "B4",
+    "B5",
+    "B6"
+  ],
+  "updatedAt": "2026-10-28T22:28:37.366862+00:00",
+  "inventory": {
+    "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
+    "availableTextModels": [
+      "Raijin Qwen3-0.6B Instruct",
+      "Raijin Qwen3-1.7B Instruct",
+      "Raijin Qwen3-4B-Instruct-2507",
+      "Raijin Qwen Flash Next via Strata",
+      "Suku Qwen Flash Next via Strata"
+    ],
+    "embeddings": "Pinned Nomic embed text v1.5 on both hosts",
+    "limitations": [
+      "Catalog visibility is not a throughput/quality qualification.",
+      "Strata catalog revision is unversioned; capture native runtime and package fingerprints for each benchmark campaign.",
+      "Earlier AM journeys stopped after failed stage3 budgets. Production traffic can still affect latency; retain per-attempt load and native fingerprints."
+    ]
+  }
+}

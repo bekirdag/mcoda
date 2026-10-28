@@ -15,8 +15,10 @@ import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGra
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
-import { awaitInteraction, interactionSettings, interactionHistory, parseInteractionDecision, preparedInteraction, type InteractionDecision } from "./InteractionRouter.js";
+import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, parseInteractionDecision, preparedInteraction, type InteractionDecision } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
+import { preparedDocdexMessage } from "./PreparedDocdex.js";
+import { budgetInspection } from "./InspectionBudget.js";
 import { ProgressTracker } from "./ProgressTracker.js";
 import { accountedUsage, usageAccounts } from "./UsageReconciliation.js";
 import { ToolRegistry, toolDescriptorFor } from "../tools/ToolRegistry.js";
@@ -70,6 +72,7 @@ export interface SessionControllerOptions {
   allowMemory?: boolean;
   allowMedia?: boolean;
   allowNetwork?: boolean;
+  userInstructionsPath?: string | false;
   /** Authenticated host context; repository settings can only narrow tools. */
   runContext?: RunContext;
   projectTaskAuthority?: ProjectTaskAuthority;
@@ -138,6 +141,10 @@ export class SessionController {
   private baseline?: WorkspaceSnapshot;
   private previousSnapshot?: WorkspaceSnapshot;
   private instructions = "";
+  private routingInstructions = "";
+  private instructionFocusKey = "";
+  private instructionSources: Record<string, unknown>[] = [];
+  private inspectionDocdexStart?: () => Promise<void>;
   private finalAttempts = 0;
   private docdex?: DocdexClient;
   private managedDocdex?: ManagedDocdex;
@@ -159,7 +166,7 @@ export class SessionController {
     this.messages = []; this.conversation = []; this.budgetStart = { tokens: 0, modelCalls: 0, toolCalls: 0 }; this.receipts.clear(); this.observed.clear(); this.touched.clear();
     this.outputStreams.clear();
     this.sequence = 0; this.currentReceipt = undefined; this.reservations.clear();
-    this.baseline = undefined; this.previousSnapshot = undefined; this.instructions = ""; this.memoryContext = "";
+    this.baseline = undefined; this.previousSnapshot = undefined; this.instructions = ""; this.routingInstructions = ""; this.instructionFocusKey = ""; this.instructionSources = []; this.memoryContext = "";
     this.lastRequestEstimate = 4000; this.repeatedFailures.clear(); this.finalAttempts = 0;
     this.progressTracker.clear();
     this.persistence = Promise.resolve(); this.persistenceError = undefined; this.gate.clearGrants();
@@ -275,7 +282,7 @@ export class SessionController {
       tasks: this.state?.tasks, effort: this.effort, permissions: this.gate.inspect(), configHash: this.options.resolved.hash,
       effortBudget: effortBudget(this.options.resolved.config, this.effort),
       nativeReasoningRequests: Object.fromEntries(Object.entries(this.options.resolved.config.models).filter(([, model]) => model.reasoning?.[this.effort]).map(([id, model]) => [id, { ...model.reasoning![this.effort] }])),
-      usage: this.usage, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
+      usage: this.usage, instructions: this.instructionSources, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
   }
   conversationSnapshot(): ProviderMessage[] { return structuredClone(interactionHistory(this.conversation, interactionSettings(this.options.resolved.config.interaction).historyChars)); }
   usageSnapshot(): SessionUsage { return { ...this.usage, estimated: this.usage.estimated || this.reservations.size > 0 }; }
@@ -748,6 +755,7 @@ export class SessionController {
     } });
     return { name: configured.name, supportsToolCalls: configured.supportsToolCalls, generate: async request => {
       await this.checkProjectTask();
+      request = { ...request, messages: request.messages.map(preparedDocdexMessage) };
       if (lead && this.state?.status === "completed") {
         const { hashes, uncertain } = await this.completionInputs();
         await this.update(state => { refreshStaleEvidence(state, hashes); });
@@ -767,6 +775,7 @@ export class SessionController {
       }
       const limits = this.limits();
       if (lead) {
+        if (this.instructionFocusKey !== JSON.stringify(this.state?.tasks.flatMap(task => task.allowedPaths) ?? [])) await this.loadInstructions();
         const modelWindow = Math.min(...resolveBinding(this.options.resolved.config, "lead", "chat.completions").map(candidate => candidate.model.contextWindow));
         const maximumChars = Math.max(0, (modelWindow - Math.min(request.maxTokens ?? limits.maxOutputTokens, limits.maxOutputTokens) - 512) * 3 - JSON.stringify(request.tools ?? []).length);
         if (this.state) {
@@ -872,6 +881,7 @@ export class SessionController {
     finally { await this.emit("authorization_state", { configHash: this.options.resolved.hash, grants: this.gate.exportGrants() }); }
     if (this.persistenceError) throw this.persistenceError;
     const kind = permissionKind(tool);
+    if (tool.name.startsWith("docdex_") && this.inspectionDocdexStart) await this.inspectionDocdexStart();
     if (this.docdex && !this.docdexReady && (["write", "shell"].includes(kind) || tool.name.startsWith("docdex_"))) throw new ToolExecutionError("docdex_unavailable", "Docdex index is unavailable for this turn. Record the blocker; recover the service before code changes.", { retryable: false });
     const validationShell = isVerificationCommand(args) || tool.name === "run_shell" && isVerificationInspectionCommand(args);
     if ((["write", "media"].includes(kind) || tool.name === "delegate_helper" || kind === "shell" && !validationShell) && this.turnUsage().tokens + this.validationReserve() > limits.maxTotalTokens) throw new ToolExecutionError("tool_permission_denied", "Remaining budget is reserved for verification; checkpoint unfinished work or increase the effort budget");
@@ -1202,6 +1212,21 @@ export class SessionController {
       temperature: request.temperature, responseFormat: request.responseFormat });
   }
 
+  private async loadInstructions(): Promise<void> {
+    const focusPaths = this.state?.tasks.flatMap(task => task.allowedPaths);
+    const blocks = await loadInstructionBlocks({ workspaceRoot: this.workspaceRoot, includeSystem: true,
+      userInstructionsPath: this.options.userInstructionsPath, focusPaths });
+    this.instructions = formatInstructionBlocks(blocks);
+    // Detailed tool recipes are irrelevant to a dispatcher with no tools.
+    // User/workspace instructions remain intact; only our own guide is staged.
+    this.routingInstructions = formatInstructionBlocks(blocks.map(block => block.sourcePath === "[codali]/AGENTS.md"
+      ? { ...block, content: block.content.split("\n## Repository work and Docdex")[0] } : block));
+    this.instructionFocusKey = JSON.stringify(focusPaths ?? []);
+    this.instructionSources = blocks.map(({ sourcePath, scope, precedence, sha256 }) => ({ sourcePath, scope, precedence, sha256 }));
+    await this.emit("instructions_loaded", { sources: this.instructionSources,
+      characters: this.instructions.length, bundleHash: hash(this.instructions) });
+  }
+
   /** Route natural-language turns before creating work, indexing, or loading tool schemas. */
   async interact(prompt: string): Promise<{ content: string; completed: boolean; mode: InteractionDecision["mode"] }> {
     if (this.busy || this.interactionAbort) throw new Error("A turn is already running");
@@ -1209,6 +1234,7 @@ export class SessionController {
     const abort = new AbortController(); this.interactionAbort = this.active = abort;
     const signal = abort.signal;
     let timer: NodeJS.Timeout | undefined;
+    let phase = "routing";
     const started = Date.now();
     try {
       if (!this.sessionId || this.state?.status === "completed") {
@@ -1221,7 +1247,9 @@ export class SessionController {
       this.activeLimits = { ...effortBudget(this.options.resolved.config, "low"), maxTotalTokens: settings.maxTotalTokens,
         maxModelCalls: settings.maxModelCalls, maxOutputTokens: settings.maxOutputTokens,
         maxSteps: settings.maxInspectionSteps, maxToolCalls: settings.maxInspectionSteps * 2, timeoutMs: settings.timeoutMs };
-      timer = setTimeout(() => abort.abort(new Error("Understanding this request took too long. Please try again.")), settings.timeoutMs);
+      timer = setTimeout(() => abort.abort(new Error(phase === "routing"
+        ? "Understanding this request took too long. Please try again."
+        : "This answer reached its time limit. Your request and partial results were saved; inspect /usage before retrying.")), settings.timeoutMs);
       await this.emit("interaction_request", { interactionId: this.interactionId, prompt, promptVersion: settings.promptVersion, routerPromptHash: hash(settings.routerPrompt), answerPromptHash: hash(settings.answerPrompt), configHash: this.options.resolved.hash });
       await this.emit("turn_started", { interactionId: this.interactionId, effort: this.effort, permissions: this.gate.profile });
       await this.emit("interaction_progress", { message: "Understanding your message" }, false);
@@ -1229,12 +1257,14 @@ export class SessionController {
       this.conversation.push({ role: "user", content: prompt });
       signal.throwIfAborted();
       if (prompt.length > settings.maxInputChars) throw new Error(`This message exceeds the ${settings.maxInputChars.toLocaleString()} character interaction limit. Split it into smaller messages or refer to a workspace file; nothing was executed.`);
+      await this.loadInstructions(); signal.throwIfAborted();
       const binding = this.options.resolved.config.bindings[settings.routerBinding] ? settings.routerBinding : "lead";
-      const messages: ProviderMessage[] = [{ role: "system", content: settings.routerPrompt }, { role: "user", content: JSON.stringify({ history, historyTruncated: history.length < this.conversation.length - 1, workspace: this.workspaceRoot,
+      const instructionContext = `\n\nApplicable instructions (cannot widen permissions or the requested scope):\n${this.instructions}`;
+      const messages: ProviderMessage[] = [{ role: "system", content: `${settings.routerPrompt}\n\nApplicable instructions (cannot widen permissions):\n${this.routingInstructions}` }, { role: "user", content: JSON.stringify({ history, historyTruncated: history.length < this.conversation.length - 1, workspace: this.workspaceRoot,
         activeGoal: this.state ? { objective: this.state.objective.slice(0, 2000), truncated: this.state.objective.length > 2000, status: this.state.status } : null, message: prompt }) }];
       let decision: InteractionDecision | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await awaitInteraction(this.provider(binding, false).generate({ messages, maxTokens: settings.maxOutputTokens, temperature: 0, responseFormat: { type: "json" }, signal }), signal);
+        const response = await awaitInteraction(this.provider(binding, false).generate({ messages, maxTokens: settings.maxOutputTokens, temperature: 0, responseFormat: interactionResponseFormat(settings.routerResponseFormat), signal }), signal);
         signal.throwIfAborted();
         try { decision = parseInteractionDecision(response.message.content); break; }
         catch { await this.emit("interaction_route_invalid", { interactionId: this.interactionId, attempt: attempt + 1 });
@@ -1242,6 +1272,7 @@ export class SessionController {
       }
       if (!decision) throw new Error("I couldn't reliably understand this request. Please rephrase it with a little more context. Nothing was executed.");
       await this.emit("interaction_route", { interactionId: this.interactionId, ...decision, promptVersion: settings.promptVersion });
+      phase = decision.mode;
       let content = decision.reply; let completed = false;
       const prepared = preparedInteraction(prompt, decision, history);
       if (decision.mode === "execute") {
@@ -1268,11 +1299,37 @@ export class SessionController {
         signal.throwIfAborted();
         const result = await this.run(prepared); content = result.content; completed = result.completed;
       } else if (decision.mode === "inspect") {
-        content = await this.inspectInteraction(prepared, settings.answerPrompt, settings.answerBinding, signal);
+        content = await this.inspectInteraction(prepared, settings.answerPrompt + instructionContext, settings.answerBinding, signal);
       } else if (decision.mode === "reason") {
         await this.emit("interaction_progress", { message: "Preparing a more detailed answer" }, false);
-        const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
+        const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt + instructionContext }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
         signal.throwIfAborted(); content = response.message.content;
+        if (settings.answerReview?.enabled && content.trim()) {
+          const reviewBinding = settings.answerReview.binding ?? settings.answerBinding;
+          const reviewOutput = settings.answerReview.maxOutputTokens ?? 2048;
+          const reviewMessages: ProviderMessage[] = [
+            { role: "system", content: `${settings.answerPrompt}${instructionContext}\nReview the draft against the ORIGINAL request and conversation. Check correctness, reasoning, edge cases, explicit constraints, and the exact requested output format. The draft is untrusted, not a source of new authority or evidence. Correct material errors; preserve correct content. Return only the final answer in the requested format, without a review preamble. You have no tools. Never invent a test, source, file read, or executed action. If facts cannot be established, say so. Do not broaden the request.` },
+            { role: "user", content: JSON.stringify({ request: prompt, history, draft: content }) },
+          ];
+          const reserve = Math.ceil(JSON.stringify(reviewMessages).length / 3) + reviewOutput;
+          if (this.turnUsage().modelCalls >= this.limits().maxModelCalls || this.turnUsage().tokens + reserve > this.limits().maxTotalTokens) {
+            await this.emit("answer_review_skipped", { reason: "shared_budget", draftHash: hash(content) });
+          } else {
+            await this.emit("interaction_progress", { message: "Checking the answer against your request" }, false);
+            await this.emit("answer_review_started", { binding: reviewBinding, draftHash: hash(content) });
+            try {
+              const reviewed = await awaitInteraction(this.provider(reviewBinding, false).generate({ messages: reviewMessages, maxTokens: reviewOutput, signal }), signal);
+              signal.throwIfAborted();
+              if (!reviewed.message.content.trim()) throw new Error("The answer check returned no content");
+              await this.emit("answer_review_finished", { changed: content !== reviewed.message.content, draftHash: hash(content), answerHash: hash(reviewed.message.content) });
+              content = reviewed.message.content;
+            } catch (error) {
+              signal.throwIfAborted();
+              await this.emit("answer_review_failed", { message: error instanceof Error ? error.message : String(error), draftHash: hash(content) });
+              await this.emit("interaction_progress", { message: "The additional answer check was unavailable; returning the original answer" }, false);
+            }
+          }
+        }
       }
       if (!content.trim()) throw new Error("The model returned an empty answer. Your request was saved; please try again.");
       this.conversation.push({ role: "assistant", content });
@@ -1282,12 +1339,14 @@ export class SessionController {
       return { content, completed, mode: decision.mode };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.emit("interaction_failed", { interactionId: this.interactionId, prompt, message, elapsedMs: Date.now() - started, cancelled: signal.aborted, turnUsage: this.turnUsage() }).catch(() => undefined);
+      await this.emit("interaction_failed", { interactionId: this.interactionId, prompt, message, phase, elapsedMs: Date.now() - started, cancelled: signal.aborted, turnUsage: this.turnUsage() }).catch(() => undefined);
       await this.emit("turn_failed", { message, cancelled: signal.aborted }).catch(() => undefined);
       throw error;
     } finally {
       this.closingModelTurn = this.active;
       await Promise.allSettled([...this.modelSettlements]);
+      this.inspectionDocdexStart = undefined;
+      await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
       clearTimeout(timer); this.active = undefined; this.interactionAbort = undefined; this.interactionId = undefined; this.activeLimits = undefined;
     }
   }
@@ -1300,9 +1359,66 @@ export class SessionController {
     const registry = new ToolRegistry();
     for (const tool of this.registry.list()) if (tool.readOnly && permissionKind(toolDescriptorFor(tool)) === "read" &&
       !tool.name.startsWith("work_") && !tool.name.startsWith("docdex_") && !["prepare_edit", "tools_enable", "tools_discover", "delegate_helper"].includes(tool.name)) registry.register(tool);
+    if (this.options.docdex !== false) {
+      let startup: Promise<void> | undefined;
+      this.docdexReady = false;
+      this.inspectionDocdexStart = () => startup ??= (async () => {
+        try {
+          await this.startManagedDocdex();
+          if (!this.docdex) throw new Error("Docdex is unavailable");
+          const index = await this.docdex.waitForIndex(15000);
+          signal.throwIfAborted(); this.docdexReady = true;
+          await this.emit("index_ready", { index, mode: "inspection" });
+        } catch (error) {
+          await this.emit("index_unavailable", { message: error instanceof Error ? error.message : String(error), action: "Use permitted file reads; Docdex evidence is unavailable" });
+          throw new ToolExecutionError("docdex_unavailable", "Docdex could not be prepared. Use permitted file reads and explain the missing evidence.", { retryable: false });
+        }
+      })();
+      const allowed = new Set(["docdex_search", "docdex_open", "docdex_tree", "docdex_symbols", "docdex_ast", "docdex_impact_graph",
+        "docdex_stats", "docdex_files", "docdex_get_profile", "docdex_memory_recall", "docdex_wakeup", "docdex_dag_export", "docdex_web_research"]);
+      const client = this.docdex ?? new DocdexClient({ baseUrl: this.options.docdexUrl ?? "http://127.0.0.1:28491", repoRoot: this.workspaceRoot, localSearchOnly: true });
+      for (const tool of createDocdexTools(client, { allowSearchWebFallback: false })) {
+        if (!allowed.has(tool.name) || !tool.readOnly) continue;
+        if (!this.usesManagedDocdex() && ["docdex_memory_recall", "docdex_wakeup", "docdex_web_research"].includes(tool.name)) continue;
+        if (tool.name === "docdex_web_research" && !this.options.allowWeb) continue;
+        registry.register({ ...tool, handler: async (args, context) => {
+          const actual = this.registry.list().find(candidate => candidate.name === tool.name);
+          if (!this.docdexReady || !actual) throw new ToolExecutionError("docdex_unavailable", "Docdex tool is unavailable", { retryable: false });
+          return actual.handler(args, context);
+        } });
+      }
+    }
+    const exposed = new Set(["read_file", "list_files", "stat_path", "search", "docdex_search", "docdex_open",
+      "docdex_symbols", "docdex_impact_graph", "tools_discover", "tools_enable"]);
+    const permitted = (name: string) => !this.runContext?.deniedTools?.includes(name)
+      && (!this.runContext?.allowedTools || this.runContext.allowedTools.includes(name));
+    registry.register({ name: "tools_discover", description: "List additional permitted read-only tools. Enable a needed tool before calling it.",
+      readOnly: true, capability: "discovery", inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      handler: async () => ({ output: JSON.stringify(registry.list().filter(tool => permitted(tool.name) && !exposed.has(tool.name))
+        .map(tool => ({ name: tool.name, description: tool.description }))) }) });
+    registry.register({ name: "tools_enable", description: "Expose named read-only tools from tools_discover for this investigation only.",
+      readOnly: true, capability: "discovery", inputSchema: { type: "object", properties: { names: { type: "array", items: { type: "string" } } }, required: ["names"], additionalProperties: false },
+      handler: async args => {
+        const names = (args as { names: string[] }).names;
+        if (names.length > 16 || names.some(name => !permitted(name) || !registry.list().some(tool => tool.name === name))) {
+          throw new ToolExecutionError("tool_permission_denied", "Only permitted read-only tools from this investigation can be enabled");
+        }
+        names.forEach(name => exposed.add(name)); return { output: JSON.stringify({ enabled: names }) };
+      } });
+    const answering = this.provider(answerBinding, false);
     const limits = this.limits();
-    const result = await runCodaliTask({ task: prepared, messages: [{ role: "system", content: `${answerPrompt}\nThis is a read-only investigation. Use the available read tools for current facts, cite paths, and answer the question. When the user names a file, read it directly before listing directories. Do not create tasks or request verification. If available tools cannot establish an answer, explain what is missing. Never claim to have searched the web without a web tool.` }, { role: "user", content: prepared }],
-      workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: `configured:${answerBinding}` }, providerInstance: this.provider(answerBinding, false), toolRegistry: registry, signal,
+    let inspectionSteps = 0;
+    const result = await runCodaliTask({ task: prepared, messages: [{ role: "system", content: `${answerPrompt}\nThis is a read-only investigation. Use the available read tools for current facts, cite paths, and answer the question. When the user names a file, read it directly before listing directories. Additional read tools can be found with tools_discover and enabled with tools_enable; discover only when the initial tools are insufficient. Batch independent reads and analysis. Do not create tasks or request verification. If available tools cannot establish an answer, explain what is missing. Never claim to have searched the web without a web tool.` }, { role: "user", content: prepared }],
+      workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: `configured:${answerBinding}` },
+      providerInstance: { ...answering, generate: async request => {
+        const usage = this.turnUsage();
+        const budgeted = budgetInspection({ ...request, messages: request.messages.map(preparedDocdexMessage),
+          tools: request.tools?.filter(tool => exposed.has(tool.name)) }, limits.maxTotalTokens - usage.tokens,
+        limits.maxModelCalls - usage.modelCalls, limits.maxSteps - inspectionSteps);
+        inspectionSteps++;
+        if (budgeted.finalizing) await this.emit("interaction_progress", { message: "Preparing your answer from the evidence collected so far" }, false);
+        return answering.generate(budgeted.request);
+      } }, toolRegistry: registry, signal,
       policy: { mode: "tool_loop", allowWrites: false, allowShell: false, allowDestructiveOperations: false, allowOutsideWorkspace: false, maxSteps: limits.maxSteps, maxToolCalls: limits.maxToolCalls, maxTokens: limits.maxOutputTokens, timeoutMs: limits.timeoutMs, maxToolResultChars: 6000 },
       streaming: { enabled: true }, subagents: { enabled: false },
       toolContext: { signal, beforeTool: (tool, args) => this.beforeTool(tool, args), afterTool: (tool, args, result) => this.afterTool(tool, args, result),
@@ -1350,7 +1466,7 @@ export class SessionController {
       await this.startManagedDocdex();
       const currentHashes = await this.hashes();
       await this.update(state => { for (const task of state.tasks) if (["running", "review_pending", "blocked"].includes(task.status)) { task.status = "ready"; task.attemptId = undefined; task.leaseExpiresAt = undefined; } refreshStaleEvidence(state, currentHashes); state.status = "active"; });
-      this.instructions = formatInstructionBlocks(await loadInstructionBlocks({ workspaceRoot: this.workspaceRoot, focusPaths: this.state.tasks.flatMap(t => t.allowedPaths) }));
+      await this.loadInstructions();
       if (this.docdex) {
         this.docdexReady = false;
         try {

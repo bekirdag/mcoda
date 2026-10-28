@@ -1,5 +1,13 @@
 import type { InteractionConfig } from "../config/OrchestrationConfig.js";
-import type { ProviderMessage } from "../providers/ProviderTypes.js";
+import type { ProviderMessage, ProviderResponseFormat } from "../providers/ProviderTypes.js";
+
+/** Native shape constraints complement prompt instructions; semantic routing still needs evaluation. */
+export const interactionResponseFormat = (mode?: "json" | "json_schema"): ProviderResponseFormat => mode === "json_schema"
+  ? { type: "json_schema", schema: { name: "codali_dispatch", strict: true, schema: {
+    type: "object", properties: { mode: { type: "string", enum: ["answer", "reason", "inspect", "execute", "clarify"] }, text: { type: "string", minLength: 1, maxLength: 500 } },
+    required: ["mode", "text"], additionalProperties: false,
+  } } }
+  : { type: "json" };
 
 export const ROUTER_PROMPT = `You are Codali's request dispatcher. Interpret the latest message using conversation history. FIRST resolve the requested action and any references from the supplied context. If essential context is missing, choose clarify and ask for it. Empty history with no activeGoal means there is no prior task to continue; never assume one exists. Codali can read the active workspace through tools in inspect mode; do not ask which repository when the message refers to this project. Choose ONE mode by the capability needed:
 - answer: brief everyday conversation or a simple nontechnical fact you know reliably. Never produce or rewrite code in this mode.

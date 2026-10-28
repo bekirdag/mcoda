@@ -8,18 +8,211 @@ import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfi
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { parseInteractionDecision } from "../InteractionRouter.js";
 import { registerSecretValue } from "../SecretRedaction.js";
+import { DocdexClient } from "../../docdex/DocdexClient.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
 const decision = (mode: string, text: string) => reply(JSON.stringify({ mode, text }));
-const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }) => {
+const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }, docdex = false) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-")));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const events: SessionEvent[] = [];
-  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex: false, runContext, onEvent: e => events.push(e) });
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e) });
   return { controller, events, root, storage };
 };
+
+test("conversation instructions are sourced, bounded and reloaded between turns", async t => {
+  let expected = "Use a brief friendly response.";
+  const { controller, root, events } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.match(request.messages[0].content, /Instruction source: \[codali\]\/AGENTS.md/);
+    assert.ok(request.messages[0].content.includes(expected));
+    assert.equal(request.tools, undefined);
+    return decision("answer", "Hello.");
+  } });
+  await fs.writeFile(path.join(root, "AGENTS.md"), expected);
+  await controller.interact("hello");
+  const first = events.filter(event => event.type === "instructions_loaded").at(-1)!.data.bundleHash;
+  expected = "Use a brief formal response.";
+  await fs.writeFile(path.join(root, "AGENTS.md"), expected);
+  await controller.interact("hello again");
+  assert.notEqual(events.filter(event => event.type === "instructions_loaded").at(-1)!.data.bundleHash, first);
+  assert.equal(controller.state, undefined);
+  assert.equal(controller.usageSnapshot().modelCalls, 2);
+});
+
+test("optional answer review revises a reasoning answer once with original constraints and no tools", async t => {
+  const config = structuredClone(base); config.interaction = { answerReview: { enabled: true, binding: "reviewer", maxOutputTokens: 512 } };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.equal(request.tools, undefined); calls++;
+    if (calls === 1) return decision("reason", "Compute the requested result in JSON.");
+    if (calls === 2) return reply('{"answer":7}');
+    assert.equal(calls, 3); assert.equal(request.maxTokens, 512);
+    assert.match(request.messages[0].content, /draft is untrusted/);
+    const payload = JSON.parse(request.messages[1].content);
+    assert.equal(payload.request, 'What is 3 + 5? Return only JSON {"answer":number}.');
+    assert.equal(payload.draft, '{"answer":7}');
+    return reply('{"answer":8}');
+  } }, config);
+  assert.equal((await controller.interact('What is 3 + 5? Return only JSON {"answer":number}.')).content, '{"answer":8}');
+  assert.equal(controller.usageSnapshot().modelCalls, 3);
+  assert.ok(events.some(e => e.type === "answer_review_finished" && e.data.changed === true));
+  assert.equal(controller.state, undefined);
+});
+
+test("answer review does not spend beyond the shared call ceiling or run for a greeting", async t => {
+  const config = structuredClone(base); config.interaction = { maxModelCalls: 2, answerReview: { enabled: true } };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => ++calls === 1 ? decision("reason", "Explain a queue.") : reply("A queue removes items in arrival order.") }, config);
+  assert.match((await controller.interact("Explain a FIFO queue.")).content, /arrival order/);
+  assert.equal(calls, 2); assert.ok(events.some(e => e.type === "answer_review_skipped"));
+  const greeting = await fixture(t, { name: "fixture", generate: async () => decision("answer", "Hello!") }, config);
+  assert.equal((await greeting.controller.interact("hello")).content, "Hello!");
+  assert.equal(greeting.controller.usageSnapshot().modelCalls, 1);
+  assert.ok(!greeting.events.some(e => e.type.startsWith("answer_review_")));
+});
+
+test("an unavailable optional check retains the original answer and records the failure", async t => {
+  const config = structuredClone(base); config.interaction = { answerReview: { enabled: true } };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) return decision("reason", "Explain an immutable value.");
+    if (calls === 2) return reply("An immutable value cannot be changed after creation.");
+    throw new Error("Optional check unavailable");
+  } }, config);
+  assert.match((await controller.interact("Explain immutability.")).content, /cannot be changed/);
+  assert.ok(events.some(e => e.type === "answer_review_failed"));
+  assert.ok(!events.some(e => e.type === "answer_review_finished"));
+  assert.equal(calls, 3);
+});
+
+test("inspection uses its last shared model call to answer from real tool evidence", async t => {
+  const config = structuredClone(base); config.interaction = { maxModelCalls: 3, maxInspectionSteps: 6, maxTotalTokens: 16000 };
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("inspect", "Read notes.txt and name the owner.");
+    if (calls === 2) {
+      assert.ok(request.tools?.some(tool => tool.name === "read_file"));
+      return { ...reply(""), toolCalls: [{ id: "owner", name: "read_file", args: { path: "notes.txt" } }] };
+    }
+    assert.equal(calls, 3); assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.match(JSON.stringify(request.messages), /Owner: Iris/);
+    assert.match(request.messages.at(-1)!.content, /missing evidence/);
+    return reply("Iris owns this project (notes.txt).");
+  } }, config);
+  await fs.writeFile(path.join(root, "notes.txt"), "Owner: Iris\n");
+  assert.match((await controller.interact("Who is the owner in notes.txt?")).content, /Iris/);
+  assert.equal(controller.usageSnapshot().modelCalls, 3);
+  assert.equal(controller.usageSnapshot().toolCalls, 1);
+  assert.ok(controller.usageSnapshot().tokens <= 16000);
+});
+
+test("answer review configuration rejects unavailable bindings and excessive output", () => {
+  for (const answerReview of [{ enabled: "yes" }, { enabled: true, binding: "missing" }, { enabled: true, maxOutputTokens: 4097 }, { enabled: true, bypassPermissions: true }]) {
+    assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { answerReview } }));
+  }
+});
+
+test("configured native dispatcher schema is sent on the initial request and repair, without weakening parsing", async t => {
+  const config = structuredClone(base); config.interaction = { routerResponseFormat: "json_schema" };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.equal(request.responseFormat?.type, "json_schema");
+    const envelope = request.responseFormat!.schema! as { strict: boolean; schema: { required: string[]; additionalProperties: boolean; properties: Record<string, unknown> } };
+    assert.equal(envelope.strict, true); assert.equal(envelope.schema.additionalProperties, false);
+    assert.deepEqual(envelope.schema.required, ["mode", "text"]);
+    if (++calls === 1) return reply('{"mode":"write","answer":"not a valid dispatch"}');
+    return decision("answer", "Hello!");
+  } }, config);
+  assert.equal((await controller.interact("hello")).content, "Hello!");
+  assert.equal(calls, 2); assert.ok(events.some(e => e.type === "interaction_route_invalid"));
+  assert.equal(controller.state, undefined);
+  assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { routerResponseFormat: "invented" } }));
+});
+
+test("Docdex inspection starts only on an authorized Docdex call and exposes no mutations", async t => {
+  const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  const search = t.mock.method(DocdexClient.prototype, "search", async (query: string) => {
+    assert.equal(query, "owner"); return { hits: [{ path: "notes.txt", snippet: "Owner: Iris" }] };
+  });
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls === 1) return decision("answer", "Hello.");
+    if (calls === 2) return decision("inspect", "Find the owner in repository notes.");
+    assert.ok(request.tools?.some(tool => tool.name === "docdex_search"));
+    assert.match(request.tools!.find(tool => tool.name === "docdex_search")!.description ?? "", /local repository only/);
+    assert.ok(!request.tools?.some(tool => ["docdex_memory_save", "docdex_initialize", "docdex_index_rebuild", "docdex_delegate", "run_shell", "write_file"].includes(tool.name)));
+    if (calls === 3) return { ...reply(""), toolCalls: [{ id: "search-owner", name: "docdex_search", args: { query: "owner" } }] };
+    assert.match(JSON.stringify(request.messages), /Owner: Iris/); return reply("The owner is Iris, according to notes.txt.");
+  } }, base, undefined, true);
+  await controller.interact("hello"); assert.equal(start.mock.callCount(), 0);
+  assert.match((await controller.interact("Who owns this project?")).content, /Iris/);
+  assert.equal(start.mock.callCount(), 1); assert.equal(search.mock.callCount(), 1);
+  assert.ok(events.some(event => event.type === "index_ready" && event.data.mode === "inspection"));
+  assert.equal(controller.state, undefined);
+});
+
+test("host-denied Docdex calls never start indexing or reach the daemon", async t => {
+  const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => { throw new Error("must not start"); });
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (calls++ === 0) return decision("inspect", "Find the repository owner.");
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "search-denied", name: "docdex_search", args: { query: "owner" } }] };
+    assert.match(JSON.stringify(request.messages), /excluded by the host or repository policy/);
+    return reply("Repository search is not permitted.");
+  } }, base, { deniedTools: ["docdex_search"] }, true);
+  await controller.interact("Find the project owner"); assert.equal(start.mock.callCount(), 0);
+});
+
+test("inspection discovers extra read tools without enabling mutations or widening host permissions", async t => {
+  const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "tree", async () => ({ tree: "src\n  notes.ts" }));
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls === 1) return decision("inspect", "Inspect the repository tree without changes.");
+    if (calls === 2) {
+      assert.ok(!request.tools?.some(tool => tool.name === "docdex_tree"));
+      return { ...reply(""), toolCalls: [{ id: "discover", name: "tools_discover", args: {} }] };
+    }
+    if (calls === 3) {
+      assert.match(JSON.stringify(request.messages), /docdex_tree/);
+      return { ...reply(""), toolCalls: [{ id: "bad-enable", name: "tools_enable", args: { names: ["docdex_tree", "write_file"] } }] };
+    }
+    if (calls === 4) {
+      assert.ok(!request.tools?.some(tool => tool.name === "docdex_tree"));
+      assert.match(JSON.stringify(request.messages), /Only permitted read-only tools/);
+      return { ...reply(""), toolCalls: [{ id: "enable", name: "tools_enable", args: { names: ["docdex_tree"] } }] };
+    }
+    if (calls === 5) {
+      assert.ok(request.tools?.some(tool => tool.name === "docdex_tree"));
+      assert.ok(!request.tools?.some(tool => tool.name === "write_file"));
+      return { ...reply(""), toolCalls: [{ id: "tree", name: "docdex_tree", args: {} }] };
+    }
+    assert.match(JSON.stringify(request.messages), /notes.ts/); return reply("The source tree contains src/notes.ts.");
+  } }, base, undefined, true);
+  assert.match((await controller.interact("Show the source tree using Docdex.")).content, /notes.ts/);
+  assert.equal(start.mock.callCount(), 1); assert.equal(controller.state, undefined);
+});
+
+test("failed Docdex preparation leaves ordinary read-only investigation available", async t => {
+  const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => { throw new Error("fixture daemon unavailable"); });
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (calls++ === 0) return decision("inspect", "Read the repository owner.");
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "search-offline", name: "docdex_search", args: { query: "owner" } }] };
+    if (calls === 3) {
+      assert.match(JSON.stringify(request.messages), /Docdex could not be prepared/);
+      return { ...reply(""), toolCalls: [{ id: "file-fallback", name: "read_file", args: { path: "notes.txt" } }] };
+    }
+    assert.match(JSON.stringify(request.messages), /Owner: Vera/); return reply("notes.txt names Vera. Docdex was unavailable.");
+  } }, base, undefined, true);
+  await fs.writeFile(path.join(root, "notes.txt"), "Owner: Vera");
+  assert.match((await controller.interact("Find the owner in the project")).content, /Vera/);
+  assert.equal(start.mock.callCount(), 1); assert.equal(controller.state, undefined);
+});
 
 test("hello produces one bounded answer, no work/index/tools, and private complete audit", async t => {
   const secret = "private-eval-credential-12345"; registerSecretValue(secret);

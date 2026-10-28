@@ -62,9 +62,12 @@ export interface TaskControlConfig {
 }
 export interface InteractionConfig {
   routerBinding?: string; answerBinding?: string; promptVersion?: string;
+  routerResponseFormat?: "json" | "json_schema";
   routerPrompt?: string; answerPrompt?: string;
   maxInputChars?: number; historyChars?: number; maxOutputTokens?: number;
   maxTotalTokens?: number; maxModelCalls?: number; maxInspectionSteps?: number; timeoutMs?: number;
+  /** Optional single bounded revision pass for answers that already needed reasoning. */
+  answerReview?: { enabled: boolean; binding?: string; maxOutputTokens?: number };
 }
 export interface OrchestrationConfig {
   schemaVersion: 1;
@@ -203,14 +206,28 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
   }
   if (root.interaction !== undefined) {
     const value = object(root.interaction, "interaction");
-    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs"], "interaction");
+    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs", "answerReview", "routerResponseFormat"], "interaction");
     for (const key of ["routerBinding", "answerBinding"]) if (value[key] !== undefined) {
       nonempty(value[key], `interaction.${key}`);
       if (!hasOwn(bindings, String(value[key])) || object(bindings[String(value[key])], key).enabled === false) throw new Error(`interaction.${key}: unavailable binding`);
     }
     if (value.promptVersion !== undefined) nonempty(value.promptVersion, "interaction.promptVersion");
+    if (value.routerResponseFormat !== undefined && !["json", "json_schema"].includes(String(value.routerResponseFormat))) throw new Error("interaction.routerResponseFormat: expected json or json_schema");
     for (const key of ["routerPrompt", "answerPrompt"]) if (value[key] !== undefined && (typeof value[key] !== "string" || !String(value[key]).trim() || String(value[key]).length > 16000)) throw new Error(`interaction.${key}: expected bounded nonempty prompt`);
     for (const key of ["maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs"]) if (value[key] !== undefined) positive(value[key], `interaction.${key}`);
+    if (value.answerReview !== undefined) {
+      const review = object(value.answerReview, "interaction.answerReview");
+      fields(review, ["enabled", "binding", "maxOutputTokens"], "interaction.answerReview");
+      if (typeof review.enabled !== "boolean") throw new Error("interaction.answerReview.enabled: expected boolean");
+      if (review.binding !== undefined) {
+        nonempty(review.binding, "interaction.answerReview.binding");
+        if (!hasOwn(bindings, String(review.binding)) || object(bindings[String(review.binding)], "review binding").enabled === false) throw new Error("interaction.answerReview.binding: unavailable binding");
+      }
+      if (review.maxOutputTokens !== undefined) {
+        positive(review.maxOutputTokens, "interaction.answerReview.maxOutputTokens");
+        if (Number(review.maxOutputTokens) > 4096) throw new Error("interaction.answerReview.maxOutputTokens: exceeds 4096");
+      }
+    }
   }
   if (root.docdex !== undefined) {
     const d = object(root.docdex, "docdex"); fields(d, ["binary", "binarySha256", "startupTimeoutMs"], "docdex");
