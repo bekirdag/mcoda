@@ -2,7 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { gradeTrustAnswer, validateTrustCorpus } from '../../packages/codali/dist/eval/TrustBenchmark.js';
 import { corpusRoot,json,jsonl,hash,argumentsMap,writeNew } from './trust-common.mjs';
-const args=argumentsMap();
+const args=argumentsMap(undefined,['output']);
 const cases=await jsonl(path.join(corpusRoot,'prompts.jsonl'));const specs=await jsonl(path.join(corpusRoot,'grading.jsonl'));
 const manifest=await json(path.join(corpusRoot,'manifest.json'));
 if(hash(await fs.readFile(path.join(corpusRoot,'grading.jsonl')))!==manifest.gradingSha256)throw Error('Grading hash mismatch');

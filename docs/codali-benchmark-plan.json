@@ -255,6 +255,22 @@
     {
       "source": "https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md",
       "use": "Native JSON-schema grammar constrains dispatcher shape; schema must also be described in the prompt, and semantics/truncation still require validation."
+    },
+    {
+      "source": "https://aider.chat/docs/usage/modes.html",
+      "use": "Separates ask from code; architect/editor mode spends two requests to separate solution design and file-edit formatting. Codali keeps conversation/inspection distinct from execution and measures optional additional passes rather than assuming they help."
+    },
+    {
+      "source": "https://github.com/Aider-AI/aider/blob/main/aider/coders/architect_coder.py",
+      "use": "The editor receives a focused architect handoff with its own conversation cleared and repository-map budget disabled; informs bounded handoff/context design, not a universal small-first router."
+    },
+    {
+      "source": "https://opencode.ai/docs/rules/",
+      "use": "Project and global AGENTS.md instructions and custom instruction sources provide persistent scoped guidance. Codali additionally packages a bounded Docdex-specific guide with source hashes."
+    },
+    {
+      "source": "https://opencode.ai/docs/agents/",
+      "use": "Agent prompts, models, tool permissions and step budgets are configurable; Codali similarly keeps role selection in configuration and permission enforcement in the host."
     }
   ],
   "evidence": [
@@ -426,6 +442,68 @@
       "protocol": "trust-opaque-paths-v2",
       "artifact": "/home/wodo/.local/state/codali-trust-benchmark/validation-v2-{host}.log",
       "preflight": "First launcher refused an incorrect100-per-host assumption before inference; corrected to retain frozen90/110family assignment."
+    },
+    {
+      "phase": "B0",
+      "type": "research_followup",
+      "docdexTrace": "mcp-web-396",
+      "fallback": "Docdex discovery returned unrelated pages and fetch failures; opened official Aider/OpenCode documentation and Aider GitHub source directly."
+    },
+    {
+      "phase": "B3",
+      "type": "grader_contract_completion_v4",
+      "at": "2026-10-28T22:49:08.856796+00:00",
+      "description": "Audit, before held-out access: preserveInput metadata now recognizes capitalized Preserve input and do not mutate; new-array contracts check identity for rotate_array/numeric_sort/immutable_reverse. Public prompts unchanged, recorded outputs rescored, answering runtime untouched.",
+      "gradingSha256": "f24fae285e72ce1e3b55908a608ec384439e65d63280358aa4da62a0271af041",
+      "focusedTests": {
+        "passed": 7,
+        "failed": 0
+      },
+      "artifact": "/tmp/codali-trust-grading-tests-v4.log"
+    },
+    {
+      "phase": "B2",
+      "type": "corpus_qualification_v4",
+      "cases": 1000,
+      "objectiveReferencesAndNegativeControls": 770,
+      "rubricContractsAndPendingReviewChecks": 230,
+      "gradingSha256": "f24fae285e72ce1e3b55908a608ec384439e65d63280358aa4da62a0271af041",
+      "artifact": "/tmp/codali-trust-corpus-qualification-v4.json"
+    },
+    {
+      "phase": "B3",
+      "type": "usage_view_and_retry_integrity",
+      "description": "status and usage events retain estimated marking for unresolved reservations. Scorer reconstructs receipt accounting without overwriting original records. Strict arguments and explicit same-runtime retry lineage prevent accidental scope drift or replacement of first failures.",
+      "fullTests": {
+        "passed": 1818,
+        "skipped": 3,
+        "failed": 0
+      },
+      "harnessTests": 5,
+      "scorerTests": 2,
+      "artifacts": [
+        "/tmp/codali-trust-accounting-full-tests.log",
+        "/tmp/codali-trust-retry-harness-tests.log",
+        "/tmp/codali-trust-retry-scoring-tests-v2.log"
+      ]
+    },
+    {
+      "phase": "B4",
+      "type": "retained_validation_failure",
+      "caseId": "code_generation.chunk_array.09",
+      "candidate": "c6-flash-v9-review",
+      "host": "suku",
+      "requestId": "c2776a55-e8f8-4d11-8ec2-c438ac28c1e1",
+      "error": "ModelServiceError: Model service HTTP200 invalid_response",
+      "retryPerformed": false,
+      "accounting": "Canonical receipt remains incomplete; retain2129-token reservation as estimated.",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/invalid-response-validation-canonical-receipt.json"
+    },
+    {
+      "phase": "B4",
+      "type": "rescore_after_grader_audit",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/graded-v4-{candidate}/report.json",
+      "finding": "C4 remains30/40 and C6 remains28/40 in development. All earlier outputs retained; rubric/critical review state explicit."
     }
   ],
   "remaining": [
@@ -433,7 +511,7 @@
     "B5",
     "B6"
   ],
-  "updatedAt": "2026-10-28T22:28:37.366862+00:00",
+  "updatedAt": "2026-10-28T22:59:32.835582+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

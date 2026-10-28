@@ -52,7 +52,8 @@ until reviewed. Code runs in the existing OS sandbox without network access,
 host credentials or answer keys. It receives inputs and returns observations;
 expected values are compared outside the sandbox. Functional tests do not prove
 every asymptotic complexity requirement. Binary search also has an indexed-read
-probe that rejects a linear scan; requested word limits are checked before review.
+probe that rejects a linear scan; explicit new-array contracts reject an alias
+even when its values are correct. Requested word limits are checked before review.
 
 Run the development portion with the configured local model endpoints:
 
@@ -88,9 +89,12 @@ an append-only ledger, and private per-attempt requests, complete model/tool
 events, outputs and errors. Resume with the identical command. A stale process
 lock requires investigation; the runner does not bypass it. An interrupted
 accepted request is recorded as unknown and is never silently retried. A new
-explicit retry must retain its predecessor and must not replace the first
-attempt in primary scores. Zero-dispatch failures do not establish live model
-coverage.
+explicit retry uses `--retry-of ORIGINAL_RUN --retry-reason "explanation"` and
+must retain the original configuration/runtime. It records predecessor IDs even
+if the process crashes. Score the original and retry together: the retry never
+replaces the original failure in primary scores. Unknown outcomes require
+receipt investigation before any explicit retry. Zero-dispatch failures do not
+establish live model coverage.
 
 Protocol `trust-opaque-paths-v2` gives each answering process random workspace
 and state paths without case, domain or arm labels. These are archived into its
@@ -162,6 +166,11 @@ over raw direct Qwen and a positive lower bound on the paired 95% interval, plus
 critical-error and tool-parity checks. A numeric aggregate alone cannot qualify
 the setup. If improvement is not demonstrated, report that result and do not
 rename failures or weaken the target to claim success.
+
+Usage is reconstructed from invocation receipts when available. A retained
+reservation with no measured usage is marked estimated, including in older
+runs whose `/status` snapshot mislabeled it. Original usage records remain
+alongside the derived view; a transport error is never assigned zero cost.
 
 The execution ledger and current phase state live in
 [`docs/codali-benchmark-plan.json`](../../codali-benchmark-plan.json).

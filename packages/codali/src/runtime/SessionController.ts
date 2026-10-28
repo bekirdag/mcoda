@@ -255,7 +255,7 @@ export class SessionController {
         this.usage.embeddingTokens = (this.usage.embeddingTokens ?? 0) + receipt.reportedTokens;
       } else this.usage.estimated = true;
       this.reservations.delete(receipt.id);
-      await this.emit("embedding_receipt", { ...receipt }); await this.emit("usage", { usage: this.usage });
+      await this.emit("embedding_receipt", { ...receipt }); await this.emit("usage", { usage: this.usageSnapshot() });
     }, async intent => {
       const limits = this.limits();
       if (this.turnUsage().modelCalls >= limits.maxModelCalls || this.turnUsage().tokens + intent.estimatedTokens > limits.maxTotalTokens) throw new Error("Shared embedding/model budget exhausted");
@@ -282,7 +282,7 @@ export class SessionController {
       tasks: this.state?.tasks, effort: this.effort, permissions: this.gate.inspect(), configHash: this.options.resolved.hash,
       effortBudget: effortBudget(this.options.resolved.config, this.effort),
       nativeReasoningRequests: Object.fromEntries(Object.entries(this.options.resolved.config.models).filter(([, model]) => model.reasoning?.[this.effort]).map(([id, model]) => [id, { ...model.reasoning![this.effort] }])),
-      usage: this.usage, instructions: this.instructionSources, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
+      usage: this.usageSnapshot(), instructions: this.instructionSources, projectTask: this.state?.projectTask, unresolvedInvocations: [...this.receipts.values()].filter(r => r.status === "pending").map(r => r.id), isolation: this.isolation, connectors: this.connectorHealth };
   }
   conversationSnapshot(): ProviderMessage[] { return structuredClone(interactionHistory(this.conversation, interactionSettings(this.options.resolved.config.interaction).historyChars)); }
   usageSnapshot(): SessionUsage { return { ...this.usage, estimated: this.usage.estimated || this.reservations.size > 0 }; }
@@ -839,7 +839,7 @@ export class SessionController {
             this.reservations.delete(id);
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("model_preflight_failed", { id, binding, inferenceDispatched: false, message: error instanceof Error ? error.message : String(error) });
-            await this.emit("usage", { usage: this.usage });
+            await this.emit("usage", { usage: this.usageSnapshot() });
           } else {
             // A failed transport may have executed remotely. Keep its reservation
             // and distinguish an unknown outcome from a zero-cost failure.
@@ -859,7 +859,7 @@ export class SessionController {
         this.reservations.delete(id);
         await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "completed", route: response.route, sessionUsage: this.usageSnapshot(),
           usage: { inputTokens: reported?.input, outputTokens: reported?.output, totalTokens: reported?.total ?? reserve, estimated: !reported } });
-        await this.emit("usage", { usage: this.usage });
+        await this.emit("usage", { usage: this.usageSnapshot() });
       });
       // Settle a received usage report before cancellation or authority changes
       // prevent using its answer. Cancellation does not erase incurred usage.

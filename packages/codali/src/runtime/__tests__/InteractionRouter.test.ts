@@ -108,6 +108,22 @@ test("inspection uses its last shared model call to answer from real tool eviden
   assert.ok(controller.usageSnapshot().tokens <= 16000);
 });
 
+test("status and live usage retain estimated accounting for an unresolved earlier response", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) throw new Error("Invalid response after dispatch");
+    return decision("answer", "Hello.");
+  } });
+  await assert.rejects(controller.interact("hello"), /Invalid response after dispatch/);
+  const usage = controller.status().usage as { tokens: number; estimated: boolean };
+  assert.ok(usage.tokens > 0); assert.equal(usage.estimated, true);
+  assert.deepEqual(usage, controller.usageSnapshot());
+  usage.tokens = 0; assert.ok(controller.usageSnapshot().tokens > 0, "status must not expose mutable accounting");
+  assert.equal((await controller.interact("hello again")).content, "Hello.");
+  assert.equal((controller.status().usage as { estimated: boolean }).estimated, true);
+  assert.equal((events.filter(e => e.type === "usage").at(-1)!.data.usage as { estimated: boolean }).estimated, true);
+});
+
 test("answer review configuration rejects unavailable bindings and excessive output", () => {
   for (const answerReview of [{ enabled: "yes" }, { enabled: true, binding: "missing" }, { enabled: true, maxOutputTokens: 4097 }, { enabled: true, bypassPermissions: true }]) {
     assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { answerReview } }));

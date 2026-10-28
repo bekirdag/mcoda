@@ -1,8 +1,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { gradeTrustAnswer, applyTrustReview, applyTrustToolEvidence } from '../../packages/codali/dist/eval/TrustBenchmark.js';
+import { accountedUsage, usageAccounts } from '../../packages/codali/dist/runtime/UsageReconciliation.js';
 import { argumentsMap,json,jsonl,corpusRoot,hash,writeNew } from './trust-common.mjs';
-const args=argumentsMap();if(!args.runs||!args.output)throw Error('Use --runs RUN_DIR[,RUN_DIR] --output NEW_DIR [--reviews JSONL]');
+const args=argumentsMap(undefined,['runs','output','reviews','critical-reviews','config-groups']);if(!args.runs||!args.output)throw Error('Use --runs RUN_DIR[,RUN_DIR] --output NEW_DIR [--reviews JSONL]');
 const configGroups=args['config-groups']?await json(args['config-groups']):{};
 if(!configGroups||Array.isArray(configGroups)||Object.entries(configGroups).some(([key,value])=>!/^[a-f0-9]{64}$/.test(key)||typeof value!=='string'||!value.trim()))throw Error('Invalid explicit configuration grouping');
 const output=path.resolve(args.output);await fs.mkdir(output,{mode:0o700});
@@ -27,6 +28,9 @@ for(const root of args.runs.split(',')){
     let events=[];try{events=await jsonl(path.join(record.directory,'events.jsonl'));}catch(e){if(e.code!=='ENOENT')throw e;}
     const modelRequests=events.filter(e=>e.type==='model_request').length;
     const modelResponses=events.filter(e=>e.type==='model_response').length;
+    const accounts=usageAccounts(events);
+    const derived=r.arm.startsWith('codali')&&accounts.size?accountedUsage(accounts.values()):undefined;
+    const usage=derived?{...r.usage,...derived}:r.usage;
     let grade=await gradeTrustAnswer(spec,r.content??'',{error:r.error??record.launchError,workspacePreserved:r.workspacePreserved});
     if(task.domain==='repository_and_docdex'&&r.arm!=='raw_direct'){
       grade=applyTrustToolEvidence(task,r.arm,grade,events);
@@ -39,12 +43,16 @@ for(const root of args.runs.split(',')){
       observed:{toolCalls:r.usage?.toolCalls,workspacePreserved:r.workspacePreserved,tools:events.filter(e=>e.type==='tool_receipt').map(e=>e.data?.receipt?.tool??e.data?.call?.name)}});
     if(grade.status==='needs_review')pending.push({reviewId:hash(r.attemptId).slice(0,20),caseId:r.caseId,attemptId:r.attemptId,outputSha256:grade.outputSha256,prompt:task.prompt,history:task.history,content:r.content,criteria:spec.criteria,observed:{toolCalls:r.usage?.toolCalls,workspacePreserved:r.workspacePreserved}});
     const configHash=r.configHash??run.identity.configHash;
-    scores.push({attemptId:r.attemptId,caseId:r.caseId,family:task.family,domain:task.domain,split:task.split,arm:r.arm,configHash,configGroup:configGroups[configHash]??configHash,
-      grade,elapsedMs:r.answerElapsedMs??r.elapsedMs,totalElapsedMs:r.elapsedMs,usage:r.usage,modelRequests,modelResponses,critical:spec.critical,criticalReviewed:!!safety,criticalFailure:safety?.passed===false||review?.criticalFailure===true||r.workspacePreserved===false,artifact:record.directory,error:r.error??record.launchError});
+    scores.push({attemptId:r.attemptId,startedAt:r.startedAt??record.at??run.createdAt,retryOf:r.retryOf,caseId:r.caseId,family:task.family,domain:task.domain,split:task.split,arm:r.arm,configHash,configGroup:configGroups[configHash]??configHash,
+      grade,elapsedMs:r.answerElapsedMs??r.elapsedMs,totalElapsedMs:r.elapsedMs,usage,originalUsage:r.usage,usageDerivedFromReceipts:!!derived,modelRequests,modelResponses,critical:spec.critical,criticalReviewed:!!safety,criticalFailure:safety?.passed===false||review?.criticalFailure===true||r.workspacePreserved===false,artifact:record.directory,error:r.error??record.launchError});
   }
 }
 // First attempts are primary. A later run is never silently substituted for failure.
-const first=new Map();for(const s of scores){const key=[s.caseId,s.arm,s.configHash].join(':');if(!first.has(key))first.set(key,s);}
+const byId=new Map(scores.map(x=>[x.attemptId,x]));
+for(const s of scores)if(s.retryOf){const previous=byId.get(s.retryOf);if(!previous||previous.caseId!==s.caseId||previous.arm!==s.arm||previous.configHash!==s.configHash)throw Error('Retry report requires the matching original attempt; a retry cannot replace its failure');}
+const first=new Map();for(const s of scores){if(s.retryOf)continue;const key=[s.caseId,s.arm,s.configHash].join(':');const previous=first.get(key);
+  if(previous&&(!Number.isFinite(Date.parse(previous.startedAt))||!Number.isFinite(Date.parse(s.startedAt))))throw Error('Repeated primary attempts require timestamps or explicit retry lineage');
+  if(!previous||Date.parse(s.startedAt)<Date.parse(previous.startedAt))first.set(key,s);}
 const primary=[...first.values()];
 const summarize=list=>{
   const sorted=key=>list.map(x=>key(x)).filter(Number.isFinite).sort((a,b)=>a-b);

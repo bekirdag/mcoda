@@ -16,7 +16,7 @@ import { loadOrchestrationConfig } from '../../packages/codali/dist/config/Orche
 import { interactionSettings } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 import { argumentsMap, json, writeNew, fixtureSnapshot, hash } from './trust-common.mjs';
 
-const args=argumentsMap();
+const args=argumentsMap(undefined,['request']);
 const request=await json(args.request); // only public case, paths and arm metadata
 const {task,attemptId,arm,directory}=request;
 const resolved=await loadOrchestrationConfig(request.config);
@@ -39,6 +39,7 @@ const timer=setTimeout(()=>abort.abort(Error('Common benchmark deadline exceeded
 const stop=()=>{abort.abort(Error('Benchmark process interrupted'));controller?.cancel();};
 process.once('SIGTERM',stop);process.once('SIGINT',stop);
 const result={schemaVersion:1,attemptId,arm,caseId:task.id,domain:task.domain,family:task.family,split:task.split,configHash:resolved.hash,
+  ...(request.retryOf?{retryOf:request.retryOf,retryReason:request.retryReason}:{}),
   startedAt:new Date(started).toISOString(),loadStart:os.loadavg(),hostname:os.hostname()};
 emit('benchmark_request',{...result,prompt:task.prompt,history:task.history,files:task.files,opaqueRoot});
 try{

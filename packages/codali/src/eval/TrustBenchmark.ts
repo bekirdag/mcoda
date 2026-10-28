@@ -16,6 +16,8 @@ export interface TrustScoreSpec {
   expected?: unknown; criteria?: string[]; reference?: string;
   alternatives?: unknown[];
   preserveInput?: boolean;
+  /** The contract requires a new array rather than returning this input array. */
+  distinctOutputFrom?: string[];
   maxWords?: number;
   complexityProbe?: { kind: "binary_search_first"; size: number; maxIndexedReads: number };
   tests?: Array<{ input: unknown; expected: unknown }>;
@@ -103,26 +105,28 @@ export async function gradeTrustAnswer(spec: TrustScoreSpec, content: string, op
       await fs.chmod(root, 0o700);
       await fs.writeFile(path.join(root, "submission.mjs"), source, { flag: "wx", mode: 0o600 });
       // Inputs only. A deliberately wrong submission cannot read expected answers.
-      await fs.writeFile(path.join(root, "inputs.json"), JSON.stringify({ inputs: tests.map(t => t.input), instrumentIndex: spec.complexityProbe ? tests.length - 1 : -1 }), { flag: "wx", mode: 0o600 });
+      await fs.writeFile(path.join(root, "inputs.json"), JSON.stringify({ inputs: tests.map(t => t.input), instrumentIndex: spec.complexityProbe ? tests.length - 1 : -1, distinctOutputPath: spec.distinctOutputFrom ?? null }), { flag: "wx", mode: 0o600 });
       await fs.writeFile(path.join(root, "observe.mjs"), `import { readFileSync } from 'node:fs';
 const stringify=JSON.stringify.bind(JSON); const parse=JSON.parse.bind(JSON); const output=process.stdout.write.bind(process.stdout);
-const {inputs,instrumentIndex}=parse(readFileSync(new URL('./inputs.json',import.meta.url),'utf8'));const get=Reflect.get.bind(Reflect);
+const {inputs,instrumentIndex,distinctOutputPath}=parse(readFileSync(new URL('./inputs.json',import.meta.url),'utf8'));const get=Reflect.get.bind(Reflect);
 const {solve}=await import('./submission.mjs');
 if(typeof solve!=='function')throw Error('Export solve(input)');
 const results=[];for(let index=0;index<inputs.length;index++){const input=inputs[index];let reads=0;
 if(index===instrumentIndex)input.values=new Proxy(input.values,{get(t,p,r){if(typeof p==='string'&&/^[0-9]+$/.test(p))reads++;return get(t,p,r);}});
-const before=stringify(input);reads=0;const value=await solve(input);const indexedReads=reads;results.push({value,indexedReads,unchanged:before===stringify(input)});}
+const originalArray=distinctOutputPath===null?undefined:distinctOutputPath.reduce((v,k)=>v[k],input);
+const before=stringify(input);reads=0;const value=await solve(input);const indexedReads=reads;results.push({value,indexedReads,distinctOutput:distinctOutputPath===null||value!==originalArray,unchanged:before===stringify(input)});}
 output(stringify(results));`, { flag: "wx", mode: 0o600 });
       const execute = createIsolatedExecutor({ network: false });
       const observed = await execute(process.execPath, ["--max-old-space-size=96", "observe.mjs"], {
         workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000, shellMaxOutputBytes: 131072,
       });
-      const actual = JSON.parse(observed.output) as Array<{ value: unknown; unchanged: boolean; indexedReads: number }>;
+      const actual = JSON.parse(observed.output) as Array<{ value: unknown; unchanged: boolean; indexedReads: number; distinctOutput: boolean }>;
       if (!Array.isArray(actual) || actual.length !== tests.length) throw new Error("Incomplete observations");
       grade.checks = actual.length;
       for (let i = 0; i < actual.length; i++) {
         if (!equalTrustValue(actual[i]?.value, tests[i].expected)) grade.failures.push(`Independent input ${i + 1}: wrong value`);
         if (spec.preserveInput && actual[i]?.unchanged !== true) grade.failures.push(`Independent input ${i + 1}: input mutated`);
+        if (spec.distinctOutputFrom !== undefined && actual[i]?.distinctOutput !== true) grade.failures.push(`Independent input ${i + 1}: returned the original array instead of a new one`);
       }
       if (spec.complexityProbe && (!Number.isSafeInteger(actual[actual.length - 1].indexedReads) || actual[actual.length - 1].indexedReads > spec.complexityProbe.maxIndexedReads)) grade.failures.push("Binary search exceeded its bounded indexed-read probe");
       grade.semanticPassed = !grade.failures.length;

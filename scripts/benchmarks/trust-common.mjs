@@ -9,11 +9,14 @@ export const hash = value => createHash('sha256').update(value).digest('hex');
 export const json = async file => JSON.parse(await fs.readFile(file, 'utf8'));
 export const jsonl = async file => (await fs.readFile(file, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 export async function writeNew(file, data) { await fs.writeFile(file, JSON.stringify(data, null, 2)+'\n', {flag:'wx',mode:0o600}); }
-export function argumentsMap(args = process.argv.slice(2)) {
+export function argumentsMap(args = process.argv.slice(2), allowed) {
   const out = {};
   for (let i=0;i<args.length;i++) {
-    if (!/^--[a-z-]+$/.test(args[i]) || !args[i+1] || args[i+1].startsWith('--') || Object.hasOwn(out,args[i])) throw Error('Expected unique --name value arguments');
-    out[args[i].slice(2)]=args[++i];
+    if (!/^--[a-z-]+$/.test(args[i]) || !args[i+1] || args[i+1].startsWith('--')) throw Error('Expected unique --name value arguments');
+    const name=args[i].slice(2);
+    if(Object.hasOwn(out,name))throw Error('Expected unique --name value arguments');
+    if(allowed&&!allowed.includes(name))throw Error('Unknown argument: --'+name);
+    out[name]=args[++i];
   }
   return out;
 }

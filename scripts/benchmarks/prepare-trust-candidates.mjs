@@ -4,7 +4,7 @@ import { ModelServiceClient } from '../../packages/codali/dist/providers/Configu
 import { validateOrchestrationConfig, orchestrationHash } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { argumentsMap,json,readPublicCorpus,writeNew,hash } from './trust-common.mjs';
 
-const args=argumentsMap();if(!args.base||!args.output)throw Error('Use --base CONFIG --output NEW_DIRECTORY');
+const args=argumentsMap(undefined,['base','output']);if(!args.base||!args.output)throw Error('Use --base CONFIG --output NEW_DIRECTORY');
 const root=path.resolve(args.output);await fs.mkdir(root,{mode:0o700});
 const base=await json(args.base);
 const [providerId,provider]=Object.entries(base.providers).find(([,p])=>p.adapter==='mswarm')??[];

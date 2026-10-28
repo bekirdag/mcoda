@@ -41,6 +41,8 @@ def add(domain, family, i, prompt, expected=None, *, files=None, history=None, c
             grade["alternatives"] = [{"answer": "meter"}]
     if domain == "code_generation" and family == "binary_search_first":
         grade["complexityProbe"] = {"kind": "binary_search_first", "size": 65536, "maxIndexedReads": 128}
+    if code and family in ("rotate_array", "numeric_sort", "immutable_reverse"):
+        grade["distinctOutputFrom"] = ["items"] if family == "rotate_array" else []
     GRADES.append(grade)
 
 
@@ -300,7 +302,7 @@ def code_family(domain, family, description, reference, input_factory, expected_
         if bug:
             instruction = f"Debug this implementation and return its corrected complete ES module:\n```js\n{bug}\n```\nContract: {description}\n"
         instruction += f"The required exported function is solve(input). No dependencies, I/O or workspace edits. Return one JavaScript code block only. Example input: {json.dumps(example, ensure_ascii=False)}. Do not special-case the example."
-        add(domain, family, i, instruction, code={"tests": [{"input": x, "expected": expected_fn(x)} for x in cases], "reference": reference, "preserveInput": any(term in description for term in ["preserve input", "without mutating input", "leaving input unchanged"])})
+        add(domain, family, i, instruction, code={"tests": [{"input": x, "expected": expected_fn(x)} for x in cases], "reference": reference, "preserveInput": any(term in description.lower() for term in ["preserve input", "without mutating input", "leaving input unchanged", "do not mutate"])})
 
 
 # References are host-side authoring aids, never included in model inputs.

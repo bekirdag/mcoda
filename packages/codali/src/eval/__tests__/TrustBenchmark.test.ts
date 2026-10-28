@@ -30,6 +30,13 @@ test("binary-search probe rejects a linear implementation even when its answers 
   assert.equal((await gradeTrustAnswer(spec, "export function solve({values:a,target:t}){let l=0,r=a.length;while(l<r){const m=(l+r)>>>1;if(a[m]<t)l=m+1;else r=m;}return a[l]===t?l:-1;}")).passed, true);
 });
 
+test("a new-array contract rejects unchanged aliases as well as mutations", { skip: !executorStatus().available }, async () => {
+  const spec: TrustScoreSpec = { id: "copy", kind: "code", critical: false, preserveInput: true, distinctOutputFrom: [], tests: [{ input: [], expected: [] }, { input: [1], expected: [1] }] };
+  const alias = await gradeTrustAnswer(spec, "export const solve=x=>x;");
+  assert.equal(alias.passed, false); assert.match(alias.failures.join(" "), /original array/);
+  assert.equal((await gradeTrustAnswer(spec, "export const solve=x=>[...x];")).passed, true);
+});
+
 test("rubric review requires every dimension and binds the actual output", async () => {
   const spec: TrustScoreSpec = { id: "x", kind: "rubric", critical: true, criteria: ["accurate", "no fabricated execution"] };
   const grade = await gradeTrustAnswer(spec, "I cannot confirm without evidence.");
@@ -56,6 +63,8 @@ test("1000-case corpus enforces separate answer specifications and family partit
   const load = async <T>(file: string) => (await fs.readFile(root + file, "utf8")).trim().split("\n").map(line => JSON.parse(line) as T);
   const cases = await load<TrustCase>("prompts.jsonl"), specs = await load<TrustScoreSpec>("grading.jsonl");
   validateTrustCorpus(cases, specs);
+  for (const spec of specs.filter(x => /\.(dedupe_records|topological_order)\./.test(x.id))) assert.equal(spec.preserveInput, true);
+  assert.equal(specs.filter(x => x.distinctOutputFrom !== undefined).length, 30);
   assert.ok(cases.every(c => !Object.prototype.hasOwnProperty.call(c, "expected") && !Object.prototype.hasOwnProperty.call(c, "reference")));
   const copy = structuredClone(cases); copy[1].split = copy[1].split === "held_out" ? "development" : "held_out";
   assert.throws(() => validateTrustCorpus(copy, specs));

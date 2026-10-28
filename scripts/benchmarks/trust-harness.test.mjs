@@ -7,9 +7,14 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {orchestrationHash} from '../../packages/codali/dist/config/OrchestrationConfig.js';
-import {benchmarkFingerprint,readPublicCorpus,writeNew,jsonl} from './trust-common.mjs';
+import {argumentsMap,benchmarkFingerprint,readPublicCorpus,writeNew,jsonl} from './trust-common.mjs';
 const exec=promisify(execFile);
 const driver=fileURLToPath(new URL('./run-trust-benchmark.mjs',import.meta.url));
+test('argument parsing rejects duplicate and unknown options before admission',()=>{
+  assert.deepEqual(argumentsMap(['--arms','raw_direct'],['arms']),{arms:'raw_direct'});
+  assert.throws(()=>argumentsMap(['--arms','raw_direct','--arms','codali_selected']),/unique/);
+  assert.throws(()=>argumentsMap(['--arm','raw_direct'],['arms']),/Unknown argument/);
+});
 async function fixture(t){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'codali-trust-harness-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const config={schemaVersion:1,profile:'test-no-live-model',providers:{local:{adapter:'openai-compatible',baseUrl:'http://127.0.0.1:1/v1'}},models:{model:{provider:'local',catalogId:'test',revision:'1',operations:['chat.completions'],contextWindow:32768,maxOutputTokens:2048,supportsTools:true}},bindings:{lead:{candidates:['model']},router:{useBinding:'lead'},reviewer:{useBinding:'lead'}}};
@@ -43,4 +48,13 @@ test('held-out execution refuses a missing freeze before creating a run',async t
   const f=await fixture(t);
   await assert.rejects(exec(process.execPath,[driver,'--config',f.configPath,'--output',path.join(f.root,'held-out'),'--split','held_out','--limit','1'],{timeout:20000}),/previously frozen selection/);
   await assert.rejects(fs.stat(path.join(f.root,'held-out')),error=>error.code==='ENOENT');
+});
+
+test('retry admission requires an explicit reason and matching retained original',async t=>{
+  const f=await fixture(t);const retry=path.join(f.root,'retry');
+  const args=[driver,'--config',f.configPath,'--output',retry,'--ids',f.task.id,'--arms','codali_initial','--retry-of',f.output];
+  await assert.rejects(exec(process.execPath,args,{timeout:20000}),/both --retry-of/);
+  await fs.writeFile(path.join(f.output,'ledger.jsonl'),'');
+  await assert.rejects(exec(process.execPath,[...args,'--retry-reason','Investigated preflight failure'],{timeout:20000}),/one retained outcome/);
+  await assert.rejects(fs.stat(retry),error=>error.code==='ENOENT');
 });
