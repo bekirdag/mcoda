@@ -185,6 +185,9 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.send('/artifacts export pixel user export.png\r'); ui.pump(.2)
         ui.send(b'\x1b[C\r'); ui.wait(lambda: (ui.workspace / 'user export.png').exists())
         assert (ui.workspace / 'user export.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+        # The file precedes the durable receipt and result view. Escape must
+        # close that view before the next command is typed.
+        ui.contains('Id: pixel-artifact')
         ui.send(b'\x1b'); ui.pump(.2)
         ui.send('/tasks cancel render\r'); ui.contains('Cancel Requested: true')
         ui.send(b'\x1b'); ui.pump(.2); ui.finish(command='/exit')
