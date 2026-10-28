@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Honor `interaction.answerBinding` for read-only inspections as well as explanations.
+
 - Prepare codali.17 with history-aware interaction dispatch before repository
   execution. Greetings and questions no longer create coding tasks or reviewer
   loops; configured small-model prompts prepare bounded stronger-model requests.

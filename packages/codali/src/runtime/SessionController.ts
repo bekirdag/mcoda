@@ -1268,7 +1268,7 @@ export class SessionController {
         signal.throwIfAborted();
         const result = await this.run(prepared); content = result.content; completed = result.completed;
       } else if (decision.mode === "inspect") {
-        content = await this.inspectInteraction(prepared, settings.answerPrompt, signal);
+        content = await this.inspectInteraction(prepared, settings.answerPrompt, settings.answerBinding, signal);
       } else if (decision.mode === "reason") {
         await this.emit("interaction_progress", { message: "Preparing a more detailed answer" }, false);
         const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
@@ -1292,7 +1292,7 @@ export class SessionController {
     }
   }
 
-  private async inspectInteraction(prepared: string, answerPrompt: string, signal: AbortSignal): Promise<string> {
+  private async inspectInteraction(prepared: string, answerPrompt: string, answerBinding: string, signal: AbortSignal): Promise<string> {
     await this.emit("interaction_progress", { message: "Looking up the facts needed for your answer" }, false);
     this.runContext = this.options.runContext ?? await new LocalConfigRunContextResolver().resolve({ workspaceRoot: this.workspaceRoot });
     signal.throwIfAborted();
@@ -1302,7 +1302,7 @@ export class SessionController {
       !tool.name.startsWith("work_") && !tool.name.startsWith("docdex_") && !["prepare_edit", "tools_enable", "tools_discover", "delegate_helper"].includes(tool.name)) registry.register(tool);
     const limits = this.limits();
     const result = await runCodaliTask({ task: prepared, messages: [{ role: "system", content: `${answerPrompt}\nThis is a read-only investigation. Use the available read tools for current facts, cite paths, and answer the question. When the user names a file, read it directly before listing directories. Do not create tasks or request verification. If available tools cannot establish an answer, explain what is missing. Never claim to have searched the web without a web tool.` }, { role: "user", content: prepared }],
-      workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: "configured:lead" }, providerInstance: this.provider("lead", false), toolRegistry: registry, signal,
+      workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: `configured:${answerBinding}` }, providerInstance: this.provider(answerBinding, false), toolRegistry: registry, signal,
       policy: { mode: "tool_loop", allowWrites: false, allowShell: false, allowDestructiveOperations: false, allowOutsideWorkspace: false, maxSteps: limits.maxSteps, maxToolCalls: limits.maxToolCalls, maxTokens: limits.maxOutputTokens, timeoutMs: limits.timeoutMs, maxToolResultChars: 6000 },
       streaming: { enabled: true }, subagents: { enabled: false },
       toolContext: { signal, beforeTool: (tool, args) => this.beforeTool(tool, args), afterTool: (tool, args, result) => this.afterTool(tool, args, result),

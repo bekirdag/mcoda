@@ -195,5 +195,32 @@
     "Mode/schema checks alone do not establish answer correctness",
     "Live model latency includes shared service queuing",
     "Existing rollout, broader long-workflow quality, human media review and24hcanary gates remain open"
-  ]
+  ],
+  "installedPreview": {
+    "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
+    "version": "0.1.135-codali.17",
+    "command": "~/.local/bin/codali-next",
+    "greeting": {
+      "tokens": 478,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "elapsedMs": 3265,
+      "workspaceUnchanged": true
+    },
+    "additionalConversationCases": {
+      "passed": 6,
+      "total": 6,
+      "totalTokens": 5688,
+      "covered": [
+        "greeting",
+        "conversation acknowledgement",
+        "history recall",
+        "planning explanation",
+        "read-only workspace inspection",
+        "thanks"
+      ],
+      "report": "/home/wodo/.local/state/codali-intent-eval/installed17-conversation-results.json"
+    },
+    "compatibility": "Shared configuration retains the new intent model/binding and omits redundant interaction defaults; both .15 and .17 validators accept it with identical effective .17 settings."
+  }
 }

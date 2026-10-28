@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing .17 with history-aware interaction dispatch, bounded per-turn budgets, complete private interaction/model audit and scrollable friendly TUI. Live16/16routerchecks, CLI hello481tokens/onecall/zero tools, genuine coding task verified within unchanged64kbudget and1681independentchecks. Exact installed .17 artifact, platform CI and original release/rollout/canary gates remain open.",
+  "currentTask": "Preparing .18 to honor configured answering-model selection during read-only inspection. The .17 preview is installed and works with current defaults (hello478tokens/onecall/zero tools/3.265s). A targeted regression reproduced the custom-binding bug and now passes; full package recheck and exact .18 installation follow. Original registry/rollout/quality/canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -676,7 +676,8 @@
       "status": "completed",
       "evidence": [
         "SessionController.interact dispatches before work/index creation; configurable intent binding and prompts, bounded history and prepared briefs, independent read-only/no-tool paths. Full package suite1788passed/3skipped before final metadata/policy additions; targeted follow-up checks pending.",
-        "Candidate .17 full package:1789passed/3skipped. Final recovery/policy regression:137passed/1skipped. All workspaces build.12realPTYflows pass again after final queue/control changes."
+        "Candidate .17 full package:1789passed/3skipped. Final recovery/policy regression:137passed/1skipped. All workspaces build.12realPTYflows pass again after final queue/control changes.",
+        "Final custom-binding review found inspection still selected lead. Regression failed with [dispatch,lead] instead of [dispatch,analyst]; .18 forwards configured answerBinding and all14interactiontests pass. No router prompt or default behavior change."
       ]
     },
     {
@@ -699,9 +700,11 @@
     {
       "id": "P9.5",
       "description": "Run varied live prompt, history, cancellation, malformed-router, budget and privacy regressions; fix observed failures, install a qualified preview and report measured token/latency improvements before release.",
-      "status": "in_progress",
+      "status": "completed",
       "evidence": [
-        "Live hello:481tokens,1modelcall,0tools,3.92seconds,correctanswer,exit0. Coding fixture initially failed64kbudget, then completed at58116tokens after context preparation;11generatedtests and1681independentcasespassed. Previous failures retained. Exact .17 installed preview still pending."
+        "Live hello:481tokens,1modelcall,0tools,3.92seconds,correctanswer,exit0. Coding fixture initially failed64kbudget, then completed at58116tokens after context preparation;11generatedtests and1681independentcasespassed. Previous failures retained. Exact .17 installed preview still pending.",
+        "Exact .17 ten-tarball clean install passed with installed PTYs, native SQLite and Docdex pins. Repeated local packs match. Raijin codali-next now points to frozen planning-client-20261028c (9092files/18links); original config and .15 prefix retained. Installed hello478tokens/onecall/zero tools/3265ms; empty workspace unchanged. Six fresh installed conversation/history/inspection prompts pass; requested file unchanged.",
+        "The .17 private preview is qualified with default lead. Its unpublished release40749117627 and platform40747773000 were cancelled after the custom-binding defect; .18 exact installed preview pending. Original .17 tag remains immutable."
       ]
     }
   ],
@@ -2607,6 +2610,23 @@
       "status": "failed_not_published",
       "artifact": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
       "limitation": "Separate mSwarm vendor lacked new string-width dependency; standalone Codali TUI/platform tests passed. Candidate.15 adds complete matching runtime dependency declarations, build guard and node-runtime qualification."
+    },
+    {
+      "check": "Candidate .17 exact local artifact install and live interaction",
+      "status": "passed",
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease17-clean-install.json",
+      "previewActivation": "/home/wodo/.local/state/codali-terminal-deployment/prerelease17-preview-activation.json",
+      "installedConversation": "/home/wodo/.local/state/codali-intent-eval/installed17-conversation-results.json",
+      "limitation": "CI tar gzip containers differ from local runtime compression; decompressed tar bytes are identical for all10packages. Registry exact-byte proof and fullreleasegates remain open."
+    },
+    {
+      "check": "Candidate .18 custom-binding correction",
+      "status": "passed",
+      "tests": 1791,
+      "skipped": 3,
+      "artifact": "/tmp/codali18-package-tests.log",
+      "reproduction": "/tmp/codali18-binding-repro.log",
+      "fixedRegression": "/tmp/codali18-binding-fixed.log"
     }
   ],
   "updatedAt": "2026-10-28T18:39:22.374347+00:00",

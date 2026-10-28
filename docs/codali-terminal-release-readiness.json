@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T18:30:37.976440+00:00",
+  "updatedAt": "2026-10-28T18:50:50.040200+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -640,6 +640,51 @@
         "path": "docs/codali-terminal-build-status.json",
         "jsonPointer": "/tasks/69/evidence"
       }
+    },
+    {
+      "id": "P9.1",
+      "description": "Research current Aider, OpenCode, Goose and RouteLLM primary docs/source; benchmark resident0.6B/1.7B/4B models on history-sensitive intent and answer cases before choosing workflow.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/70/evidence"
+      }
+    },
+    {
+      "id": "P9.2",
+      "description": "Implement configurable history-aware capability routing and prompt preparation before indexing or work creation. Bound classification/answer/inspection, preserve original requests and active goals, fail safely on invalid output; use no hardcoded request taxonomy.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/71/evidence"
+      }
+    },
+    {
+      "id": "P9.3",
+      "description": "Log every terminal request, actual model input/output and final response/error with correlation, prompt/config version, usage and timing in private redacted durable logs; preserve existing sessions.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/72/evidence"
+      }
+    },
+    {
+      "id": "P9.4",
+      "description": "Make TUI transcript scrollable with wheel and keyboard, stable while streaming; provide friendly progress/errors and polished help/usage/command views.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/73/evidence"
+      }
+    },
+    {
+      "id": "P9.5",
+      "description": "Run varied live prompt, history, cancellation, malformed-router, budget and privacy regressions; fix observed failures, install a qualified preview and report measured token/latency improvements before release.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/74/evidence"
+      }
     }
   ],
   "openGates": [
@@ -647,7 +692,7 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "FullTUI .15 remains installed as codali-next for immediate preview. Unpublished release40724251209 was superseded by .16 source0108a36 with complete command additions. .16 Linux Node20/22 and local installed TUI checks pass; macOS, exact release artifacts and registry verification are pending."
+      "current": "Qualified .17 preview installed on Raijin.12realPTYflows and all installed clean-install terminal checks pass locally; six-platform CI40747773000 remains running."
     },
     {
       "id": "long-workflows",
@@ -692,8 +737,9 @@
     },
     {
       "id": "history-aware-interaction",
-      "status": "open",
-      "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate."
+      "status": "completed",
+      "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate.",
+      "current": "P9.1-P9.5 complete for installedpreview; measured/configurable intent, budgets, audit and scrollable TUI validated at00e087c. Broader fullreleasegates remain separate."
     }
   ],
   "failureTaxonomy": [
@@ -934,7 +980,7 @@
     "node": "N",
     "nodeVersion": "0.1.135-codali.11",
     "globalStableCli": "0.1.134",
-    "plannedNode": "Q/.16 after exact publication and qualification",
+    "plannedNode": "S/.18 after exact publication and qualification; no node service changes from preview activation",
     "stagedBackend": null,
     "canaryStarted": false,
     "backendRollout": "n2 request-preserving rollback",
@@ -942,21 +988,18 @@
     "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4"
   },
   "pendingCandidate": {
-    "version": "0.1.135-codali.16",
-    "status": "held_intent_orchestration_failure",
-    "sourceCommit": "0108a366408f6c05ee73da2797aaf590e7644e56",
-    "changes": "Fresh sessions, cancellation fences, CLI aliases, plan diff, verified artifact actions and live-entitled shared model selection on top of the full TUI",
-    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862067",
-    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862477",
-    "qualification": [
-      "Linux Node20/22 platform checks",
-      "local clean install including11expandedPTYflows",
-      "General CI40734862477 Linuxfullmonorepo andWindowscompatibility passed"
-    ],
-    "privatePreviewVersion": "0.1.135-codali.15",
+    "version": "0.1.135-codali.18",
+    "status": "local_qualification",
+    "sourceCommit": null,
+    "privatePreviewVersion": "0.1.135-codali.17",
     "privateCliCommand": "~/.local/bin/codali-next",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40736246861",
-    "releaseDisposition": "Release40736246861cancelled before publishing after reproduced119088-token greeting failure; .16tag remains immutable."
+    "changes": "Honor configured answering binding for read-only inspection; preserve all .17 interaction/TUI improvements",
+    "qualification": [
+      "Regression reproduces .17 inspection binding failure",
+      "All14interactiontests pass after correction",
+      "Allworkspacesbuild",
+      "Full Codali package1791passed/3optional skips/0failures"
+    ]
   },
   "failedCandidate": {
     "version": "0.1.135-codali.14",
@@ -1004,13 +1047,53 @@
         "six native candidate checks per host"
       ],
       "reason": "Followup .16 includes the completed terminal command additions; retain private .15 preview and all partial qualification evidence."
+    },
+    {
+      "version": "0.1.135-codali.16",
+      "status": "held_intent_orchestration_failure",
+      "sourceCommit": "0108a366408f6c05ee73da2797aaf590e7644e56",
+      "changes": "Fresh sessions, cancellation fences, CLI aliases, plan diff, verified artifact actions and live-entitled shared model selection on top of the full TUI",
+      "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862067",
+      "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862477",
+      "qualification": [
+        "Linux Node20/22 platform checks",
+        "local clean install including11expandedPTYflows",
+        "General CI40734862477 Linuxfullmonorepo andWindowscompatibility passed",
+        "All six standalone platform checks completed successfully before .16 was superseded for greeting failure"
+      ],
+      "privatePreviewVersion": "superseded by .17",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40736246861",
+      "releaseDisposition": "Release40736246861cancelled before publishing after reproduced119088-token greeting failure; .16tag remains immutable."
+    },
+    {
+      "version": "0.1.135-codali.17",
+      "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
+      "status": "superseded_before_publication",
+      "privatePreviewVersion": "0.1.135-codali.17",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028c",
+      "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40747773000",
+      "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40747773238",
+      "qualification": [
+        "Exact local ten-tarball clean installation including installed PTYs/nativeSQLite/Docdexruntime pins",
+        "Live greeting478tokens/onecall/zero tools/3265ms",
+        "Six additional installed conversation/history/inspection prompts pass; file unchanged",
+        "Local repeated compressed artifacts match; CI decompressed tar contents identical but gzip containers differ",
+        "General CI40747773238 passed full Linux suite and Windows compatibility; shared config validated with both .15 and .17 readers"
+      ],
+      "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease17-preview-activation.json",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40749117627",
+      "reason": "Inspection ignored custom interaction.answerBinding; reproduced and corrected in .18. .17 preview remains available with default lead.",
+      "releaseDisposition": "Release40749117627 cancelled before publication; immutable tag retained"
     }
   ],
   "unreleasedInteractionCorrection": {
-    "version": "0.1.135-codali.17",
-    "status": "local_qualification",
+    "version": "0.1.135-codali.18",
+    "status": "final_binding_correction_under_qualification",
     "report": "docs/codali-interaction-evaluation.json",
     "releaseReady": false,
-    "installedPreview": "0.1.135-codali.15 until exact .17 artifact is checked"
+    "installedPreview": "0.1.135-codali.17",
+    "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8"
   }
 }

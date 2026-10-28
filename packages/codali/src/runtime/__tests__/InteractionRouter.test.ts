@@ -100,6 +100,24 @@ test("repository questions can read files but cannot write, run shell or create 
   assert.equal(controller.state, undefined); assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "forty two");
 });
 
+test("configured interaction bindings apply to both explanation and inspection", async t => {
+  for (const mode of ["reason", "inspect"] as const) {
+    const config = structuredClone(base);
+    config.bindings.dispatch = { useBinding: "lead" };
+    config.bindings.analyst = { useBinding: "lead" };
+    config.interaction = { routerBinding: "dispatch", answerBinding: "analyst" };
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true,
+      generate: async () => calls++ === 0 ? decision(mode, "Answer the user's question.") : reply("The requested answer.") }, config);
+    const result = await controller.interact("Answer my question without making changes.");
+    assert.equal(result.mode, mode);
+    assert.equal(result.content, "The requested answer.");
+    assert.equal(controller.state, undefined);
+    assert.deepEqual(events.filter(event => event.type === "model_request").map(event => event.data.binding),
+      ["dispatch", "analyst"], `${mode} must use the configured answering binding`);
+  }
+});
+
 test("later turns have fresh budgets without losing cumulative usage", async t => {
   const config = structuredClone(base); config.interaction = { maxModelCalls: 1, maxTotalTokens: 2000 };
   const { controller } = await fixture(t, { name: "fixture", generate: async () => decision("answer", "Hello.") }, config);
