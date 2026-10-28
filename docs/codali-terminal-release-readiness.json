@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T18:50:50.040200+00:00",
+  "updatedAt": "2026-10-28T19:17:27.060393+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -692,7 +692,7 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "Qualified .17 preview installed on Raijin.12realPTYflows and all installed clean-install terminal checks pass locally; six-platform CI40747773000 remains running."
+      "current": "Qualified .18preview installed onRaijin; all30exact-artifactinstallationchecks pass including12PTYflows. Six-platform CI40752167133 and exactreleaseartifactqualification remain inprogress."
     },
     {
       "id": "long-workflows",
@@ -739,7 +739,7 @@
       "id": "history-aware-interaction",
       "status": "completed",
       "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate.",
-      "current": "P9.1-P9.5 complete for installedpreview; measured/configurable intent, budgets, audit and scrollable TUI validated at00e087c. Broader fullreleasegates remain separate."
+      "current": "P9.1-P9.5 complete for installed .18preview at e60d623. Measured/configurable intent, prepared prompts, budgets, private audit and scrollable TUI validated; custominspectionmodelbinding now covered. Broader releasegates remain separate."
     }
   ],
   "failureTaxonomy": [
@@ -989,17 +989,25 @@
   },
   "pendingCandidate": {
     "version": "0.1.135-codali.18",
-    "status": "local_qualification",
-    "sourceCommit": null,
-    "privatePreviewVersion": "0.1.135-codali.17",
+    "status": "preview_installed_platform_qualification",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "privatePreviewVersion": "0.1.135-codali.18",
     "privateCliCommand": "~/.local/bin/codali-next",
     "changes": "Honor configured answering binding for read-only inspection; preserve all .17 interaction/TUI improvements",
     "qualification": [
       "Regression reproduces .17 inspection binding failure",
       "All14interactiontests pass after correction",
       "Allworkspacesbuild",
-      "Full Codali package1791passed/3optional skips/0failures"
-    ]
+      "Full Codali package1791passed/3optional skips/0failures",
+      "Final .18exactten-tarballinstall30checks pass,9092files/18links frozen",
+      "Installed hello480tokens/onecall/zero tools/2653ms; actualcustomSukuanswerbinding check passes",
+      "All14isolated S/.18drain/rollbackfailurechecks pass; production node services unchanged"
+    ],
+    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028e",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167133",
+    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167290",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
+    "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
   },
   "failedCandidate": {
     "version": "0.1.135-codali.14",
@@ -1090,10 +1098,10 @@
   ],
   "unreleasedInteractionCorrection": {
     "version": "0.1.135-codali.18",
-    "status": "final_binding_correction_under_qualification",
+    "status": "implemented_tested_preview_installed",
     "report": "docs/codali-interaction-evaluation.json",
     "releaseReady": false,
-    "installedPreview": "0.1.135-codali.17",
-    "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8"
+    "installedPreview": "0.1.135-codali.18",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7"
   }
 }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "date": "2026-10-28",
-  "candidate": "0.1.135-codali.17",
+  "candidate": "0.1.135-codali.18",
   "published": false,
   "model": "mcoda-raijin-qwen3-4b-instruct-2507",
   "promptVersion": "interaction-v8",
@@ -196,31 +196,58 @@
     "Live model latency includes shared service queuing",
     "Existing rollout, broader long-workflow quality, human media review and24hcanary gates remain open"
   ],
+  "installedPreviewHistory": [
+    {
+      "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
+      "version": "0.1.135-codali.17",
+      "command": "~/.local/bin/codali-next",
+      "greeting": {
+        "tokens": 478,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "elapsedMs": 3265,
+        "workspaceUnchanged": true
+      },
+      "additionalConversationCases": {
+        "passed": 6,
+        "total": 6,
+        "totalTokens": 5688,
+        "covered": [
+          "greeting",
+          "conversation acknowledgement",
+          "history recall",
+          "planning explanation",
+          "read-only workspace inspection",
+          "thanks"
+        ],
+        "report": "/home/wodo/.local/state/codali-intent-eval/installed17-conversation-results.json"
+      },
+      "compatibility": "Shared configuration retains the new intent model/binding and omits redundant interaction defaults; both .15 and .17 validators accept it with identical effective .17 settings."
+    }
+  ],
   "installedPreview": {
-    "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
-    "version": "0.1.135-codali.17",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "version": "0.1.135-codali.18",
     "command": "~/.local/bin/codali-next",
     "greeting": {
-      "tokens": 478,
+      "tokens": 480,
       "modelCalls": 1,
       "toolCalls": 0,
-      "elapsedMs": 3265,
+      "elapsedMs": 2653,
       "workspaceUnchanged": true
     },
-    "additionalConversationCases": {
-      "passed": 6,
-      "total": 6,
-      "totalTokens": 5688,
-      "covered": [
-        "greeting",
-        "conversation acknowledgement",
-        "history recall",
-        "planning explanation",
-        "read-only workspace inspection",
-        "thanks"
-      ],
-      "report": "/home/wodo/.local/state/codali-intent-eval/installed17-conversation-results.json"
+    "customAnswerBinding": {
+      "passed": true,
+      "router": "mcoda-raijin-qwen3-4b-instruct-2507",
+      "answer": "mcoda-sukunahikona-qwen-latest-flash-next",
+      "tokens": 2308,
+      "modelCalls": 3,
+      "toolCalls": 1,
+      "elapsedMs": 12826,
+      "fileUnchanged": true,
+      "report": "/home/wodo/.local/state/codali-intent-eval/installed18-custom-binding-result.json"
     },
-    "compatibility": "Shared configuration retains the new intent model/binding and omits redundant interaction defaults; both .15 and .17 validators accept it with identical effective .17 settings."
+    "qualification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-clean-install-final.json",
+    "activation": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
   }
 }

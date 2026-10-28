@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Preparing .18 to honor configured answering-model selection during read-only inspection. The .17 preview is installed and works with current defaults (hello478tokens/onecall/zero tools/3.265s). A targeted regression reproduced the custom-binding bug and now passes; full package recheck and exact .18 installation follow. Original registry/rollout/quality/canary gates remain open.",
+  "currentTask": "Qualified .18 preview at e60d623 is installed on Raijin as codali-next. Installed hello480tokens/onecall/zero tools/2.653s; custom read-only answering binding verified through Suku.1791package tests and30exact-artifact installation checks pass. Prerelease/platform CI, registry proof and original rollout/quality/canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -704,7 +704,8 @@
       "evidence": [
         "Live hello:481tokens,1modelcall,0tools,3.92seconds,correctanswer,exit0. Coding fixture initially failed64kbudget, then completed at58116tokens after context preparation;11generatedtests and1681independentcasespassed. Previous failures retained. Exact .17 installed preview still pending.",
         "Exact .17 ten-tarball clean install passed with installed PTYs, native SQLite and Docdex pins. Repeated local packs match. Raijin codali-next now points to frozen planning-client-20261028c (9092files/18links); original config and .15 prefix retained. Installed hello478tokens/onecall/zero tools/3265ms; empty workspace unchanged. Six fresh installed conversation/history/inspection prompts pass; requested file unchanged.",
-        "The .17 private preview is qualified with default lead. Its unpublished release40749117627 and platform40747773000 were cancelled after the custom-binding defect; .18 exact installed preview pending. Original .17 tag remains immutable."
+        "The .17 private preview is qualified with default lead. Its unpublished release40749117627 and platform40747773000 were cancelled after the custom-binding defect; .18 exact installed preview pending. Original .17 tag remains immutable.",
+        "Final .18 at e60d623 installed as codali-next. All30clean-installchecks pass; installedhello480tokens/onecall/zerotools/2653ms. ActualconfiguredSukuanswerbinding passesreadonlyfilecheck2308tokens/3calls/1tool; file unchanged. First packaging failure was a PTYtest race (Escape before result view), preserved and fixed by waiting for visible result; runtime artifact bytes unchanged."
       ]
     }
   ],
@@ -2627,6 +2628,14 @@
       "artifact": "/tmp/codali18-package-tests.log",
       "reproduction": "/tmp/codali18-binding-repro.log",
       "fixedRegression": "/tmp/codali18-binding-fixed.log"
+    },
+    {
+      "check": "Final .18 installed preview and custom model selection",
+      "status": "passed",
+      "checks": 30,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-clean-install-final.json",
+      "liveCustomBinding": "/home/wodo/.local/state/codali-intent-eval/installed18-custom-binding-result.json",
+      "activation": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
     }
   ],
   "updatedAt": "2026-10-28T18:39:22.374347+00:00",
