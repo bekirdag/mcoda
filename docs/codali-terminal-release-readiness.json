@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T19:17:27.060393+00:00",
+  "updatedAt": "2026-10-28T20:17:04.443552+00:00",
   "candidate": {
-    "version": "0.1.135-codali.13",
-    "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
+    "version": "0.1.135-codali.18",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
     "publishedChannel": "next",
     "stableVersion": "0.1.134",
-    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease13-registry-artifacts/verification.json"
+    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-registry-artifacts/verification.json"
   },
   "releaseReady": false,
   "requirements": [
@@ -692,13 +692,13 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "Qualified .18preview installed onRaijin; all30exact-artifactinstallationchecks pass including12PTYflows. Six-platform CI40752167133 and exactreleaseartifactqualification remain inprogress."
+      "current": "Published .18 preview is installed on Raijin. All six Linux/macOS Node20/22 exact-artifact installations passed 30 checks including 12 PTY flows. Actual .18 SSH qualification remains open; earlier .15 SSH evidence is retained."
     },
     {
       "id": "long-workflows",
       "status": "open",
       "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
-      "current": "AG exact.11: service-adapters passes105m31s (duration below2h); billing and localized-export fail budgets despite4/4module grades; data-delivery stage3 marks goal complete at13:10Oct27 but has no final result/independent grade. No active runners; four qualified journeys remain open."
+      "current": "AM started 2026-10-28T20:15:35Z against exact .18 public artifacts and node S on both hosts: billing-audit and service-adapters active, then data-delivery and localized-export if each first case passes. Three inference stages each receive 1.6M tokens/170 model calls/341 tool calls/170 steps, keeping aggregate within the old 4.8M/512/1024/512 ceilings. Stage allocation differs from prior lifetime-budget runs; this is diagnostic, not a matched comparison. Original failures retained; no multi-hour pass claim."
     },
     {
       "id": "broad-quality",
@@ -710,7 +710,7 @@
       "id": "context-and-failover",
       "status": "open",
       "required": "Actual context limit and cross-host smaller compatible context failover with pinned embeddings.",
-      "current": "Node N actual native context refusals passed on both hosts for streaming/nonstreaming, one submission and canonical pre-admission zero accounting. Both Strata windows are32768; resident smaller helpers lack advertised tools. Cross-host smaller-compatible-context qualification remains open."
+      "current": "Node S/.18 actual native context refusals passed on both hosts for streaming/nonstreaming: one submission, one canonical invocation and complete zero-token accounting. Both Strata windows remain 32768. Cross-host smaller-compatible-context and pinned embedding migration qualification remain open."
     },
     {
       "id": "tenant-coexistence",
@@ -739,7 +739,7 @@
       "id": "history-aware-interaction",
       "status": "completed",
       "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate.",
-      "current": "P9.1-P9.5 complete for installed .18preview at e60d623. Measured/configurable intent, prepared prompts, budgets, private audit and scrollable TUI validated; custominspectionmodelbinding now covered. Broader releasegates remain separate."
+      "current": "P9.1-P9.5 complete in published .18 at e60d623, installed as codali-next. Measured configurable intent, prepared prompts, per-turn budgets, private audit, scrollable TUI and custom inspection binding validated. Broader release gates remain separate."
     }
   ],
   "failureTaxonomy": [
@@ -977,37 +977,25 @@
   "deployedEnvironment": {
     "backend": "N",
     "backendSource": "54753f5a22a9b93d11e2671b37e8350a75ba33b0",
-    "node": "N",
-    "nodeVersion": "0.1.135-codali.11",
+    "node": "S",
+    "nodeVersion": "0.1.135-codali.18",
     "globalStableCli": "0.1.134",
-    "plannedNode": "S/.18 after exact publication and qualification; no node service changes from preview activation",
+    "plannedNode": null,
     "stagedBackend": null,
     "canaryStarted": false,
     "backendRollout": "n2 request-preserving rollback",
     "bdyaCapacityPatch": "deployed v2",
-    "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4"
-  },
-  "pendingCandidate": {
-    "version": "0.1.135-codali.18",
-    "status": "preview_installed_platform_qualification",
-    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
-    "privatePreviewVersion": "0.1.135-codali.18",
-    "privateCliCommand": "~/.local/bin/codali-next",
-    "changes": "Honor configured answering binding for read-only inspection; preserve all .17 interaction/TUI improvements",
-    "qualification": [
-      "Regression reproduces .17 inspection binding failure",
-      "All14interactiontests pass after correction",
-      "Allworkspacesbuild",
-      "Full Codali package1791passed/3optional skips/0failures",
-      "Final .18exactten-tarballinstall30checks pass,9092files/18links frozen",
-      "Installed hello480tokens/onecall/zero tools/2653ms; actualcustomSukuanswerbinding check passes",
-      "All14isolated S/.18drain/rollbackfailurechecks pass; production node services unchanged"
+    "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4",
+    "nodeSource": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "nodeRuntimePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028f",
+    "nodeActivationEvidence": [
+      "/home/wodo/.local/state/codali-terminal-deployment/node-upgrade-s-raijin/activation.json",
+      "/home/wodo/.local/state/codali-terminal-deployment/node-upgrade-s-suku/activation.json"
     ],
-    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028e",
-    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167133",
-    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167290",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
-    "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
+    "nodeQualificationEvidence": [
+      "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/raijin-postdeploy-matrix-node-s.json",
+      "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/suku-postdeploy-matrix-node-s.json"
+    ]
   },
   "failedCandidate": {
     "version": "0.1.135-codali.14",
@@ -1017,25 +1005,6 @@
     "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40718355640",
     "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
     "reason": "Release tests found missing TUI dependency in the separately vendored mSwarm runtime. Failed tag.14 retained; no public packages published by this run."
-  },
-  "unreleasedTerminalFollowups": {
-    "sourceCommit": "f944dbd",
-    "changes": [
-      "fresh-session /new and /clear",
-      "responsive /stop and /exit with cancellation fencing",
-      "documented output/permission/config-validation syntax",
-      "explicit goal amendments without inference",
-      "saved plan revision diff without inference",
-      "verified media export/open and owned-job cancellation",
-      "live-entitled shared model selection with preview and explicit persistence"
-    ],
-    "validation": [
-      "172 affected regression tests after media actions",
-      "8 focused artifact tests",
-      "3 model-selection tests",
-      "11 expanded PTY flows"
-    ],
-    "includedInCandidate15": false
   },
   "supersededCandidates": [
     {
@@ -1094,11 +1063,65 @@
       "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40749117627",
       "reason": "Inspection ignored custom interaction.answerBinding; reproduced and corrected in .18. .17 preview remains available with default lead.",
       "releaseDisposition": "Release40749117627 cancelled before publication; immutable tag retained"
+    },
+    {
+      "version": "0.1.135-codali.13",
+      "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
+      "publishedChannel": "next",
+      "stableVersion": "0.1.134",
+      "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease13-registry-artifacts/verification.json",
+      "status": "published_superseded_by_18"
     }
   ],
-  "unreleasedInteractionCorrection": {
+  "publishedCandidateQualification": {
     "version": "0.1.135-codali.18",
-    "status": "implemented_tested_preview_installed",
+    "status": "published_verified_and_node_deployed",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "privatePreviewVersion": "0.1.135-codali.18",
+    "privateCliCommand": "~/.local/bin/codali-next",
+    "changes": "Honor configured answering binding for read-only inspection; preserve all .17 interaction/TUI improvements",
+    "qualification": [
+      "Regression reproduces .17 inspection binding failure",
+      "All14interactiontests pass after correction",
+      "Allworkspacesbuild",
+      "Full Codali package1791passed/3optional skips/0failures",
+      "Final .18exactten-tarballinstall30checks pass,9092files/18links frozen",
+      "Installed hello480tokens/onecall/zero tools/2653ms; actualcustomSukuanswerbinding check passes",
+      "All14isolated S/.18drain/rollbackfailurechecks passed before activation.",
+      "All ten npm registry tarballs match exact CI release bytes; both hosts run S/.18 with six public route checks and four native context refusal checks passed."
+    ],
+    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028e",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167133",
+    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167290",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
+    "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json",
+    "platformQualification": "All six exact-artifact installation jobs in release 40752501777 passed. Duplicate standalone 40752167133 was cancelled after Linux checks; general CI40752167290 passed.",
+    "runtimePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028f"
+  },
+  "publishedTerminalFollowups": {
+    "sourceCommit": "f944dbd",
+    "changes": [
+      "fresh-session /new and /clear",
+      "responsive /stop and /exit with cancellation fencing",
+      "documented output/permission/config-validation syntax",
+      "explicit goal amendments without inference",
+      "saved plan revision diff without inference",
+      "verified media export/open and owned-job cancellation",
+      "live-entitled shared model selection with preview and explicit persistence"
+    ],
+    "validation": [
+      "172 affected regression tests after media actions",
+      "8 focused artifact tests",
+      "3 model-selection tests",
+      "11 expanded PTY flows"
+    ],
+    "includedInCandidate15": false,
+    "publishedVersion": "0.1.135-codali.18"
+  },
+  "publishedInteractionCorrection": {
+    "version": "0.1.135-codali.18",
+    "status": "implemented_tested_published",
     "report": "docs/codali-interaction-evaluation.json",
     "releaseReady": false,
     "installedPreview": "0.1.135-codali.18",

@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Qualified .18 preview at e60d623 is installed on Raijin as codali-next. Installed hello480tokens/onecall/zero tools/2.653s; custom read-only answering binding verified through Suku.1791package tests and30exact-artifact installation checks pass. Prerelease/platform CI, registry proof and original rollout/quality/canary gates remain open.",
+  "currentTask": "Published .18 at e60d623 is installed as codali-next on Raijin. All ten registry tarballs match CI; six platform installations and general CI pass. Node S/.18 is deployed on both hosts after accepted-work drains; six public route and four native context checks pass. AM long-workflow diagnostics are running. Broad quality, actual .18 SSH qualification, remaining lifecycle/load checks and canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -22,7 +22,8 @@
         "Logmira production app/worker now embed0.1.135-codali.2. Postdeploy Wodo/Heka each returned15scoped search hits,4module contexts,grounded answers and warnings[]/failures[]; observed direct Strata receipts across both nodes. Broader scheduled/business coverage remains open.",
         "2026-10-27 backendL/recovery2 requalification passed TNL story intelligence (4model/2Docdex calls,8sources,no warnings), BDYA3synthetic stages, and Logmira Wodo/Heka (40/24citations,8/6direct Strata calls,4module contexts each,Docdex,warnings[]/failures[]). TNL current symlink now points to20261026-content-recovery, updated outside this rollout; smoke inspected that actual service. Broader business/scheduled coverage remains open.",
         "BackendM deployed with6public compatibility cases passing; production nodes remainL until staged.10 qualification and graceful activation.",
-        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json."
+        "2026-10-27 node N .11 deployed on both hosts after zero accepted rows and graceful drains; six public route cases and four actual native context rejection receipt cases pass. Exact registry/CI bytes and six platform installations verified; stablelatest/globalCLI stay.134. See node-n-postdeploy-environment.json and native-context-node-n-{host}/result.json.",
+        "2026-10-28 node S/.18 deployed on both hosts after graceful drains and fresh empty accepted-work proofs. Six public direct/gateway/staged checks and four actual native context refusals passed. Backend N and native inference processes unchanged; exact .18 publication artifacts verified."
       ]
     },
     {
@@ -474,7 +475,8 @@
         "Linux tmux 45x18 approval/choice/close passed. Workflow now qualifies source and exact installed TUI bytes across Linux/macOS Node20/22. Cross-platform results pending.",
         "Cross-platform run 40718355640 passed all six jobs at 670298a, including installed-package PTYs. Release .14 subsequently failed due to missing mSwarm vendored dependencies and was not published. Corrected .15 publication and SSH checks remain pending.",
         "Exact .15 Linux CI bytes at 53d4a09 pass installed PTY flows on Raijin/Suku and actual ssh -tt input, window-change delivery and terminal restoration. Evidence: tui-20261028/candidate15-{raijin-pty,suku-pty,real-ssh}.json. Public registry verification and remaining platform jobs are pending.",
-        "Followup f944dbd passes11 PTY flows including model lookup cancellation, explicit shared-config activation, media export approvals and pending media cancellation. Frozen .15 source is still53d4a09 and excludes these followups; remaining exact-install macOS jobs and registry proof are pending."
+        "Followup f944dbd passes11 PTY flows including model lookup cancellation, explicit shared-config activation, media export approvals and pending media cancellation. Frozen .15 source is still53d4a09 and excludes these followups; remaining exact-install macOS jobs and registry proof are pending.",
+        "Published .18 release40752501777 passed all six exact-artifact platform installations with30checks each, including12PTYflows. All ten registry tarballs match CI. Actual .18 SSH TUI qualification remains open."
       ]
     },
     {
@@ -2636,14 +2638,38 @@
       "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-clean-install-final.json",
       "liveCustomBinding": "/home/wodo/.local/state/codali-intent-eval/installed18-custom-binding-result.json",
       "activation": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
+    },
+    {
+      "check": "Published .18 exact registry and platform installation verification",
+      "status": "passed",
+      "packages": 10,
+      "exactArtifactInstallations": 6,
+      "artifact": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-registry-artifacts/verification.json",
+      "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167290"
+    },
+    {
+      "check": "Node S/.18 rollout and public/native qualification",
+      "status": "passed",
+      "hosts": [
+        "raijin",
+        "suku"
+      ],
+      "publicRoutes": 6,
+      "nativeContextRefusals": 4,
+      "artifacts": [
+        "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/raijin-postdeploy-matrix-node-s.json",
+        "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/suku-postdeploy-matrix-node-s.json"
+      ],
+      "guardQualification": "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/fingerprint-guard-qualification.json",
+      "limitation": "First Raijin activation refused stale DB proof during cold file verification; fresh proof passed without weakening the guard. Native/backend settings unchanged. Broader failover, mixed load and canary remain open."
     }
   ],
-  "updatedAt": "2026-10-28T18:39:22.374347+00:00",
+  "updatedAt": "2026-10-28T20:17:04.443552+00:00",
   "openFindings": [
-    "The user requires a full Codex/Claude-style TUI. The full TUI is implemented and cross-platform qualified; P6.8 still needs exact public release and SSH qualification. All prior runtime and release gates remain required.",
-    "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
+    "The full TUI is published in .18 and passes all six exact-artifact platform installations; actual .18 SSH qualification remains open. All original quality and release gates remain required.",
+    "Actual native context refusal accounting is fixed and rechecked on both S/.18 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku .10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
     "All accepted phases and release gates are not complete. Broad independent quality evaluation, four successful multi-hour live journeys, paired helper comparisons, full consumer qualification and the24-hour canary remain open.",
-    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.11 are published on next. All ten .11 registry tarballs match exact CI artifacts and six installation jobs passed. Nodes run isolated .11; stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
+    "Docdex0.2.100-codali.4 and mcoda0.1.135-codali.18 are published on next. All ten .18 registry tarballs match exact CI artifacts and six installation jobs passed. Nodes run isolated S/.18; stable mcoda/latest and global CLI remain0.1.134. No stable promotion or canary.",
     "Backend K preserves the requested public embedding model identity. Both native Nomic services now use batch-size=2048 and ubatch-size=2048; 1906-token checks and short-vector equivalence passed without restarting Strata. Codali public managed memory save, long recall and restart recall passed on both hosts with complete usage receipts. Broader indexing/migration/context-bound cases remain open.",
     "Earlier E/U/V/W/X/Y/Z/AA failures are preserved. AA completed all four cases with stable environments but failed final completion on 2.4M tokens; three cases passed all four module grades, service-adapters three of four. AB was invalidated after npm installation restarted its Docdex daemons; partial results are not model-quality evidence. Four successful multi-hour journeys remain unqualified.",
     "TNL story smoke and BDYA synthetic stage routes passed on backendJ/nodeL; broader business/background coverage remains open. Logmira app/worker now useCodali.2 after qualified idle/HTTP drain and zero-exit proofs. Postdeploy Wodo/Heka scope,Docdex,grounded answers and Strata routing checks passed; no failures/warnings.",
@@ -2662,6 +2688,6 @@
     "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters.",
     "Post-nodeN TNL story smoke and Logmira Wodo/Heka pass. BDYA first impact probe failed: exact invocationshi_4b920c5fae0f480ca228037202e95e92 records nativeHTTP429 as upstream_error; relay returnedMCODA_EMPTY_RESPONSE. Later same deployed-client impact probe passes via Suku Strata. Cause of concurrent native admission and lost classification must be fixed/qualified; a successful retry is not clearance. Evidence consumers-postdeploy-node-n.json and bdya-empty-exact-invocation.json.",
     "BDYA native429 root response is confirmed. Sanitized capacity propagation fixes are tested and committed across client, backend and isolated relay, but remain undeployed during frozenAG. Native queue pressure origin and mixed-load recovery remain unqualified; no uncertain request replay or zero-usage fabrication was added.",
-    "Release-blocking user report confirmed: greeting hello entered coding/work-verification loop,14lead+4reviewer+1embedding calls,119088tokens (117189input/1899output), attempted hello.txt write denied, no turn_result. Separate semantic interaction handling must precede coding orchestration; raising budgets is not a remedy."
+    "Original hello failure is retained:119088tokens/19calls/no answer. Published .18 corrects history-aware interaction routing; installed greeting returned in2.653s with480tokens/1call/0tools. This bounded pass does not replace broad workflow qualification."
   ]
 }
