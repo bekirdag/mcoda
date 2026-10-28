@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "The TUI passed all six platform jobs at 670298a. Release .14 failed before publication because the mSwarm vendor package omitted runtime dependencies. Candidate .15 adds matching dependencies, a build-time guard, and mSwarm platform checks; its 173 runtime tests pass. Backend N/n2 and the BDYA v2 capacity fix are live, with passing public-route and consumer smokes. Nodes remain .11; the global stable CLI remains .134. Exact-release rollout, live quality, long workflows, context, authentication, media, mixed-load and 24-hour canary gates remain open.",
+  "currentTask": "Candidate .15 at 53d4a09 passed the full monorepo suite, all six release packaging jobs, local installed-package checks, both-host PTYs, actual SSH TUI input/resize/restoration, and six live candidate route checks per host. Release 40724251209 is running exact-tarball platform installation checks before publication. Raijin codali-next launches the private .15 candidate; global codali remains .134 and production nodes remain N/.11. Follow-up commits 0a15e4c, 7a3f773 and 3287909 add fresh-session/stop/exit flows, cancellation fences, documented script options and goal amendments; those changes are not in the frozen .15 candidate. Long workflows, broad quality, context failover, authentication, media review, mixed load and the 24-hour canary remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -418,7 +418,9 @@
       "id": "P6.2",
       "description": "Implement the alpha command set from Section 6 against controller state. Status and permission inspection must not trigger an inference call.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "Follow-up 0a15e4c/7a3f773/3287909 implements /new without an immediate objective, /clear, /stop, /exit, /model inspection and /goal amend. 62 session tests, actual CLI configuration/JSONL tests and nine PTY flows pass. Remaining command-contract work is still open; follow-ups are not in candidate .15."
+      ]
     },
     {
       "id": "P6.3",
@@ -440,7 +442,9 @@
       "id": "P6.5",
       "description": "Stabilize scripted mode: JSONL event output, final result format, stderr diagnostics and documented exit codes. Retain old command behavior and add migration notes.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "3287909 adds the documented --output-format jsonl|text, --permission-profile and config validate --file syntax. Actual CLI test proves validation uses no inference and JSONL startup errors remain machine readable."
+      ]
     },
     {
       "id": "P6.6",
@@ -454,7 +458,9 @@
       "id": "P6.7",
       "description": "Add /goal, /decisions and the expanded /plan and /tasks commands. Show current requirements, scope history, phase/task dependencies, blockers, ownership and evidence counts through deterministic reads. Make user steering reviewable with a plan diff; preserve authorization for routine work and make planning/execution mode changes explicit.",
       "status": "in_progress",
-      "evidence": []
+      "evidence": [
+        "3287909 exposes original objective, revision, constraints, non-goals and amendment history; /goal amend records steering without inference. PTY verifies the resumed original session keeps its original objective and waits for /continue."
+      ]
     },
     {
       "id": "P6.8",
@@ -463,7 +469,8 @@
       "evidence": [
         "2026-10-28 source suite: 1758 passed, 3 skipped, 0 failed. Expanded real PTY checks pass for approvals/paste/completion/multiline input/cancel/resume/queue/steer; existing status/resize/login/restoration smoke passes. Evidence: /home/wodo/.local/state/codali-terminal-deployment/tui-20261028",
         "Linux tmux 45x18 approval/choice/close passed. Workflow now qualifies source and exact installed TUI bytes across Linux/macOS Node20/22. Cross-platform results pending.",
-        "Cross-platform run 40718355640 passed all six jobs at 670298a, including installed-package PTYs. Release .14 subsequently failed due to missing mSwarm vendored dependencies and was not published. Corrected .15 publication and SSH checks remain pending."
+        "Cross-platform run 40718355640 passed all six jobs at 670298a, including installed-package PTYs. Release .14 subsequently failed due to missing mSwarm vendored dependencies and was not published. Corrected .15 publication and SSH checks remain pending.",
+        "Exact .15 Linux CI bytes at 53d4a09 pass installed PTY flows on Raijin/Suku and actual ssh -tt input, window-change delivery and terminal restoration. Evidence: tui-20261028/candidate15-{raijin-pty,suku-pty,real-ssh}.json. Public registry verification and remaining platform jobs are pending."
       ]
     },
     {
@@ -2556,7 +2563,7 @@
       "limitation": "Separate mSwarm vendor lacked new string-width dependency; standalone Codali TUI/platform tests passed. Candidate.15 adds complete matching runtime dependency declarations, build guard and node-runtime qualification."
     }
   ],
-  "updatedAt": "2026-10-28T16:10:44.267728+00:00",
+  "updatedAt": "2026-10-28T16:49:26.800693+00:00",
   "openFindings": [
     "The user requires a full Codex/Claude-style TUI. The full TUI is implemented and cross-platform qualified; P6.8 still needs exact public release and SSH qualification. All prior runtime and release gates remain required.",
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",

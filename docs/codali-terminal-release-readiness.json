@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T16:10:19.354633+00:00",
+  "updatedAt": "2026-10-28T16:49:26.800693+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -647,7 +647,7 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "Full TUI implemented; all six Linux/macOS Node 20/22 source and installed-tarball jobs passed in run 40718355640 after the Escape ordering correction. Release .14 failed before publication due to missing mSwarm vendored-runtime dependencies. Corrected .15 publication and SSH checks are pending."
+      "current": "Full TUI passed six prior platform jobs at 670298a. Corrected .15 at 53d4a09 passes all release packaging jobs, private installed PTYs on both hosts and actual SSH interaction. Exact release installation checks and public registry verification are pending; follow-up command improvements remain unreleased."
     },
     {
       "id": "long-workflows",
@@ -938,8 +938,20 @@
   },
   "pendingCandidate": {
     "version": "0.1.135-codali.15",
-    "status": "local_runtime_and_packaging_validation",
-    "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe"
+    "status": "private_candidate_staged_release_installation_checks_running",
+    "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe",
+    "sourceCommit": "53d4a09e3c296c07d59e825d6d27e35b06c854f4",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40724251209",
+    "privateCliCommand": "~/.local/bin/codali-next",
+    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028a",
+    "qualification": [
+      "full local monorepo",
+      "all six release packaging jobs",
+      "local clean install",
+      "Raijin/Suku installed PTYs",
+      "actual SSH TUI",
+      "six native candidate checks per host"
+    ]
   },
   "failedCandidate": {
     "version": "0.1.135-codali.14",
@@ -949,5 +961,20 @@
     "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40718355640",
     "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
     "reason": "Release tests found missing TUI dependency in the separately vendored mSwarm runtime. Failed tag.14 retained; no public packages published by this run."
+  },
+  "unreleasedTerminalFollowups": {
+    "sourceCommit": "3287909",
+    "changes": [
+      "fresh-session /new and /clear",
+      "responsive /stop and /exit with cancellation fencing",
+      "documented output/permission/config-validation syntax",
+      "explicit goal amendments without inference"
+    ],
+    "validation": [
+      "62 session tests",
+      "3 CLI contract tests",
+      "9 expanded PTY flows"
+    ],
+    "includedInCandidate15": false
   }
 }
