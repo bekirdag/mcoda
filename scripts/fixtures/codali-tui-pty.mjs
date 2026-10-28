@@ -23,7 +23,7 @@ if (mode === "resume") {
     const current = ++turn;
     this.active = new AbortController(); const signal = this.active.signal;
     try {
-      record({ turn: current, objective: this.state.objective, ...(mode === "commands" ? { sessionId: this.sessionId } : {}) });
+      record({ turn: current, objective: this.state.objective, ...(mode === "commands" ? { sessionId: this.sessionId, originalObjective: this.state.originalObjective } : {}) });
       await this.emit("turn_started", {});
       if (signal.aborted) throw new Error("Cancelled by user");
       await new Promise((resolve, reject) => {

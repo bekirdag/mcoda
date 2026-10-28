@@ -80,6 +80,7 @@ runtime versions remain available for existing profiles.
 | `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
 | `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
 | `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
+| `/goal amend TEXT` | Record an explicit goal amendment between turns, preserving the original objective; execution waits for `/continue` |
 | `/model`, `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
 | `/plan [show\|history\|edit TEXT\|mode plan\|execute]` | Inspect or revise the plan; execute mode uses the approval policy |
 | `/tools`, `/mcp`, `/docdex` | Inspect available tools, connectors and indexing configuration |
@@ -127,8 +128,13 @@ they do not trigger an automatic retry of a side effect. Session data lives unde
 `~/.local/state/codali/workspaces/`, outside the editable repository. Media workers
 survive terminal disconnects and keep binary artifacts out of model transcripts.
 
-`--json` emits JSONL events. Stable fields are `schemaVersion`, `type` and `data`;
-session events also carry `id`, `sessionId`, `sequence` and `at`. `turn_result`
+`--json` emits JSONL events; `--output-format jsonl` is its explicit alias
+(`text` selects readable output).
+`--permission-profile` aliases `--permissions`. Validate a shared configuration
+without inference with `codali config validate --file PATH`.
+
+Stable event fields are `schemaVersion`, `type` and `data`; session events also
+carry `id`, `sessionId`, `sequence` and `at`. `turn_result`
 contains `completed`; consumers must check it. `command_failed` covers command
 failures. Exit codes are 0 for verified completion (or a requested planning turn),
 1 for errors, 2 for open/blocked work, and 130 for cancellation. `--plain` disables

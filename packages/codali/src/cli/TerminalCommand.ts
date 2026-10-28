@@ -33,14 +33,16 @@ export const parseTerminalArguments = (argv: string[]): Arguments => {
     const flag = input[i];
     if (["--allow-web", "--allow-memory", "--allow-media", "--allow-network"].includes(flag)) { const key = { "--allow-web": "allowWeb", "--allow-memory": "allowMemory", "--allow-media": "allowMedia", "--allow-network": "allowNetwork" }[flag]!; (result as unknown as Record<string, unknown>)[key] = true; continue; }
     if (["--json", "--plain", "--stdin"].includes(flag)) { (result as unknown as Record<string, unknown>)[flag.slice(2)] = true; continue; }
-    if (["--workspace-root", "--config", "--docdex-binary", "--effort", "--permissions", "--project-task"].includes(flag)) {
+    if (["--workspace-root", "--config", "--file", "--docdex-binary", "--effort", "--permissions", "--permission-profile", "--output-format", "--project-task"].includes(flag)) {
       const value = input[++i]; if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
       if (flag === "--workspace-root") result.workspaceRoot = path.resolve(value);
       if (flag === "--config") result.config = path.resolve(value);
+      if (flag === "--file") { if (command !== "config") throw new Error("--file is a config validate option"); result.config = path.resolve(value); }
+      if (flag === "--output-format") { if (!["jsonl", "text"].includes(value)) throw new Error("Expected --output-format jsonl or text"); result.json = value === "jsonl"; }
       if (flag === "--docdex-binary") { if (command !== "setup") throw new Error("--docdex-binary is a setup option"); result.docdexBinary = value.includes(path.sep) ? path.resolve(value) : value; }
       if (flag === "--project-task") result.projectTask = value;
       if (flag === "--effort") { if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Invalid effort level"); result.effort = value as EffortLevel; }
-      if (flag === "--permissions") { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
+      if (flag === "--permissions" || flag === "--permission-profile") { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
     } else if (flag.startsWith("--")) throw new Error(`Unknown terminal option: ${flag}`); else positional.push(flag);
   }
   result.prompt = positional.join(" "); return result;
@@ -135,7 +137,8 @@ export class TerminalCommand {
   static async run(argv: string[], host: TerminalHost = {}): Promise<void> {
     try { await this.execute(argv, host); }
     catch (error) {
-      if (!argv.includes("--json")) throw error;
+      const format = argv.lastIndexOf("--output-format");
+      if (!(argv.lastIndexOf("--json") > format || (format >= 0 && argv[format + 1] === "jsonl"))) throw error;
       const message = redactSecretValues(error instanceof Error ? error.message : String(error));
       process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: "command_failed", data: { message, completed: false } })}\n`);
       process.exitCode = /cancel/i.test(message) ? 130 : 1;
@@ -165,7 +168,9 @@ export class TerminalCommand {
       output({ configuration: resolved.source, hash: resolved.hash, bindings: resolved.config.bindings, docdex }); return;
     }
     if (args.command === "doctor") { output(await terminalDoctor(args.config)); return; }
+    if (args.command === "config" && args.prompt !== "validate") throw new Error("Usage: codali config validate --file PATH");
     let resolved = await loadOrchestrationConfig(args.config).catch(error => { throw new Error(`Cannot load orchestration configuration; run codali setup. ${error instanceof Error ? error.message : String(error)}`); });
+    if (args.command === "config") { output({ valid: true, source: resolved.source, hash: resolved.hash }); return; }
     const interactive = ["chat", "resume"].includes(args.command) && !!process.stdin.isTTY && !args.json;
     let rl: Interface | undefined; let pendingApproval: ((decision: "once" | "session" | "deny") => void) | undefined;
     let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; const queued: string[] = [];
@@ -239,7 +244,11 @@ export class TerminalCommand {
         output({ source: resolved.source, hash: resolved.hash, configuration: resolved.config });
       }
       else if (name === "/models" || name === "/model") { if (value) throw new Error("Use /config validate PATH, /config diff PATH and /config reload to change configured model bindings"); output({ bindings: resolved.config.bindings, models: resolved.config.models }); }
-      else if (name === "/goal") output(controller.state ? { original: controller.state.originalObjective, objective: controller.state.objective, requirements: controller.state.requirements, amendments: controller.state.amendments } : {});
+      else if (name === "/goal") {
+        if (parts[0] === "amend") { if (activeRun || controller.busy) throw new Error("Use /steer TEXT during a turn or stop before amending the goal"); const instruction = parts.slice(1).join(" "); if (!instruction) throw new Error("Usage: /goal amend INSTRUCTION"); await controller.steer(instruction); }
+        else if (value && value !== "show") throw new Error("Usage: /goal [show|amend INSTRUCTION]");
+        output(controller.state ? { original: controller.state.originalObjective, objective: controller.state.objective, revision: controller.state.goalRevision, constraints: controller.state.constraints, nonGoals: controller.state.nonGoals, requirements: controller.state.requirements, amendments: controller.state.amendments } : {});
+      }
       else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
       else if (name === "/plan") {
         if (parts[0] === "mode") { if (controller.busy) throw new Error("Cancel the active turn before changing plan mode"); if (!["plan", "execute"].includes(parts[1])) throw new Error("Usage: /plan mode plan|execute"); controller.gate.setProfile(parts[1] === "plan" ? "plan" : "ask"); }

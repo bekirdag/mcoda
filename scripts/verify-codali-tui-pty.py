@@ -136,9 +136,13 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.send('/new\r'); ui.pump(.2)
         ui.send('/resume ' + original + '\r'); ui.pump(.2)
         assert len(ui.events()) == 2, 'Resume unexpectedly started execution'
+        ui.send('/goal amend Keep original requirements\r'); ui.contains('Keep original requirements')
+        assert len(ui.events()) == 2, 'Goal amendment unexpectedly started inference'
+        ui.send(b'\x1b'); ui.pump(.2)
         ui.send('/continue\r'); ui.wait(lambda: len(ui.events()) == 3)
         assert ui.events()[2]['sessionId'] == original
-        assert ui.events()[2]['objective'] == 'Preserved objective'
+        assert ui.events()[2]['objective'] == 'Preserved objective\n\nUser steering: Keep original requirements'
+        assert ui.events()[2]['originalObjective'] == 'Preserved objective'
         ui.finish(command='/exit')
         checks.append('new/clear preserve resumable sessions; stop discards queued work; exit restores the terminal')
     finally: ui.cleanup()

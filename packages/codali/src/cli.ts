@@ -16,6 +16,8 @@ import { TerminalCommand, terminalDoctor } from "./cli/TerminalCommand.js";
 const HELP_TEXT =
   "Usage: codali [chat] [prompt] [--effort low|medium|high|max] [--permissions plan|ask|workspace]\n" +
   "   or: codali exec <prompt> [--json] [--config <path>]\n" +
+  "   or: codali exec <prompt> --output-format jsonl --permission-profile workspace\n" +
+  "   or: codali config validate --file <path>\n" +
   "   or: codali setup | login [--stdin] | logout | auth status\n" +
   "   or: codali sessions | resume <id> | inspect <id>\n" +
   "   or: codali ask \"<question>\" [--trace] [--json] [--workspace-root <path>]\n" +
@@ -111,8 +113,8 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
     return;
   }
 
-  if (["chat", "exec", "setup", "login", "logout", "sessions", "resume", "status", "inspect", "checkpoint", "amend"].includes(command)) { await TerminalCommand.run(argv); return; }
-  if (["--effort", "--permissions", "--config", "--workspace-root", "--plain", "--json", "--stdin"].includes(command)) { await TerminalCommand.run(["chat", ...argv]); return; }
+  if (["chat", "exec", "config", "setup", "login", "logout", "sessions", "resume", "status", "inspect", "checkpoint", "amend"].includes(command)) { await TerminalCommand.run(argv); return; }
+  if (["--effort", "--permissions", "--permission-profile", "--output-format", "--config", "--workspace-root", "--plain", "--json", "--stdin"].includes(command)) { await TerminalCommand.run(["chat", ...argv]); return; }
 
   if (command === "ask") {
     await AskCommand.run(rest);
