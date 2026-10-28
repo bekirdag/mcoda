@@ -149,6 +149,24 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.finish(command='/exit')
         checks.append('new/clear preserve resumable sessions; stop discards queued work; exit restores the terminal')
     finally: ui.cleanup()
+    ui = Terminal('models', base)
+    try:
+        ui.contains('Ask Codali anything')
+        current = lambda: json.loads((base / 'configuration.json').read_text())['bindings']['lead']['candidates']
+        ui.send('/model select lead unentitled --save\r'); ui.contains('not entitled/advertised')
+        assert current() == ['fixture']
+        ui.send('/model select lead alternate\r'); ui.contains('Saved: false')
+        assert current() == ['fixture'], 'Preview persisted a binding'
+        ui.send(b'\x1b'); ui.pump(.2)
+        ui.send('/model select lead alternate --save\r'); ui.event({'catalog': 3})
+        ui.send('/stop\r'); ui.pump(.8)
+        assert current() == ['fixture'], 'Cancelled selection persisted later'
+        ui.send('/model select lead alternate --save\r'); ui.contains('Activated: true')
+        assert current() == ['alternate']
+        ui.send(b'\x1b'); ui.pump(.2); ui.finish(command='/exit')
+        assert not any('executionStarted' in event or 'unexpectedRequest' in event for event in ui.events())
+        checks.append('model selection verifies entitlement, previews shared scope, cancels pending lookup and saves only explicit choices')
+    finally: ui.cleanup()
     ui = Terminal('artifacts', base)
     try:
         ui.contains('Inspect generated artifacts without inference')

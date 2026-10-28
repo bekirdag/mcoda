@@ -20,6 +20,7 @@ import { TerminalTui } from "./tui/TerminalTui.js";
 import { inspectPlanDiff } from "./TerminalPlan.js";
 import { openTerminalArtifact } from "./TerminalArtifacts.js";
 import { mediaJobSummary } from "../connectors/media/ConfiguredMediaTools.js";
+import { proposeTerminalModel, saveTerminalModel, terminalModelOperation } from "./TerminalModels.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
@@ -246,7 +247,29 @@ export class TerminalCommand {
         } else if (value) throw new Error("Usage: /config [reload|validate PATH|diff PATH]");
         output({ source: resolved.source, hash: resolved.hash, configuration: resolved.config });
       }
-      else if (name === "/models" || name === "/model") { if (value) throw new Error("Use /config validate PATH, /config diff PATH and /config reload to change configured model bindings"); output({ bindings: resolved.config.bindings, models: resolved.config.models }); }
+      else if (name === "/models" || name === "/model") {
+        if (!value) output({ source: resolved.source, configHash: resolved.hash, bindings: resolved.config.bindings, models: resolved.config.models, select: "/model select BINDING MODEL_ID [--save] (shared configuration)" });
+        else {
+          if (name !== "/model" || parts[0] !== "select" || ![3, 4].includes(parts.length) || parts.length === 4 && parts[3] !== "--save") throw new Error("Usage: /model select BINDING MODEL_ID [--save]. Preview first; --save changes the shared configuration for future turns and other consumers on reload.");
+          if (activeRun || controller.busy) throw new Error("Change model bindings between turns");
+          const [, binding, modelId] = parts;
+          const proposed = proposeTerminalModel(resolved, binding, modelId);
+          const active = new AbortController(); commandAbort = active;
+          try {
+            const signal = AbortSignal.any([active.signal, AbortSignal.timeout(15000)]);
+            const selected = await new ConfiguredProvider(proposed, binding).select(terminalModelOperation(binding), signal, ["lead", "architect", "worker", "reviewer"].includes(binding));
+            signal.throwIfAborted();
+            if (commandEpoch !== cancelEpoch || closed) throw new Error("Cancelled before saving model selection");
+            if (parts[3] === "--save") {
+              await saveTerminalModel(resolved, proposed, signal);
+              resolved = proposed;
+              try { await controller.reloadConfiguration(proposed); }
+              catch (error) { closed = true; queued.length = 0; tui?.stop(); rl?.close(); throw new Error(`Configuration saved to ${proposed.source}, but session activation failed. Restart Codali before continuing. ${error instanceof Error ? error.message : String(error)}`); }
+            }
+            output({ source: proposed.source, scope: "Shared configuration; other consumers apply it on reload", binding, modelId, backend: selected.actual.backend, health: selected.actual.health, configHash: proposed.hash, saved: parts[3] === "--save", activated: parts[3] === "--save", ...(parts[3] === "--save" ? {} : { apply: `/model select ${binding} ${modelId} --save` }) });
+          } finally { if (commandAbort === active) commandAbort = undefined; }
+        }
+      }
       else if (name === "/goal") {
         if (parts[0] === "amend") { if (activeRun || controller.busy) throw new Error("Use /steer TEXT during a turn or stop before amending the goal"); const instruction = parts.slice(1).join(" "); if (!instruction) throw new Error("Usage: /goal amend INSTRUCTION"); await controller.steer(instruction); }
         else if (value && value !== "show") throw new Error("Usage: /goal [show|amend INSTRUCTION]");

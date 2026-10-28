@@ -11,7 +11,24 @@ const [{ TerminalTui }, { TerminalCommand }, { SessionController }, { loadOrches
 ]);
 const [mode, workspace, log, configuration] = process.argv.slice(2);
 const record = value => appendFileSync(log, JSON.stringify(value) + "\n");
-if (mode === "artifacts") {
+if (mode === "models") {
+  const { createServer } = await import("node:http");
+  const { promises: fs } = await import("node:fs");
+  let catalogs = 0;
+  const server = createServer((request, response) => {
+    if (request.url !== "/v1/models") { record({ unexpectedRequest: request.url }); response.writeHead(500); response.end(); return; }
+    const count = ++catalogs; record({ catalog: count });
+    setTimeout(() => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "fixture" }, { id: "alternate" }] })); }, count === 3 ? 600 : 0);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const config = JSON.parse(await fs.readFile(configuration, "utf8"));
+  config.providers.local.baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  for (const id of ["alternate", "unentitled"]) config.models[id] = { ...config.models.fixture, catalogId: id };
+  await fs.writeFile(configuration, JSON.stringify(config));
+  SessionController.prototype.run = async function () { record({ executionStarted: true }); throw new Error("Model selection must not start inference"); };
+  try { await TerminalCommand.run(["chat", "--workspace-root", workspace, "--config", configuration]); }
+  finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+} else if (mode === "artifacts") {
   const [{ atomicWriteJson }, { persistMediaArtifact }] = await Promise.all([
     import(new URL("dist/session/AtomicState.js", packageRoot)), import(new URL("dist/connectors/media/MediaArtifactReceipt.js", packageRoot)),
   ]);
