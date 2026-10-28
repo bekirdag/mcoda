@@ -26,7 +26,7 @@ for (const rejected of [false, true]) {
           toolCalls: [{ id: "last-call", name: rejected ? "run_shell" : "work_status",
             args: rejected ? { command: "node", args: ["-e", "throw new Error('unclaimed shell must not execute')"] } : {} }] };
       } } });
-    await assert.rejects(controller.run("Inspect the task status without changing the repository."), /Shared model\/token budget exhausted/);
+    await assert.rejects(controller.run("Inspect the task status without changing the repository."), /This turn reached its model\/token limit/);
     assert.equal(calls, 1);
     const receipts = events.filter(event => event.type === "tool_receipt");
     assert.equal(receipts.length, 1);

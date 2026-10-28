@@ -4,6 +4,7 @@ import path from "node:path";
 import type { SessionEvent } from "../../runtime/SessionController.js";
 import { TerminalInput } from "../TerminalInput.js";
 import { terminalText, TerminalTextStream } from "../TerminalText.js";
+import { terminalHelp, terminalUsage, toolActivity } from "./TerminalPresentation.js";
 import { TerminalEditor } from "./TerminalEditor.js";
 import { renderTerminalScreen, type TerminalOverlay, type TerminalScreenState, type TranscriptBlock } from "./TerminalScreen.js";
 
@@ -46,12 +47,12 @@ export class TerminalTui {
       if (this.approval || this.picker || this.state.overlay) return;
       if (!this.editor.insert(terminalText(text).replace(/\t/g, "  "))) this.notice("Input exceeds 256 KiB");
       this.schedule();
-    }, onRejected: text => this.notice(text), onEscape: () => this.onKey("", { name: "escape" }) });
+    }, onRejected: text => this.notice(text), onWheel: direction => this.scroll(direction * -3), onEscape: () => this.onKey("", { name: "escape" }) });
   }
   start(): void {
     if (this.live) return;
     this.live = true; this.previousRaw = !!process.stdin.isRaw;
-    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J");
+    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J");
     process.stdin.setRawMode(true);
     emitKeypressEvents(this.input);
     this.input.on("keypress", this.onKey);
@@ -71,7 +72,7 @@ export class TerminalTui {
     process.stdout.off("drain", this.drain);
     process.stdin.unpipe(this.input); this.input.off("keypress", this.onKey); this.input.destroy();
     process.stdin.setRawMode(this.previousRaw); process.stdin.pause();
-    process.stdout.write("\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l");
+    process.stdout.write("\x1b[0m\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
     this.resolveClosed();
   }
   private resize = (): void => { this.previousFrame = []; this.schedule(); };
@@ -88,7 +89,11 @@ export class TerminalTui {
       this.state.suggestions = this.options.commands.filter(command => command.name.startsWith(this.editor.text)).slice(0, 5).map(command => `${command.name}  ${command.description}`);
       this.state.selectedSuggestion = 0;
     }
-    const frame = renderTerminalScreen(this.state, process.stdout.columns || 80, process.stdout.rows || 24, process.env.NO_COLOR === undefined);
+    let frame = renderTerminalScreen(this.state, process.stdout.columns || 80, process.stdout.rows || 24, process.env.NO_COLOR === undefined);
+    if (this.state.scroll > 0 && frame.transcriptRows > this.transcriptRows) {
+      this.state.scroll += frame.transcriptRows - this.transcriptRows;
+      frame = renderTerminalScreen(this.state, process.stdout.columns || 80, process.stdout.rows || 24, process.env.NO_COLOR === undefined);
+    }
     this.frameRows = frame.viewportRows; this.transcriptRows = frame.transcriptRows;
     let output = "\x1b[?25l";
     frame.lines.forEach((line, i) => { if (this.previousFrame[i] !== line) output += `\x1b[${i + 1};1H\x1b[2K${line}`; });
@@ -101,8 +106,17 @@ export class TerminalTui {
     while (this.state.blocks.length > 200 || (this.state.blocks.length > 1 && this.state.blocks.reduce((sum, item) => sum + item.text.length, 0) > 262144)) this.state.blocks.shift();
     this.schedule(); return block;
   }
+  private scroll(lines: number): void {
+    if (this.picker) return;
+    if (this.state.overlay) this.state.overlay.offset = Math.max(0, this.state.overlay.offset - lines);
+    else this.state.scroll = Math.max(0, Math.min(Math.max(0, this.transcriptRows - this.frameRows), this.state.scroll + lines));
+    this.schedule();
+  }
   notice(text: string): void { this.append("notice", "NOTICE", text); }
-  error(text: string): void { this.append("error", "ERROR", text); }
+  error(text: string): void {
+    const message = text === "fetch failed" ? "Could not reach the requested service. Check your connection or service status, then try again." : text;
+    this.append("error", "NEEDS ATTENTION", message);
+  }
   user(text: string): void { this.state.scroll = 0; this.append("user", "YOU", text); }
   result(text: string): void {
     const clean = terminalText(text);
@@ -110,8 +124,8 @@ export class TerminalTui {
     this.assistant = this.append("assistant", "CODALI", clean);
   }
   show(value: unknown, title = "Details"): void {
-    const text = typeof value === "string" ? value : formatInspection(value);
-    const overlay = { title: terminalText(title), lines: terminalText(text).split("\n"), offset: 0 };
+    const text = title.toLowerCase() === "help" ? terminalHelp() : title.toLowerCase() === "usage" ? terminalUsage(value) : typeof value === "string" ? value : formatInspection(value);
+    const overlay = { title: terminalText(title.slice(0, 1).toUpperCase() + title.slice(1)), lines: terminalText(text).split("\n"), offset: 0 };
     if (this.approval) this.pendingInspection = overlay;
     else { this.picker = undefined; this.state.overlay = overlay; }
     this.schedule();
@@ -123,8 +137,10 @@ export class TerminalTui {
     for (const event of events.slice(-3000)) {
       if (!event?.data || typeof event.type !== "string") continue;
       if (event.sessionId) this.state.session = event.sessionId;
-      if (event.type === "session_started" && typeof event.data.objective === "string") this.user(event.data.objective);
-      else if (event.type === "goal_amended" && typeof event.data.instruction === "string") this.user(event.data.instruction);
+      if (event.type === "conversation_history" && Array.isArray(event.data.messages)) { this.state.blocks = []; for (const message of event.data.messages) { if (message.role === "user") this.user(message.content); else if (message.role === "assistant") this.result(message.content); } }
+      else if (event.type === "interaction_request" && typeof event.data.prompt === "string") this.user(event.data.prompt);
+      else if (event.type === "session_started" && !event.data.interactionId && typeof event.data.objective === "string") this.user(event.data.objective);
+      else if (event.type === "goal_amended" && !event.data.interactionId && typeof event.data.instruction === "string") this.user(event.data.instruction);
       else if (event.type === "turn_result" && typeof event.data.content === "string") this.result(event.data.content);
       else if (event.type === "turn_failed" && typeof event.data.message === "string") this.error(event.data.message);
       else if (["tool_intent", "tool_receipt", "usage", "model_route"].includes(event.type)) this.event(event);
@@ -139,11 +155,12 @@ export class TerminalTui {
       if (!this.assistant) this.assistant = this.append("assistant", "CODALI", "");
       this.assistant.text = (this.assistant.text + this.stream.write(data.content)).slice(-262144);
     } else if (event.type === "model_route") { this.state.route = terminalText(`${data.modelId ?? "Model"}${data.host ? ` on ${data.host}` : ""}`); this.state.activity = "Thinking"; }
+    else if (event.type === "interaction_progress" && typeof data.message === "string") this.state.activity = terminalText(data.message);
     else if (event.type === "usage") { const usage = data.usage as { tokens?: number }; if (Number.isFinite(usage?.tokens)) this.state.tokens = usage.tokens!; }
     else if (event.type === "tool_intent") {
       const receipt = data.receipt as { tool: string; id: string; args?: unknown };
-      this.lastTool = this.append("tool", `● ${receipt.tool}`, receipt.args ? JSON.stringify(receipt.args, null, 2) : "Running…");
-      this.lastTool.id = receipt.id; this.state.activity = terminalText(receipt.tool);
+      this.lastTool = this.append("tool", `● ${toolActivity(receipt.tool, receipt.args)}`, receipt.args ? JSON.stringify(receipt.args, null, 2) : "Running…");
+      this.lastTool.id = receipt.id; this.lastTool.summary = toolActivity(receipt.tool, receipt.args); this.state.activity = terminalText(this.lastTool.summary);
     } else if (event.type === "process_output" && typeof data.content === "string") {
       if (!this.lastTool) this.lastTool = this.append("tool", "Process output", "");
       this.lastTool.text = (this.lastTool.text + terminalText(data.content)).slice(-65536);
@@ -151,14 +168,15 @@ export class TerminalTui {
       const receipt = data.receipt as { id: string; tool: string; status: string; args?: unknown; output?: string; error?: string };
       const block = this.state.blocks.find(item => item.id === receipt.id);
       if (block) {
-        block.title = terminalText(`${receipt.status === "success" ? "✓" : "!"} ${receipt.tool} · ${receipt.status}`);
+        block.title = terminalText(`${receipt.status === "success" ? "✓" : "!"} ${toolActivity(receipt.tool, receipt.args)} · ${receipt.status === "success" ? "done" : "needs attention"}`);
+        block.summary = receipt.status === "success" ? "Finished. Ctrl+O shows the details." : terminalText(receipt.error ?? receipt.output ?? "This step needs attention. Ctrl+O shows the details.").slice(0, 600);
         if (typeof receipt.output === "string") block.text = terminalText([receipt.args ? JSON.stringify(receipt.args, null, 2) : "", receipt.output].filter(Boolean).join("\n\n")).slice(-65536);
         else if (receipt.error) block.text += "\n" + terminalText(receipt.error);
       }
     } else if (event.type === "status" && typeof data.message === "string") this.state.activity = terminalText(data.message);
     else if (event.type === "turn_result" || event.type === "turn_failed") {
       if (this.assistant) this.assistant.text += this.stream.finish();
-      this.state.busy = false; this.state.activity = event.type === "turn_failed" ? "Turn stopped" : data.completed ? "Goal completed" : "Ready to continue";
+      this.state.busy = false; this.state.activity = event.type === "turn_failed" ? "Turn stopped" : data.mode && data.mode !== "execute" ? "Ready" : data.completed ? "Goal completed" : "Ready to continue";
     }
     this.schedule();
   }
@@ -170,7 +188,7 @@ export class TerminalTui {
       const finish = (choice: "once" | "session" | "deny"): void => {
         signal?.removeEventListener("abort", abort); this.approval = undefined; this.state.overlay = this.pendingInspection; this.pendingInspection = undefined; this.schedule(); resolve(choice);
       };
-      const overlay = { title: terminalText(title), lines: terminalText(details).split("\n"), offset: 0, choices: ["Allow once", "Allow for this session", "Deny"], selected: 2, hint: "←→ choose · Enter confirm · PgUp/PgDn inspect · Esc deny" };
+      const overlay = { title: terminalText(title.slice(0, 1).toUpperCase() + title.slice(1)), lines: terminalText(details).split("\n"), offset: 0, choices: ["Allow once", "Allow for this session", "Deny"], selected: 2, hint: "←→ choose · Enter confirm · PgUp/PgDn inspect · Esc deny" };
       this.approval = { resolve: finish, selected: 2, overlay }; this.state.overlay = overlay;
       signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
       this.schedule();
@@ -238,6 +256,7 @@ export class TerminalTui {
       else if (["up", "down", "pageup", "pagedown"].includes(key.name ?? "")) this.state.overlay.offset = Math.max(0, this.state.overlay.offset + (["up", "pageup"].includes(key.name!) ? -1 : 1) * (key.name!.startsWith("page") ? 8 : 1));
       return;
     }
+    if (key.ctrl && key.name === "end") { this.state.scroll = 0; return; }
     if (key.ctrl && key.name === "p") { this.openPicker("command"); return; }
     if (key.ctrl && key.name === "r") { this.openPicker("history"); return; }
     if (key.ctrl && key.name === "o") { this.state.expanded = !this.state.expanded; return; }

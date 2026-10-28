@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T17:20:06.871158+00:00",
+  "updatedAt": "2026-10-28T18:30:37.976440+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -647,7 +647,7 @@
       "id": "interactive-tui",
       "status": "open",
       "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
-      "current": "Full TUI passed six prior platform jobs at 670298a. Corrected .15 at 53d4a09 passes all release packaging jobs, private installed PTYs on both hosts and actual SSH interaction. Exact release installation checks and public registry verification are pending; follow-up command improvements remain unreleased."
+      "current": "FullTUI .15 remains installed as codali-next for immediate preview. Unpublished release40724251209 was superseded by .16 source0108a36 with complete command additions. .16 Linux Node20/22 and local installed TUI checks pass; macOS, exact release artifacts and registry verification are pending."
     },
     {
       "id": "long-workflows",
@@ -689,6 +689,11 @@
       "id": "canary-and-promotion",
       "status": "not_started",
       "required": "Internal rollout,24-hourcanary including busy period, then promote tested artifacts."
+    },
+    {
+      "id": "history-aware-interaction",
+      "status": "open",
+      "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate."
     }
   ],
   "failureTaxonomy": [
@@ -929,7 +934,7 @@
     "node": "N",
     "nodeVersion": "0.1.135-codali.11",
     "globalStableCli": "0.1.134",
-    "plannedNode": "P/.15 after exact publication and qualification",
+    "plannedNode": "Q/.16 after exact publication and qualification",
     "stagedBackend": null,
     "canaryStarted": false,
     "backendRollout": "n2 request-preserving rollback",
@@ -937,21 +942,21 @@
     "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4"
   },
   "pendingCandidate": {
-    "version": "0.1.135-codali.15",
-    "status": "private_candidate_staged_release_installation_checks_running",
-    "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe",
-    "sourceCommit": "53d4a09e3c296c07d59e825d6d27e35b06c854f4",
-    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40724251209",
-    "privateCliCommand": "~/.local/bin/codali-next",
-    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028a",
+    "version": "0.1.135-codali.16",
+    "status": "held_intent_orchestration_failure",
+    "sourceCommit": "0108a366408f6c05ee73da2797aaf590e7644e56",
+    "changes": "Fresh sessions, cancellation fences, CLI aliases, plan diff, verified artifact actions and live-entitled shared model selection on top of the full TUI",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862067",
+    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862477",
     "qualification": [
-      "full local monorepo",
-      "all six release packaging jobs",
-      "local clean install",
-      "Raijin/Suku installed PTYs",
-      "actual SSH TUI",
-      "six native candidate checks per host"
-    ]
+      "Linux Node20/22 platform checks",
+      "local clean install including11expandedPTYflows",
+      "General CI40734862477 Linuxfullmonorepo andWindowscompatibility passed"
+    ],
+    "privatePreviewVersion": "0.1.135-codali.15",
+    "privateCliCommand": "~/.local/bin/codali-next",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40736246861",
+    "releaseDisposition": "Release40736246861cancelled before publishing after reproduced119088-token greeting failure; .16tag remains immutable."
   },
   "failedCandidate": {
     "version": "0.1.135-codali.14",
@@ -980,5 +985,32 @@
       "11 expanded PTY flows"
     ],
     "includedInCandidate15": false
+  },
+  "supersededCandidates": [
+    {
+      "version": "0.1.135-codali.15",
+      "status": "superseded_before_publication",
+      "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe",
+      "sourceCommit": "53d4a09e3c296c07d59e825d6d27e35b06c854f4",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40724251209",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028a",
+      "qualification": [
+        "full local monorepo",
+        "all six release packaging jobs",
+        "local clean install",
+        "Raijin/Suku installed PTYs",
+        "actual SSH TUI",
+        "six native candidate checks per host"
+      ],
+      "reason": "Followup .16 includes the completed terminal command additions; retain private .15 preview and all partial qualification evidence."
+    }
+  ],
+  "unreleasedInteractionCorrection": {
+    "version": "0.1.135-codali.17",
+    "status": "local_qualification",
+    "report": "docs/codali-interaction-evaluation.json",
+    "releaseReady": false,
+    "installedPreview": "0.1.135-codali.15 until exact .17 artifact is checked"
   }
 }

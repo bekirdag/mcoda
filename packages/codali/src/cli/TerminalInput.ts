@@ -19,13 +19,24 @@ export class TerminalInput extends Transform {
   private overflow = false;
   private escapeTimer?: NodeJS.Timeout;
   private escapeNotified = false;
-  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number; onEscape?: () => void }) { super(); }
+  private mousePending = "";
+  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number; onEscape?: () => void; onWheel?: (direction: -1 | 1) => void }) { super(); }
   private append(text: string): void {
     this.bytes += Buffer.byteLength(text);
     if (this.bytes > (this.options.maxPasteBytes ?? 262144)) { this.overflow = true; this.pasted = ""; }
     else if (!this.overflow) this.pasted += text;
   }
   private forward(text: string): void {
+    if (this.options.onWheel) {
+      text = this.mousePending + text; this.mousePending = "";
+      text = text.replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_match, code: string, _x: string, _y: string, end: string) => {
+        const button = Number(code);
+        if (end === "M" && (button & 64) && (button & 3) < 2) this.options.onWheel?.((button & 1) ? 1 : -1);
+        return "";
+      });
+      const partial = /\x1b\[<[0-9;]{0,40}$/.exec(text);
+      if (partial) { this.mousePending = partial[0]; text = text.slice(0, partial.index); }
+    }
     // A standalone Escape can share a read with the next paste marker. Notify
     // it before delivering that paste instead of leaving readline's escape
     // timeout pending while the paste callback observes the old modal state.

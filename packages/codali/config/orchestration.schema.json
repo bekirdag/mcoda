@@ -245,6 +245,62 @@
           "minimum": 1
         }
       }
+    },
+    "interaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "routerBinding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answerBinding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "routerPrompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000
+        },
+        "answerPrompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000
+        },
+        "maxInputChars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "historyChars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxTotalTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxModelCalls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxInspectionSteps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   },
   "required": [

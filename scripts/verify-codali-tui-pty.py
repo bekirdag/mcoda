@@ -67,15 +67,15 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
     try:
         ui.contains('Ask Codali anything')
         ui.send('/stream\r'); ui.contains('stream-')
-        ui.send('draft stays editable'); ui.send(b'\x1b[5~'); ui.send(b'\r')
+        ui.send('draft stays editable'); ui.send(b'\x1b[5~'); ui.send(b'\x1b[<64;12;5M'); ui.send(b'\r')
         ui.event({'text': 'draft stays editable', 'intent': 'queue'})
-        checks.append('streaming and scroll preserve editable input')
+        checks.append('streaming, wheel and keyboard scrolling preserve editable input')
         ui.send('/approval\r'); ui.contains('Permission: fixture')
         ui.send(b'\x1b[200~\x1b[C\r\x1b[201~')
         assert not any('approval' in event for event in ui.events()), 'Paste approved an operation'
         ui.send(b'\r'); ui.event({'approval': 'deny'})
         ui.send('/approval\r')
-        ui.send(b'\x1b[6~'*15); ui.contains('LAST_ARGUMENT')
+        ui.send(b'\x1b[<65;12;5M'*30); ui.contains('LAST_ARGUMENT')
         ui.send(b'\x1b[C\r'); ui.event({'approval': 'once'})
         ui.send('/approval\r'); ui.send(b'\x03')
         ui.wait(lambda: sum(event == {'approval': 'deny'} for event in ui.events()) == 2)
@@ -87,6 +87,15 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.event({'text': '@src/main.ts', 'intent': 'queue'})
         ui.send('line one\x1b\rline two\x13'); ui.event({'text': 'line one\nline two', 'intent': 'steer'})
         checks.append('history selection, workspace file completion, multiline steering')
+        ui.send('/scroll-fixture\r'); ui.pump(.2)
+        ui.send(b'\x1b[<64;12;5M'*80); ui.contains('FIRST_SCROLL_MESSAGE')
+        ui.send('/scroll-state\r'); ui.wait(lambda: any('scroll' in event for event in ui.events()))
+        before_scroll = [event['scroll'] for event in ui.events() if 'scroll' in event][-1]
+        assert before_scroll > 0
+        ui.send('/stream\r'); ui.pump(.25); ui.send('/scroll-state\r')
+        ui.wait(lambda: len([event for event in ui.events() if 'scroll' in event]) >= 2)
+        assert [event['scroll'] for event in ui.events() if 'scroll' in event][-1] >= before_scroll
+        checks.append('wheel reaches earlier messages and streaming preserves scrollback position')
         # NO_COLOR preserves cursor controls but never enables an SGR color.
         import re
         assert not re.search(rb'\x1b\[(?:3[0-7]|9[0-7]|[34]8;)[0-9;]*m', ui.output)

@@ -799,3 +799,42 @@ The task-control revision additionally inspected CodaliJobRuntime stage/dependen
 The capacity audit in Section 4.4 measured current GPU residency and passive headroom, queried live model services and retrieved published model/artifact metadata. It did not install/load the proposed candidates or exercise worst-case media/vision peaks. The selected profiles therefore have calculated admission budgets and explicit qualification gates, not benchmark-proven footprints or quality claims. Phase 0 refreshes the inventory and Phase 5 measures candidate fit. All new commands, configuration fields and deployment changes remain proposed contracts.
 
 This document is saved in the repository's existing local docs/planning area, which is ignored by Git. When implementation starts, move or add the accepted plan/decision records to the agreed tracked documentation location as part of Phase 0, preserving this draft.
+
+## 14. Interaction efficiency and TUI correction — accepted 2026-10-28
+
+The user's `hello` consumed 119,088 tokens without an answer. Release remains
+held until P9.1–P9.5 in the build ledger pass. This amendment supersedes the
+assumption that every terminal message should initialize a verified coding task.
+
+Research current primary sources and test installed small models before choosing
+the dispatcher; see [the investigation](codali-interaction-routing-research.md).
+Use model-interpreted capabilities and configurable versioned prompts, not a
+list of greeting/request patterns. Resolve intent using recent conversation and
+the active goal. Preserve the original request alongside a prepared brief.
+
+Conversation and clarification need no tools, index, task claim or reviewer.
+Programming explanations and difficult answers use a stronger model without
+execution tools. Repository questions get bounded read-only tools. Only an
+action request enters the existing guarded execution workflow. A side question
+must preserve the active goal; an approval such as `go ahead` must retain the
+request it refers to. Invalid decisions cannot escalate into edits.
+
+Measure valid routing, actual answer correctness, latency and token receipts
+across greetings, languages, ambiguity, contextual follow-ups, code questions,
+workspace investigation and changes. Correct failures as they are observed.
+Maintain cumulative session usage and independent bounded turn budgets, carrying
+uncertain inference reservations forward rather than treating them as free.
+
+Retain private credential-redacted request/model-response/final-answer/error
+records with correlation IDs, configuration and prompt versions, timings and
+usage. Logging is required now; training, learning and uploading logs are outside
+this amendment. Preserve existing sessions and user files.
+
+Support wheel and keyboard scrollback while tokens continue streaming. Render
+tool activity and errors in understandable language, with technical details
+available on demand. Give `/help`, `/usage` and other command views readable
+sections, spacing and terminal visuals. Test fragmented input, scroll position,
+approval overlays, cancellation, resume, narrow screens and terminal restoration.
+
+These corrections add release gates; they do not waive the original platform,
+quality, rollout, media review or 24-hour canary requirements.

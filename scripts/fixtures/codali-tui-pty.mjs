@@ -51,6 +51,12 @@ if (mode === "models") {
   SessionController.prototype.run = async function () { record({ executionStarted: true }); return { content: "Continued only by explicit input", completed: false }; };
   await TerminalCommand.run(["resume", controller.sessionId, "--workspace-root", workspace, "--config", configuration]);
 } else if (mode === "queue" || mode === "commands") {
+  // This fixture isolates terminal sequencing; semantic dispatch has controller/live tests.
+  SessionController.prototype.interact = async function (prompt) {
+    if (!this.state || this.state.status === "completed") await this.start(prompt);
+    else await this.steer(prompt);
+    return this.run(prompt);
+  };
   let turn = 0;
   SessionController.prototype.run = async function () {
     const current = ++turn;
@@ -70,6 +76,13 @@ if (mode === "models") {
   };
   await TerminalCommand.run(["chat", "--workspace-root", workspace, "--config", configuration]);
 } else if (mode === "startup" || mode === "new-startup") {
+  if (mode === "startup") SessionController.prototype.interact = async function () {
+    this.active = new AbortController(); const signal = this.active.signal;
+    record({ initializing: true });
+    try { await new Promise(resolve => setTimeout(resolve, 600)); if (signal.aborted) throw new Error("Cancelled by user before execution"); return this.run(); }
+    finally { this.active = undefined; }
+  };
+  if (mode === "new-startup") SessionController.prototype.interact = async function (prompt) { await this.start(prompt); return this.run(prompt); };
   const method = mode === "startup" ? "start" : "clearSession";
   const original = SessionController.prototype[method];
   SessionController.prototype[method] = async function (objective) {
@@ -93,6 +106,13 @@ if (mode === "models") {
         abort = new AbortController();
         const result = await ui.approve("Permission: fixture", Array.from({ length: 70 }, (_, i) => `argument-${i}: complete value`).join("\n") + "\nLAST_ARGUMENT", abort.signal);
         record({ approval: result }); ui.notice(`Decision: ${result}`); return;
+      }
+      if (text === "/scroll-state") { record({ scroll: ui.state.scroll }); return; }
+      if (text === "/scroll-fixture") {
+        ui.restore([]);
+        ui.user("FIRST_SCROLL_MESSAGE");
+        for (let i = 0; i < 60; i++) ui.notice(`History row ${i}`);
+        return;
       }
       if (text === "/stream") {
         ui.event(event("turn_started", {}));

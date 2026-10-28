@@ -60,6 +60,12 @@ export interface TaskControlConfig {
   checkpointOn: string[];
   reviewPolicy: "risk-and-evidence";
 }
+export interface InteractionConfig {
+  routerBinding?: string; answerBinding?: string; promptVersion?: string;
+  routerPrompt?: string; answerPrompt?: string;
+  maxInputChars?: number; historyChars?: number; maxOutputTokens?: number;
+  maxTotalTokens?: number; maxModelCalls?: number; maxInspectionSteps?: number; timeoutMs?: number;
+}
 export interface OrchestrationConfig {
   schemaVersion: 1;
   profile: string;
@@ -69,6 +75,7 @@ export interface OrchestrationConfig {
   routing?: { strategy: "capability-and-capacity"; requiredBackends?: Record<string, string[]> };
   effort?: Partial<Record<EffortLevel, Partial<EffortBudget>>>;
   taskControl?: TaskControlConfig;
+  interaction?: InteractionConfig;
   docdex?: { binary?: string; binarySha256?: string; startupTimeoutMs?: number };
 }
 export interface ResolvedOrchestrationConfig {
@@ -113,7 +120,7 @@ export const orchestrationHash = (config: OrchestrationConfig): string => create
 
 export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig => {
   const root = object(input, "orchestration");
-  fields(root, ["schemaVersion", "profile", "providers", "models", "bindings", "routing", "effort", "taskControl", "docdex"], "orchestration");
+  fields(root, ["schemaVersion", "profile", "providers", "models", "bindings", "routing", "effort", "taskControl", "docdex", "interaction"], "orchestration");
   if (root.schemaVersion !== 1) throw new Error("Unsupported orchestration schemaVersion");
   nonempty(root.profile, "profile");
   const providers = object(root.providers, "providers");
@@ -193,6 +200,17 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
     if (t.maxWritingTasksPerWorktree !== 1 || t.helpers !== "read-only-or-draft" || t.reviewPolicy !== "risk-and-evidence") throw new Error("Invalid task-control safety policy");
     for (const key of ["maxConcurrentHelpers", "repeatedFailureThreshold", "repairAttemptsBeforeReplan"]) positive(t[key], `taskControl.${key}`);
     if (!Array.isArray(t.checkpointOn) || t.checkpointOn.some(v => !["task-transition", "before-compaction", "before-exit"].includes(String(v)))) throw new Error("Invalid checkpointOn policy");
+  }
+  if (root.interaction !== undefined) {
+    const value = object(root.interaction, "interaction");
+    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs"], "interaction");
+    for (const key of ["routerBinding", "answerBinding"]) if (value[key] !== undefined) {
+      nonempty(value[key], `interaction.${key}`);
+      if (!hasOwn(bindings, String(value[key])) || object(bindings[String(value[key])], key).enabled === false) throw new Error(`interaction.${key}: unavailable binding`);
+    }
+    if (value.promptVersion !== undefined) nonempty(value.promptVersion, "interaction.promptVersion");
+    for (const key of ["routerPrompt", "answerPrompt"]) if (value[key] !== undefined && (typeof value[key] !== "string" || !String(value[key]).trim() || String(value[key]).length > 16000)) throw new Error(`interaction.${key}: expected bounded nonempty prompt`);
+    for (const key of ["maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs"]) if (value[key] !== undefined) positive(value[key], `interaction.${key}`);
   }
   if (root.docdex !== undefined) {
     const d = object(root.docdex, "docdex"); fields(d, ["binary", "binarySha256", "startupTimeoutMs"], "docdex");

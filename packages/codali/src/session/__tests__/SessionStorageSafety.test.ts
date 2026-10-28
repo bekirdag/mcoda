@@ -103,7 +103,7 @@ test("future metadata is read-only to this client, including transcript appends"
   await f.store.createSession({ sessionId: "s", repoRoot: f.workspace, task: "Preserve" });
   await f.store.appendTranscript("s", { type: "note", data: { n: 1 } });
   const meta = path.join(f.session, "metadata.json"); const next = JSON.parse(await fs.readFile(meta, "utf8"));
-  next.schemaVersion = 2; next.futureData = { required: true }; await fs.writeFile(meta, JSON.stringify(next));
+  next.schemaVersion = 3; next.futureData = { required: true }; await fs.writeFile(meta, JSON.stringify(next));
   const metadataBefore = await fs.readFile(meta); const transcriptBefore = await fs.readFile(path.join(f.session, "transcript.jsonl"));
   await assert.rejects(f.store.readSession("s"), /Unsupported session metadata/);
   await assert.rejects(f.store.updateSession("s", { task: "rewrite" }), /Unsupported session metadata/);

@@ -460,3 +460,56 @@ receipts and independent-review excerpts preserve the beginning, a detected
 failure region, and the end of bounded output; omission markers never imply
 that an unretained full log is available. Successful test exit status remains
 separate from whether the tests prove the requested behavior.
+
+## Terminal interaction dispatch and audit
+
+Natural-language terminal messages first pass through a bounded semantic
+dispatcher. It uses recent conversation and the active goal to choose a direct
+answer, stronger no-tool answer, read-only investigation, action, or clarification.
+It does not match a list of phrases. Conversation does not initialize a work
+record, repository index or verification loop. Side questions preserve active
+work. Action requests retain the original text and relevant conversation beside
+the prepared brief; the brief cannot grant permissions or replace constraints.
+
+`codali setup` configures the evaluated local Qwen3 4B Instruct route as `intent`
+when it is advertised and healthy, with configured Strata candidates as fallback.
+The older `router` binding used by automation is unchanged. Existing profiles
+without an `intent` binding use a bounded lead call until the operator configures
+one. No model is downloaded automatically.
+
+The optional `interaction` object accepts:
+
+```json
+{
+  "routerBinding": "intent",
+  "answerBinding": "lead",
+  "promptVersion": "my-interaction-v1",
+  "maxInputChars": 24000,
+  "historyChars": 6000,
+  "maxOutputTokens": 768,
+  "maxTotalTokens": 16000,
+  "maxModelCalls": 8,
+  "maxInspectionSteps": 6,
+  "timeoutMs": 90000
+}
+```
+
+Optional `routerPrompt` and `answerPrompt` strings replace the built-in prompts.
+The router must return exactly `{"mode":"answer","text":"Hello!"}` with mode
+one of `answer`, `reason`, `inspect`, `execute`, `clarify`. For delegated modes,
+text is a task brief of at most 500 characters, not a proposed solution. Invalid
+output gets one bounded repair attempt; it cannot start execution. Model bindings
+still enforce catalog entitlement, backend identity and context capacity.
+
+Session totals accumulate, while turn budgets restart per message. Unknown
+remote outcomes retain their token reservations until reconciled. Execution
+continues to use the selected effort budget and existing completion gate.
+
+Private session `transcript.jsonl` records `interaction_request`, `model_request`,
+`model_response`, and `interaction_result` or `interaction_failed`. Correlation
+IDs, actual message/tool payloads, configuration and prompt hashes, model routes,
+token receipts and final outcomes support later investigation. Registered
+credentials and recognizable token formats are redacted; files have private
+permissions and stay outside the repository. No training or log upload is enabled.
+Cancellation may leave a remote model outcome unknown; the log preserves that
+reservation rather than inventing a response or zero usage.

@@ -35,10 +35,18 @@ test("completed tool cards retain actual results and sanitize terminal escapes",
   const ui = make();
   ui.event(event("tool_intent", { receipt: { id: "read", tool: "read_file", args: { path: "src/main.ts" } } }));
   ui.event(event("tool_receipt", { receipt: { id: "read", tool: "read_file", status: "success", args: { path: "src/main.ts" }, output: "export const value = 42;\x1b[2J" } }));
-  assert.match(ui.state.blocks[0].title, /success/);
+  assert.match(ui.state.blocks[0].title, /Reading src\/main.ts · done/);
   assert.match(ui.state.blocks[0].text, /src\/main\.ts/);
   assert.match(ui.state.blocks[0].text, /export const value = 42;/);
   assert.doesNotMatch(ui.state.blocks[0].text, /\x1b/);
+});
+
+test("help and usage render readable sections instead of serialized session objects", () => {
+  const ui = make(); ui.show("old help", "help");
+  assert.ok(ui.state.overlay?.lines.includes("KEYBOARD & MOUSE"));
+  ui.show({ session: { tokens: 320, inputTokens: 300, outputTokens: 20, modelCalls: 1, toolCalls: 0 }, turn: { tokens: 320, modelCalls: 1, toolCalls: 0 }, server: {} }, "usage");
+  const text = ui.state.overlay!.lines.join("\n");
+  assert.match(text, /320 tokens/); assert.match(text, /LATEST TURN/); assert.doesNotMatch(text, /"inputTokens"/);
 });
 
 test("workspace labels and persisted history cannot inject terminal controls", () => {

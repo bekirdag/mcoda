@@ -1,7 +1,7 @@
 import { cells, fitCells, padCells, wrapCells } from "./TerminalCells.js";
 
 export type BlockKind = "user" | "assistant" | "tool" | "error" | "notice";
-export interface TranscriptBlock { id: string; kind: BlockKind; title: string; text: string; }
+export interface TranscriptBlock { id: string; kind: BlockKind; title: string; text: string; summary?: string; }
 export interface TerminalOverlay { title: string; lines: string[]; offset: number; choices?: string[]; selected?: number; hint?: string; }
 export interface TerminalScreenState {
   workspace: string; branch?: string; session?: string; version: string; profile: string;
@@ -45,7 +45,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
     let cached = blockRows.get(block);
     if (!cached || cached.text !== block.text || cached.width !== width) { cached = { text: block.text, width, rows: wrapCells(block.text.replace(/\t/g, "  "), width) }; blockRows.set(block, cached); }
     const content = cached.rows;
-    const visible = block.kind === "tool" && !state.expanded ? content.slice(0, 3) : content;
+    const visible = block.kind === "tool" && !state.expanded ? block.summary ? wrapCells(block.summary, width).slice(0, 3) : content.slice(0, 3) : content;
     let code = false, language = "";
     for (const line of visible) {
       if (line.startsWith("```")) { code = !code; if (code) language = line.slice(3).trim(); transcript.push(dim(code ? `┌ ${language || "code"}` : "└")); }
@@ -55,7 +55,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
       else if (/^#{1,6} /.test(line)) transcript.push(paint("1", line.replace(/^#+ /, "")));
       else transcript.push(line.replace(/\*\*([^*]+)\*\*/g, (_match, value: string) => paint("1", value)).replace(/`([^`]+)`/g, (_match, value: string) => paint("36", value)));
     }
-    if (visible.length < content.length) transcript.push(dim(`… ${content.length - visible.length} more lines · Ctrl+O expand`));
+    if (visible.length < content.length && !(block.kind === "tool" && !state.expanded && block.summary)) transcript.push(dim(`… ${content.length - visible.length} more lines · Ctrl+O expand`));
     transcript.push("");
   }
   if (!transcript.length) transcript.push("", paint("1", "What would you like to build?"), "", ...wrapCells("Describe a change, investigate a problem, or ask about this project.", width).map(dim), "", dim("/ commands    @ files    Ctrl+P command palette"));
@@ -81,7 +81,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   lines.push("  " + paint("36", "╰" + "─".repeat(width - 2) + "╯"));
   const tokens = state.tokens >= 1000 ? `${(state.tokens / 1000).toFixed(1)}k` : String(state.tokens);
   lines.push("  " + dim(fitCells(`${state.route || state.profile} · ${state.effort} · ${state.permissions} · ${tokens} tokens`, width)));
-  lines.push("  " + dim(fitCells(state.busy ? "Enter queue · Ctrl+S steer · Esc cancel · PgUp scroll" : "Enter send · Alt+Enter newline · Ctrl+P commands · Ctrl+R history", width)));
+  lines.push("  " + dim(fitCells(state.busy ? "Enter queue · Ctrl+S steer · Esc cancel · Wheel/PgUp scroll" : "Enter send · Alt+Enter newline · Ctrl+P commands · Wheel/PgUp scroll", width)));
   let cursor: TerminalFrame["cursor"] = { row: editorTop + cursorLine - editorOffset, column: 5 + cursorCell };
   const overlay = state.overlay;
   if (overlay) {
@@ -90,7 +90,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
     if (!cached || cached.lines !== overlay.lines || cached.width !== bodyWidth) { cached = { lines: overlay.lines, width: bodyWidth, rows: overlay.lines.flatMap(line => wrapCells(line.replace(/\t/g, "  "), bodyWidth)) }; overlayRows.set(overlay, cached); }
     const contents = cached.rows;
     const offset = Math.min(Math.max(0, contents.length - available), Math.max(0, overlay.offset));
-    const panel = [paint("1;36", fitCells(overlay.title, bodyWidth)), ...contents.slice(offset, offset + available)];
+    const panel = [paint("1;36", fitCells(overlay.title, bodyWidth)), ...contents.slice(offset, offset + available).map(line => /^[A-Z][A-Z &/]+$/.test(line) ? paint("1;36", line) : line)];
     if (overlay.choices) panel.push("", ...overlay.choices.map((choice, i) => paint(i === overlay.selected ? "7" : "0", fitCells(`${i === overlay.selected ? "›" : " "} ${choice}`, bodyWidth))));
     panel.push("", dim(fitCells(overlay.hint ?? "↑↓ scroll · PgUp/PgDn page · Esc close", bodyWidth)));
     const visible = panel.slice(0, rows - 2);

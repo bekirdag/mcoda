@@ -67,6 +67,11 @@ export const setupTerminalConfig = async (destination: string, options: { prepar
   for (const entry of lead) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.digest ?? entry.raw.revision ?? "catalog-unversioned"), operations: ["chat.completions"], backend: "strata", contextWindow: entry.contextWindow ?? 32768, maxOutputTokens: 4096, supportsTools: true, supportsStreaming: false };
   config.bindings.lead = { candidates: lead.map(entry => entry.id) };
   for (const role of ["architect", "worker", "reviewer", "planner", "compactor", "router", "adjudicator", "synthesizer", "verifier", "repair"]) config.bindings[role] = { useBinding: "lead" };
+  // The evaluated local intent model is an explicit configurable binding.
+  const intent = catalog.filter(entry => entry.health === "healthy" && entry.id.endsWith("qwen3-4b-instruct-2507") && entry.operations.includes("chat.completions"));
+  for (const entry of intent) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.digest ?? entry.raw.revision ?? "catalog-unversioned"), operations: ["chat.completions"], backend: entry.backend, contextWindow: entry.contextWindow ?? 16384, maxOutputTokens: 1024, supportsTools: false, supportsStreaming: false };
+  config.bindings.intent = intent.length ? { candidates: [...intent.map(entry => entry.id), ...lead.map(entry => entry.id)] } : { useBinding: "lead" };
+  config.interaction = { routerBinding: "intent", answerBinding: "lead", promptVersion: "interaction-v8" };
   config.bindings.helper = { enabled: false }; config.bindings.embedding = { enabled: false };
   // Only explicit operator contracts can initialize an index. Incompatible
   // embedding spaces never become replicas merely because dimensions match.
@@ -167,7 +172,7 @@ export class TerminalCommand {
     if (args.command === "auth-status") { try { await providerCredential(DEFAULT_PROVIDER); const catalog = await new ModelServiceClient(DEFAULT_PROVIDER).catalog(); output({ authenticated: true, entitledModels: catalog.length }); } catch (error) { output({ authenticated: false, error: error instanceof Error ? error.message : String(error) }); process.exitCode = 1; } return; }
     if (args.command === "setup") {
       const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH, { prepareRuntime: () => ensureManagedDocdexRuntime({ binary: args.docdexBinary }) });
-      const docdex = resolved.config.docdex ? { mode: "managed", ...resolved.config.docdex, initialization: "Private repository indexing starts with the first session" }
+      const docdex = resolved.config.docdex ? { mode: "managed", ...resolved.config.docdex, initialization: "Private repository indexing starts when execution needs it" }
         : { mode: "unavailable", reason: "No entitled embedding route advertises a pinned model and complete preprocessing contract" };
       output({ configuration: resolved.source, hash: resolved.hash, bindings: resolved.config.bindings, docdex }); return;
     }
@@ -177,7 +182,7 @@ export class TerminalCommand {
     if (args.command === "config") { output({ valid: true, source: resolved.source, hash: resolved.hash }); return; }
     const interactive = ["chat", "resume"].includes(args.command) && !!process.stdin.isTTY && !args.json;
     let rl: Interface | undefined; let pendingApproval: ((decision: "once" | "session" | "deny") => void) | undefined;
-    let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; let commandAbort: AbortController | undefined; const queued: string[] = [];
+    let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; let commandAbort: AbortController | undefined; const queued: Array<{ text: string; steer?: boolean }> = [];
     const approve: PermissionPrompt = async (request, signal) => {
       if (!interactive || closed) return { allow: false };
       const reviewableArgs = redactSecretValues(JSON.stringify(request.args, (key, value: unknown) => /authorization|api[_-]?key|password|credential|secret|signature|token/i.test(key) ? "[redacted]" : value, 2));
@@ -210,13 +215,17 @@ export class TerminalCommand {
       if (closed || epoch !== cancelEpoch) { showPrompt(); return; }
       tui?.update({ busy: true, activity: "Preparing turn", queued: queued.length });
       activeRun = (async () => {
-        try { if (closed || epoch !== cancelEpoch) return; if ((newSession || !controller.sessionId || controller.state?.status === "completed") && prompt) await controller.start(prompt); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = await controller.run(prompt); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || args.permissions === "plan" ? 0 : 2; }
+        try { if (closed || epoch !== cancelEpoch) return; if (newSession && controller.sessionId) await controller.clearSession(); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = prompt ? await controller.interact(prompt) : await controller.run(); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || "mode" in result && result.mode !== "execute" || args.permissions === "plan" ? 0 : 2; }
         catch (error) { const message = redactSecretValues(error instanceof Error ? error.message : String(error)); if (tui) { tui.error(message); tui.update({ activity: "Turn stopped" }); } else if (args.json) output({ schemaVersion: 1, type: "command_failed", sessionId: controller.sessionId, data: { message, completed: false } }); else process.stderr.write(`${terminalText(message)}\n`); if (!interactive) process.exitCode = /cancel/i.test(String(error)) ? 130 : 1; }
         finally {
           pendingApproval?.("deny"); pendingApproval = undefined;
           if (!closed && queued.length) {
             const next = queued.shift()!; const nextEpoch = cancelEpoch;
-            try { if (controller.state?.status === "completed") { activeRun = undefined; run(next, false, nextEpoch); } else { await controller.steer(next); activeRun = undefined; run(undefined, false, nextEpoch); } }
+            try {
+              if (next.steer && controller.state && controller.state.status !== "completed") {
+                await controller.steer(next.text); activeRun = undefined; run(undefined, false, nextEpoch);
+              } else { activeRun = undefined; run(next.text, false, nextEpoch); }
+            }
             catch (error) { activeRun = undefined; const message = terminalText(error instanceof Error ? error.message : String(error)); if (tui) tui.error(message); else process.stderr.write(`${message}\n`); showPrompt(); }
           } else { activeRun = undefined; showPrompt(); }
         }
@@ -232,7 +241,7 @@ export class TerminalCommand {
       else if (name === "/status") output(controller.status());
       else if (name === "/usage") {
         const reconciliation = await controller.reconcileUsage();
-        output({ session: controller.usageSnapshot(), reconciliation, server: await usageFor(resolved) });
+        output({ session: controller.usageSnapshot(), turn: controller.turnUsageSnapshot(), reconciliation, server: await usageFor(resolved) });
       }
       else if (name === "/permissions") { if (value === "clear") await controller.clearPermissionGrants(); else if (value) { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Expected plan, ask, workspace or clear"); controller.gate.setProfile(value as PermissionProfile); } output(controller.gate.inspect()); }
       else if (name === "/effort") { if (value) { if (controller.busy) throw new Error("Change effort between turns"); if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Expected low, medium, high or max"); controller.effort = value as EffortLevel; } output({ effort: controller.effort }); }
@@ -289,11 +298,11 @@ export class TerminalCommand {
         output({ revision: controller.state?.planRevision ?? 1, mode: controller.gate.profile === "plan" ? "plan" : "execute", phases: controller.state?.phases ?? [], tasks: controller.state?.tasks ?? [], history: controller.state?.planHistory?.map(p => ({ revision: p.revision, goalRevision: p.goalRevision, at: p.at, reason: p.reason })) ?? [] });
       }
       else if (name === "/decisions") output(controller.state?.decisions ?? []);
-      else if (name === "/context") output({ goal: controller.state, configHash: resolved.hash });
+      else if (name === "/context") output({ conversation: controller.conversationSnapshot(), goal: controller.state, configHash: resolved.hash });
       else if (name === "/diff") output(await controller.diff());
       else if (name === "/tools") output(controller.registry.list().map(tool => ({ name: tool.name, description: tool.description })));
       else if (name === "/mcp") output({ connectors: controller.status().connectors, tools: controller.registry.list().filter(tool => tool.name.startsWith("mcp")).map(tool => ({ name: tool.name, description: tool.description })) });
-      else if (name === "/docdex") output({ configuredRuntime: resolved.config.docdex, embedding: resolved.config.bindings.embedding, availableTools: controller.registry.list().filter(tool => tool.name.startsWith("docdex")).map(tool => tool.name), initialization: "Private repository indexing starts with the first session" });
+      else if (name === "/docdex") output({ configuredRuntime: resolved.config.docdex, embedding: resolved.config.bindings.embedding, availableTools: controller.registry.list().filter(tool => tool.name.startsWith("docdex")).map(tool => tool.name), initialization: "Private repository indexing starts when execution needs it" });
       else if (name === "/sessions") output(await controller.store.listSessions());
       else if (name === "/artifacts") {
         if (!value) output(await controller.artifacts());
@@ -306,7 +315,7 @@ export class TerminalCommand {
           finally { if (commandAbort === active) commandAbort = undefined; }
         } else throw new Error("Usage: /artifacts [export JOB_ID PATH|open JOB_ID]");
       }
-      else if (name === "/steer" && (activeRun || controller.busy)) { if (!value) throw new Error("Provide the correction"); queued.unshift(value); cancelTurn(); tui?.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); }
+      else if (name === "/steer" && (activeRun || controller.busy)) { if (!value) throw new Error("Provide the correction"); queued.unshift({ text: value, steer: true }); cancelTurn(); tui?.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); }
       else if (name === "/retention") { const days = value ? Number(value) : 30; if (!Number.isFinite(days) || days < 0) throw new Error("Retention days must be nonnegative"); output({ dryRun: true, days, candidates: (await controller.store.listSessions()).filter(s => s.status === "completed" && Date.parse(s.updatedAt) < Date.now() - days * 86_400_000).map(s => ({ id: s.sessionId, updatedAt: s.updatedAt })), action: "Use /delete-session ID to remove a reviewed session and its local artifacts" }); }
       else if (activeRun || controller.busy) throw new Error("This command requires an idle turn; use /cancel or queue an instruction");
       else if (name === "/resume") { await controller.resume(value); if (tui) { tui.restore((await controller.store.readTranscript(value)).map(item => item.data.event as SessionEvent).filter(Boolean)); showPrompt(); } else output(controller.status()); }
@@ -360,8 +369,7 @@ export class TerminalCommand {
             if (closed || inputEpoch !== cancelEpoch) return;
             if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); return; }
             tui!.user(line);
-            if (activeRun || controller.busy) { if (intent === "steer") { queued.unshift(line); cancelTurn(); tui!.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); } else { queued.push(line); tui!.notice("Message queued for the next turn."); } }
-            else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(undefined, false, inputEpoch); }
+            if (activeRun || controller.busy) { if (intent === "steer") { queued.unshift({ text: line, steer: true }); cancelTurn(); tui!.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); } else { queued.push({ text: line }); tui!.notice("Message queued for the next turn."); } }
             else run(line, false, inputEpoch);
             showPrompt();
           }).catch(error => tui!.error(redactSecretValues(error instanceof Error ? error.message : String(error)))); }
@@ -388,8 +396,7 @@ export class TerminalCommand {
         if (pendingApproval) { const response = line.trim().toLowerCase(); if (!["once", "session", "deny"].includes(response)) { process.stderr.write("Enter once, session or deny.\n"); return; } const resolve = pendingApproval; pendingApproval = undefined; resolve(response as "once" | "session" | "deny"); return; }
         if (!line.trim()) { showPrompt(); return; }
         if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); }
-        else if (activeRun || controller.busy) { queued.push(line); output("Instruction queued for the next turn. Use /cancel to interrupt first."); }
-        else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(undefined, false, inputEpoch); }
+        else if (activeRun || controller.busy) { queued.push({ text: line }); output("Instruction queued for the next turn. Use /cancel to interrupt first."); }
         else run(line, false, inputEpoch);
       }).catch(error => { process.stderr.write(`${terminalText(error instanceof Error ? error.message : String(error))}\n`); showPrompt(); }); });
       if (args.prompt) run(args.prompt); else showPrompt();

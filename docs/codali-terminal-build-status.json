@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Frozen .15 TUI is installed as codali-next on Raijin and staged on Suku; release40724251209 awaits three macOS exact-install jobs. Followups through f944dbd add fresh sessions, plan diffs, explicit media actions and validated shared model selection, with11 PTY flows passing; they require a new release version. Remaining live-quality, owner-auth, human-media, coexistence and24hcanary gates remain open.",
+  "currentTask": "Preparing .17 with history-aware interaction dispatch, bounded per-turn budgets, complete private interaction/model audit and scrollable friendly TUI. Live16/16routerchecks, CLI hello481tokens/onecall/zero tools, genuine coding task verified within unchanged64kbudget and1681independentchecks. Exact installed .17 artifact, platform CI and original release/rollout/canary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -660,6 +660,48 @@
       "status": "in_progress",
       "evidence": [
         "Current requirement/evidence mapping and diagnosed failure taxonomy are captured in docs/codali-terminal-release-readiness.json. It explicitly marks releaseReady=false and links the actual AD billing goal/plan/attempt/receipt failure to its regression and correction. Final report remains gated on unresolved release criteria."
+      ]
+    },
+    {
+      "id": "P9.1",
+      "description": "Research current Aider, OpenCode, Goose and RouteLLM primary docs/source; benchmark resident0.6B/1.7B/4B models on history-sensitive intent and answer cases before choosing workflow.",
+      "status": "completed",
+      "evidence": [
+        "Primary-source research and model/prompt comparisons: docs/codali-interaction-routing-research.md. Measured outcomes: docs/codali-interaction-evaluation.json; final classifier16/16 including history-sensitive requests."
+      ]
+    },
+    {
+      "id": "P9.2",
+      "description": "Implement configurable history-aware capability routing and prompt preparation before indexing or work creation. Bound classification/answer/inspection, preserve original requests and active goals, fail safely on invalid output; use no hardcoded request taxonomy.",
+      "status": "completed",
+      "evidence": [
+        "SessionController.interact dispatches before work/index creation; configurable intent binding and prompts, bounded history and prepared briefs, independent read-only/no-tool paths. Full package suite1788passed/3skipped before final metadata/policy additions; targeted follow-up checks pending.",
+        "Candidate .17 full package:1789passed/3skipped. Final recovery/policy regression:137passed/1skipped. All workspaces build.12realPTYflows pass again after final queue/control changes."
+      ]
+    },
+    {
+      "id": "P9.3",
+      "description": "Log every terminal request, actual model input/output and final response/error with correlation, prompt/config version, usage and timing in private redacted durable logs; preserve existing sessions.",
+      "status": "completed",
+      "evidence": [
+        "Private transcript events retain original requests, actual model payloads/responses, route/config/prompt hashes, usage and final answer/error/cancellation. Credential redaction and0600permissions regression passes. Conversation metadata v2 prevents .15 from misinterpreting chat as work; actual old-client rejection verified.",
+        "Conversation-to-work promotion persists intent/attachment before initialization and resumes after a simulated interruption. Older.15client rejects new metadata v2; existing v1 work sessions remain supported."
+      ]
+    },
+    {
+      "id": "P9.4",
+      "description": "Make TUI transcript scrollable with wheel and keyboard, stable while streaming; provide friendly progress/errors and polished help/usage/command views.",
+      "status": "completed",
+      "evidence": [
+        "12realPTYflows pass including mouse wheel, keyboard scrollback, scroll anchoring during streaming, approval scrolling, cancellation, resumption and terminal restoration. Human tool labels, dedicated help/usage views and readable error messages implemented."
+      ]
+    },
+    {
+      "id": "P9.5",
+      "description": "Run varied live prompt, history, cancellation, malformed-router, budget and privacy regressions; fix observed failures, install a qualified preview and report measured token/latency improvements before release.",
+      "status": "in_progress",
+      "evidence": [
+        "Live hello:481tokens,1modelcall,0tools,3.92seconds,correctanswer,exit0. Coding fixture initially failed64kbudget, then completed at58116tokens after context preparation;11generatedtests and1681independentcasespassed. Previous failures retained. Exact .17 installed preview still pending."
       ]
     }
   ],
@@ -2567,7 +2609,7 @@
       "limitation": "Separate mSwarm vendor lacked new string-width dependency; standalone Codali TUI/platform tests passed. Candidate.15 adds complete matching runtime dependency declarations, build guard and node-runtime qualification."
     }
   ],
-  "updatedAt": "2026-10-28T17:20:06.871158+00:00",
+  "updatedAt": "2026-10-28T18:39:22.374347+00:00",
   "openFindings": [
     "The user requires a full Codex/Claude-style TUI. The full TUI is implemented and cross-platform qualified; P6.8 still needs exact public release and SSH qualification. All prior runtime and release gates remain required.",
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
@@ -2590,6 +2632,7 @@
     "AD service-adapters exhausted4.8M tokens after84.6min, with independently failing interval API despite task-level approval. Final review repeatedly lacked complete source. Source pagination preserves acceptance/hash checks; it does not establish general reviewer correctness or invalidate the original failures.",
     "AF billing passed all four module graders but failed goal completion; service-adapters stalled, and follow-on journeys were deliberately aborted. AF actually used max1024, corrected by preserved audit evidence. Readonly AH with exact original workspace passed fresh scoped/final reviews at asserted4096; this isolates the checklist fix and does not qualify autonomous completion. Fresh workflows must use the fixed release and assert effective route parameters.",
     "Post-nodeN TNL story smoke and Logmira Wodo/Heka pass. BDYA first impact probe failed: exact invocationshi_4b920c5fae0f480ca228037202e95e92 records nativeHTTP429 as upstream_error; relay returnedMCODA_EMPTY_RESPONSE. Later same deployed-client impact probe passes via Suku Strata. Cause of concurrent native admission and lost classification must be fixed/qualified; a successful retry is not clearance. Evidence consumers-postdeploy-node-n.json and bdya-empty-exact-invocation.json.",
-    "BDYA native429 root response is confirmed. Sanitized capacity propagation fixes are tested and committed across client, backend and isolated relay, but remain undeployed during frozenAG. Native queue pressure origin and mixed-load recovery remain unqualified; no uncertain request replay or zero-usage fabrication was added."
+    "BDYA native429 root response is confirmed. Sanitized capacity propagation fixes are tested and committed across client, backend and isolated relay, but remain undeployed during frozenAG. Native queue pressure origin and mixed-load recovery remain unqualified; no uncertain request replay or zero-usage fabrication was added.",
+    "Release-blocking user report confirmed: greeting hello entered coding/work-verification loop,14lead+4reviewer+1embedding calls,119088tokens (117189input/1899output), attempted hello.txt write denied, no turn_result. Separate semantic interaction handling must precede coding orchestration; raising budgets is not a remedy."
   ]
 }

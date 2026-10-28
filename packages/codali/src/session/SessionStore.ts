@@ -9,10 +9,12 @@ import { readStateFile, sessionStoragePath } from "./SessionStoragePath.js";
 export type CodaliSessionStatus = "active" | "paused" | "completed" | "failed";
 
 export interface CodaliSessionMetadata {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   sessionId: string;
   repoRoot: string;
   task: string;
+  kind?: "conversation" | "work";
+  projectTaskKey?: string;
   status: CodaliSessionStatus;
   branch?: string;
   parentSessionId?: string;
@@ -71,6 +73,8 @@ export interface CreateSessionInput {
   sessionId?: string;
   repoRoot: string;
   task: string;
+  kind?: "conversation" | "work";
+  projectTaskKey?: string;
   status?: CodaliSessionStatus;
   branch?: string;
   parentSessionId?: string;
@@ -92,11 +96,14 @@ const safeSummaryRef = (value: string): string => {
 };
 
 const validateMetadata = (value: CodaliSessionMetadata, sessionId: string): CodaliSessionMetadata => {
-  if (!value || value.schemaVersion !== 1) throw new Error("Unsupported session metadata schema; use a compatible client");
+  if (!value || ![1, 2].includes(value.schemaVersion)) throw new Error("Unsupported session metadata schema; use a compatible client");
   if (value.sessionId !== sessionId || typeof value.repoRoot !== "string" || typeof value.task !== "string" || !["active", "paused", "completed", "failed"].includes(value.status)) throw new Error("Invalid session metadata identity/status");
   for (const key of ["runIds", "transcriptRefs", "summaryRefs", "contextLaneRefs", "instructionSources"] as const) {
     if (!Array.isArray(value[key]) || value[key].some(item => typeof item !== "string")) throw new Error(`Invalid session ${key}`);
   }
+  if (value.kind !== undefined && !["conversation", "work"].includes(value.kind)) throw new Error("Invalid session kind");
+  if (value.schemaVersion === 2 && value.kind === undefined) throw new Error("Session metadata v2 requires an explicit kind");
+  if (value.projectTaskKey !== undefined && (typeof value.projectTaskKey !== "string" || !value.projectTaskKey.trim())) throw new Error("Invalid project attachment key");
   value.summaryRefs.forEach(safeSummaryRef);
   return value;
 };
@@ -229,10 +236,13 @@ export class SessionStore {
     const sessionId = input.sessionId ? safeId(input.sessionId) : randomUUID();
     const createdAt = this.nextTimestampIso();
     const metadata: CodaliSessionMetadata = {
-      schemaVersion: 1,
+      // Older clients must not reinterpret conversation-only sessions as coding goals.
+      schemaVersion: input.kind === "conversation" || input.projectTaskKey ? 2 : 1,
       sessionId,
       repoRoot: input.repoRoot,
       task: input.task,
+      kind: input.kind ?? (input.projectTaskKey ? "work" : undefined),
+      projectTaskKey: input.projectTaskKey,
       status: input.status ?? "active",
       branch: input.branch,
       parentSessionId: input.parentSessionId,

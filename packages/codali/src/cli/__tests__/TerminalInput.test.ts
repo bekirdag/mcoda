@@ -4,6 +4,25 @@ import { PassThrough } from "node:stream";
 import { createInterface, type Interface } from "node:readline";
 import { TerminalInput, insertTerminalPaste } from "../TerminalInput.js";
 
+test("mouse wheel sequences are consumed across every byte boundary without changing the draft", async () => {
+  const sequence = Buffer.from("draft\x1b[<64;12;4M\x1b[<65;12;4Mtail");
+  for (let split = 0; split <= sequence.length; split++) {
+    const wheel: number[] = []; let raw = "";
+    const input = new TerminalInput({ onWheel: direction => wheel.push(direction), onPaste: () => assert.fail(), onRejected: reason => assert.fail(reason) });
+    input.on("data", chunk => { raw += chunk.toString(); });
+    input.write(sequence.subarray(0, split)); input.end(sequence.subarray(split));
+    await new Promise<void>(resolve => input.once("end", resolve));
+    assert.deepEqual(wheel, [-1, 1]); assert.equal(raw, "drafttail");
+  }
+});
+
+test("pasted mouse bytes cannot scroll or approve anything", () => {
+  let wheel = 0;
+  const input = new TerminalInput({ onWheel: () => { wheel++; }, onPaste: () => {}, onRejected: reason => assert.fail(reason) });
+  input.write("\x1b[200~\x1b[<64;1;1M\x1b[201~");
+  assert.equal(wheel, 0); input.destroy();
+});
+
 test("coalesced Escape closes a modal before the next paste is delivered", () => {
   const events: string[] = [];
   const input = new TerminalInput({ onEscape: () => events.push("escape"), onPaste: text => events.push(`paste:${text}`), onRejected: reason => assert.fail(reason) });

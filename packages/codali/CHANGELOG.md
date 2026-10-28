@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Prepare codali.17 with history-aware interaction dispatch before repository
+  execution. Greetings and questions no longer create coding tasks or reviewer
+  loops; configured small-model prompts prepare bounded stronger-model requests.
+- Record private redacted request/model-response/final-outcome audit events,
+  preserve cumulative usage with bounded turn budgets, and remove transport
+  metadata from repeated model context. Conversation metadata v2 prevents older
+  clients from reinterpreting these sessions as coding jobs; v1 work sessions
+  remain readable.
+- Add mouse-wheel scrollback that stays anchored during streaming, readable tool
+  activity and errors, and dedicated help/usage views. Preserve keyboard access,
+  approval controls and terminal restoration.
+
 - Retry transient Windows state-file replacement conflicts without deleting the
   previous state or suppressing permanent errors. Retain file durability checks.
 - Resolve native macOS Git within the selected developer installation so sandboxed

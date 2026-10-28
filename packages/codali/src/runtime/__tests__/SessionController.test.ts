@@ -926,7 +926,7 @@ test("the final budget reserve allows Git inspection but fences new implementati
   controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: limited, hash: orchestrationHash(limited), source: "test" },
     provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
   if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
-  await assert.rejects(controller.run("Set value to two, inspect the resulting diff and run a meaningful check before completion."), /Shared model\/token budget exhausted/);
+  await assert.rejects(controller.run("Set value to two, inspect the resulting diff and run a meaningful check before completion."), /This turn reached its model\/token limit/);
   const receipts = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string; output: string });
   const final = receipts.slice(-4);
   assert.deepEqual(final.map(receipt => receipt.status), ["success", "success", "failed", "failed"],
