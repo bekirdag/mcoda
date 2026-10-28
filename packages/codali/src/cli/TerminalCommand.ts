@@ -197,23 +197,24 @@ export class TerminalCommand {
     });
     const cancelTurn = (): void => { cancelEpoch++; controller.cancel(); };
     const showPrompt = (): void => { if (tui) { tui.update({ busy: !!activeRun || controller.busy, effort: controller.effort, permissions: controller.gate.profile, tokens: controller.usageSnapshot().tokens, queued: queued.length, session: controller.sessionId }); return; } if (!closed && !controller.busy && !pendingApproval) { rl?.setPrompt("codali> "); rl?.prompt(); } };
-    const run = (prompt?: string, newSession = false): void => {
-      const epoch = cancelEpoch;
+    const run = (prompt?: string, newSession = false, epoch = cancelEpoch): void => {
+      if (closed || epoch !== cancelEpoch) { showPrompt(); return; }
       tui?.update({ busy: true, activity: "Preparing turn", queued: queued.length });
       activeRun = (async () => {
-        try { if (closed) return; if ((newSession || !controller.sessionId || controller.state?.status === "completed") && prompt) await controller.start(prompt); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = await controller.run(prompt); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || args.permissions === "plan" ? 0 : 2; }
+        try { if (closed || epoch !== cancelEpoch) return; if ((newSession || !controller.sessionId || controller.state?.status === "completed") && prompt) await controller.start(prompt); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = await controller.run(prompt); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || args.permissions === "plan" ? 0 : 2; }
         catch (error) { const message = redactSecretValues(error instanceof Error ? error.message : String(error)); if (tui) { tui.error(message); tui.update({ activity: "Turn stopped" }); } else if (args.json) output({ schemaVersion: 1, type: "command_failed", sessionId: controller.sessionId, data: { message, completed: false } }); else process.stderr.write(`${terminalText(message)}\n`); if (!interactive) process.exitCode = /cancel/i.test(String(error)) ? 130 : 1; }
         finally {
           pendingApproval?.("deny"); pendingApproval = undefined;
           if (!closed && queued.length) {
-            const next = queued.shift()!;
-            try { if (controller.state?.status === "completed") { activeRun = undefined; run(next); } else { await controller.steer(next); activeRun = undefined; run(); } }
+            const next = queued.shift()!; const nextEpoch = cancelEpoch;
+            try { if (controller.state?.status === "completed") { activeRun = undefined; run(next, false, nextEpoch); } else { await controller.steer(next); activeRun = undefined; run(undefined, false, nextEpoch); } }
             catch (error) { activeRun = undefined; const message = terminalText(error instanceof Error ? error.message : String(error)); if (tui) tui.error(message); else process.stderr.write(`${message}\n`); showPrompt(); }
           } else { activeRun = undefined; showPrompt(); }
         }
       })();
     };
     const command = async (line: string): Promise<void> => {
+      const commandEpoch = cancelEpoch;
       const [name, ...parts] = line.trim().split(/\s+/); const value = parts.join(" ");
       outputTitle = name.slice(1);
       if (name === "/cancel" || name === "/stop") { queued.length = 0; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; tui?.notice("Stopping the turn and clearing queued instructions; waiting for owned work to settle."); return; }
@@ -242,7 +243,7 @@ export class TerminalCommand {
       else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
       else if (name === "/plan") {
         if (parts[0] === "mode") { if (controller.busy) throw new Error("Cancel the active turn before changing plan mode"); if (!["plan", "execute"].includes(parts[1])) throw new Error("Usage: /plan mode plan|execute"); controller.gate.setProfile(parts[1] === "plan" ? "plan" : "ask"); }
-        else if (parts[0] === "edit") { if (controller.busy) throw new Error("Cancel the active turn before revising the plan"); const instruction = parts.slice(1).join(" "); if (!instruction) throw new Error("Usage: /plan edit INSTRUCTION"); if (!controller.state) throw new Error("Start a goal before editing its plan"); controller.gate.setProfile("plan"); await controller.steer(`Revise the plan as requested: ${instruction}`); run(); return; }
+        else if (parts[0] === "edit") { if (controller.busy) throw new Error("Cancel the active turn before revising the plan"); const instruction = parts.slice(1).join(" "); if (!instruction) throw new Error("Usage: /plan edit INSTRUCTION"); if (!controller.state) throw new Error("Start a goal before editing its plan"); controller.gate.setProfile("plan"); await controller.steer(`Revise the plan as requested: ${instruction}`); run(undefined, false, commandEpoch); return; }
         else if (value && !["show", "history"].includes(value)) throw new Error("Usage: /plan [show|history|edit INSTRUCTION|mode plan|execute]");
         output({ revision: controller.state?.planRevision ?? 1, mode: controller.gate.profile === "plan" ? "plan" : "execute", phases: controller.state?.phases ?? [], tasks: controller.state?.tasks ?? [], history: controller.state?.planHistory?.map(p => ({ revision: p.revision, goalRevision: p.goalRevision, at: p.at, reason: p.reason })) ?? [] });
       }
@@ -263,15 +264,15 @@ export class TerminalCommand {
       else if (name === "/new" || name === "/clear") {
         await controller.clearSession();
         tui?.restore([]); tui?.update({ activity: "Ready" });
-        if (value) { tui?.user(value); run(value, true); }
+        if (value) { tui?.user(value); run(value, true, commandEpoch); }
         else if (tui) tui.notice("Fresh session. Enter an objective to begin; previous sessions remain available through /sessions and /resume.");
         else output("Fresh session. Enter an objective to begin; previous sessions are preserved.");
       }
       else if (name === "/steer") { if (!value) throw new Error("Provide the correction"); await controller.steer(value); output(controller.state); }
-      else if (name === "/continue") run();
+      else if (name === "/continue") run(undefined, false, commandEpoch);
       else if (name === "/checkpoint") { await controller.checkpoint(value || "User checkpoint"); output("Checkpoint saved."); }
       else if (name === "/compact") { await controller.compact(); output("Context compacted."); }
-      else if (name === "/review") { if (!controller.state) throw new Error("No goal to review"); await controller.steer("Review the current changes against the original goal and architecture decisions; fix concrete findings and reverify."); run(); }
+      else if (name === "/review") { if (!controller.state) throw new Error("No goal to review"); await controller.steer("Review the current changes against the original goal and architecture decisions; fix concrete findings and reverify."); run(undefined, false, commandEpoch); }
       else if (name === "/reconcile") { const [id, outcome, ...note] = parts; if (!["success", "failed"].includes(outcome)) throw new Error("Usage: /reconcile ID success|failed observed outcome"); await controller.reconcile(id, outcome as "success" | "failed", note.join(" ")); output("Reconciliation recorded."); }
       else if (name === "/reconcile-media") { const [id, outcome, ...note] = parts; if (outcome !== "failed") throw new Error("Usage: /reconcile-media ID failed confirmed remote failure or cancellation; a lost response alone is not confirmation"); output(await controller.mediaStore().reconcileFailure(id, note.join(" ")).then(job => ({ id: job.id, status: job.status, reconciliation: job.reconciliation }))); }
       else if (name === "/export") { if (!controller.sessionId) throw new Error("No active session"); output({ schemaVersion: 1, state: controller.state, events: await controller.store.readTranscript(controller.sessionId) }); }
@@ -309,8 +310,8 @@ export class TerminalCommand {
             if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); return; }
             tui!.user(line);
             if (activeRun || controller.busy) { if (intent === "steer") { queued.unshift(line); cancelTurn(); tui!.notice("Cancelling the turn; steering will apply at the next safe checkpoint."); } else { queued.push(line); tui!.notice("Message queued for the next turn."); } }
-            else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(); }
-            else run(line);
+            else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(undefined, false, inputEpoch); }
+            else run(line, false, inputEpoch);
             showPrompt();
           }).catch(error => tui!.error(redactSecretValues(error instanceof Error ? error.message : String(error)))); }
         });
@@ -337,8 +338,8 @@ export class TerminalCommand {
         if (!line.trim()) { showPrompt(); return; }
         if (line.startsWith("/") && !/[\r\n]/.test(line)) { await command(line); showPrompt(); }
         else if (activeRun || controller.busy) { queued.push(line); output("Instruction queued for the next turn. Use /cancel to interrupt first."); }
-        else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(); }
-        else run(line);
+        else if (controller.state && controller.state.status !== "completed") { await controller.steer(line); run(undefined, false, inputEpoch); }
+        else run(line, false, inputEpoch);
       }).catch(error => { process.stderr.write(`${terminalText(error instanceof Error ? error.message : String(error))}\n`); showPrompt(); }); });
       if (args.prompt) run(args.prompt); else showPrompt();
       await new Promise<void>(resolve => rl!.once("close", () => { closed = true; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined;

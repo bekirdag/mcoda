@@ -142,4 +142,12 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.finish(command='/exit')
         checks.append('new/clear preserve resumable sessions; stop discards queued work; exit restores the terminal')
     finally: ui.cleanup()
+    ui = Terminal('new-startup', base)
+    try:
+        ui.contains('Ask Codali anything'); ui.send('/new Cancelled fresh objective\r')
+        ui.event({'initializing': True}); ui.send('/stop\r'); ui.pump(.8)
+        assert not any('executionStarted' in event for event in ui.events()), 'Stop during /new was lost'
+        ui.send('Allowed next objective\r'); ui.event({'executionStarted': True})
+        ui.finish(command='/exit'); checks.append('stop during fresh-session preparation prevents later execution')
+    finally: ui.cleanup()
 print(json.dumps({'passed': True, 'checks': checks}))

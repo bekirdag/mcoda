@@ -36,12 +36,13 @@ if (mode === "resume") {
     } finally { this.active = undefined; }
   };
   await TerminalCommand.run(["chat", "--workspace-root", workspace, "--config", configuration]);
-} else if (mode === "startup") {
-  const start = SessionController.prototype.start;
-  SessionController.prototype.start = async function (objective) {
+} else if (mode === "startup" || mode === "new-startup") {
+  const method = mode === "startup" ? "start" : "clearSession";
+  const original = SessionController.prototype[method];
+  SessionController.prototype[method] = async function (objective) {
     record({ initializing: true });
     await new Promise(resolve => setTimeout(resolve, 600));
-    return start.call(this, objective);
+    return original.call(this, objective);
   };
   SessionController.prototype.run = async function () { record({ executionStarted: true }); return { content: "Unexpected execution", completed: false }; };
   await TerminalCommand.run(["chat", "--workspace-root", workspace, "--config", configuration]);
