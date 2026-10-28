@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T16:49:26.800693+00:00",
+  "updatedAt": "2026-10-28T17:20:06.871158+00:00",
   "candidate": {
     "version": "0.1.135-codali.13",
     "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
@@ -963,17 +963,21 @@
     "reason": "Release tests found missing TUI dependency in the separately vendored mSwarm runtime. Failed tag.14 retained; no public packages published by this run."
   },
   "unreleasedTerminalFollowups": {
-    "sourceCommit": "3287909",
+    "sourceCommit": "f944dbd",
     "changes": [
       "fresh-session /new and /clear",
       "responsive /stop and /exit with cancellation fencing",
       "documented output/permission/config-validation syntax",
-      "explicit goal amendments without inference"
+      "explicit goal amendments without inference",
+      "saved plan revision diff without inference",
+      "verified media export/open and owned-job cancellation",
+      "live-entitled shared model selection with preview and explicit persistence"
     ],
     "validation": [
-      "62 session tests",
-      "3 CLI contract tests",
-      "9 expanded PTY flows"
+      "172 affected regression tests after media actions",
+      "8 focused artifact tests",
+      "3 model-selection tests",
+      "11 expanded PTY flows"
     ],
     "includedInCandidate15": false
   }

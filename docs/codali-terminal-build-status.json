@@ -4,7 +4,7 @@
   "acceptedAt": "2026-10-25",
   "baseline": "d6ae58e",
   "status": "in_progress",
-  "currentTask": "Candidate .15 at 53d4a09 passed the full monorepo suite, all six release packaging jobs, local installed-package checks, both-host PTYs, actual SSH TUI input/resize/restoration, and six live candidate route checks per host. Release 40724251209 is running exact-tarball platform installation checks before publication. Raijin codali-next launches the private .15 candidate; global codali remains .134 and production nodes remain N/.11. Follow-up commits 0a15e4c, 7a3f773 and 3287909 add fresh-session/stop/exit flows, cancellation fences, documented script options and goal amendments; those changes are not in the frozen .15 candidate. Long workflows, broad quality, context failover, authentication, media review, mixed load and the 24-hour canary remain open.",
+  "currentTask": "Frozen .15 TUI is installed as codali-next on Raijin and staged on Suku; release40724251209 awaits three macOS exact-install jobs. Followups through f944dbd add fresh sessions, plan diffs, explicit media actions and validated shared model selection, with11 PTY flows passing; they require a new release version. Remaining live-quality, owner-auth, human-media, coexistence and24hcanary gates remain open.",
   "tasks": [
     {
       "id": "P0.1",
@@ -419,7 +419,8 @@
       "description": "Implement the alpha command set from Section 6 against controller state. Status and permission inspection must not trigger an inference call.",
       "status": "in_progress",
       "evidence": [
-        "Follow-up 0a15e4c/7a3f773/3287909 implements /new without an immediate objective, /clear, /stop, /exit, /model inspection and /goal amend. 62 session tests, actual CLI configuration/JSONL tests and nine PTY flows pass. Remaining command-contract work is still open; follow-ups are not in candidate .15."
+        "Follow-up 0a15e4c/7a3f773/3287909 implements /new without an immediate objective, /clear, /stop, /exit, /model inspection and /goal amend. 62 session tests, actual CLI configuration/JSONL tests and nine PTY flows pass. Remaining command-contract work is still open; follow-ups are not in candidate .15.",
+        "f944dbd adds /model select BINDING MODEL_ID [--save]: live entitlement check, shared-file preview/persistence, stale-edit protection, safe-boundary activation and compatible embedding preservation. Three unit tests and11 PTY flows pass; incompatible vector-space migration remains an explicit separate-config/fresh-session rebuild workflow needing live qualification."
       ]
     },
     {
@@ -451,7 +452,8 @@
       "description": "Add /artifacts and media-job detail to /tasks, with artifact paths/provenance, separate render usage and explicit download/open actions. Surface effective model bindings/configuration version, pending configuration updates and modality-specific unsupported-operation errors.",
       "status": "in_progress",
       "evidence": [
-        "B/expired-media-local-export-20261027/result.json proves .7 can reconcile/export all three previously acknowledged image/audio/video artifacts after server results expire, with unchanged original job records, zero network requests or new renders, matching SHA256 and successful full decode. B/public-media-expiry-readonly-20261027.json confirms expired remote status. Unacknowledged retention expiry and signed-URL refresh are not established by this check."
+        "B/expired-media-local-export-20261027/result.json proves .7 can reconcile/export all three previously acknowledged image/audio/video artifacts after server results expire, with unchanged original job records, zero network requests or new renders, matching SHA256 and successful full decode. B/public-media-expiry-readonly-20261027.json confirms expired remote status. Unacknowledged retention expiry and signed-URL refresh are not established by this check.",
+        "438b72a adds /artifacts export/open and /tasks media/cancel. Export validates durable path/format/hash receipt, takes the workspace lock, honors permissions/cancellation/fences, refuses overwrite and records a user export without task verification evidence. Linux/macOS desktop opener is shell-free; headless terminals receive export/download guidance.8 focused tests,172 affected regression tests and real approval/cancellation PTYs pass."
       ]
     },
     {
@@ -459,7 +461,8 @@
       "description": "Add /goal, /decisions and the expanded /plan and /tasks commands. Show current requirements, scope history, phase/task dependencies, blockers, ownership and evidence counts through deterministic reads. Make user steering reviewable with a plan diff; preserve authorization for routine work and make planning/execution mode changes explicit.",
       "status": "in_progress",
       "evidence": [
-        "3287909 exposes original objective, revision, constraints, non-goals and amendment history; /goal amend records steering without inference. PTY verifies the resumed original session keeps its original objective and waits for /continue."
+        "3287909 exposes original objective, revision, constraints, non-goals and amendment history; /goal amend records steering without inference. PTY verifies the resumed original session keeps its original objective and waits for /continue.",
+        "c54ee93 adds /plan diff [FROM [TO]], comparing saved task/phase contracts without interpreting execution progress as plan changes.2 unit tests and actual TUI inspection pass without inference."
       ]
     },
     {
@@ -470,7 +473,8 @@
         "2026-10-28 source suite: 1758 passed, 3 skipped, 0 failed. Expanded real PTY checks pass for approvals/paste/completion/multiline input/cancel/resume/queue/steer; existing status/resize/login/restoration smoke passes. Evidence: /home/wodo/.local/state/codali-terminal-deployment/tui-20261028",
         "Linux tmux 45x18 approval/choice/close passed. Workflow now qualifies source and exact installed TUI bytes across Linux/macOS Node20/22. Cross-platform results pending.",
         "Cross-platform run 40718355640 passed all six jobs at 670298a, including installed-package PTYs. Release .14 subsequently failed due to missing mSwarm vendored dependencies and was not published. Corrected .15 publication and SSH checks remain pending.",
-        "Exact .15 Linux CI bytes at 53d4a09 pass installed PTY flows on Raijin/Suku and actual ssh -tt input, window-change delivery and terminal restoration. Evidence: tui-20261028/candidate15-{raijin-pty,suku-pty,real-ssh}.json. Public registry verification and remaining platform jobs are pending."
+        "Exact .15 Linux CI bytes at 53d4a09 pass installed PTY flows on Raijin/Suku and actual ssh -tt input, window-change delivery and terminal restoration. Evidence: tui-20261028/candidate15-{raijin-pty,suku-pty,real-ssh}.json. Public registry verification and remaining platform jobs are pending.",
+        "Followup f944dbd passes11 PTY flows including model lookup cancellation, explicit shared-config activation, media export approvals and pending media cancellation. Frozen .15 source is still53d4a09 and excludes these followups; remaining exact-install macOS jobs and registry proof are pending."
       ]
     },
     {
@@ -2563,7 +2567,7 @@
       "limitation": "Separate mSwarm vendor lacked new string-width dependency; standalone Codali TUI/platform tests passed. Candidate.15 adds complete matching runtime dependency declarations, build guard and node-runtime qualification."
     }
   ],
-  "updatedAt": "2026-10-28T16:49:26.800693+00:00",
+  "updatedAt": "2026-10-28T17:20:06.871158+00:00",
   "openFindings": [
     "The user requires a full Codex/Claude-style TUI. The full TUI is implemented and cross-platform qualified; P6.8 still needs exact public release and SSH qualification. All prior runtime and release gates remain required.",
     "Actual native context refusal accounting is fixed and rechecked on both .11 nodes: streaming/nonstreaming each produce context_length_exceeded, one submission, one canonical invocation and complete zero counters. Original Suku.10 failure is preserved. Other uncertainty and prior usage remain unchanged.",
