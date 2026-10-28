@@ -60,12 +60,12 @@ try:
  read_until(lambda data:b'Ask Codali anything' in data)
  assert b'\x1b[?2004h' in captured and b'\x1b[?1049h' in captured
  os.write(master,b'/status\r');read_until(lambda data:b'Busy: false' in data)
- os.write(master,b'\x1b');time.sleep(0.2)
+ offset=len(captured);os.write(master,b'\x1b');read_until(lambda data:b'\x1b[?25h' in data[offset:])
  fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',18,45,0,0));os.kill(p.pid,signal.SIGWINCH)
- os.write(master,'\x1b[200~alpha\n/quit\nβeta\x1b[201~'.encode());time.sleep(0.2)
+ offset=len(captured);os.write(master,'\x1b[200~alpha\n/quit\nβeta\x1b[201~'.encode());read_until(lambda data:'βeta'.encode() in data[offset:])
  assert p.poll() is None,'Pasted /quit executed before submission'
  os.write(master,b'\x15/effort high\r');read_until(lambda data:b'Effort: high' in data)
- os.write(master,b'\x1b');time.sleep(0.2)
+ offset=len(captured);os.write(master,b'\x1b');read_until(lambda data:b'\x1b[?25h' in data[offset:])
  os.write(master,b'/quit\r');read_until(lambda data:b'\x1b[?2004l' in data)
  p.wait(timeout=5);assert p.returncode==0
  node=sys.argv[1] if len(sys.argv)>1 else 'node'

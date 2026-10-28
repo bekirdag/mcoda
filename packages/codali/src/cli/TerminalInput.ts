@@ -25,6 +25,15 @@ export class TerminalInput extends Transform {
     if (this.bytes > (this.options.maxPasteBytes ?? 262144)) { this.overflow = true; this.pasted = ""; }
     else if (!this.overflow) this.pasted += text;
   }
+  private forward(text: string): void {
+    // A standalone Escape can share a read with the next paste marker. Notify
+    // it before delivering that paste instead of leaving readline's escape
+    // timeout pending while the paste callback observes the old modal state.
+    let escapes = 0;
+    if (this.options.onEscape) while (text.endsWith("\u001b")) { text = text.slice(0, -1); escapes++; }
+    if (text) this.push(text);
+    for (let index = 0; index < escapes; index++) this.options.onEscape!();
+  }
   private consume(text: string): void {
     this.pending += text;
     while (this.pending) {
@@ -32,7 +41,7 @@ export class TerminalInput extends Transform {
       const index = this.pending.indexOf(token);
       if (index < 0) {
         const keep = suffixLength(this.pending, token); const ready = this.pending.slice(0, this.pending.length - keep);
-        if (this.pasting) this.append(ready); else if (ready) this.push(ready);
+        if (this.pasting) this.append(ready); else this.forward(ready);
         this.pending = keep ? this.pending.slice(-keep) : ""; return;
       }
       const ready = this.pending.slice(0, index); this.pending = this.pending.slice(index + token.length);
@@ -41,7 +50,7 @@ export class TerminalInput extends Transform {
         if (this.overflow) this.options.onRejected("Paste exceeds the 256 KiB input limit");
         else this.options.onPaste(this.pasted.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ""));
         this.pasting = false; this.pasted = ""; this.bytes = 0; this.overflow = false;
-      } else { if (ready) this.push(ready); this.pasting = true; }
+      } else { this.forward(ready); this.pasting = true; }
     }
   }
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
@@ -63,7 +72,7 @@ export class TerminalInput extends Transform {
     try {
       if (this.escapeTimer) clearTimeout(this.escapeTimer);
       this.consume(this.decoder.end());
-      if (this.pasting) this.options.onRejected("Incomplete paste discarded"); else if (this.pending) this.push(this.pending);
+      if (this.pasting) this.options.onRejected("Incomplete paste discarded"); else if (this.pending && !(this.pending === "\u001b" && this.escapeNotified)) this.forward(this.pending);
       callback();
     } catch (error) { callback(error as Error); }
   }

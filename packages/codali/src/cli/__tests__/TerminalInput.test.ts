@@ -4,6 +4,15 @@ import { PassThrough } from "node:stream";
 import { createInterface, type Interface } from "node:readline";
 import { TerminalInput, insertTerminalPaste } from "../TerminalInput.js";
 
+test("coalesced Escape closes a modal before the next paste is delivered", () => {
+  const events: string[] = [];
+  const input = new TerminalInput({ onEscape: () => events.push("escape"), onPaste: text => events.push(`paste:${text}`), onRejected: reason => assert.fail(reason) });
+  input.on("data", chunk => events.push(`raw:${chunk.toString()}`));
+  input.write("\x1b\x1b[200~draft\n/quit\x1b[201~\x15/effort high\r");
+  assert.deepEqual(events, ["escape", "paste:draft\n/quit", "raw:\x15/effort high\r"]);
+  input.destroy();
+});
+
 test("standalone Escape is responsive without losing a delayed paste marker", async () => {
   let escaped = 0; const pasted: string[] = []; const raw: string[] = [];
   const input = new TerminalInput({ onEscape: () => { escaped++; }, onPaste: value => pasted.push(value), onRejected: reason => assert.fail(reason) });
@@ -13,7 +22,10 @@ test("standalone Escape is responsive without losing a delayed paste marker", as
   input.write(Buffer.from("[200~hello\n/quit\x1b[201~"));
   assert.deepEqual(pasted, ["hello\n/quit"]); assert.equal(raw.join(""), "");
   input.write(Buffer.from("\x1b")); await new Promise(resolve => setTimeout(resolve, 140)); input.write(Buffer.from("a"));
-  assert.equal(escaped, 2); assert.equal(raw.join(""), "a"); input.destroy();
+  assert.equal(escaped, 2); assert.equal(raw.join(""), "a");
+  input.write(Buffer.from("\x1b")); await new Promise(resolve => setTimeout(resolve, 140));
+  input.end(); await new Promise<void>(resolve => input.once("end", resolve));
+  assert.equal(escaped, 3); assert.equal(raw.join(""), "a");
 });
 
 test("bracketed paste remains one input across every byte boundary", async () => {
