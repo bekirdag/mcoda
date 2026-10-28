@@ -83,6 +83,7 @@ runtime versions remain available for existing profiles.
 | `/goal amend TEXT` | Record an explicit goal amendment between turns, preserving the original objective; execution waits for `/continue` |
 | `/model`, `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
 | `/plan [show\|history\|edit TEXT\|mode plan\|execute]` | Inspect or revise the plan; execute mode uses the approval policy |
+| `/plan diff [FROM [TO]]` | Review changed task scope, dependencies and phases between saved revisions; defaults to the previous and current plan |
 | `/tools`, `/mcp`, `/docdex` | Inspect available tools, connectors and indexing configuration |
 | `/context`, `/diff`, `/review` | Inspect retained context/changes or request a new review task |
 | `/checkpoint`, `/compact` | Save progress or reduce conversation context while preserving canonical work state |

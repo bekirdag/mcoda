@@ -17,6 +17,7 @@ import { ModelServiceError } from "../providers/ModelServiceError.js";
 import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
 import { ensureManagedDocdexRuntime, inspectManagedDocdexRuntime, type ManagedRuntimeIdentity } from "../docdex/ManagedRuntime.js";
 import { TerminalTui } from "./tui/TerminalTui.js";
+import { inspectPlanDiff } from "./TerminalPlan.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
@@ -251,9 +252,10 @@ export class TerminalCommand {
       }
       else if (name === "/tasks") output({ tasks: controller.state?.tasks ?? [], media: await controller.artifacts() });
       else if (name === "/plan") {
-        if (parts[0] === "mode") { if (controller.busy) throw new Error("Cancel the active turn before changing plan mode"); if (!["plan", "execute"].includes(parts[1])) throw new Error("Usage: /plan mode plan|execute"); controller.gate.setProfile(parts[1] === "plan" ? "plan" : "ask"); }
+        if (parts[0] === "diff") { if (!controller.state) throw new Error("Start a goal before inspecting its plan"); if (parts.length > 3) throw new Error("Usage: /plan diff [FROM [TO]]"); output(inspectPlanDiff(controller.state, parts[1] === undefined ? undefined : Number(parts[1]), parts[2] === undefined ? undefined : Number(parts[2]))); return; }
+        else if (parts[0] === "mode") { if (controller.busy) throw new Error("Cancel the active turn before changing plan mode"); if (!["plan", "execute"].includes(parts[1])) throw new Error("Usage: /plan mode plan|execute"); controller.gate.setProfile(parts[1] === "plan" ? "plan" : "ask"); }
         else if (parts[0] === "edit") { if (controller.busy) throw new Error("Cancel the active turn before revising the plan"); const instruction = parts.slice(1).join(" "); if (!instruction) throw new Error("Usage: /plan edit INSTRUCTION"); if (!controller.state) throw new Error("Start a goal before editing its plan"); controller.gate.setProfile("plan"); await controller.steer(`Revise the plan as requested: ${instruction}`); run(undefined, false, commandEpoch); return; }
-        else if (value && !["show", "history"].includes(value)) throw new Error("Usage: /plan [show|history|edit INSTRUCTION|mode plan|execute]");
+        else if (value && !["show", "history"].includes(value)) throw new Error("Usage: /plan [show|history|diff [FROM [TO]]|edit INSTRUCTION|mode plan|execute]");
         output({ revision: controller.state?.planRevision ?? 1, mode: controller.gate.profile === "plan" ? "plan" : "execute", phases: controller.state?.phases ?? [], tasks: controller.state?.tasks ?? [], history: controller.state?.planHistory?.map(p => ({ revision: p.revision, goalRevision: p.goalRevision, at: p.at, reason: p.reason })) ?? [] });
       }
       else if (name === "/decisions") output(controller.state?.decisions ?? []);

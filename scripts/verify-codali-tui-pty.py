@@ -136,6 +136,9 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.send('/new\r'); ui.pump(.2)
         ui.send('/resume ' + original + '\r'); ui.pump(.2)
         assert len(ui.events()) == 2, 'Resume unexpectedly started execution'
+        ui.send('/plan diff\r'); ui.contains('From Revision: 1')
+        assert len(ui.events()) == 2, 'Plan inspection unexpectedly started inference'
+        ui.send(b'\x1b'); ui.pump(.2)
         ui.send('/goal amend Keep original requirements\r'); ui.contains('Keep original requirements')
         assert len(ui.events()) == 2, 'Goal amendment unexpectedly started inference'
         ui.send(b'\x1b'); ui.pump(.2)
