@@ -160,7 +160,7 @@
         "Live greeting, history, read-only Docdex, code fixture, help/usage and scroll checks pass",
         "Report completed/failed/unscored coverage and remaining original release gates honestly"
       ],
-      "outcome": "Exact .24 private package passed30 checks and all platform CI. codali-preview now uses separate preview-24-v10.json with explicit low effort; previous .22 launcher/profile preserved. Actual hello answered with908tokens,1modelcall,0tools. Installation deliverables complete, but the required broad quality-improvement gate remains unmet."
+      "outcome": "Exact .26 private package passed30checks and runtime CI/platform qualification. Reversible codali-preview uses preview-26-v11-low.json; .24 launcher retained. Fresh capabilities10/11, unresolved open-ended primary-source discovery. Actual hello1239tokens/1call/0tools/~3.1s. Installation complete; broad quality-improvement gate unmet."
     },
     {
       "id": "U0",
@@ -273,6 +273,88 @@
         "No claim of quality improvement based on exposed held-out cases or changed graders"
       ],
       "outcome": "Exact .24 runtime/installed package and platform CI pass; installed capability qualification10/11 strictly passed (one305-word answer exceeded250\u2013300; all required native-tool/skill/planning/compaction operations succeeded and no-tools constraints held). Fresh U5 strict27/32vs28/32, shared-template exclusion21/24both, with79/79 audited model requests/responses. Shorter v10 dispatcher fixes pantry routing; native512reasoning adds no accuracy gain and was rejected. New frozen16case/32attempt check completed: Codali15/16vsraw14/16,61537vs1936tokens (31.8x), all73/73 model requests/responses audited; no errors. Codali sole failure was JSON-only formatting; raw had one formatting and one arithmetic failure. Small diagnostic does not establish superiority; known dependency-readiness failure remains. All development and follow-up checks are complete. Broad quality/efficiency gate remains unmet; no quality promotion."
+    },
+    {
+      "id": "I0",
+      "title": "Audit actual serving and preserve measurement provenance",
+      "status": "completed",
+      "dependsOn": [
+        "B5"
+      ],
+      "deliverables": [
+        "Actual Strata/GGUF/context/template metadata, explicit digest limitations and direct/proxy diagnostics",
+        "Native tool-history regression, graceful private node fix and identical final-turn live control",
+        "Versioned development failure taxonomy and reference/negative-control-qualified corpus"
+      ],
+      "outcome": "Source e652d79 .25 fixes native final tool-history passthrough. All224 ablation requests/responses accounted, no missing outcomes; historical studies and failed variants retained."
+    },
+    {
+      "id": "I1",
+      "title": "Unify semantic dispatch and final output validation",
+      "status": "completed",
+      "dependsOn": [
+        "I0"
+      ],
+      "deliverables": [
+        "Shared versioned mode/text/tools/output schema; original request and history remain authoritative",
+        "Every interaction route checks JSON syntax, top-level required keys and explicit word bounds; one bounded tool-free conversational repair",
+        "Resident small/large dispatcher comparison; explicit qualification required before selecting a small model"
+      ],
+      "outcome": "Large dispatcher20/20 on exposed development fixtures; small models did not qualify. Format validation does not verify full JSON Schema, factual correctness or code behavior."
+    },
+    {
+      "id": "I2",
+      "title": "Select useful verification instead of routine self-review",
+      "status": "in_progress",
+      "dependsOn": [
+        "I1"
+      ],
+      "deliverables": [
+        "Exact draft/revision correction-versus-damage ablation",
+        "Independent arithmetic, code, repository and architecture evidence on realistic tasks"
+      ],
+      "outcome": "17 reviewed drafts:0 corrected,1 damaged,12 unchanged correct,4 unchanged wrong. Disable routine review. Broader independent-verification workflow and realistic architecture quality remain unresolved."
+    },
+    {
+      "id": "I3",
+      "title": "Qualify bounded evidence selection and recovery",
+      "status": "in_progress",
+      "dependsOn": [
+        "I1"
+      ],
+      "deliverables": [
+        "Installed tool, planning, compression and resumed-source checks",
+        "Realistic interrupted multi-step tasks without duplicated actions or lost constraints"
+      ],
+      "outcome": "Installed .26 passed word-bound, planning, compression, constraint recall and exact source-recovery checks; full capability suite10/11. Open-ended primary-source discovery failed conservatively. Realistic interrupted workflow reliability remains unproven."
+    },
+    {
+      "id": "I4",
+      "title": "Controlled development selection and fresh workflow comparison",
+      "status": "in_progress",
+      "dependsOn": [
+        "I2",
+        "I3"
+      ],
+      "deliverables": [
+        "Review/native-reasoning ablation against raw direct and matched tools",
+        "New family-disjoint workflow validation/heldout and prespecified repeated reliability trials"
+      ],
+      "outcome": "All112 first attempts on20 exposed cases scored. Selected low/512 native reasoning with review off:17/20,59595tokens versus strong raw18/20,8005tokens; tool subset6/6 vs4/6 at3.03times tokens. No broad promotion; fresh workflow campaign remains."
+    },
+    {
+      "id": "I5",
+      "title": "Apply broader promotion gate and preserve learning lineage",
+      "status": "pending",
+      "dependsOn": [
+        "I4"
+      ],
+      "deliverables": [
+        "Held-out correctness gain with positive paired interval and tool-matched advantage",
+        "Critical-case review and prospective efficiency/domain-regression gates",
+        "Verified-label lineage before any later automatic learning or weight tuning"
+      ],
+      "outcome": "Not met. Keep preview experimental and preserve earlier failed gates; no stable/npm release or automatic learning."
     }
   ],
   "corpus": {
@@ -990,13 +1072,61 @@
       "packageChecks": 30,
       "freshRegressionProtocol": "/home/wodo/.local/state/codali-trust-benchmark/u5-regression-protocol-v1.json",
       "qualityPromotion": false
+    },
+    {
+      "phase": "I4",
+      "type": "completed_development_ablation_no_promotion",
+      "at": "2026-10-29T13:30:37.162815+00:00",
+      "sourceRevision": "e652d79",
+      "publicReport": "docs/benchmarks/codali-intelligence-improvement/results.json",
+      "privateEvidenceRoot": "/home/wodo/.local/state/codali-trust-benchmark/intelligence-20261029-v1",
+      "attempts": 112,
+      "modelRequests": 224,
+      "modelResponses": 224,
+      "reviewPending": 0,
+      "qualityPromotion": false
+    },
+    {
+      "phase": "B6",
+      "type": "experimental_preview26_installed_no_broad_promotion",
+      "at": "2026-10-29T13:58:00.310505+00:00",
+      "sourceRevision": "56e34c6",
+      "tests": {
+        "passed": 2058,
+        "skipped": 4,
+        "failed": 0
+      },
+      "packageChecks": 30,
+      "capabilities": {
+        "passed": 10,
+        "total": 11,
+        "failed": [
+          "web-discovery"
+        ]
+      },
+      "hello": {
+        "tokens": 1239,
+        "modelCalls": 1,
+        "toolCalls": 0
+      },
+      "ciRuns": [
+        40884306269,
+        40884306271
+      ],
+      "activation": "/home/wodo/.local/state/codali-trust-benchmark/intelligence-20261029-v1/preview26-activation-v1/manifest.json",
+      "publicReport": "docs/benchmarks/codali-intelligence-improvement/results.json",
+      "qualityPromotion": false
     }
   ],
   "remaining": [
     "B6",
-    "U5"
+    "U5",
+    "I2",
+    "I3",
+    "I4",
+    "I5"
   ],
-  "updatedAt": "2026-10-29T09:22:33.045115+00:00",
+  "updatedAt": "2026-10-29T13:58:00.310542+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [
