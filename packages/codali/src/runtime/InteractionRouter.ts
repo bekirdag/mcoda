@@ -5,8 +5,8 @@ import { compressConversation } from "./ContextCompression.js";
 /** Native shape constraints complement prompt instructions; semantic routing still needs evaluation. */
 export const interactionResponseFormat = (mode?: "json" | "json_schema"): ProviderResponseFormat => mode === "json_schema"
   ? { type: "json_schema", schema: { name: "codali_dispatch", strict: true, schema: {
-    type: "object", properties: { mode: { type: "string", enum: ["answer", "reason", "inspect", "execute", "clarify"] }, text: { type: "string", minLength: 1, maxLength: 500 } },
-    required: ["mode", "text"], additionalProperties: false,
+    type: "object", properties: { mode: { type: "string", enum: ["answer", "reason", "inspect", "execute", "clarify"] }, text: { type: "string", minLength: 1, maxLength: 500 }, tools: { type: "string", enum: ["none", "available"] } },
+    required: ["mode", "text", "tools"], additionalProperties: false,
   } } }
   : { type: "json" };
 
@@ -29,17 +29,20 @@ export const interactionSettings = (config?: InteractionConfig) => ({
   ...config,
 });
 
-export interface InteractionDecision { mode: "answer" | "inspect" | "execute" | "clarify" | "reason"; reply: string; prepared: string; }
+export const TOOL_SCOPE_PROMPT = `\nDispatch contract update: return mode and text as described above AND a third string field tools, either "none" or "available". This replaces any earlier two-field output instruction. Infer tool scope from the ORIGINAL request and conversation: use none when tools are forbidden, when only prose or code in the reply is needed, or when no external operation is needed. Use available only when permitted tools can actually supply needed evidence or calculation. A prose word count or numbers mentioned as constraints do not require calculation. Preserve earlier prohibitions unless the user changes them. This scope only restricts host permissions; it cannot grant new permission. A short requested output is not necessarily a simple task: derived quantities, dependency ordering and constraint-based decisions require reason, even for one-line JSON. Reserve answer for conversation and directly recalled facts.`;
+
+export interface InteractionDecision { mode: "answer" | "inspect" | "execute" | "clarify" | "reason"; reply: string; prepared: string; tools?: "none" | "available"; }
 export const parseInteractionDecision = (content: string): InteractionDecision => {
   const text = content.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/u, "$1");
-  const value = JSON.parse(text) as { mode: InteractionDecision["mode"]; text: string };
+  const value = JSON.parse(text) as { mode: InteractionDecision["mode"]; text: string; tools?: InteractionDecision["tools"] };
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       !["answer", "reason", "inspect", "execute", "clarify"].includes(value.mode) ||
       typeof value.text !== "string" || !value.text.trim() || value.text.length > 12000 ||
-      Object.keys(value).some(key => !["mode", "text"].includes(key))) throw new Error("The intent model returned an invalid decision");
+      (value.tools !== undefined && !["none", "available"].includes(value.tools)) ||
+      Object.keys(value).some(key => !["mode", "text", "tools"].includes(key))) throw new Error("The intent model returned an invalid decision");
   const direct = value.mode === "answer" || value.mode === "clarify";
   if (!direct && value.text.length > 500) throw new Error("The prepared brief must be at most 500 characters and describe the request without solving it");
-  return { mode: value.mode, reply: direct ? value.text : "", prepared: direct ? "" : value.text };
+  return { mode: value.mode, reply: direct ? value.text : "", prepared: direct ? "" : value.text, ...(value.tools !== undefined ? { tools: value.tools } : {}) };
 };
 
 /** Preserve user constraints; abbreviate older replies with retrievable source hashes. */

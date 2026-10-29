@@ -61,7 +61,10 @@ export class SkillCatalog {
     let traversed = 0;
     for (const entry of this.roots) {
       let root: string;
-      try { root = await fs.realpath(entry.directory); if (entry.boundary && !inside(entry.boundary, root)) throw new Error("Skill root escapes the workspace"); }
+      try {
+        root = await fs.realpath(entry.directory);
+        if (entry.boundary && !inside(await fs.realpath(entry.boundary), root)) throw new Error("Skill root escapes the workspace");
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`${entry.scope}: ${String(error)}`); continue; }
       const visit = async (directory: string, depth: number): Promise<void> => {
         if (traversed >= 256 || records.length >= 128) return;

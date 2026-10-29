@@ -622,7 +622,7 @@ greeting, claims independent verification, or runs automatically by default.
 Use measured quality and latency results before enabling it.
 
 `calculator: true` experimentally exposes the pure `calculate` tool only during
-`reason` turns. It is off by default. The model chooses whether to use it; the
+`reason` turns whose dispatcher returns `tools: "available"`. It is off by default. The model chooses whether to use it; the
 dispatcher does not match arithmetic keywords or a list of request types.
 It receives a capability note so requests requiring calculator verification
 reach reasoning mode; the recorded router-prompt hash includes that note.
@@ -640,11 +640,20 @@ can verify an expression, but it cannot establish that the model chose the
 correct formula, units or interpretation. Enable it only after evaluating that
 tradeoff with the intended model and workload.
 
-The router must return exactly `{"mode":"answer","text":"Hello!"}` with mode
+The router returns `{"mode":"answer","text":"Hello!","tools":"none"}` with mode
 one of `answer`, `reason`, `inspect`, `execute`, `clarify`. For delegated modes,
 text is a task brief of at most 500 characters, not a proposed solution. Invalid
 output gets one bounded repair attempt; it cannot start execution. Model bindings
 still enforce catalog entitlement, backend identity and context capacity.
+
+The dispatcher interprets `tools` from the original request and conversation;
+it is `none` or `available`. The host withholds tools for `none`, converting an
+inconsistent inspection/execution decision into a tool-free answer. `available`
+does not override host or repository permissions. Older two-field decisions
+remain readable, but cannot enable the optional calculator. The runtime appends
+this contract to custom router prompts and records the effective prompt hash.
+This model-derived restriction still needs semantic evaluation; it is not proof
+that every natural-language prohibition was understood correctly.
 
 Session totals accumulate, while turn budgets restart per message. Unknown
 remote outcomes retain their token reservations until reconciled. Execution

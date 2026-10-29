@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a structured, history-aware tool-scope decision and withhold optional
+  calculation when the dispatcher does not explicitly allow tools. Preserve
+  host restrictions and record scope conflicts. Fix local skill discovery when
+  a workspace path resolves through platform aliases or symlinks.
+- Record the separate 32-question regression and its prompt-template erratum;
+  it does not demonstrate better intelligence than raw Qwen.
+
 - Add native Docdex repository/web investigation, bounded browser snapshots,
   server time, progressive local skills with a bundled planning workflow, and
   readable TUI tables with narrow-screen layouts.

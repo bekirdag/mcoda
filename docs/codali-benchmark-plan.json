@@ -196,7 +196,7 @@
         "Live unseen repository and web questions produce actual model-issued Docdex calls and grounded source citations",
         "A transient failed request cannot silently turn an explicitly tool-dependent request into an unsupported guessed answer"
       ],
-      "outcome": "Native Docdex repo/web, isolated browser/time/calculator, usage reconciliation and final-answer reserves implemented. Broad web discovery first failed source grounding; preserved discovery URLs and evidence labels prevent false authority claims. Progressive schemas based on actual native tool choice passed37 routing tests and the same broad web diagnostic (7calls11111tokens). Frozen combined capability v5 is running; all earlier failures retained."
+      "outcome": "Native model-issued Docdex repo/web, isolated browser/time/calculator, usage reconciliation and final-answer reserves implemented and exercised live. Installed .23 web discovery/primary citation, clock and browser table checks pass, but explicit no-tools prohibition failed. .24 structured semantic tool scope with host enforcement is under live validation; first allowed/forbidden arithmetic cases pass."
     },
     {
       "id": "U2",
@@ -214,7 +214,7 @@
         "Skill selection, nested resources, precedence, limits and incompatible environments tested",
         "Loading a skill cannot silently widen permissions or execute hooks; unavailable Mac-specific dependencies are reported"
       ],
-      "outcome": "Bounded YAML SKILL.md discovery and paged references, configured Mac roots, bundled planning and /skills implemented. Live skill reference and Linux rejection of Mac-only dependencies passed. Durable plan recording now survives low-budget pressure; saved plans receive explicitly partial deterministic reporting if inference is exhausted. v4 saved required phases/tasks without implementation; final combined and package qualification pending."
+      "outcome": "Local/reference/Mac compatibility and durable phased planning passed live installed .23; saved plan remains explicitly partial and open. CI exposed lexical-vs-canonical workspace boundary mismatch on Mac/Windows; .24 canonical-boundary fix and symlink containment regression pass locally. Platform requalification pending."
     },
     {
       "id": "U3",
@@ -249,7 +249,7 @@
         "Long live and deterministic conversations continue across compaction without losing key constraints or executing an action twice",
         "Compaction failures/cancellation/oversized immutable input fail clearly without loops or exceeding shared budgets"
       ],
-      "outcome": "Extractive context compression preserves user/system constraints, native call identity and redacted archived originals across resume/fork. Live six-constraint recall passed; first exact160character recovery failed because model counted incorrectly. Added typed maxChars for deterministic archived spans; v5 live recovery pending. No extra summarizer inference."
+      "outcome": "Extractive compression preserves user/system constraints, tool identity and private archived originals across resume/fork. Frozen and installed .23 six-constraint recall and exact160character archived-span recovery pass. Separate no-tools violation is tracked under U1/U5; new tool-scope validation underway."
     },
     {
       "id": "U5",
@@ -272,7 +272,7 @@
         "All requested capabilities demonstrated on the installed build",
         "No claim of quality improvement based on exposed held-out cases or changed graders"
       ],
-      "outcome": "Final extended runtime suite passed1871 tests with4 optional skips; .23 clean package passed30 checks including actual table/resize/scroll PTY and bundled planning skills in both Codali and vendored mSwarm. Frozen11case capability v5 running; fresh32case regression protocol and64attempt comparison queued. Exact preview installation and release gates remain; original/R1 failed promotion unchanged."
+      "outcome": "Frozen e064aa9 fresh32 regression completed64 first attempts: Codali27/32 vsraw28/32, 46662vs4439tokens; no runtimeerrors. Eight general-knowledge prompts have ambiguous quoted type examples; complete-template exclusion gives21/24 both (post-observation sensitivity, original scores unchanged). Exact .23 installed automated11case checks pass, but semantic audit fails explicit no-tools (5calculator calls). .24 structured tool-scope fix and canonical skill boundary fix pass1876 tests with4skips; live diagnostic and platform/package qualification underway. No quality promotion."
     }
   ],
   "corpus": {
@@ -1000,7 +1000,7 @@
     "U4",
     "U5"
   ],
-  "updatedAt": "2026-10-29T08:32:33.003982+00:00",
+  "updatedAt": "2026-10-29T09:00:00Z",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

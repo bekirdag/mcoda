@@ -40,6 +40,24 @@ test("skill resource pagination preserves text through the serialized tool-resul
   assert.equal(restored, contents);
 });
 
+test("workspace aliases discover local skills while actual outside roots remain rejected", async t => {
+  const { root, content } = await fixture(t);
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-skill-alias-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const alias = path.join(parent, "workspace"), outside = path.join(parent, "outside");
+  await fs.symlink(root, alias, "dir");
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, "SKILL.md"), "---\nname: escaped\ndescription: Must not load.\n---\nOutside workspace.\n");
+  await fs.mkdir(path.join(root, ".agents"));
+  await fs.symlink(outside, path.join(root, ".agents", "skills"), "dir");
+  const catalog = new SkillCatalog({ workspaceRoot: alias, includeUser: false, includeBuiltin: false });
+  await catalog.refresh();
+  assert.deepEqual(catalog.list().skills.map(skill => skill.name), ["example"]);
+  assert.equal((await catalog.read("example")).content, content);
+  assert.equal(catalog.list().warnings.length, 1);
+  assert.match(catalog.list().warnings[0], /escapes the workspace/);
+});
+
 test("skill reads reject traversal, symlink escapes, binary resources and modified instructions", async t => {
   const { catalog, source, directory, root } = await fixture(t); await catalog.refresh();
   await fs.writeFile(path.join(root, "outside.txt"), "private");

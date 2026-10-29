@@ -13,7 +13,7 @@ import { ManagedDocdex } from "../../docdex/ManagedDocdex.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
-const decision = (mode: string, text: string) => reply(JSON.stringify({ mode, text }));
+const decision = (mode: string, text: string, tools?: "none" | "available") => reply(JSON.stringify({ mode, text, ...(tools ? { tools } : {}) }));
 const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }, docdex = false, options: Partial<SessionControllerOptions> = {}) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-")));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-state-"));
@@ -215,7 +215,7 @@ test("optional calculator uses real receipts and leaves the final shared call fo
     if (++calls === 1) {
       assert.equal(request.tools, undefined);
       assert.match(request.messages[0].content, /reason mode can use a bounded numeric calculate tool/);
-      return decision("reason", "Calculate the weighted mean.");
+      return decision("reason", "Calculate the weighted mean.", "available");
     }
     if (calls === 2) {
       assert.deepEqual(request.tools?.map(tool => tool.name), ["calculate"]);
@@ -243,7 +243,7 @@ test("calculator is not exposed for greetings or when repository policy denies i
   assert.equal(hello.controller.usageSnapshot().toolCalls, 0);
   let calls = 0;
   const denied = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) return decision("reason", "Compute three plus five.");
+    if (++calls === 1) return decision("reason", "Compute three plus five.", "available");
     assert.ok(!request.tools?.length);
     return reply("8");
   } }, config, { deniedTools: ["calculate"] });
@@ -251,12 +251,39 @@ test("calculator is not exposed for greetings or when repository policy denies i
   assert.equal(denied.controller.usageSnapshot().toolCalls, 0);
 });
 
+for (const mode of ["reason", "inspect", "execute"]) test(`explicit no-tools scope prevents ${mode} tool dispatch`, async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true, answerReview: { enabled: true } };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision(mode, "Explain the supplied numerical constraints without tools.", "none");
+    assert.equal(request.tools, undefined);
+    if (calls === 2) assert.equal(request.toolChoice, "none");
+    return reply("The explanation uses only your supplied context.");
+  } }, config);
+  const result = await controller.interact("Explain retries with a limit of 5 and timeout 1700ms. Do not use any tools.");
+  assert.equal(result.mode, "reason"); assert.equal(calls, 3);
+  assert.equal(controller.usageSnapshot().toolCalls, 0); assert.equal(controller.state, undefined);
+  assert.ok(!events.some(e => e.type === "tool_receipt" || e.type === "index_ready"));
+});
+
+test("legacy decisions cannot silently enable the optional calculator", async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("reason", "Explain the constraints.");
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none"); return reply("Explained.");
+  } }, config);
+  await controller.interact("Explain this without tools.");
+  assert.equal(controller.usageSnapshot().toolCalls, 0);
+  for (const tools of [true, null, "yes", {}]) assert.throws(() => parseInteractionDecision(JSON.stringify({ mode: "reason", text: "Explain.", tools })), /invalid decision/);
+});
+
 test("calculator remains usable after two unknown requests without erasing their reservations", async t => {
   const config = structuredClone(base); config.interaction = { calculator: true, maxOutputTokens: 1024 };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls <= 2) throw new Error("Unknown remote outcome");
-    if (calls === 3) return decision("reason", "Use the calculator to compute the requested expression.");
+    if (calls === 3) return decision("reason", "Use the calculator to compute the requested expression.", "available");
     if (calls === 4) {
       assert.ok(request.tools?.some(tool => tool.name === "calculate"));
       assert.equal(request.maxTokens, 1024);
@@ -336,7 +363,7 @@ test("answer review receives actual calculator evidence without additional tool 
   const config = structuredClone(base); config.interaction = { calculator: true, answerReview: { enabled: true } };
   let calls = 0;
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) return decision("reason", "Calculate three plus five.");
+    if (++calls === 1) return decision("reason", "Calculate three plus five.", "available");
     if (calls === 2) return { ...reply(""), toolCalls: [{ id: "sum", name: "calculate", args: { expression: "3+5" } }] };
     if (calls === 3) return reply("8");
     assert.equal(calls, 4); assert.equal(request.tools, undefined);
@@ -365,7 +392,7 @@ test("configured native dispatcher schema is sent on the initial request and rep
     assert.equal(request.responseFormat?.type, "json_schema");
     const envelope = request.responseFormat!.schema! as { strict: boolean; schema: { required: string[]; additionalProperties: boolean; properties: Record<string, unknown> } };
     assert.equal(envelope.strict, true); assert.equal(envelope.schema.additionalProperties, false);
-    assert.deepEqual(envelope.schema.required, ["mode", "text"]);
+    assert.deepEqual(envelope.schema.required, ["mode", "text", "tools"]);
     if (++calls === 1) return reply('{"mode":"write","answer":"not a valid dispatch"}');
     return decision("answer", "Hello!");
   } }, config);
@@ -556,7 +583,7 @@ test("configured interaction bindings apply to both explanation and inspection",
 });
 
 test("later turns have fresh budgets without losing cumulative usage", async t => {
-  const config = structuredClone(base); config.interaction = { maxModelCalls: 1, maxTotalTokens: 2000 };
+  const config = structuredClone(base); config.interaction = { maxModelCalls: 1, maxTotalTokens: 3200 };
   const { controller } = await fixture(t, { name: "fixture", generate: async () => decision("answer", "Hello.") }, config);
   await controller.interact("hello"); await controller.interact("thanks");
   assert.equal(controller.usageSnapshot().modelCalls, 2); assert.equal(controller.usageSnapshot().tokens, 640);

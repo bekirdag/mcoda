@@ -17,7 +17,7 @@ import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGra
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
-import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, parseInteractionDecision, preparedInteraction, type InteractionDecision } from "./InteractionRouter.js";
+import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, parseInteractionDecision, preparedInteraction, TOOL_SCOPE_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
@@ -1333,7 +1333,7 @@ export class SessionController {
     }
     const settings = interactionSettings(this.options.resolved.config.interaction);
     const calculationCapability = settings.calculator ? "\nCapability update: reason mode can use a bounded numeric calculate tool when host policy permits. It has no file, shell or network access. Choose reason for requested calculator use or computations needing arithmetic verification, so the answering model can inspect actual tool results. Do not solve those calculations in answer mode or route them to environment execution. Greetings and brief conversation still use answer. Preserve the original constraints and output format." : "";
-    const routerPrompt = settings.routerPrompt + calculationCapability + "\nCapability map: inspect provides Docdex repo/web research, browser page reads, server_time, local skill reads and context_read for abbreviated history. Use inspect for information gathering; preserve requested tools, sources and format. Never guess unseen/current facts. Saving a durable work plan requires execute, even without implementation; planning-only permissions allow plan records but forbid executing tasks. A plan requested only as prose belongs in reason.";
+    const routerPrompt = settings.routerPrompt + calculationCapability + "\nCapability map: inspect provides Docdex repo/web research, browser page reads, server_time, local skill reads and context_read for abbreviated history. Use inspect for information gathering; preserve requested tools, sources and format. Never guess unseen/current facts. Saving a durable work plan requires execute, even without implementation; planning-only permissions allow plan records but forbid executing tasks. A plan requested only as prose belongs in reason." + TOOL_SCOPE_PROMPT;
     const abort = new AbortController(); this.interactionAbort = this.active = abort;
     const signal = abort.signal;
     let timer: NodeJS.Timeout | undefined;
@@ -1373,9 +1373,13 @@ export class SessionController {
         signal.throwIfAborted();
         try { decision = parseInteractionDecision(response.message.content); break; }
         catch { await this.emit("interaction_route_invalid", { interactionId: this.interactionId, attempt: attempt + 1 });
-          messages.push({ role: "assistant", content: response.message.content.slice(0, 6000) }, { role: "user", content: "Your decision did not match the required schema. Return only the two string fields mode and text, with a valid capability mode. For reason/inspect/execute text must be a single imperative task sentence under 500 characters; do not solve the task or include a draft answer. Reconsider the original request and history." }); }
+          messages.push({ role: "assistant", content: response.message.content.slice(0, 6000) }, { role: "user", content: "Your decision did not match the required schema. Return the three string fields mode, text and tools (none or available), with a valid capability mode. For reason/inspect/execute text must be a single imperative task sentence under 500 characters; do not solve the task or include a draft answer. Reconsider the original request and history." }); }
       }
       if (!decision) throw new Error("I couldn't reliably understand this request. Please rephrase it with a little more context. Nothing was executed.");
+      if (decision.tools === "none" && ["inspect", "execute"].includes(decision.mode)) {
+        await this.emit("interaction_scope_restricted", { requestedMode: decision.mode, effectiveMode: "reason", tools: "none" });
+        decision.mode = "reason";
+      }
       await this.emit("interaction_route", { interactionId: this.interactionId, ...decision, promptVersion: settings.promptVersion });
       phase = decision.mode;
       let content = decision.reply; let completed = false;
@@ -1408,11 +1412,11 @@ export class SessionController {
       } else if (decision.mode === "reason") {
         await this.emit("interaction_progress", { message: "Preparing a more detailed answer" }, false);
         let calculationEvidence: ProviderMessage[] = [];
-        if (settings.calculator) {
+        if (settings.calculator && decision.tools === "available") {
           const result = await this.calculateInteraction(prepared, settings.answerPrompt + instructionContext, settings.answerBinding, signal);
           content = result.content; calculationEvidence = result.evidence;
         } else {
-          const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt + instructionContext }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
+          const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt + instructionContext + "\nNo tools are available for this answer. Explain missing evidence honestly; never claim an operation was performed." }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), toolChoice: "none", signal }), signal);
           signal.throwIfAborted(); content = response.message.content;
         }
         if (settings.answerReview?.enabled && content.trim()) {
@@ -1473,7 +1477,7 @@ export class SessionController {
     let steps = 0;
     let evidence: ProviderMessage[] = [];
     const result = await runCodaliTask({ task: prepared, messages: [
-      { role: "system", content: `${answerPrompt}\nFor this reasoning turn, the declared calculate tool is available only if listed. It performs bounded numeric arithmetic with no file, shell or network access. Use it when calculation can check your answer; decide from the request, not keyword rules. Check the formula, units and constraints yourself. Calculator output proves only the supplied expression, not the interpretation of the problem. No other tools or actions are available. Return only the user's requested final format. If no tools are listed, answer from available evidence without claiming a calculation was executed.` },
+      { role: "system", content: `${answerPrompt}\nFor this reasoning turn, the declared calculate tool is available only if listed. It performs bounded numeric arithmetic with no file, shell or network access. The user may forbid tools; that prohibition takes precedence over this optional capability. When tools are permitted, use it only for numeric work actually needed by the request. Do not invent calculations for a prose explanation, code example, or word count. Only numeric arithmetic is supported, not strings, len, log or arbitrary functions. Check the formula, units and constraints yourself. Calculator output proves only the supplied expression, not the interpretation of the problem. No other tools or actions are available. Return only the user's requested final format. If no tools are listed, answer from available evidence without claiming a calculation was executed.` },
       { role: "user", content: prepared },
     ], workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: `configured:${answerBinding}` },
     providerInstance: { ...answering, generate: async request => {
