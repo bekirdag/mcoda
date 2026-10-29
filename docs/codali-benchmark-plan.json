@@ -160,7 +160,7 @@
         "Live greeting, history, read-only Docdex, code fixture, help/usage and scroll checks pass",
         "Report completed/failed/unscored coverage and remaining original release gates honestly"
       ],
-      "outcome": "Exact .22 private package passed29 checks and actual SSH TUI qualification. Separate codali-preview launcher and editable profile installed on Raijin; real startup/help/Escape/quit probe passed. Six installed live quality smoke cases prepared for after the running R1 comparison. Experimental preview only; no quality promotion. Post-study six-case live smoke failed: two routing HTTP503s; Docdex insufficient evidence and calculator wrong without required tool; history and isolated code passed. Keep preview experimental and fix recovery/tool-budget behavior under U1."
+      "outcome": "Exact .24 private package passed30 checks and all platform CI. codali-preview now uses separate preview-24-v10.json with explicit low effort; previous .22 launcher/profile preserved. Actual hello answered with908tokens,1modelcall,0tools. Installation deliverables complete, but the required broad quality-improvement gate remains unmet."
     },
     {
       "id": "U0",
@@ -179,7 +179,7 @@
     {
       "id": "U1",
       "title": "Bounded browser and deterministic tools",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "U0"
       ],
@@ -196,12 +196,12 @@
         "Live unseen repository and web questions produce actual model-issued Docdex calls and grounded source citations",
         "A transient failed request cannot silently turn an explicitly tool-dependent request into an unsupported guessed answer"
       ],
-      "outcome": "Native model-issued Docdex repo/web, isolated browser/time/calculator, usage reconciliation and final-answer reserves implemented and exercised live. Installed .23 web discovery/primary citation, clock and browser table checks pass, but explicit no-tools prohibition failed. .24 structured semantic tool scope with host enforcement is under live validation; first allowed/forbidden arithmetic cases pass."
+      "outcome": "Native Docdex repository/web, isolated browser, clock, calculator and bounded accounting are implemented. Exact installed .24 live research, primary-source citation, rendered table and clock checks pass. Structured tool scope passes explicit allowed/forbidden arithmetic and multi-turn no-tools checks; host permissions remain independent. Pure model reasoning errors remain tracked as quality failures."
     },
     {
       "id": "U2",
       "title": "Reusable local skills and planning workflow",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "U0"
       ],
@@ -214,12 +214,12 @@
         "Skill selection, nested resources, precedence, limits and incompatible environments tested",
         "Loading a skill cannot silently widen permissions or execute hooks; unavailable Mac-specific dependencies are reported"
       ],
-      "outcome": "Local/reference/Mac compatibility and durable phased planning passed live installed .23; saved plan remains explicitly partial and open. CI exposed lexical-vs-canonical workspace boundary mismatch on Mac/Windows; .24 canonical-boundary fix and symlink containment regression pass locally. Platform requalification pending."
+      "outcome": "Bounded skills/references, platform compatibility, bundled durable planning and /skills demonstrated on installed .24. Plans preserve phases/tasks/dependencies and remain open without implementation. Canonical workspace boundary fix passes Linux, Mac arm64/Intel Node20/22 and Windows CI. No named Mac-only planning package was supplied; standard local skill roots remain configurable."
     },
     {
       "id": "U3",
       "title": "Readable common TUI outputs",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "U0"
       ],
@@ -230,12 +230,12 @@
       "exit": [
         "Interactive table/code/list/resize/scroll fixtures pass on supported terminal widths without control-sequence injection or damaged input"
       ],
-      "outcome": "Unicode Markdown tables and narrow labeled-field fallback implemented. TUI33 tests and actual PTY table/resize/scroll/draft checks passed. Private .23 package passed30 clean-install checks including these PTY tests; latest runtime changes still require U5 artifact qualification."
+      "outcome": "Exact .24 package passes real PTY table/resize/scroll/draft tests and all30 install checks. Actual mcoda-repo TUI startup, hello, help/usage scrolling and clean shutdown confirmed."
     },
     {
       "id": "U4",
       "title": "Context compression before model limits",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "U1",
         "U2"
@@ -249,7 +249,7 @@
         "Long live and deterministic conversations continue across compaction without losing key constraints or executing an action twice",
         "Compaction failures/cancellation/oversized immutable input fail clearly without loops or exceeding shared budgets"
       ],
-      "outcome": "Extractive compression preserves user/system constraints, tool identity and private archived originals across resume/fork. Frozen and installed .23 six-constraint recall and exact160character archived-span recovery pass. Separate no-tools violation is tracked under U1/U5; new tool-scope validation underway."
+      "outcome": "Extractive compaction preserves original user constraints and native tool-call identity, with bounded archived context_read after resume/fork. Installed .24 long conversation retains all six constraints and recovers exact160characters from an archived response. No additional summarizer call is used; oversized immutable context is rejected before dispatch."
     },
     {
       "id": "U5",
@@ -272,7 +272,7 @@
         "All requested capabilities demonstrated on the installed build",
         "No claim of quality improvement based on exposed held-out cases or changed graders"
       ],
-      "outcome": "Frozen e064aa9 fresh32 regression completed64 first attempts: Codali27/32 vsraw28/32, 46662vs4439tokens; no runtimeerrors. Eight general-knowledge prompts have ambiguous quoted type examples; complete-template exclusion gives21/24 both (post-observation sensitivity, original scores unchanged). Exact .23 installed automated11case checks pass, but semantic audit fails explicit no-tools (5calculator calls). .24 structured tool-scope fix and canonical skill boundary fix pass1876 tests with4skips; live diagnostic and platform/package qualification underway. No quality promotion."
+      "outcome": "Exact .24 runtime/installed package and platform CI pass; installed capability qualification10/11 strictly passed (one305-word answer exceeded250\u2013300; all required native-tool/skill/planning/compaction operations succeeded and no-tools constraints held). Fresh U5 strict27/32vs28/32, shared-template exclusion21/24both, with79/79 audited model requests/responses. Shorter v10 dispatcher fixes pantry routing; native512reasoning adds no accuracy gain and was rejected. New frozen16case/32attempt check completed: Codali15/16vsraw14/16,61537vs1936tokens (31.8x), all73/73 model requests/responses audited; no errors. Codali sole failure was JSON-only formatting; raw had one formatting and one arithmetic failure. Small diagnostic does not establish superiority; known dependency-readiness failure remains. All development and follow-up checks are complete. Broad quality/efficiency gate remains unmet; no quality promotion."
     }
   ],
   "corpus": {
@@ -994,13 +994,9 @@
   ],
   "remaining": [
     "B6",
-    "U1",
-    "U2",
-    "U3",
-    "U4",
     "U5"
   ],
-  "updatedAt": "2026-10-29T09:00:00Z",
+  "updatedAt": "2026-10-29T09:22:33.045115+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

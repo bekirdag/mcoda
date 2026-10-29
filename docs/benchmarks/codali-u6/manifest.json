@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-29T09:07:01.192596+00:00",
+  "count": 16,
+  "promptsSha256": "720c07d2184156b5291bff92f93d3b49d6d6ea42e78e787adfe6f88ea62ec8d9",
+  "gradingSha256": "1e80f92ff42a494c72383e21400b0d4a9d39b633c1e9270dd3eae91f759ded9f",
+  "validationContract": {
+    "count": 16,
+    "families": 16,
+    "splits": {
+      "development": 0,
+      "validation": 16,
+      "held_out": 0
+    }
+  },
+  "limitations": [
+    "Fresh exact prompts for regression only; small sample and familiar task families do not establish held-out superiority.",
+    "Constrained architecture questions do not measure open-ended design quality.",
+    "No quoted type placeholders; reference and negative controls checked before inference.",
+    "One selected configuration, first attempts only; preserve all failures and do not tune against this sample."
+  ]
+}
