@@ -106,7 +106,7 @@
     {
       "id": "B5",
       "title": "Execute every prompt and measure improvement",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "B4"
       ],
@@ -121,7 +121,7 @@
         "Every result links request, final output/error, config/model/tool provenance and grade",
         "Promote only if predeclared quality rules pass; otherwise retain baseline and continue development without retuning on the sealed test"
       ],
-      "outcome": "All2100 original first attempts complete and scored with349 rubric/130 critical reviews and0pending. Raw769/1000 vsCodali789/1000; held-out159/200 vs169/200, +5pp CI[-5.5,+16.5]pp. Promotion fails. Linked live-coverage retries and final retry audit remain; no first failures replaced."
+      "outcome": "All2100 original first attempts and27 explicit linked retries complete. All1000 cases dispatched in both primary arms; five original Codali native failures remain failed with unknown measured usage. All reviews complete, original scores unchanged, corrected full-payload audit passes. Original promotion fails: held-out+5pp CI[-5.5,+16.5]pp."
     },
     {
       "id": "R1",
@@ -140,7 +140,8 @@
         "Complete B5 before follow-up held-out evaluation or any promotion",
         "Use only original development evidence and fresh validation for follow-up selection; never tune on exposed original held-out cases",
         "Apply the same correctness, critical-error and uncertainty gates to new held-out evidence; report all candidate attempts and failures"
-      ]
+      ],
+      "outcome": "Two development screens and all200 fresh validation attempts complete. Frozen rule selected calculator+review A68/100 over B67/100, zero runtime/critical failures,52rubric/20critical reviews. Module-format erratum and secondary diagnostic disclosed; original grades/selection unchanged.450 fresh held-out attempts admitted and running on both hosts."
     },
     {
       "id": "B6",
@@ -788,14 +789,34 @@
       },
       "qualification": "Only Suku partition; Raijin development/validation now running. No candidate selected and no held-out evaluation yet.",
       "artifact": "/home/wodo/.local/state/codali-trust-benchmark/r1-validation-suku-score-v2"
+    },
+    {
+      "phase": "B5",
+      "type": "full_comparison_and_retry_coverage_complete",
+      "at": "2026-10-29T04:54:36.002439+00:00",
+      "completion": "/home/wodo/.local/state/codali-trust-benchmark/original-study-completion-v1.json",
+      "scored": "/home/wodo/.local/state/codali-trust-benchmark/final-complete-with-retries-v1",
+      "audit": "/home/wodo/.local/state/codali-trust-benchmark/final-v3-with-retries-audit-v4.json",
+      "primaryResultsUnchanged": true,
+      "promotionQualified": false
+    },
+    {
+      "phase": "R1",
+      "type": "validation_selected_and_fresh_heldout_started",
+      "at": "2026-10-29T04:54:36.002439+00:00",
+      "publicReport": "docs/benchmarks/codali-r1/results.json",
+      "selection": "/home/wodo/.local/state/codali-trust-benchmark/r1-selection-v1.json",
+      "admission": "/home/wodo/.local/state/codali-trust-benchmark/r1-heldout-admission-v1.json",
+      "candidate": "r1-a-calculator-review",
+      "expectedAttempts": 450,
+      "qualification": "Experimental; no held-out outcome or promotion yet."
     }
   ],
   "remaining": [
-    "B5",
     "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-29T04:08:28.589039+00:00",
+  "updatedAt": "2026-10-29T04:54:36.002439+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

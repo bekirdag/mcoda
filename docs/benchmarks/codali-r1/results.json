@@ -1,0 +1,1350 @@
+{
+  "schemaVersion": 1,
+  "study": "codali-r1",
+  "at": "2026-10-29T04:54:36.002439+00:00",
+  "status": "held_out_running",
+  "qualification": "Experimental candidate selected; no held-out result or promotion claim yet.",
+  "frozen": {
+    "corpusHash": "63999299eb0926a879a45a04784c40fefc59d84c5da7dcc2a8ac9496fb2f0d69",
+    "gradingHash": "a6c737e6f9f4a6caf89ca52831922566048a3cc9b272bf5ac987b273dd1b4d40",
+    "runtimeFingerprint": "715870eb73168efc5a8f76dc69ed4e64e1f23745626eccba8e54a67cf05412b8",
+    "packageSourceRevision": "71174f7b474509f96ba784f93d695e1062ff440f",
+    "protocolSha256": "9e815c3352aaa93e16ee2e6a349cdeb200acf14c691c411d2c5eaeef3a229d84",
+    "configHashes": {
+      "r1-a-calculator-review:raijin": "b31a5aaf02403dc6e8114206e2939fa913871650a89e887e9eed1a9f5d998613",
+      "r1-a-calculator-review:suku": "a97eff6f40d12d21d20487a08d4f96e7e184a05be09429682f7f338e211ca278",
+      "r1-b-calculator:raijin": "d5693546c7274473dcffb1fbe33b17d33f405a46d54f7335b3ce10cd7f308ea2",
+      "r1-b-calculator:suku": "08dcfa40ff9503cf94942ef92dbcae99cac8ec1419c74a5fa9c2b580373eaddc"
+    },
+    "selectionCreatedAt": "2026-10-29T04:43:57.629209+00:00",
+    "nativePreHeldOutFileSha256": "cda6c921c876e69783689bf18252e5848881b270f773046a8f7689b5cdf02c5f",
+    "nativeIdentityMatchesOriginal": true
+  },
+  "development": {
+    "attempts": 80,
+    "aggregates": {
+      "codali_candidate:r1-a-calculator-review": {
+        "all": {
+          "attempts": 40,
+          "uniqueCases": 40,
+          "passed": 30,
+          "failed": 10,
+          "liveResponseCases": 40,
+          "zeroDispatchAttempts": 0,
+          "unansweredDispatchedAttempts": 0,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "strictAccuracy": 0.75,
+          "latencyMs": {
+            "p50": 11661,
+            "p95": 28608,
+            "known": 40
+          },
+          "tokens": {
+            "p50": 917,
+            "p95": 7183,
+            "sum": 109760,
+            "known": 40,
+            "estimated": 0
+          }
+        },
+        "domains": {
+          "code_generation": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 16356,
+              "p95": 38141,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 3550,
+              "p95": 4008,
+              "sum": 14453,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "daily_assistance": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 3,
+            "failed": 1,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.75,
+            "latencyMs": {
+              "p50": 6078,
+              "p95": 45356,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 816,
+              "p95": 7517,
+              "sum": 16326,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "debugging_and_tests": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 16392,
+              "p95": 27542,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 2996,
+              "p95": 4629,
+              "sum": 13703,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "general_knowledge": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 2850,
+              "p95": 11661,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 775,
+              "p95": 784,
+              "sum": 3114,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "history_and_ambiguity": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 4763,
+              "p95": 9249,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 782,
+              "p95": 832,
+              "sum": 3221,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "math_and_data": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 3115,
+              "p95": 6457,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 787,
+              "p95": 806,
+              "sum": 3179,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "repository_and_docdex": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 3,
+            "failed": 1,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.75,
+            "latencyMs": {
+              "p50": 17924,
+              "p95": 21313,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 6664,
+              "p95": 8912,
+              "sum": 27126,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "security_and_evidence": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 0,
+            "failed": 4,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0,
+            "latencyMs": {
+              "p50": 4321,
+              "p95": 12357,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 809,
+              "p95": 867,
+              "sum": 3339,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "software_architecture": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 1,
+            "failed": 3,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.25,
+            "latencyMs": {
+              "p50": 23891,
+              "p95": 28608,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 4125,
+              "p95": 4290,
+              "sum": 16643,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "writing_and_communication": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 3,
+            "failed": 1,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.75,
+            "latencyMs": {
+              "p50": 10882,
+              "p95": 17839,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 917,
+              "p95": 3504,
+              "sum": 8656,
+              "known": 4,
+              "estimated": 0
+            }
+          }
+        }
+      },
+      "codali_candidate:r1-b-calculator": {
+        "all": {
+          "attempts": 40,
+          "uniqueCases": 40,
+          "passed": 31,
+          "failed": 9,
+          "liveResponseCases": 40,
+          "zeroDispatchAttempts": 0,
+          "unansweredDispatchedAttempts": 0,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "strictAccuracy": 0.775,
+          "latencyMs": {
+            "p50": 10438,
+            "p95": 31155,
+            "known": 40
+          },
+          "tokens": {
+            "p50": 2202,
+            "p95": 7615,
+            "sum": 104892,
+            "known": 40,
+            "estimated": 0
+          }
+        },
+        "domains": {
+          "code_generation": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 9458,
+              "p95": 19751,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 2263,
+              "p95": 3757,
+              "sum": 10584,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "daily_assistance": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 3024,
+              "p95": 22782,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 815,
+              "p95": 4971,
+              "sum": 11568,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "debugging_and_tests": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 10438,
+              "p95": 31155,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 3449,
+              "p95": 3586,
+              "sum": 13998,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "general_knowledge": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 2929,
+              "p95": 11890,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 775,
+              "p95": 780,
+              "sum": 3105,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "history_and_ambiguity": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 3515,
+              "p95": 5326,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 793,
+              "p95": 841,
+              "sum": 3250,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "math_and_data": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 4,
+            "failed": 0,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 9406,
+              "p95": 12955,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 800,
+              "p95": 5688,
+              "sum": 10654,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "repository_and_docdex": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 3,
+            "failed": 1,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.75,
+            "latencyMs": {
+              "p50": 21268,
+              "p95": 36913,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 7615,
+              "p95": 9381,
+              "sum": 32109,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "security_and_evidence": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 1,
+            "failed": 3,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.25,
+            "latencyMs": {
+              "p50": 4054,
+              "p95": 13813,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 869,
+              "p95": 2014,
+              "sum": 4572,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "software_architecture": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 1,
+            "failed": 3,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.25,
+            "latencyMs": {
+              "p50": 13990,
+              "p95": 19722,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 2508,
+              "p95": 2542,
+              "sum": 10059,
+              "known": 4,
+              "estimated": 0
+            }
+          },
+          "writing_and_communication": {
+            "attempts": 4,
+            "uniqueCases": 4,
+            "passed": 2,
+            "failed": 2,
+            "liveResponseCases": 4,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.5,
+            "latencyMs": {
+              "p50": 5868,
+              "p95": 12640,
+              "known": 4
+            },
+            "tokens": {
+              "p50": 906,
+              "p95": 2246,
+              "sum": 4993,
+              "known": 4,
+              "estimated": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "validation": {
+    "attempts": 200,
+    "rubricReviews": 52,
+    "criticalReviews": 20,
+    "pendingReviews": 0,
+    "aggregates": {
+      "codali_candidate:r1-a-calculator-review": {
+        "all": {
+          "attempts": 100,
+          "uniqueCases": 100,
+          "passed": 68,
+          "failed": 32,
+          "liveResponseCases": 100,
+          "zeroDispatchAttempts": 0,
+          "unansweredDispatchedAttempts": 0,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "strictAccuracy": 0.68,
+          "latencyMs": {
+            "p50": 12702,
+            "p95": 31355,
+            "known": 100
+          },
+          "tokens": {
+            "p50": 3304,
+            "p95": 6496,
+            "sum": 317134,
+            "known": 100,
+            "estimated": 0
+          }
+        },
+        "domains": {
+          "code_generation": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 0,
+            "failed": 10,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0,
+            "latencyMs": {
+              "p50": 28148,
+              "p95": 37575,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 5942,
+              "p95": 7563,
+              "sum": 55722,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "debugging_and_tests": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 17841,
+              "p95": 24993,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3274,
+              "p95": 4883,
+              "sum": 35706,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "history_and_ambiguity": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 9278,
+              "p95": 13183,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 850,
+              "p95": 857,
+              "sum": 8514,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "repository_and_docdex": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 0,
+            "failed": 10,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0,
+            "latencyMs": {
+              "p50": 12169,
+              "p95": 21406,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 4494,
+              "p95": 4529,
+              "sum": 44968,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "software_architecture": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 2,
+            "failed": 8,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.2,
+            "latencyMs": {
+              "p50": 25991,
+              "p95": 31355,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3960,
+              "p95": 4273,
+              "sum": 40172,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "daily_assistance": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 16618,
+              "p95": 28108,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 4776,
+              "p95": 6640,
+              "sum": 54310,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "general_knowledge": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 3063,
+              "p95": 4066,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 782,
+              "p95": 792,
+              "sum": 7829,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "math_and_data": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 8,
+            "failed": 2,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.8,
+            "latencyMs": {
+              "p50": 13301,
+              "p95": 32583,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 4267,
+              "p95": 4313,
+              "sum": 35808,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "security_and_evidence": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 8,
+            "failed": 2,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.8,
+            "latencyMs": {
+              "p50": 4456,
+              "p95": 19291,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 949,
+              "p95": 3345,
+              "sum": 11843,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "writing_and_communication": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 11605,
+              "p95": 16410,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3039,
+              "p95": 3163,
+              "sum": 22262,
+              "known": 10,
+              "estimated": 0
+            }
+          }
+        }
+      },
+      "codali_candidate:r1-b-calculator": {
+        "all": {
+          "attempts": 100,
+          "uniqueCases": 100,
+          "passed": 67,
+          "failed": 33,
+          "liveResponseCases": 100,
+          "zeroDispatchAttempts": 0,
+          "unansweredDispatchedAttempts": 0,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "strictAccuracy": 0.67,
+          "latencyMs": {
+            "p50": 11176,
+            "p95": 23015,
+            "known": 100
+          },
+          "tokens": {
+            "p50": 2269,
+            "p95": 4905,
+            "sum": 249190,
+            "known": 100,
+            "estimated": 0
+          }
+        },
+        "domains": {
+          "code_generation": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 0,
+            "failed": 10,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0,
+            "latencyMs": {
+              "p50": 19270,
+              "p95": 31482,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3818,
+              "p95": 4162,
+              "sum": 36688,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "debugging_and_tests": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 13525,
+              "p95": 22250,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 2268,
+              "p95": 3770,
+              "sum": 25370,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "history_and_ambiguity": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 6189,
+              "p95": 13267,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 849,
+              "p95": 858,
+              "sum": 8516,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "repository_and_docdex": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 0,
+            "failed": 10,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0,
+            "latencyMs": {
+              "p50": 12781,
+              "p95": 33242,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 4497,
+              "p95": 4527,
+              "sum": 44967,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "software_architecture": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 2,
+            "failed": 8,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.2,
+            "latencyMs": {
+              "p50": 14283,
+              "p95": 27991,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 2511,
+              "p95": 2549,
+              "sum": 25050,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "daily_assistance": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 11841,
+              "p95": 17423,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3571,
+              "p95": 5216,
+              "sum": 36104,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "general_knowledge": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 2911,
+              "p95": 5411,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 782,
+              "p95": 792,
+              "sum": 7831,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "math_and_data": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 6,
+            "failed": 4,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.6,
+            "latencyMs": {
+              "p50": 9862,
+              "p95": 17739,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 3310,
+              "p95": 3382,
+              "sum": 23256,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "security_and_evidence": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 9,
+            "failed": 1,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 0.9,
+            "latencyMs": {
+              "p50": 5096,
+              "p95": 12092,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 939,
+              "p95": 2241,
+              "sum": 11916,
+              "known": 10,
+              "estimated": 0
+            }
+          },
+          "writing_and_communication": {
+            "attempts": 10,
+            "uniqueCases": 10,
+            "passed": 10,
+            "failed": 0,
+            "liveResponseCases": 10,
+            "zeroDispatchAttempts": 0,
+            "unansweredDispatchedAttempts": 0,
+            "needsReview": 0,
+            "errors": 0,
+            "criticalFailures": 0,
+            "criticalUnreviewed": 0,
+            "strictAccuracy": 1,
+            "latencyMs": {
+              "p50": 10098,
+              "p95": 24719,
+              "known": 10
+            },
+            "tokens": {
+              "p50": 2137,
+              "p95": 7023,
+              "sum": 29492,
+              "known": 10,
+              "estimated": 0
+            }
+          }
+        }
+      }
+    },
+    "pairedComparison": {
+      "candidate": "r1-a-calculator-review",
+      "baseline": "r1-b-calculator",
+      "primary": {
+        "cases": 100,
+        "families": 10,
+        "accuracyGain": 0.01,
+        "familyBootstrap95": [
+          -0.03,
+          0.06
+        ]
+      },
+      "excludingAmbiguousModuleFamily": {
+        "cases": 90,
+        "families": 9,
+        "accuracyGain": 0.011111111111111112,
+        "familyBootstrap95": [
+          -0.03333333333333333,
+          0.06666666666666667
+        ]
+      },
+      "qualification": "Validation comparison only, descriptive; does not establish held-out generalization or change the frozen selection rule."
+    }
+  },
+  "selection": {
+    "candidate": "r1-a-calculator-review",
+    "rule": {
+      "order": [
+        "fewest critical failures",
+        "highest strict passes",
+        "fewest runtime errors",
+        "lowest median tokens",
+        "lowest median answer latency",
+        "candidate ID lexicographic"
+      ],
+      "incompleteReviews": "Selection prohibited with pending rubric or critical reviews.",
+      "qualification": "Winner is experimental unless promotion gates pass; selection does not waive any failure."
+    },
+    "ranking": [
+      {
+        "criticalFailures": 0,
+        "passed": 68,
+        "errors": 0,
+        "candidateId": "r1-a-calculator-review",
+        "medianTokens": 3304,
+        "medianLatencyMs": 12702
+      },
+      {
+        "criticalFailures": 0,
+        "passed": 67,
+        "errors": 0,
+        "candidateId": "r1-b-calculator",
+        "medianTokens": 2269,
+        "medianLatencyMs": 11176
+      }
+    ]
+  },
+  "moduleFormatDiagnostic": {
+    "schemaVersion": 1,
+    "at": "2026-10-29T04:43:38.908Z",
+    "purpose": "Secondary module-format sensitivity only; does not alter primary grades, selection, or promotion gates.",
+    "corpusHash": "63999299eb0926a879a45a04784c40fefc59d84c5da7dcc2a8ac9496fb2f0d69",
+    "gradingHash": "a6c737e6f9f4a6caf89ca52831922566048a3cc9b272bf5ac987b273dd1b4d40",
+    "scoresHash": "322abbb29dc280c9ea84cd8dba557b8eadcfe513e9708894f4b946d694d8d15a",
+    "analyzerHash": "89f50c819a011e92e424347d43d34aa0ea76f622c14cf74b5c754016737d011c",
+    "affectedFamilies": [
+      "code_generation.lru_simulation",
+      "code_generation.html_text_escape",
+      "code_generation.interval_pair_intersection"
+    ],
+    "aggregates": {
+      "codali_candidate:r1-a-calculator-review": {
+        "attempts": 10,
+        "primaryPassed": 0,
+        "compatibilityPassed": 7
+      },
+      "codali_candidate:r1-b-calculator": {
+        "attempts": 10,
+        "primaryPassed": 0,
+        "compatibilityPassed": 9
+      }
+    },
+    "limitations": [
+      "Agent-authored synthetic cases; module format was omitted from these prompts.",
+      "Original source is executed unchanged under ESM, then CommonJS if necessary, within the existing isolated executor.",
+      "Functional checks and input preservation are assessed; no broader correctness or security proof."
+    ]
+  },
+  "heldOut": {
+    "status": "running",
+    "freshCases": 200,
+    "primaryPairs": 200,
+    "toolBaselineCases": 50,
+    "plannedAttempts": 450,
+    "hosts": {
+      "raijin": 220,
+      "suku": 230
+    },
+    "startedAt": "2026-10-29T04:52:15Z",
+    "admissionSha256": "a7d84b7cbd65c99baa3b719e6345061a724b0afa8110faff8fcbded7e8547040"
+  },
+  "audits": {
+    "development": {
+      "auditVersion": 4,
+      "completed": 80,
+      "modelRequests": 176,
+      "modelResponses": 176,
+      "requestPayloadLeaks": 0,
+      "missingArtifacts": 0,
+      "unsafeFileModes": 0,
+      "workspaceChanges": 0,
+      "noLoggedModelRequest": 0,
+      "missingResponses": 0,
+      "hashMismatches": 0,
+      "requestMismatches": 0,
+      "missingRequestPayloads": 0
+    },
+    "validation": {
+      "auditVersion": 4,
+      "completed": 200,
+      "modelRequests": 471,
+      "modelResponses": 471,
+      "requestPayloadLeaks": 0,
+      "missingArtifacts": 0,
+      "unsafeFileModes": 0,
+      "workspaceChanges": 0,
+      "noLoggedModelRequest": 0,
+      "missingResponses": 0,
+      "hashMismatches": 0,
+      "requestMismatches": 0,
+      "missingRequestPayloads": 0
+    }
+  },
+  "evidenceHashes": {
+    "developmentArtifactAudit": "bdbad5a66a669e953ec76161be255817f8c59ee5e8ac8a296cd11d5e3c79ab2a",
+    "validationArtifactAudit": "a0ad8e2287b947b6a0b12cd44ae5e4a1ab09c0369cc820a6fa1917e4813e491f",
+    "validationReport": "08da7d749c83cb2c7f29f947a5b29dafb0b696a8dbb283860a017255062f2c46",
+    "validationScores": "322abbb29dc280c9ea84cd8dba557b8eadcfe513e9708894f4b946d694d8d15a",
+    "rubricReviews": "27b1feeb4a6c4fc0d0c757eb6a978b7cdce5ad54a73ed2ff58783222e3e50355",
+    "criticalReviews": "83d4d0ecd05260c18045e0df458105ab0412da63c0ea24896ef6cc8c9899e639",
+    "selection": "37b36c8990ddbcfe8d95f128b6f5dae54ce82be80d73883cd0fb384063eaf475",
+    "moduleFormatErratum": "eceba8f7fa83be9bb3226242493c8ef2ae8974c40ca4b2a1c178d264e729ec85"
+  },
+  "limitations": [
+    "Agent-authored synthetic tasks, not real user traffic or independent human assessment.",
+    "Ten correlated variants per family; cluster uncertainty by family.",
+    "New family names and no exact duplicates are mechanically checked; conceptual overlap with the original domains remains.",
+    "Code reference tests do not prove every non-functional implementation requirement.",
+    "Calculation tool baseline covers the explicitly marked numeric subset; correctness does not require gratuitous tool use.",
+    "Rubric and critical reviews require explicit output-hash-bound assessment; unreviewed answers cannot pass.",
+    "Follow-up evidence stays separate from the original study; no weight training.",
+    "The module-format ambiguity is reported in errata.json. Whole-family exclusion preserves the strict validation ranking, but separate compatible-module totals reverse it (A75/100 versus B76/100). These diagnostic totals do not replace primary scores or selection.",
+    "The one-point validation difference has family95%CI[-3,+6] percentage points and does not establish superiority.",
+    "Native identity checks cover executable/process/configuration/backend hashes, not full model-weight attestation."
+  ]
+}

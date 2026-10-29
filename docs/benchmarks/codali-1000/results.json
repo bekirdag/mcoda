@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "study": "codali-trust-1000-v1",
-  "at": "2026-10-29T04:08:28.589039+00:00",
-  "status": "first_attempt_scoring_complete_coverage_retries_pending",
+  "at": "2026-10-29T04:54:36.002439+00:00",
+  "status": "completed_failed_promotion",
   "promotion": {
     "qualified": false,
     "observedHeldOutGainPercentagePoints": 5,
@@ -1518,15 +1518,74 @@
     "missingResponses": 6,
     "nativePrePostIdentical": true,
     "nativePrePostFileSha256": "cda6c921c876e69783689bf18252e5848881b270f773046a8f7689b5cdf02c5f",
-    "nativeAttestationLimit": "Bounded executable/process/config/backend identity and argument-file hashes, not complete model-weight attestation."
+    "nativeAttestationLimit": "Bounded executable/process/config/backend identity and argument-file hashes, not complete model-weight attestation.",
+    "auditVersion": 4,
+    "missingRequestPayloads": 0,
+    "payloadScope": "Complete actual model request bodies in both direct Codali event.data and raw event.data.request trace layouts; earlier v1 inspected only the raw layout.",
+    "combinedIncludingRetries": {
+      "auditVersion": 4,
+      "completed": 2127,
+      "modelRequests": 3598,
+      "modelResponses": 3592,
+      "requestPayloadLeaks": 0,
+      "missingArtifacts": 0,
+      "unsafeFileModes": 0,
+      "workspaceChanges": 0,
+      "noLoggedModelRequest": 25,
+      "missingResponses": 6,
+      "hashMismatches": 0,
+      "requestMismatches": 0,
+      "missingRequestPayloads": 0
+    }
   },
   "coverageRetries": {
-    "original429Failures": 26,
-    "completedSukuLinkedRetries": 5,
-    "remainingRaijin429Retries": 21,
-    "additional503RetryPrepared": 1,
-    "policy": "First attempts stay primary. Explicit linked retries establish live coverage and are scored separately.",
-    "additional503Receipt": "No canonical invocation receipt available; inference start cannot be confirmed."
+    "status": "completed",
+    "attempts": 27,
+    "passed": 25,
+    "runtimeErrors": 0,
+    "primaryResultsUnchanged": true,
+    "coverageByArm": {
+      "raw_direct": {
+        "required": 1000,
+        "uniqueAttempted": 1000,
+        "clientDispatched": 1000,
+        "modelResponseCases": 1000,
+        "confirmedNativeFailureCases": 0,
+        "confirmedNativeFailureRequestIds": [],
+        "retryAttempts": 15,
+        "retryPassed": 14,
+        "retryRuntimeErrors": 0
+      },
+      "codali_selected": {
+        "required": 1000,
+        "uniqueAttempted": 1000,
+        "clientDispatched": 1000,
+        "modelResponseCases": 995,
+        "confirmedNativeFailureCases": 5,
+        "confirmedNativeFailureRequestIds": [
+          "b87835ea-7d2e-4ca0-b174-16ed3a33b214",
+          "cb3fae5a-f01a-4a56-9edd-a5c0cddf201a",
+          "aa6a1a7b-8b78-478f-9509-fff33bc1ac18",
+          "6814bc54-5634-4124-8312-c00c6c8d3433",
+          "488378cd-d6c2-4cb3-9c25-ffb01a608e2b"
+        ],
+        "retryAttempts": 12,
+        "retryPassed": 11,
+        "retryRuntimeErrors": 0
+      },
+      "raw_tools": {
+        "required": 100,
+        "uniqueAttempted": 100,
+        "clientDispatched": 100,
+        "modelResponseCases": 100,
+        "confirmedNativeFailureCases": 0,
+        "confirmedNativeFailureRequestIds": [],
+        "retryAttempts": 0,
+        "retryPassed": 0,
+        "retryRuntimeErrors": 0
+      }
+    },
+    "policy": "First failures remain primary; retry success repairs live coverage only. Five native failed invocations have no successful model response and retain estimated usage."
   },
   "erratumSensitivity": {
     "excludedFamily": "repository_and_docdex.duplicate_symbol",
@@ -1540,7 +1599,11 @@
     "semanticReviews": "cb4124a6705706519e6f28b138c6c4b8b81482a772c235051985c42df3a38061",
     "rubricReviews": "02eec2a87a31d3439e2e8c6b317cdffe8afce73a81ee4c0450ea54fdfef97229",
     "criticalReviews": "f7b9183ef137cf8a5466492e918c1dcc89de4e3ef8f4de64952c12efec87b23e",
-    "artifactAudit": "6b143c933fd2133ef1dc6c97f92b4ecab12815ad575611a612eb93aae9141491"
+    "artifactAudit": "fcdf0f5f3166d357444c3d8b30732b4c9d7c1ff0e0a0be5e3a76e0c3c2a927a6",
+    "combinedScores": "9f7f2c7d906f8e459ff240ac3ceef2f2ae8f954a605213274b69e7e76580fcdb",
+    "combinedReport": "93abef9f27d502d4f6f3c3a643482136a9a93acc9a2daa0f9fa235eb0ca81ed5",
+    "combinedArtifactAudit": "4707b3863907dc48579e74d3727f55e63e169f85bd1e540640c28618ddeb32eb",
+    "completion": "5210c82ec9b25cc3bade4217559b6ca1ae20a65029481987e698003b5e8eef20"
   },
   "limitations": [
     "Family-correlated synthetic tasks; primary agent authored and reviewed rubrics.",

@@ -289,11 +289,23 @@ The same primary Codex agent authored the corpus and reviewed the outputs;
 rubric queues omitted arm/model names, while critical artifact paths could
 reveal arms. These are not human or externally independent reviews.
 
-All artifacts passed the final request/hash/permission/leakage audit, and both
-hosts' recorded runtime identities remained unchanged. Twenty-five original
-attempts had no logged model request. Their linked retries, and an additional
-HTTP 503 coverage retry, are being retained separately; they cannot replace
-first failures or change this promotion decision. Secondary semantic review
+All artifacts passed the corrected request/hash/permission/leakage audit, which
+inspects both Codali and raw-model trace layouts. Both hosts' recorded runtime
+identities remained unchanged. The 27 linked retries completed with 25 strict
+passes and no runtime errors. All 1,000 cases now have actual model-dispatch
+coverage in each primary arm; five Codali cases retain confirmed failed native
+invocations without successful responses or measured usage. Original outcomes
+remain unchanged, so retries cannot change the promotion decision. Secondary semantic review
 found 29 correct-in-substance answers among 97 reviewed JSON failures and did
 not change strict scores. The whole-family erratum sensitivity and the separate
 calculator follow-up are also reported independently.
+
+The [calculator follow-up results](../codali-r1/results.json) record 80 completed
+development attempts and 200 fresh validation attempts. The frozen rule selected
+the review-enabled configuration with 68/100 strict passes versus 67/100; both
+had zero runtime or critical failures. The one-point difference has a descriptive
+family interval of −3 to +6 points. Whole-family exclusion for the module-format
+erratum preserves that ranking, while the separate compatible-module totals
+reverse it (75 versus 76). Selection is experimental. The 200 fresh held-out pairs
+and 50 tool controls are running under unchanged settings; no follow-up quality
+or promotion claim is available yet.
