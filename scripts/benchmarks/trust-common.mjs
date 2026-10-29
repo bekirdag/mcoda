@@ -22,14 +22,15 @@ export function argumentsMap(args = process.argv.slice(2), allowed) {
 }
 export async function benchmarkFingerprint() {
   const extras = ['pnpm-lock.yaml','packages/codali/package.json','packages/codali/config/AGENTS.md',
-    'scripts/benchmarks/trust-common.mjs','scripts/benchmarks/trust-attempt.mjs','scripts/benchmarks/run-trust-benchmark.mjs'];
+    'packages/codali/config/docdex-tools-0.2.99.json', 'packages/codali/config/deterministic/requirements.txt', 'packages/codali/config/documents/requirements.txt',
+    'scripts/benchmarks/trust-common.mjs','scripts/benchmarks/trust-attempt.mjs','scripts/benchmarks/trust-full-tools.mjs','scripts/benchmarks/run-trust-benchmark.mjs'];
   const files = Object.fromEntries(await Promise.all(extras.map(async file => [file,hash(await fs.readFile(path.join(repository,file)))])));
   // These workspace dependencies can be linked by pnpm and must not silently drift.
   const dependencies = {};
   for (const name of ['shared','db']) dependencies[name] = await terminalClientBuildHash(path.join(repository,'packages',name,'dist'));
   return {client:await terminalClientBuildHash(),files,dependencies,node:process.version,platform:process.platform,arch:process.arch};
 }
-export const hasToolBaseline = task => task.domain === 'repository_and_docdex' || task.toolParity === 'calculation';
+export const hasToolBaseline = task => task.domain === 'repository_and_docdex' || ['calculation','full'].includes(task.toolParity);
 export async function readPublicCorpus(directory=corpusRoot) {
   const manifest=await json(path.join(directory,'manifest.json'));
   const bytes=await fs.readFile(path.join(directory,'prompts.jsonl'));

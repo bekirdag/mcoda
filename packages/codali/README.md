@@ -174,6 +174,64 @@ On macOS, the selected installed Xcode developer tools and SDK are also read-onl
 Use `doctor` to inspect selected executable paths. Dependency installation still
 requires network permission, and build outputs must fit the task's write scope.
 
+### Deterministic and evidence tools (development)
+
+The development client exposes direct Decimal.js arithmetic, math.js numerical
+operations, Ajv JSON Schema validation, SymPy algebra/calculus, Z3 constraints,
+DuckDB queries and Polars transforms through tool discovery. These operations
+run in bounded, offline workers over supplied data. Library versions and input
+hashes accompany results. Decimal inputs use strings; floating-point results
+remain approximations. A solver reporting `unknown` is not a proof.
+
+Install and verify the Python tools explicitly on the host:
+
+```sh
+codali tools install
+codali tools check --json
+codali doctor
+```
+
+From a source checkout, use `node packages/codali/dist/cli.js` in place of
+`codali` after building. `tools check` uses fixed independent values with no
+model calls; it reports each tool separately and exits nonzero on any failure.
+`doctor` reports installation metadata, isolation, the browser executable and
+local TNL credential status. Credential metadata alone does not verify server
+access or expiry enforcement. The lower-level installer remains available as
+`config/deterministic/install-python.mjs` inside the package.
+The default private environment is
+`~/.local/state/codali/tool-runtimes/python-v1`; the host can override it with
+`CODALI_TOOL_PYTHON_ROOT`. A missing or incompatible runtime produces an explicit
+tool error. The model cannot choose runtime paths or install dependencies through
+these tools. JavaScript verification and Vitest execute supplied checks in the
+existing isolated executor. Passing model-authored checks is useful evidence,
+but does not establish independent test coverage.
+
+`extract_entities` uses the locally served ADES extractor for bounded entity
+hints. Confidence scores and canonical links can be wrong; the original query
+and source evidence remain authoritative. Docdex supplies repository and web
+retrieval, structural analysis, memory and additional versioned capabilities.
+Optional daemon features can be unavailable even when their schemas are known.
+
+Browser navigation uses the npm `browser-use` direct session API in a temporary
+worker with a restricted environment. Codali owns Chrome and closes it on
+cancellation; workspace `.env` files and model-service credentials are not
+loaded by the browser worker. New setup configurations select local specialist
+image/audio/video backends and pin their advertised identity. Missing local
+routes remain unavailable; setup does not substitute a text model or cloud route.
+
+`tnl_read` retrieves source-linked news, entity/impact relationships and data
+catalog records from The Neural Ledger. Configure its host credential at
+`~/.config/codali/credentials/tnl.json` with `apiKey`, `baseUrl` and `expiresAt`,
+owned by the current user with mode `0600`. The key must have a real server-side
+expiry as well as this local expiry. Never put it in a prompt or repository.
+`CODALI_TNL_CREDENTIAL_FILE` can select another private host file. Requests are
+GET-only and restricted to the credential's origin; web permission still
+applies. Retrieved dates, sources and inferred relationships require evaluation,
+and an outage or empty response must not be presented as an established fact.
+
+These additions remain under qualification and are not present in the older
+installed `.26` preview merely because this source documentation is available.
+
 Each task is tied to the original goal and a bounded path scope. A successful tool
 call is not task completion: changed code needs recorded validation and separate
 review, and the goal gate checks requirement coverage, current file hashes and
@@ -308,3 +366,7 @@ codali writes JSONL logs under `logs/codali/<runId>.jsonl`, rooted in the global
 
 ## Docdex integration
 codali calls docdex over HTTP for search/snippets/graphs and uses MCP for symbols/AST/memory. Ensure `docdexd` is running and `DOCDEX_HTTP_BASE_URL` is set if needed.
+
+Local document tools support PDF, Word (`.docx`), Excel (`.xlsx`) and UTF-8 Markdown. Install their separate pinned runtime with `codali tools install --documents`, then run `codali tools check --documents --json`. These host commands do not require a model or a tenant connection. The tool names are `document_read` and `document_create`; creation uses typed text blocks or literal spreadsheet rows, requires workspace write permission, and never overwrites an existing file.
+
+The offline worker receives only copied input and returns checksums, library versions, bounded text/tables and explicit truncation. Formula expressions are not calculated values; formula-looking strings supplied to creation remain literal text. PDF extraction does not perform OCR, and document reading does not claim complete interpretation of images, headers, tracked changes or complex layouts. PDF creation uses a bundled font and fails on unsupported characters; DOCX/Markdown preserve broader Unicode. Image, audio and video generation use the separately configured local specialist models.

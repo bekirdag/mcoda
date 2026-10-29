@@ -3,6 +3,17 @@ import assert from "node:assert/strict";
 import { validateOrchestrationConfig, resolveBinding, orchestrationHash } from "../OrchestrationConfig.js";
 
 const fixture = () => ({ schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1234/v1" } }, models: { text: { provider: "local", catalogId: "text-v1", revision: "abc", contextWindow: 32768, maxOutputTokens: 2048, operations: ["chat.completions"], backend: "strata" } }, bindings: { lead: { candidates: ["text"] }, reviewer: { useBinding: "lead" } } });
+test("initial tool exposure is bounded and only valid for progressive discovery", () => {
+  const interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: [] };
+  assert.deepEqual(validateOrchestrationConfig({ ...fixture(), interaction }).interaction?.initialTools, []);
+  for (const initialTools of ["calculate", ["calculate", "calculate"], ["../read"], [null], Array.from({ length: 17 }, (_, i) => `tool_${i}`)]) {
+    assert.throws(() => validateOrchestrationConfig({ ...fixture(), interaction: { ...interaction, initialTools } }), /initialTools/);
+  }
+  assert.deepEqual(validateOrchestrationConfig({ ...fixture(), interaction: { ...interaction, toolExposure: "gateway" } }).interaction?.initialTools, []);
+  for (const change of [{ strategy: "routed" }, { toolSelection: "semantic" }]) {
+    assert.throws(() => validateOrchestrationConfig({ ...fixture(), interaction: { ...interaction, ...change } }), /initialTools/);
+  }
+});
 test("portable profiles resolve aliases and stable canonical hashes", () => {
   const c = validateOrchestrationConfig(fixture());
   assert.equal(resolveBinding(c, "reviewer", "chat.completions")[0].id, "text");

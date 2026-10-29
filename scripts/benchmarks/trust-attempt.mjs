@@ -16,6 +16,8 @@ import { PermissionGate } from '../../packages/codali/dist/permissions/Permissio
 import { loadOrchestrationConfig } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { interactionSettings } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 import { argumentsMap, json, writeNew, fixtureSnapshot, hash } from './trust-common.mjs';
+import { fullTrustTools } from './trust-full-tools.mjs';
+import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 
 const args=argumentsMap(undefined,['request']);
 const request=await json(args.request); // only public case, paths and arm metadata
@@ -77,7 +79,20 @@ try{
       const registry=new ToolRegistry();const gate=new PermissionGate('plan',undefined,{shellIsolated:false,allowWeb:false,allowMemory:false,allowMedia:false});
       const calculation=task.toolParity==='calculation';
       let exposed;
-      if(calculation){
+      if(task.toolParity==='full'){
+        exposed=fullTrustTools(registry,workspace,async()=>{
+          const embeddings=new ConfiguredEmbeddings(resolved,async receipt=>{
+            if(receipt.reportedTokens!==undefined){tokens+=receipt.reportedTokens-(reservations.get(receipt.id)??0);reservations.delete(receipt.id);}else estimated=true;
+            emit('embedding_receipt',receipt);
+          },async intent=>{
+            if(tokens+intent.estimatedTokens>settings.maxTotalTokens||modelCalls>=settings.maxModelCalls)throw Error('Common aggregate embedding/model budget exhausted');
+            tokens+=intent.estimatedTokens;modelCalls++;reservations.set(intent.id,intent.estimatedTokens);emit('embedding_intent',intent);
+          });
+          managed=new ManagedDocdex({workspaceRoot:workspace,stateRoot:path.join(storage,'docdex'),embeddings,provider,signal:abort.signal,allowWeb:false,
+            binary:resolved.config.docdex?.binary,binarySha256:resolved.config.docdex?.binarySha256,startupTimeoutMs:resolved.config.docdex?.startupTimeoutMs});
+          const client=await managed.start();await client.waitForIndex(15000);return client;
+        },settings.initialTools);
+      }else if(calculation){
         if(!settings.calculator||task.domain==='repository_and_docdex')throw Error('Calculation parity requires an enabled calculator and a non-repository case');
         registry.register(createCalculatorTool());exposed=new Set(['calculate']);
       }else{
@@ -101,7 +116,7 @@ try{
       }
       messages.push({role:'user',content:task.prompt});
       for(let step=0;step<settings.maxInspectionSteps;step++){
-        const tools=registry.list().filter(t=>exposed.has(t.name)).map(t=>({name:t.name,description:t.description,inputSchema:t.inputSchema}));
+        const tools=registry.list().filter(t=>exposed.has(t.name)).map(t=>({name:t.name,description:task.toolParity==='full'?t.description.slice(0,140):t.description,inputSchema:task.toolParity==='full'?compactToolSchema(t.inputSchema):t.inputSchema}));
         const response=await provider.generate({messages,tools,maxTokens:calculation?Math.min(2048,settings.maxTotalTokens):settings.maxOutputTokens,temperature:0,signal:abort.signal});
         const calls=response.toolCalls??response.message.toolCalls??[];
         if(!calls.length){output=response.message.content;break;}

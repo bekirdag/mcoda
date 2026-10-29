@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ToolExecutionError, type ToolDescriptor } from "../tools/ToolTypes.js";
+import { docdexCatalogKind } from "../docdex/DocdexCatalog.js";
 
 export type PermissionProfile = "plan" | "ask" | "workspace";
 export type PermissionKind = "read" | "write" | "shell" | "web" | "memory" | "media" | "external";
@@ -17,18 +18,31 @@ const docdexReads = /^(docdex_(search|batch_search|rerank|open|files|tree|stats|
 
 export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (tool.name === "run_shell") return "shell";
+  if (tool.name === "document_read" && tool.capability === "workspace" && tool.readOnly) return "read";
+  if (tool.name === "document_create" && tool.capability === "workspace" && !tool.readOnly) return "write";
   if (fileWrite.has(tool.name)) return "write";
   if (["tools_discover", "tools_enable"].includes(tool.name)) return "read";
+  if (tool.name === "tools_describe" && tool.capability === "discovery" && tool.readOnly) return "read";
   if (tool.name === "calculate" && tool.capability === "calculation" && tool.readOnly) return "read";
+  if (["verify_javascript", "verify_tests"].includes(tool.name) && tool.capability === "verification" && tool.readOnly) return "read";
+  if (["decimal_calculate", "numerical_calculate", "validate_json", "symbolic_math", "solve_constraints", "query_data", "transform_data"].includes(tool.name) && tool.capability === "deterministic" && tool.readOnly) return "read";
   if (tool.name === "server_time" && tool.capability === "clock" && tool.readOnly) return "read";
+  if (tool.name === "extract_entities" && tool.capability === "entity_hints" && tool.readOnly) return "read";
   if (["skill_list", "skill_load", "skill_read"].includes(tool.name) && tool.capability === "skill_read" && tool.readOnly) return "read";
   if (tool.name === "context_read" && tool.capability === "context_read" && tool.readOnly) return "read";
   if (tool.name === "browser_read" && tool.capability === "browser_snapshot" && tool.readOnly) return "read";
   if (tool.name === "browser_open" && tool.capability === "browser") return "web";
+  if (tool.name === "tnl_read" && tool.capability === "tnl_evidence" && tool.readOnly) return "web";
   if (["media_job_status", "media_job_wait", "delegate_helper"].includes(tool.name)) return "read";
   if (tool.name === "media_job_cancel") return "media";
   if (/image.*generat|audio.*generat|video.*generat|media.*generat/.test(tool.name) || /^(image|audio|video|media)_generation$/.test(tool.capability)) return "media";
   if (tool.name === "docdex_web_research") return "web";
+  if (tool.capability === "docdex") {
+    const kind = docdexCatalogKind(tool.name);
+    if (kind === "read" && tool.readOnly) return "read";
+    if (kind === "memory") return "memory";
+    if (kind === "external" || kind === "delegate") return "external";
+  }
   if (/^docdex_(memory_save|save_preference|index|diary_write|conversation_import|delegate)/.test(tool.name)) return "memory";
   if ((fileRead.has(tool.name) || docdexReads.test(tool.name)) && tool.readOnly || controlRead.has(tool.name)) return "read";
   return "external";

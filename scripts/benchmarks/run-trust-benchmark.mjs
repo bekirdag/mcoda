@@ -43,7 +43,7 @@ if(selected.some(c=>c.split==='held_out')){
   if(freeze.configHash!==resolved.hash||freeze.corpusHash!==corpus.promptsSha256||freeze.clientFingerprint!==hash(JSON.stringify(fingerprint))||!freeze.selectionEvidence||!freeze.createdAt)throw Error('Selection freeze does not match this run');
 }
 const root=path.resolve(args.output);await fs.mkdir(root,{recursive:true,mode:0o700});await fs.chmod(root,0o700);
-const identity={schemaVersion:1,protocolVersion:'trust-opaque-paths-v2',configHash:resolved.hash,corpusHash:corpus.promptsSha256,fingerprint,arms,taskIds:selected.map(x=>x.id),split,timeoutMs:Number(args['timeout-ms']??300000)};
+const identity={schemaVersion:1,protocolVersion:selected.some(task=>task.toolParity==='full')?'trust-direct-tools-v3':'trust-opaque-paths-v2',configHash:resolved.hash,corpusHash:corpus.promptsSha256,fingerprint,arms,taskIds:selected.map(x=>x.id),split,timeoutMs:Number(args['timeout-ms']??300000)};
 if(retryLineage.length)identity.retryLineage=retryLineage;
 if(!Number.isSafeInteger(identity.timeoutMs)||identity.timeoutMs<1000||identity.timeoutMs>900000)throw Error('Invalid common deadline');
 const manifestPath=path.join(root,'manifest.json');

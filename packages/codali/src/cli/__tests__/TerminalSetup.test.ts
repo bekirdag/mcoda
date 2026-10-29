@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setupTerminalConfig } from "../TerminalCommand.js";
 import { resolveBinding } from "../../config/OrchestrationConfig.js";
+import { ConfiguredProvider } from "../../providers/ConfiguredProvider.js";
 
 test("setup pins only compatible qualified embedding replicas and never treats an update timestamp as a model revision", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-setup-embedding-"));
@@ -44,23 +45,34 @@ test("setup pins only compatible qualified embedding replicas and never treats a
   assert.deepEqual(unavailable.config.bindings.embedding, { enabled: false });
 });
 
-test("setup negotiates durable media and preserves a model's multiple operations", async () => {
+test("setup pins local specialist media, preserves multiple operations and rejects backend drift", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-setup-"));
   const originalFetch = globalThis.fetch; const originalKey = process.env.MCODA_MSWARM_API_KEY;
   const urls: string[] = []; process.env.MCODA_MSWARM_API_KEY = "setup-fixture-key";
+  let mediaBackend = "openai-compatible-local";
   globalThis.fetch = async input => {
     const url = String(input); urls.push(url);
     if (url.endsWith("/v1/media/jobs")) return Response.json({ protocol: "mswarm-media-jobs-v1" });
-    return Response.json({ agents: [{ slug: "fixture-strata", adapter: "strata-local", supports_tools: true, health_status: "healthy", context_window: 32768, operations: [{ type: "chat.completions" }, { type: "images.generations" }, { type: "audio.generations" }] }] });
+    return Response.json({ agents: [
+      { slug: "fixture-strata", adapter: "strata-local", supports_tools: true, health_status: "healthy", context_window: 32768, operations: [{ type: "chat.completions" }, { type: "images.generations" }, { type: "audio.generations" }] },
+      { slug: "fixture-local-media", adapter: mediaBackend, health_status: "healthy", operations: [{ type: "images.generations" }, { type: "audio.generations" }] },
+      { slug: "fixture-cloud-media", adapter: "cloud", health_status: "healthy", operations: [{ type: "images.generations" }, { type: "videos.generations" }] },
+      { slug: "fixture-unknown-video", health_status: "healthy", operations: [{ type: "videos.generations" }] },
+    ] });
   };
   try {
     const result = await setupTerminalConfig(path.join(root, "orchestration.json"));
     assert.equal(result.config.providers.mswarm.mediaJobsUrl, "https://api.mswarm.org/v1/media/jobs");
     assert.equal(resolveBinding(result.config, "lead", "chat.completions")[0].model.backend, "strata");
-    assert.equal(resolveBinding(result.config, "image", "images.generations")[0].id, "fixture-strata");
-    assert.equal(resolveBinding(result.config, "audio", "audio.generations")[0].id, "fixture-strata");
+    assert.equal(resolveBinding(result.config, "image", "images.generations")[0].id, "fixture-local-media");
+    assert.equal(resolveBinding(result.config, "audio", "audio.generations")[0].id, "fixture-local-media");
+    assert.equal(result.config.models["fixture-local-media"].backend, "openai-compatible-local");
+    assert.equal(result.config.models["fixture-cloud-media"], undefined);
+    assert.equal(result.config.models["fixture-unknown-video"], undefined);
     assert.equal(result.config.bindings.video.enabled, false);
     assert.equal(urls.length, 2); assert.equal(urls.some(url => url.endsWith("/completions")), false);
+    mediaBackend = "cloud";
+    await assert.rejects(new ConfiguredProvider(result, "image").select("images.generations"), /backend identity not verified/);
     await assert.rejects(setupTerminalConfig(result.source), /already exists/);
   } finally { globalThis.fetch = originalFetch; if (originalKey === undefined) delete process.env.MCODA_MSWARM_API_KEY; else process.env.MCODA_MSWARM_API_KEY = originalKey; await fs.rm(root, { recursive: true, force: true }); }
 });

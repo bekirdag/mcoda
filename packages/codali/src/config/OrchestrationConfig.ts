@@ -61,6 +61,11 @@ export interface TaskControlConfig {
   reviewPolicy: "risk-and-evidence";
 }
 export interface InteractionConfig {
+  toolExposure?: "gateway" | "native";
+  toolSelection?: "fixed" | "progressive" | "lexical" | "semantic";
+  initialTools?: string[];
+  /** Opt-in single-call answering; routed preserves the established dispatcher. */
+  strategy?: "routed" | "direct" | "native" | "cascade" | "gateway" | "adaptive";
   routerBinding?: string; answerBinding?: string; promptVersion?: string;
   routerResponseFormat?: "json" | "json_schema";
   routerPrompt?: string; answerPrompt?: string;
@@ -209,7 +214,14 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
   }
   if (root.interaction !== undefined) {
     const value = object(root.interaction, "interaction");
-    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs", "answerReview", "routerResponseFormat", "calculator"], "interaction");
+    fields(value, ["strategy", "toolExposure", "toolSelection", "initialTools", "routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs", "answerReview", "routerResponseFormat", "calculator"], "interaction");
+    if (value.toolExposure !== undefined && (typeof value.toolExposure !== "string" || !["gateway", "native"].includes(value.toolExposure))) throw new Error("interaction.toolExposure: expected gateway or native");
+    if (value.toolSelection !== undefined && (typeof value.toolSelection !== "string" || !["fixed", "progressive", "lexical", "semantic"].includes(value.toolSelection))) throw new Error("interaction.toolSelection: expected fixed, progressive, lexical or semantic");
+    if (value.initialTools !== undefined) {
+      if (!["gateway", "adaptive"].includes(String(value.strategy)) || value.toolSelection !== "progressive") throw new Error("interaction.initialTools: requires gateway or adaptive strategy with progressive tools");
+      if (!Array.isArray(value.initialTools) || value.initialTools.length > 16 || value.initialTools.some(name => typeof name !== "string" || !/^[a-z][a-z0-9_]{0,79}$/u.test(name)) || new Set(value.initialTools).size !== value.initialTools.length) throw new Error("interaction.initialTools: expected up to 16 distinct tool names");
+    }
+    if (value.strategy !== undefined && (typeof value.strategy !== "string" || !["routed", "direct", "native", "cascade", "gateway", "adaptive"].includes(value.strategy))) throw new Error("interaction.strategy: expected routed, direct, native, cascade, gateway or adaptive");
     if (value.calculator !== undefined && typeof value.calculator !== "boolean") throw new Error("interaction.calculator: expected boolean");
     for (const key of ["routerBinding", "answerBinding"]) if (value[key] !== undefined) {
       nonempty(value[key], `interaction.${key}`);

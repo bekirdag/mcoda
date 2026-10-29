@@ -6,6 +6,23 @@ import path from "node:path";
 import { createIsolatedExecutor, darwinSandboxProfile, executorStatus } from "../IsolatedExecutor.js";
 import { createShellTool } from "../ShellTool.js";
 
+test("trusted runtime mounts expose libraries read-only without exposing adjacent files", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-runtime-work-"));
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-runtime-install-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(parent, { recursive: true, force: true }); });
+  const runtime = path.join(parent, "runtime"); await fs.mkdir(runtime);
+  await fs.writeFile(path.join(runtime, "library.txt"), "library"); await fs.writeFile(path.join(parent, "private.txt"), "private");
+  const execute = createIsolatedExecutor({ status, readOnlyRuntimeRoots: [runtime] });
+  const context = { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 };
+  const result = await execute("node", ["-e", "console.log(require('fs').readFileSync(process.argv[1],'utf8'))", path.join(runtime, "library.txt")], context);
+  assert.match(result.output, /library/);
+  for (const [operation, target] of [["readFileSync", path.join(parent, "private.txt")], ["writeFileSync", path.join(runtime, "library.txt")]]) {
+    await assert.rejects(execute("node", ["-e", `require('fs').${operation}(process.argv[1]${operation === "writeFileSync" ? ", 'changed'" : ""})`, target], context));
+  }
+  await assert.rejects(createIsolatedExecutor({ status, readOnlyRuntimeRoots: [os.homedir()] })("node", ["-e", ""], context), /dedicated installed/);
+});
+
 test("Darwin policy confines temporary access to one owned directory and quotes hostile path syntax", () => {
   const profile = darwinSandboxProfile('/Users/test/repo"(allow default)', "/private/tmp/codali-shell-123", ["/Users/test/repo/src"], []);
   assert.ok(!profile.includes('(subpath "/private/tmp")'));

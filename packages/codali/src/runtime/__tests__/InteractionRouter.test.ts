@@ -6,11 +6,12 @@ import path from "node:path";
 import { SessionController, type SessionEvent, type SessionControllerOptions } from "../SessionController.js";
 import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
-import { parseInteractionDecision } from "../InteractionRouter.js";
+import { parseInteractionDecision, parseDirectInteractionDecision, DIRECT_INTERACTION_VERSION, interactionFirstPrompt, interactionResponseFormat, compactToolSchema } from "../InteractionRouter.js";
 import { unconstrainedOutput, type InteractionOutputContract } from "../InteractionContract.js";
 import { registerSecretValue } from "../SecretRedaction.js";
 import { DocdexClient } from "../../docdex/DocdexClient.js";
 import { ManagedDocdex } from "../../docdex/ManagedDocdex.js";
+import { executorStatus } from "../../tools/shell/IsolatedExecutor.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
@@ -41,6 +42,480 @@ test("conversation instructions are sourced, bounded and reloaded between turns"
   assert.notEqual(events.filter(event => event.type === "instructions_loaded").at(-1)!.data.bundleHash, first);
   assert.equal(controller.state, undefined);
   assert.equal(controller.usageSnapshot().modelCalls, 2);
+});
+
+test("direct strategy answers code and follow-ups in one call per turn without losing user constraints", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "direct", routerBinding: "router", answerBinding: "lead", routerResponseFormat: "json_schema", answerPrompt: "Keep the user's examples unchanged." };
+  const code = `export const identity = value => value;\n/*${"long code comment ".repeat(40)}*/`;
+  let calls = 0;
+  const { controller, events, root } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.equal(request.tools, undefined);
+    assert.match(request.messages[0].content, /Keep the user's examples unchanged/);
+    assert.match(request.messages[0].content, /PRESERVE_WORKSPACE_RULE/);
+    if (++calls === 1) return reply(JSON.stringify({ mode: "answer", text: code }));
+    assert.ok(request.messages.some(m => m.role === "user" && m.content.includes("No tools")));
+    assert.ok(request.messages.some(m => m.role === "assistant" && m.content === code));
+    return decision("answer", "It returns the input unchanged.");
+  } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "PRESERVE_WORKSPACE_RULE");
+  assert.equal((await controller.interact("Give the identity function and comment as code only. No tools.")).content, code);
+  assert.equal((await controller.interact("Explain that function.")).content, "It returns the input unchanged.");
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.ok(events.filter(e => e.type === "model_request").every(e => e.data.binding === "lead"));
+  assert.ok(events.filter(e => e.type === "interaction_request").every(e => e.data.contractVersion === DIRECT_INTERACTION_VERSION));
+  assert.equal(controller.state, undefined);
+  const format = interactionResponseFormat("json_schema", "direct");
+  assert.ok(format.type === "json_schema" && JSON.stringify(format).includes('"maxLength":12000'));
+  assert.ok(interactionFirstPrompt(config.interaction).length < 2000);
+});
+
+test("compact direct contracts default to no tools and reject malformed constraints", () => {
+  const parse = (value: unknown) => parseDirectInteractionDecision(JSON.stringify(value));
+  assert.equal(parse({ mode: "inspect", text: "Read the source." }).tools, "none");
+  assert.deepEqual(parse({ mode: "answer", text: '{"value":1}', output: { format: "json", requiredKeys: ["value"] } }).output,
+    { format: "json", requiredKeys: ["value"], minWords: null, maxWords: null });
+  for (const output of [null, [], { maxWords: -1 }, { maxWords: "4" }, { minWords: 4, maxWords: 2 }, { unknown: true }]) {
+    assert.throws(() => parse({ mode: "answer", text: "Hello", output }));
+  }
+  assert.throws(() => parse({ mode: "answer", text: "Hello", tools: null }));
+  assert.throws(() => parse({ mode: "answer", text: "Hello", unexpected: true }));
+  assert.throws(() => parse({ mode: "execute", text: "x".repeat(501), tools: "available" }));
+});
+
+test("native strategy preserves literal JSON answers without treating them as control", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "native" };
+  const content = '{"mode":"execute","text":"quoted value","tools":"available"}';
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali_control"]);
+    assert.equal(request.responseFormat, undefined); return reply(content);
+  } }, config);
+  assert.equal((await controller.interact(`Return this JSON literally: ${content}`)).content, content);
+  assert.equal(calls, 1); assert.equal(controller.state, undefined);
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+});
+
+test("native final constraints use the shared one-repair validation path", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "native" };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "final", name: "codali_control", args: {
+      mode: "answer", text: "42", output: { format: "json", requiredKeys: ["answer"] },
+    } }] };
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none"); return reply('{"answer":42}');
+  } }, config);
+  assert.equal((await controller.interact("Return42as JSON with an answer key.")).content, '{"answer":42}');
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.equal(events.filter(event => event.type === "interaction_control").length, 1);
+  assert.equal(events.filter(event => event.type === "interaction_output_repair_started").length, 1);
+});
+
+test("native capability selection cannot execute unadvertised tools", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "native" };
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "invalid", name: "write_file", args: { path: "bad.txt", content: "no" } }] };
+    return reply("I can explain the change.");
+  } }, config);
+  assert.equal((await controller.interact("Explain how to write a file. Do not make changes.")).content, "I can explain the change.");
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.equal(controller.state, undefined); await assert.rejects(fs.access(path.join(root, "bad.txt")));
+});
+
+test("native inspection uses the declared calculator with the original request", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "native", calculator: true };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "route", name: "codali_control", args: { mode: "reason", text: "Calculate the requested sum." } }] };
+    if (calls === 2) {
+      assert.match(JSON.stringify(request.messages), /Use the calculator for2plus3/);
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["calculate"]);
+      return { ...reply(""), toolCalls: [{ id: "sum", name: "calculate", args: { expression: "2+3" } }] };
+    }
+    assert.ok(request.messages.some(m => m.role === "tool" && m.name === "calculate")); return reply("5");
+  } }, config);
+  assert.equal((await controller.interact("Use the calculator for2plus3; no files or shell.")).content, "5");
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.ok(events.some(event => event.type === "tool_intent")); assert.equal(controller.state, undefined);
+});
+
+test("cascade dispatch uses its router binding and preserves the original answer scope", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "cascade", routerBinding: "router", answerBinding: "lead" };
+  let calls = 0;
+  const original = "Explain a reversible migration in prose; do not change any files.";
+  const { controller, events, root } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.match(request.messages[0].content, /WORKSPACE_MARKER/);
+    if (++calls === 1) {
+      assert.equal(JSON.parse(request.messages[1].content).message, original);
+      return reply(JSON.stringify({ mode: "reason", text: "Explain the rollout and irreversible boundary." }));
+    }
+    assert.ok(request.messages.some(message => message.role === "user" && message.content === original));
+    assert.match(request.messages.at(-1)!.content, /untrusted aid/);
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    return reply("Keep both schemas compatible until the rollback window closes.");
+  } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "WORKSPACE_MARKER");
+  assert.match((await controller.interact(original)).content, /rollback window/);
+  assert.deepEqual(events.filter(event => event.type === "model_request").map(event => event.data.binding), ["router", "lead"]);
+  assert.equal(calls, 2); assert.equal(controller.state, undefined); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+});
+
+test("adaptive replies directly in one call without initializing a tool runtime", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.toolChoice, "auto"); return reply("Hello!");
+  } }, config);
+  assert.equal((await controller.interact("Hello!")).content, "Hello!");
+  assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.ok(!events.some(event => event.type === "index_ready")); assert.equal(controller.state, undefined);
+});
+
+test("adaptive directly invokes a real tool and preserves the original instructions and budget", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", toolExposure: "gateway", calculator: true, routerPrompt: "CUSTOM_ROUTING_MARKER" };
+  const original = "Use the calculator for two plus three."; let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.ok(request.messages.some(message => message.role === "user" && message.content === original));
+    assert.match(request.messages[0].content, /WORKSPACE_MARKER/);
+    assert.ok(request.messages.some(message => message.content.includes("CUSTOM_ROUTING_MARKER")));
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]);
+    if (++calls === 1) {
+      assert.equal(request.toolChoice, "auto");
+      return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+    }
+    assert.deepEqual(request.toolChoice, { name: "codali" });
+    assert.equal(JSON.parse(JSON.parse(request.messages.at(-1)!.content).content).result, 5);
+    return { ...reply(""), toolCalls: [{ id: "answer", name: "codali", args: { name: "final_answer", args: { text: "5" } } }] };
+  } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "WORKSPACE_MARKER");
+  assert.equal((await controller.interact(original)).content, "5"); assert.equal(calls, 2);
+  assert.equal(controller.turnUsageSnapshot().modelCalls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+});
+
+test("adaptive rejects malformed calls and mixed control batches without execution", async t => {
+  for (const calls of [[{ id: "a", name: "codali", args: { action: "write_file", path: "bad.txt" } }], [{ id: "a", name: "codali", args: { name: "start_work", args: { task: "write bad.txt" } } }, { id: "b", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }]]) {
+    const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
+    let modelCalls = 0;
+    const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++modelCalls === 1 ? ({ ...reply(""), toolCalls: calls }) : reply("Hello.") }, config);
+    assert.equal((await controller.interact("Hello.")).content, "Hello.");
+    assert.ok(events.some(event => event.type === "interaction_tool_rejected")); assert.equal(controller.state, undefined);
+    assert.equal(controller.turnUsageSnapshot().toolCalls, 0); await assert.rejects(fs.access(path.join(root, "bad.txt")));
+  }
+});
+
+test("adaptive escalation cannot reset the shared model budget", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 1 };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++; return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+  } }, config);
+  await assert.rejects(controller.interact("Use the calculator."), /answer budget was reserved/i);
+  assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+});
+
+test("adaptive repairs printed tool markup without executing it, preserving literal answers", async t => {
+  const text = '<tool_call>\n<function=write_file>bad.txt</function>\n</tool_call>';
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
+  let calls = 0;
+  const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(text);
+    assert.deepEqual(request.toolChoice, { name: "codali" });
+    assert.match(request.messages.at(-1)!.content, /nothing was executed/);
+    return { ...reply(""), toolCalls: [{ id: "literal", name: "codali", args: { name: "final_answer", args: { text } } }] };
+  } }, config);
+  assert.equal((await controller.interact(`Return this text literally: ${text}`)).content, text);
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.equal(events.filter(event => event.type === "interaction_protocol_repair").length, 1);
+  await assert.rejects(fs.access(path.join(root, "bad.txt")));
+});
+
+test("adaptive markup correction is bounded and shares the original model budget", async t => {
+  for (const maxModelCalls of [1, 2]) {
+    const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls };
+    let calls = 0;
+    const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; return reply("<tool_call>unexecuted</tool_call>"); } }, config);
+    await assert.rejects(controller.interact("Use a tool."), /unexecuted tool markup/);
+    assert.equal(calls, maxModelCalls); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  }
+});
+
+test("gateway invokes the real calculator in two model calls and retains instruction policy", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", calculator: true, answerPrompt: "CUSTOM_ANSWER_POLICY" };
+  let calls = 0;
+  const { controller, events, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.match(request.messages[0].content, /CUSTOM_ANSWER_POLICY/);
+    assert.match(request.messages[0].content, /GATEWAY_WORKSPACE_RULE/);
+    if (++calls === 1) {
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.responseFormat, undefined);
+      assert.deepEqual(request.toolChoice, { name: "codali" });
+      return { ...reply(""), toolCalls: [{ id: "sum", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+    }
+    const evidence = JSON.parse(request.messages.find(m => m.role === "tool")!.content);
+    assert.equal(evidence.tool, "calculate"); assert.equal(JSON.parse(evidence.content).result, 5); return reply("5");
+  } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "GATEWAY_WORKSPACE_RULE");
+  assert.equal((await controller.interact("Use the calculator for 2+3.")).content, "5");
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1); assert.equal(controller.state, undefined);
+  assert.ok(events.some(event => event.type === "tool_receipt"));
+});
+
+for (const toolExposure of ["gateway", "native"] as const) test(`${toolExposure} prepares Docdex evidence before truncation and preserves the original audit receipt`, async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure };
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  const raw = { repo_id: "transport-only-".repeat(260), hits: [{ doc_id: "notes-doc", path: "notes.txt", snippet: "Owner: Iris", start_line: 7, end_line: 7 }], meta: { dag_session_id: "evidence-trace" } };
+  t.mock.method(DocdexClient.prototype, "search", async () => raw);
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "lookup", name: toolExposure === "gateway" ? "codali" : "docdex_search",
+      args: toolExposure === "gateway" ? { name: "docdex_search", args: { query: "owner" } } : { query: "owner" } }] };
+    const envelope = JSON.parse(request.messages.find(message => message.role === "tool")!.content);
+    assert.equal(envelope.truncated, false);
+    const evidence = JSON.parse(envelope.content);
+    assert.equal(evidence.repo_id, undefined); assert.deepEqual(evidence.hits, raw.hits); assert.deepEqual(evidence.meta, raw.meta);
+    return reply("The owner is Iris (notes.txt:7).");
+  } }, config, undefined, true);
+  assert.match((await controller.interact("Use Docdex to find the project owner.")).content, /Iris/);
+  const receipt = events.find(event => event.type === "tool_receipt" && (event.data.receipt as { tool?: string }).tool === "docdex_search")!.data.receipt as { output: string };
+  assert.equal(JSON.parse(receipt.output).repo_id, raw.repo_id);
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+});
+
+test("native tool exposure executes declared tools and enables discovered schemas", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    const tool = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `call-${calls}`, name, args }] });
+    assert.ok(request.tools?.some(tool => tool.name === "calculate"));
+    assert.ok(!request.tools?.some(tool => tool.name === "codali"));
+    if (calls === 1) return tool("calculate", { expression: "2+3" });
+    if (calls === 2) {
+      assert.match(request.messages.at(-1)!.content, /result/);
+      assert.ok(!request.tools?.some(tool => tool.name === "read_file"));
+      return tool("tools_describe", { names: ["read_file"] });
+    }
+    if (calls === 3) {
+      assert.ok(request.tools?.some(tool => tool.name === "read_file"));
+      return tool("read_file", { path: "note.txt" });
+    }
+    assert.match(request.messages.at(-1)!.content, /sample text/);
+    return tool("final_answer", { text: "The sum is 5; the file says sample text." });
+  } }, config);
+  await fs.writeFile(path.join(root, "note.txt"), "sample text");
+  assert.equal((await controller.interact("Calculate2+3and read note.txt.")).content, "The sum is 5; the file says sample text.");
+  assert.equal(calls, 4); assert.equal(controller.turnUsageSnapshot().toolCalls, 3);
+});
+
+test("schema compression preserves property names, enum data and validation constraints", () => {
+  const schema = { type: "object", description: "metadata", properties: { description: { type: "string", description: "field metadata", maxLength: 10 },
+    value: { enum: [{ title: "data", description: "data" }] } }, required: ["description"], additionalProperties: false };
+  assert.deepEqual(compactToolSchema(schema), { type: "object", properties: { description: { type: "string", maxLength: 10 },
+    value: { enum: [{ title: "data", description: "data" }] } }, required: ["description"], additionalProperties: false });
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
+  assert.equal(validateOrchestrationConfig(config).interaction?.toolExposure, "native");
+  assert.throws(() => validateOrchestrationConfig({ ...config, interaction: { ...config.interaction, toolExposure: ["native"] } }), /toolExposure/);
+});
+
+test("configured empty exposure preserves discovery and host-denied tools stay unavailable", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: [] };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) {
+      assert.deepEqual(request.tools?.map(tool => tool.name).sort(), ["final_answer", "start_work", "tools_describe"]);
+      return { ...reply(""), toolCalls: [{ id: "discover", name: "tools_describe", args: { names: ["calculate"] } }] };
+    }
+    assert.ok(!request.tools?.some(tool => tool.name === "calculate"));
+    assert.match(request.messages.at(-1)!.content, /tool_permission_denied/);
+    return reply("Calculation is unavailable for this request.");
+  } }, config, { deniedTools: ["calculate"] });
+  await controller.interact("Inspect calculator access.");
+  assert.equal(calls, 2);
+});
+
+test("configured initial tools reject mutations and unknown names before inference", async t => {
+  for (const name of ["write_file", "missing_tool"]) {
+    const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: [name] };
+    let calls = 0;
+    const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; return reply("no"); } }, config);
+    await assert.rejects(controller.interact("Hello."), /unavailable read-only tool/);
+    assert.equal(calls, 0);
+  }
+});
+
+test("gateway rejects writes and host-denied tools while preserving the original workspace", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "write", name: "codali", args: { name: "write_file", args: { path: "bad.txt", content: "no" } } }] };
+    if (calls === 2) {
+      assert.match(request.messages.at(-1)!.content, /tool_unknown/);
+      return { ...reply(""), toolCalls: [{ id: "denied", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+    }
+    assert.match(request.messages.at(-1)!.content, /tool_permission_denied/); return reply("The requested tools are unavailable.");
+  } }, config, { deniedTools: ["calculate"] });
+  await controller.interact("Inspect the available tools.");
+  await assert.rejects(fs.access(path.join(root, "bad.txt"))); assert.equal(controller.state, undefined);
+  assert.equal(events.filter(event => event.type === "interaction_tool_rejected").length, 2);
+});
+
+test("gateway final-answer controls retain common format validation", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "final", name: "codali", args: { name: "final_answer", args: { text: "42", output: { format: "json", requiredKeys: ["answer"] } } } }] };
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none"); return reply('{"answer":42}');
+  } }, config);
+  assert.equal((await controller.interact("Return JSON with an answer key.")).content, '{"answer":42}');
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+});
+
+test("gateway loads final control schema on demand then computes through the real registry", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.deepEqual(request.toolChoice, { name: "codali" });
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "schema", name: "codali", args: { name: "tools_describe", args: { names: ["final_answer"] } } }] };
+    const envelope = JSON.parse(request.messages.at(-1)!.content);
+    const descriptors = JSON.parse(envelope.content);
+    assert.equal(descriptors[0].name, "final_answer"); assert.ok(descriptors[0].inputSchema.properties.compute);
+    return { ...reply(""), toolCalls: [{ id: "compute", name: "codali", args: { name: "final_answer", args: { text: "{{answer}}", compute: { tool: "calculate", args: { expression: "2+3" }, fields: { answer: { path: "result" } } } } } }] };
+  } }, config);
+  assert.equal((await controller.interact("Calculate two plus three.")).content, "5");
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 2);
+  assert.ok(events.some(event => event.type === "computed_answer"));
+});
+
+test("native final_answer verifies the exact module and delivers it without another model call", async t => {
+  if (!executorStatus().available) { t.skip("OS isolation unavailable"); return; }
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
+  const text = "```js\nexport const twice=x=>x*2;\n```";
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++; return { ...reply(""), toolCalls: [{ id: "checked", name: "final_answer", args: { text,
+      checks: { entry: "twice", cases: [{ args: [2], expected: 4 }, { args: [-3], expected: -6 }] } } }] };
+  } }, config);
+  assert.equal((await controller.interact("Write and test a function that doubles a number.")).content, text);
+  assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.ok(events.some(event => event.type === "tool_receipt" && JSON.stringify(event.data).includes("verify_javascript")));
+  assert.equal(events.filter(event => event.type === "interaction_output_repair_started").length, 0);
+});
+
+test("native final_answer returns actual computation in one model call and one audited tool", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive" };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++; return { ...reply(""), toolCalls: [{ id: "computed", name: "final_answer", args: { text: "", output: { format: "json", requiredKeys: ["answer"] },
+      compute: { tool: "calculate", args: { expression: "300*1.1^2" }, fields: { answer: { path: "result", as: "number" } } } } }] };
+  } }, config);
+  const result = await controller.interact("Calculate compounded growth and return JSON.");
+  assert.ok(Math.abs(JSON.parse(result.content).answer - 363) < 1e-10);
+  assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.ok(events.some(event => event.type === "computed_answer"));
+  assert.equal(events.filter(event => event.type === "interaction_output_repair_started").length, 0);
+});
+
+test("computed finalization cannot invoke denied tools or filesystem writes", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "bad", name: "final_answer", args: { text: "{{answer}}", compute: { tool: "write_file", args: { path: "bad.txt", content: "bad" }, fields: { answer: { path: "result" } } } } }] };
+    assert.match(request.messages.at(-1)!.content, /permitted deterministic/);
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "denied", name: "final_answer", args: { text: "{{answer}}", compute: { tool: "calculate", args: { expression: "2+3" }, fields: { answer: { path: "result" } } } } }] };
+    return reply("The requested operation is unavailable.");
+  } }, config, { deniedTools: ["calculate"] });
+  await controller.interact("Test the permitted calculation capabilities.");
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 0); await assert.rejects(fs.access(path.join(root, "bad.txt")));
+});
+
+test("computed finalization propagates audit persistence failures instead of retrying execution", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++; return { ...reply(""), toolCalls: [{ id: "computed", name: "final_answer", args: { text: "{{answer}}", compute: { tool: "calculate", args: { expression: "2+3" }, fields: { answer: { path: "result" } } } } }] };
+  } }, config);
+  const internal = controller as unknown as { afterTool: () => Promise<void> };
+  t.mock.method(internal, "afterTool", async () => { throw Error("audit persistence unavailable"); });
+  await assert.rejects(controller.interact("Compute two plus three."), /audit persistence unavailable/);
+  assert.equal(calls, 1);
+});
+
+test("gateway repairs failed code from real observations while retaining the original checks", async t => {
+  if (!executorStatus().available) { t.skip("OS isolation unavailable"); return; }
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const checks = { entry: "twice", cases: [{ args: [3], expected: 6 }] };
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 2) {
+      const data = JSON.parse(request.messages.at(-1)!.content);
+      assert.equal(JSON.parse(data.content).passed, false);
+    }
+    return { ...reply(""), toolCalls: [{ id: `check-${calls}`, name: "codali", args: { name: "final_answer", args: {
+      text: `export const twice=x=>x${calls === 1 ? "+2" : "*2"};`, checks,
+    } } }] };
+  } }, config);
+  assert.equal((await controller.interact("Write and test twice(x).")).content, "export const twice=x=>x*2;");
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 2);
+});
+
+test("gateway cannot bypass failed checks with an unchecked final reply", async t => {
+  if (!executorStatus().available) { t.skip("OS isolation unavailable"); return; }
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1
+    ? { ...reply(""), toolCalls: [{ id: "bad", name: "codali", args: { name: "final_answer", args: {
+      text: "export const twice=x=>x;", checks: { entry: "twice", cases: [{ args: [2], expected: 4 }] },
+    } } }] } : reply("All tests passed.") }, config);
+  await assert.rejects(controller.interact("Write and test twice(x)."), /unchecked replacement/);
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+});
+
+test("gateway final-budget boundary cannot execute another tool", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", maxModelCalls: 1 };
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    return { ...reply(""), toolCalls: [{ id: "ignored", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+  } }, config);
+  await assert.rejects(controller.interact("Calculate 2+3."), /answer budget was reserved/);
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 0); assert.equal(controller.turnUsageSnapshot().modelCalls, 1);
+});
+
+test("gateway rejects mixed finalization batches before performing any tool", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1
+    ? { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }, { id: "final", name: "codali", args: { name: "final_answer", args: { text: "5" } } }] }
+    : reply("No tool was executed.") }, config);
+  assert.equal((await controller.interact("Use the calculator.")).content, "No tool was executed.");
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+});
+
+test("gateway authorized work transitions retain the durable completion gate", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway" };
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ({ ...reply(""),
+    toolCalls: [{ id: "work", name: "codali", args: { name: "start_work", args: { task: "Create the requested file." } } }],
+  }) }, config);
+  t.mock.method(controller, "run", async () => ({ content: "Work is still open.", completed: false }));
+  const result = await controller.interact("Create a file named hello.txt.");
+  assert.equal(result.mode, "execute"); assert.equal(result.completed, false); assert.notEqual(controller.state?.status, "completed");
+  assert.match(controller.state!.objective, /hello.txt/);
+});
+
+test("direct strategy still validates final output and refuses unsolicited native tool calls", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "direct" };
+  const output = { ...unconstrainedOutput(), format: "json" as const, requiredKeys: ["answer"] };
+  let calls = 0;
+  const { controller, events, root } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) return { ...decision("answer", '{"answer":42}', "none", output), toolCalls: [{ id: "bad", name: "write_file", args: { path: "bad.txt", content: "no" } }] };
+    if (calls === 2) return decision("answer", "42", "none", output);
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    return reply('{"answer":42}');
+  } }, config);
+  assert.equal((await controller.interact("Return JSON with answer42. Do not use tools.")).content, '{"answer":42}');
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.equal(events.filter(e => e.type === "interaction_route_invalid").length, 1);
+  assert.equal(events.filter(e => e.type === "turn_result").length, 1);
+  await assert.rejects(fs.access(path.join(root, "bad.txt")));
+  assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { strategy: ["direct"] } }), /strategy/);
 });
 
 test("live routing rejects a legacy decision while custom policy cannot replace the current schema", async t => {

@@ -21,6 +21,10 @@ import { TerminalTui } from "./tui/TerminalTui.js";
 import { inspectPlanDiff } from "./TerminalPlan.js";
 import { openTerminalArtifact } from "./TerminalArtifacts.js";
 import { mediaJobSummary } from "../connectors/media/ConfiguredMediaTools.js";
+import { inspectDeterministicRuntime } from "../tools/deterministic/DeterministicRuntime.js";
+import { inspectDocumentRuntime } from "../tools/documents/DocumentRuntime.js";
+import { resolveBrowserBinary } from "../tools/browser/BrowserTool.js";
+import { inspectTnlCredential } from "../tools/research/TnlTool.js";
 import { proposeTerminalModel, saveTerminalModel, terminalModelOperation } from "./TerminalModels.js";
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
@@ -96,11 +100,11 @@ export const setupTerminalConfig = async (destination: string, options: { prepar
     config.bindings.embedding = { candidates: [...candidates, entry.id], embeddingSpace: "catalog-pinned-v1" };
   }
   for (const [binding, operation] of [["image", "images.generations"], ["audio", "audio.generations"], ["video", "videos.generations"]] as const) {
-    const entries = catalog.filter(entry => entry.health === "healthy" && entry.operations.includes(operation));
+    const entries = catalog.filter(entry => entry.health === "healthy" && entry.backend === "openai-compatible-local" && entry.operations.includes(operation));
     for (const entry of entries) {
       const previous = config.models[entry.id];
-      config.models[entry.id] = previous ? { ...previous, operations: [...new Set([...previous.operations, operation])] }
-        : { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.revision ?? "catalog-unversioned"), operations: [operation], contextWindow: 8192, maxOutputTokens: 1 };
+      config.models[entry.id] = previous ? { ...previous, operations: [...new Set([...previous.operations, operation])], backend: "openai-compatible-local" }
+        : { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.revision ?? "catalog-unversioned"), operations: [operation], contextWindow: 8192, maxOutputTokens: 1, backend: "openai-compatible-local" };
     }
     config.bindings[binding] = entries.length ? { candidates: entries.map(entry => entry.id) } : { enabled: false };
   }
@@ -118,7 +122,13 @@ const usageFor = async (resolved: ResolvedOrchestrationConfig): Promise<Record<s
 };
 
 export const terminalDoctor = async (configPath?: string): Promise<Record<string, unknown>> => {
-  const report: Record<string, unknown> = { node: process.version, runtimeSupported: Number(process.versions.node.split(".")[0]) >= 20, isolation: executorStatus() };
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  const report: Record<string, unknown> = { node: process.version, runtimeSupported: major >= 24 || major === 22 && minor >= 12 || major === 20 && minor >= 19, isolation: executorStatus() };
+  report.deterministicTools = await inspectDeterministicRuntime();
+  report.documentTools = await inspectDocumentRuntime();
+  report.tnl = await inspectTnlCredential();
+  try { report.browser = { available: true, executable: await resolveBrowserBinary(), mode: "browser-use worker with isolated Chrome" }; }
+  catch { report.browser = { available: false, action: "Install Chrome/Chromium or set CODALI_BROWSER_PATH" }; }
   report.nodeToolchain = discoverHostToolchain(process.cwd()).map(runtime => ({ name: runtime.name, executable: runtime.executable, readOnlyRoot: runtime.readOnlyRoot }));
   try {
     const resolved = await loadOrchestrationConfig(configPath); report.configuration = { source: resolved.source, hash: resolved.hash, profile: resolved.config.profile };

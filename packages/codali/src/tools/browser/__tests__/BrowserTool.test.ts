@@ -15,6 +15,55 @@ test("browser snapshot reads reject missing identities and cancelled calls", asy
   await assert.rejects(open.handler({ url: "https://example.org" }, { ...context, signal: AbortSignal.abort(new Error("stop browser")) }), /stop browser/);
 });
 
+test("browser-use cannot load the workspace dotenv into its caller", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 45000 }, async () => {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { execFile } = await import("node:child_process");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-browser-env-"));
+  const server = createServer((_request, response) => { response.setHeader("content-type", "text/html"); response.end("<main>Isolated evidence</main>"); });
+  try {
+    await fs.writeFile(path.join(root, ".env"), "CODALI_BROWSER_DOTENV_SENTINEL=untrusted\n");
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+    // Fresh caller process makes the test independent of browser-use's module
+    // cache in other tests and never changes this test runner's cwd or env.
+    const script = `import assert from 'node:assert/strict';
+      import {createBrowserTools} from ${JSON.stringify(new URL("../BrowserTool.js", import.meta.url).href)};
+      delete process.env.CODALI_BROWSER_DOTENV_SENTINEL;
+      const [open]=createBrowserTools({executablePath:process.env.CODALI_TEST_BROWSER_BINARY});
+      const result=await open.handler({url:${JSON.stringify(url)}},{workspaceRoot:process.cwd()});
+      assert.match(JSON.parse(result.output).content,/Isolated evidence/);
+      assert.equal(process.env.CODALI_BROWSER_DOTENV_SENTINEL,undefined);`;
+    await new Promise<void>((resolve, reject) => execFile(process.execPath, ["--input-type=module", "-e", script], { cwd: root, timeout: 40000, maxBuffer: 200000 }, error => error ? reject(error) : resolve()));
+  } finally {
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real browser cancellation interrupts navigation and invalidates earlier evidence", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 15000 }, async t => {
+  let notifySlow: () => void = () => undefined;
+  const slowRequested = new Promise<void>(resolve => { notifySlow = resolve; });
+  const server = createServer((request, response) => {
+    if (request.url === "/slow") { notifySlow(); return; }
+    response.setHeader("content-type", "text/html"); response.end("<main>Earlier evidence</main>");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const [open, read] = createBrowserTools({ executablePath: process.env.CODALI_TEST_BROWSER_BINARY, timeoutMs: 10000 });
+  const previous = JSON.parse((await open.handler({ url: baseUrl }, { workspaceRoot: "." })).output);
+  const abort = new AbortController();
+  const pending = open.handler({ url: `${baseUrl}/slow` }, { workspaceRoot: ".", signal: abort.signal });
+  // Attach a handler immediately so an early navigation failure is observable.
+  const rejected = assert.rejects(pending, /stop browser/);
+  await Promise.race([slowRequested, pending]);
+  const started = Date.now(); abort.abort(new Error("stop browser"));
+  await rejected; assert.ok(Date.now() - started < 2000);
+  await assert.rejects(read.handler({ snapshotId: previous.snapshotId, offset: 0 }, { workspaceRoot: "." }), /unavailable/);
+});
+
 test("real browser renders scripts and tables, blocks POST, and paginates captured evidence", { skip: !process.env.CODALI_TEST_BROWSER_BINARY }, async t => {
   let mutations = 0;
   const server = createServer((request, response) => {

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, statSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,10 +10,10 @@ import { discoverHostToolchain, extraRuntimeMounts, type HostRuntime } from "./H
 export interface ExecutorStatus { available: boolean; backend: "bubblewrap" | "sandbox-exec" | "unavailable"; reason?: string; }
 
 /** All paths have been canonicalized by the host, before launching the sandbox. */
-export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false): string => {
+export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false, runtimeRoots: string[] = []): string => {
   const quoted = (value: string) => JSON.stringify(value);
   const ancestors = new Set<string>();
-  for (const target of [root, scratch, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
+  for (const target of [root, scratch, ...runtimeRoots, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
     for (let parent = path.dirname(target); parent !== path.dirname(parent); parent = path.dirname(parent)) ancestors.add(parent);
   }
   return [
@@ -31,6 +31,7 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     '(allow file-read* (literal "/private/var/select/sh") (literal "/var/select/sh"))',
     '(allow file-read-metadata (literal "/private/var/select") (literal "/var/select"))',
     `(allow file-read* (subpath ${quoted(root)}))`,
+    ...runtimeRoots.map(runtime => `(allow file-read* (subpath ${quoted(runtime)}))`),
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
     `(allow file-read* file-write* (subpath ${quoted(scratch)}))`,
     ...writePaths.map(file => `(allow file-write* (subpath ${quoted(file)}))`),
@@ -61,7 +62,7 @@ export const executorStatus = (): ExecutorStatus => {
   return { available: false, backend: "unavailable", reason: "No supported isolation backend on this platform" };
 };
 
-export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
+export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
   const status = options.status ?? executorStatus();
   return async (command, args, context) => {
     if (!status.available) throw new ToolExecutionError("tool_permission_denied", status.reason ?? "Isolation unavailable");
@@ -69,6 +70,12 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
     const cwd = resolveShellWorkingDirectory(root, context.shellWorkingDirectory);
     if (root === path.parse(root).root) throw new ToolExecutionError("tool_permission_denied", "Filesystem root cannot be an isolated workspace");
     const runtimes = discoverHostToolchain(root);
+    const runtimeRoots = [...new Set((options.readOnlyRuntimeRoots ?? []).map(requested => {
+      const real = realpathSync(requested);
+      if (!statSync(real).isDirectory() || [path.parse(real).root, os.homedir(), context.workspaceRoot].some(forbidden => real === realpathSync(forbidden))
+        || root.startsWith(`${real}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Runtime mount must be a dedicated installed library directory");
+      return real;
+    }))];
     const writePaths = (context.allowedWritePaths ?? ["."]).map(file => {
       const requested = path.resolve(root, file);
       if (requested !== root && !requested.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope escapes workspace");
@@ -86,6 +93,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       }
       launch.push("--dir", path.dirname(root), "--ro-bind", root, root);
       for (const runtime of extraRuntimeMounts(runtimes)) launch.push("--dir", path.dirname(runtime.readOnlyRoot), "--ro-bind", runtime.readOnlyRoot, runtime.readOnlyRoot);
+      for (const runtime of runtimeRoots) launch.push("--dir", path.dirname(runtime), "--ro-bind", runtime, runtime);
       launch.push("--dir", "/tmp/codali-bin");
       for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
       for (const file of writePaths) launch.push("--bind", file, file);
@@ -102,7 +110,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       const privateHome = path.join(scratch, "home"); const privateBin = path.join(scratch, "bin");
       await fs.mkdir(privateHome, { mode: 0o700 }); await fs.mkdir(privateBin, { mode: 0o700 });
       for (const runtime of runtimes) await fs.symlink(runtime.executable, path.join(privateBin, runtime.name));
-      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network);
+      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network, runtimeRoots);
       return await runProcess("/usr/bin/sandbox-exec", ["-p", profile, runtimes.find(runtime => runtime.name === command)?.executable ?? command, ...args], context, {
         ...runtimes.find(runtime => runtime.name === "cc")?.environment,
         HOME: privateHome, TMPDIR: scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,

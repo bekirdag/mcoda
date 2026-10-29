@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs, constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { fork, type ChildProcess } from "node:child_process";
+import { chromium, type BrowserServer } from "playwright-core";
 import { ToolExecutionError, type ToolDefinition } from "../ToolTypes.js";
 
 export const browserUrl = (value: string): string => {
@@ -18,6 +19,7 @@ export async function resolveBrowserBinary(): Promise<string> {
   const explicit = process.env.CODALI_BROWSER_PATH;
   const candidates = explicit ? [explicit] : [
     ...[process.env.DOCDEX_WEB_BROWSER, process.env.CHROME_PATH].filter((value): value is string => !!value),
+    chromium.executablePath(),
     ...String(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap(directory =>
       ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome.exe"].map(name => path.join(directory, name))),
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -70,36 +72,46 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
       const signal = AbortSignal.any([...(context.signal ? [context.signal] : []), AbortSignal.timeout(options.timeoutMs ?? 45000)]);
       signal.throwIfAborted(); snapshot = undefined;
       const executablePath = options.executablePath ?? await resolveBrowserBinary();
-      let browser: Browser | undefined;
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), "codali-browser-"));
+      await fs.chmod(directory, 0o700);
+      let browser: BrowserServer | undefined;
+      let worker: ChildProcess | undefined;
       let rejectAbort: (error: unknown) => void = () => undefined;
       const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
-      const abort = () => { rejectAbort(signal.reason); void browser?.close().catch(() => undefined); };
+      const abort = () => { rejectAbort(signal.reason); worker?.kill("SIGKILL"); void browser?.close().catch(() => undefined); };
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
       const work = (async () => {
-        browser = await chromium.launch({ executablePath, headless: true, chromiumSandbox: true, timeout: 10000 });
+        browser = await chromium.launchServer({ executablePath, headless: true, chromiumSandbox: true, timeout: 10000 });
         if (signal.aborted) { await browser.close(); signal.throwIfAborted(); }
-        const tabContext = await browser.newContext({ acceptDownloads: false, serviceWorkers: "block", permissions: [] });
-        tabContext.setDefaultTimeout(5000);
-        await tabContext.route("**/*", route => {
-          const request = route.request();
-          try { browserUrl(request.url()); } catch { return route.abort("blockedbyclient"); }
-          if (!["GET", "HEAD"].includes(request.method())) return route.abort("blockedbyclient");
-          return route.continue();
+        // The CLI owns Chrome; cancellation closes it even if the worker dies.
+        // Do not let browser-use import a workspace .env or inherit API keys.
+        worker = fork(new URL("./BrowserWorker.js", import.meta.url), [], { cwd: directory, execArgv: [],
+          env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR,
+            HOME: directory, USERPROFILE: directory, TMPDIR: directory, TMP: directory, TEMP: directory,
+            XDG_CONFIG_HOME: directory, XDG_CACHE_HOME: directory, XDG_DATA_HOME: directory,
+            LANG: "C.UTF-8", ANONYMIZED_TELEMETRY: "false" },
+          stdio: ["ignore", "ignore", "ignore", "ipc"] });
+        const result = await new Promise<Omit<BrowserSnapshot, "id" | "capturedAt">>((resolve, reject) => {
+          worker!.once("error", reject);
+          worker!.once("exit", code => reject(new Error(`Browser worker exited before returning evidence (${code})`)));
+          worker!.once("message", (message: unknown) => {
+            const reply = message as { ok?: boolean; message?: string; value?: Omit<BrowserSnapshot, "id" | "capturedAt"> };
+            const value = reply?.value;
+            if (!reply?.ok) return reject(new Error(typeof reply?.message === "string" ? reply.message.slice(0, 2000) : "Browser navigation failed"));
+            if (!value || typeof value.url !== "string" || typeof value.title !== "string" || typeof value.content !== "string" || value.content.length > 100000 || !["main", "page"].includes(value.scope) || typeof value.truncated !== "boolean") return reject(new Error("Browser worker returned invalid evidence"));
+            resolve(value);
+          });
+          worker!.send({ endpoint: browser!.wsEndpoint(), url, scope: (args as { scope?: string }).scope ?? "main" }, error => { if (error) reject(error); });
         });
-        await tabContext.routeWebSocket("**/*", socket => socket.close());
-        const tab = await tabContext.newPage();
-        tabContext.on("page", popup => { if (popup !== tab) void popup.close().catch(() => undefined); });
-        tab.on("dialog", dialog => { void dialog.dismiss().catch(() => undefined); });
-        await tab.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
         signal.throwIfAborted();
-        const main = tab.getByRole("main");
-        const useMain = (args as { scope?: string }).scope !== "page" && await main.count() > 0;
-        const content = useMain ? await main.first().ariaSnapshot({ timeout: 5000 }) : await tab.ariaSnapshot({ mode: "default", depth: 20, timeout: 5000, signal });
-        const title = await tab.title(); signal.throwIfAborted();
-        snapshot = { id: randomUUID(), url: browserUrl(tab.url()), title, capturedAt: new Date().toISOString(), scope: useMain ? "main" : "page", content: content.slice(0, 100000), truncated: content.length > 100000 };
+        snapshot = { ...result, id: randomUUID(), url: browserUrl(result.url), capturedAt: new Date().toISOString() };
         return page();
-      })().finally(async () => { await browser?.close().catch(() => undefined); });
+      })().finally(async () => {
+        worker?.kill("SIGKILL");
+        await browser?.close().catch(() => undefined);
+        await fs.rm(directory, { recursive: true, force: true });
+      });
       try { return await Promise.race([work, aborted]); }
       finally { signal.removeEventListener("abort", abort); if (signal.aborted) snapshot = undefined; }
     },

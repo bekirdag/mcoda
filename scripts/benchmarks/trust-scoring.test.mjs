@@ -27,7 +27,7 @@ test('host partitions combine only under explicit grouping and identical protoco
   }
   const mapping=path.join(root,'groups.json');await writeNew(mapping,Object.fromEntries(configs.map(x=>[x,'same-candidate-host-pins'])));
   const run=async name=>{const out=path.join(root,name);await exec(process.execPath,[scorer,'--runs',runs.join(','),'--output',out,'--config-groups',mapping],{timeout:20000});return json(path.join(out,'report.json'));};
-  const combined=await run('combined');assert.equal(combined.paired.length,1);assert.equal(combined.paired[0].cases,200);assert.equal(combined.paired[0].complete,true);assert.equal(combined.paired[0].numericQualityGate,false);
+  const combined=await run('combined');assert.equal(combined.paired.length,1);assert.equal(combined.paired[0].cases,200);assert.equal(combined.paired[0].complete,true);assert.equal(combined.paired[0].numericQualityGate,null);
   assert.equal(combined.aggregates['codali_selected:same-candidate-host-pins'].all.uniqueCases,200);
   assert.equal(combined.aggregates['codali_selected:same-candidate-host-pins'].all.tokens.estimated,200);
   assert.equal(combined.aggregates['codali_selected:same-candidate-host-pins'].all.tokens.sum,200*123);

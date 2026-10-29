@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "packages", "codali", "dist");
 const destination = path.join(root, "packages", "mswarm", "dist", "vendor", "codali");
-const skills = path.join(root, "packages", "codali", "config", "skills");
-const vendoredSkills = path.resolve(destination, "../config/skills");
+const config = path.join(root, "packages", "codali", "config");
+const vendoredConfig = path.resolve(destination, "../config");
+const runtimeAssets = ["AGENTS.md", "docdex-runtime.json", "docdex-tools-0.2.99.json", "skills", "deterministic", "documents"];
 
 // The copied runtime resolves dependencies from @mcoda/mswarm, not from the
 // source Codali package. Refuse an incomplete runtime before replacing output.
@@ -22,13 +23,22 @@ for (const [name, version] of Object.entries(codali.dependencies ?? {})) {
 if (!existsSync(source)) {
   throw new Error("packages/codali/dist is missing; build @mcoda/codali before packaging mswarm.");
 }
+for (const entry of runtimeAssets) {
+  if (!existsSync(path.join(config, entry))) throw new Error(`Vendored Codali runtime asset is missing: config/${entry}`);
+}
 
 rmSync(destination, { recursive: true, force: true });
 mkdirSync(destination, { recursive: true });
 copyDirectory(source, destination);
-// SkillCatalog resolves ../../config/skills from the runtime's session module.
-rmSync(vendoredSkills, { recursive: true, force: true });
-if (existsSync(skills)) copyDirectory(skills, vendoredSkills);
+// Runtime modules resolve config relative to the copied dist tree. Copy only
+// declared package assets, including Docdex catalogs and offline installers.
+rmSync(vendoredConfig, { recursive: true, force: true });
+mkdirSync(vendoredConfig, { recursive: true });
+for (const entry of runtimeAssets) {
+  const from = path.join(config, entry), to = path.join(vendoredConfig, entry);
+  if (statSync(from).isDirectory()) copyDirectory(from, to);
+  else copyFileSync(from, to);
+}
 
 function copyDirectory(from, to) {
   mkdirSync(to, { recursive: true });
@@ -49,7 +59,7 @@ function copyDirectory(from, to) {
 
 function shouldSkip(name) {
   return (
-    name === "__tests__" ||
+    name.startsWith(".") || name === "__tests__" || name === "__pycache__" || /\.pyc$/i.test(name) ||
     /\.test\.(?:[cm]?js|d\.ts)(?:\.map)?$/i.test(name)
   );
 }

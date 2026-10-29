@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../ToolTypes.js";
 import type { DocdexClient } from "../../docdex/DocdexClient.js";
+import { createDocdexCatalogTools } from "./DocdexCatalogTools.js";
 
 const toOutput = (payload: unknown): { output: string; data: unknown } => ({
   output: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2),
@@ -329,6 +330,8 @@ export type RelevanceJudge = (input: {
 }) => Promise<boolean>;
 
 export interface DocdexToolOptions {
+  /** Include the versioned, explicitly classified standard MCP catalog. */
+  includeCatalog?: boolean;
   judgeRelevance?: RelevanceJudge;
   /** Terminal clients authorize web research as a separate operation. */
   allowSearchWebFallback?: boolean;
@@ -337,7 +340,10 @@ export interface DocdexToolOptions {
 export const createDocdexTools = (
   client: DocdexClient,
   options: DocdexToolOptions = {},
-): ToolDefinition[] => withDocdexMetadata([...docdexToolDefinitions(client, options), ...continuityTools(client)]);
+): ToolDefinition[] => {
+  const tools = withDocdexMetadata([...docdexToolDefinitions(client, options), ...continuityTools(client)]);
+  return options.includeCatalog ? [...tools, ...createDocdexCatalogTools(client, new Set(tools.map(tool => tool.name)))] : tools;
+};
 
 const continuityTools = (client: DocdexClient): ToolDefinition[] => {
   const single = (name: string, description: string, key: string, call: (value: string) => Promise<unknown>): ToolDefinition => ({

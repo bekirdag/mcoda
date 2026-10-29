@@ -9,6 +9,7 @@ import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { sanitizeArgs } from "../gateway/GatewayTracer.js";
 import { inspectToolSurface } from "../gateway/ToolSurface.js";
+import { runDeterministicRuntimeCommand } from "../tools/deterministic/DeterministicRuntime.js";
 
 /**
  * `codali tools` — inspect what an orchestration run can actually reach.
@@ -18,13 +19,17 @@ import { inspectToolSurface } from "../gateway/ToolSurface.js";
  * problems with planning problems.
  */
 
-const HELP = `Usage: codali tools <list|describe|call|health> [options]
+const HELP = `Usage: codali tools <list|describe|call|health|install|check> [options]
 
 Commands:
   list                 List every tool available to a run, grouped by capability
   describe <name>      Show one tool's description and argument schema
   call <name>          Invoke a tool directly (read-only connectors)
   health               Show MCP server connection status
+  install              Install pinned host Python tools, then run their checks
+  check                Check deterministic tools without inference (--documents: document tools)
+
+Host install/check commands accept only --json; they do not use tenant context.
 
 Options:
   --workspace-root <path>   Repository to resolve config against (default: cwd)
@@ -116,6 +121,8 @@ export const runTools = async (
     write(HELP);
     return 0;
   }
+
+  if (["install", "check"].includes(argv[0])) return runDeterministicRuntimeCommand(argv, write);
 
   const options = parseToolsArgs(argv);
   // A host-supplied context answers the question a product actually has: not

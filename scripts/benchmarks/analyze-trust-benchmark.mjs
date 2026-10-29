@@ -42,7 +42,78 @@ export function pairedFamilyBootstrap(pairs, seed = 20261028, iterations = 10000
   };
 }
 
-export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], excludedFamilies = []) {
+export function validateSelectionFreeze(freeze, report, scores) {
+  const targets = freeze?.targets;
+  const fields = ['semanticGainPercentagePoints', 'tokenRatioMaximum', 'medianLatencyRatioMaximum', 'p95LatencyRatioMaximum'];
+  if (!targets || fields.some(field => !Number.isFinite(targets[field]) || targets[field] <= 0) || targets.semanticGainPercentagePoints > 100) {
+    throw Error('Selection freeze requires explicit positive quality, token and latency targets');
+  }
+  if (freeze.corpusHash !== report.corpus.promptsSha256 || freeze.clientFingerprint !== report.runtimeFingerprint ||
+      !scores.some(row => row.arm.startsWith('codali_') && row.configHash === freeze.configHash)) {
+    throw Error('Selection freeze does not match corpus, runtime or candidate configuration');
+  }
+  const at = Date.parse(freeze.createdAt);
+  if (!Number.isFinite(at) || scores.some(row => !Number.isFinite(Date.parse(row.startedAt)) || Date.parse(row.startedAt) < at)) {
+    throw Error('Selection and targets must be frozen before every evaluated attempt');
+  }
+}
+
+/** Cost comparisons use the exact same primary cases, including failed attempts. */
+export function pairedMeasurements(matches, semanticOutcome = row => row.error ? false : row.grade.semanticPassed) {
+  const candidates = matches.map(([a]) => a), baselines = matches.map(([, b]) => b);
+  const percentile = (rows, p) => {
+    const values = rows.map(row => row.elapsedMs).filter(value => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
+    return values.length ? values[Math.ceil(values.length * p) - 1] : null;
+  };
+  const side = rows => ({
+    tokens: rows.reduce((sum, row) => sum + (Number.isSafeInteger(row.usage?.tokens) && row.usage.tokens >= 0 ? row.usage.tokens : 0), 0),
+    tokenUnknown: rows.filter(row => !Number.isSafeInteger(row.usage?.tokens) || row.usage.tokens < 0 || row.usage.estimated !== false || row.usage.pendingReservations?.length).length,
+    latencyUnknown: rows.filter(row => !Number.isFinite(row.elapsedMs) || row.elapsedMs < 0).length,
+    latencyMs: { p50: percentile(rows, .5), p95: percentile(rows, .95) },
+    errors: rows.filter(row => row.error).length,
+    incompleteDispatch: rows.filter(row => !(row.modelRequests > 0 && row.modelResponses > 0)).length,
+    semanticUnknown: rows.filter(row => typeof semanticOutcome(row) !== 'boolean').length,
+    semanticPasses: rows.filter(row => semanticOutcome(row) === true).length,
+    reviewPending: rows.filter(row => row.grade.status === 'needs_review' || row.critical && !row.criticalReviewed).length,
+    criticalFailures: rows.filter(row => row.criticalFailure).length,
+    toolEvidenceFailures: rows.filter(row => row.grade.toolEvidence?.required && row.grade.toolEvidence.passed !== true).length,
+  });
+  const candidate = side(candidates), baseline = side(baselines);
+  const ratio = (a, b) => Number.isFinite(a) && Number.isFinite(b) && b > 0 ? a / b : null;
+  const semantic = candidate.semanticUnknown + baseline.semanticUnknown === 0 ? pairedFamilyBootstrap(matches.map(([a, b]) => ({
+    family: a.family, candidatePassed: semanticOutcome(a), baselinePassed: semanticOutcome(b),
+  }))) : null;
+  return { candidate, baseline, semantic,
+    strictGain: matches.length ? matches.reduce((sum, [a, b]) => sum + Number(a.grade.passed) - Number(b.grade.passed), 0) / matches.length : null,
+    ratios: { tokens: candidate.tokenUnknown + baseline.tokenUnknown ? null : ratio(candidate.tokens, baseline.tokens),
+      p50Latency: candidate.latencyUnknown + baseline.latencyUnknown ? null : ratio(candidate.latencyMs.p50, baseline.latencyMs.p50),
+      p95Latency: candidate.latencyUnknown + baseline.latencyUnknown ? null : ratio(candidate.latencyMs.p95, baseline.latencyMs.p95) } };
+}
+
+export function targetQualification({ scope, complete, measurement, targets, eligible, candidateMatchesFreeze }) {
+  const reasons = [];
+  if (scope !== 'held_out' || !eligible) reasons.push('Corpus/scope is exploratory, not an eligible independent holdout');
+  if (!complete) reasons.push('Missing primary cases for this comparison');
+  if (!targets || !candidateMatchesFreeze) reasons.push('No matching prospective selection and target freeze');
+  for (const name of ['candidate', 'baseline']) {
+    const side = measurement[name];
+    if (side.tokenUnknown || side.latencyUnknown) reasons.push(`${name}: incomplete or estimated usage/timing`);
+    if (side.errors || side.incompleteDispatch) reasons.push(`${name}: inference/infrastructure failures remain`);
+    if (side.semanticUnknown || side.reviewPending) reasons.push(`${name}: semantic or critical reviews remain`);
+    if (side.criticalFailures || side.toolEvidenceFailures) reasons.push(`${name}: critical or explicit tool-evidence failures`);
+  }
+  if (targets) {
+    if (!measurement.semantic || measurement.semantic.accuracyGain + 1e-12 < targets.semanticGainPercentagePoints / 100 ||
+        measurement.semantic.families < 2 || measurement.semantic.familyBootstrap95[0] <= 0) reasons.push('Semantic improvement or family uncertainty target not met');
+    if (measurement.strictGain === null || measurement.strictGain < 0) reasons.push('Strict correctness regressed');
+    for (const [metric, threshold] of [['tokens', 'tokenRatioMaximum'], ['p50Latency', 'medianLatencyRatioMaximum'], ['p95Latency', 'p95LatencyRatioMaximum']]) {
+      if (measurement.ratios[metric] === null || measurement.ratios[metric] > targets[threshold]) reasons.push(`${metric} target not met or not measurable`);
+    }
+  }
+  return { passed: reasons.length === 0, reasons };
+}
+
+export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], excludedFamilies = [], freeze) {
   const byId = new Map(scores.map(row => [row.attemptId, row]));
   if (byId.size !== scores.length || report.attempts !== scores.length) throw Error('Score/report attempt mismatch');
   const taskMap = new Map(tasks.map(task => [task.id, task]));
@@ -50,7 +121,8 @@ export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], e
   if (excludedFamilies.some(family => !knownFamilies.has(family))) throw Error('Unknown excluded family');
   const first = new Map();
   for (const row of scores) {
-    if (!taskMap.has(row.caseId) || row.family !== taskMap.get(row.caseId).family) throw Error('Unknown/mismatched case');
+    const task = taskMap.get(row.caseId);
+    if (!task || row.family !== task.family || row.domain !== task.domain || row.split !== task.split) throw Error('Unknown/mismatched case');
     if (typeof row.grade?.passed !== 'boolean') throw Error('Missing grade');
     if (row.retryOf) {
       const previous = byId.get(row.retryOf);
@@ -73,11 +145,14 @@ export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], e
     const row = byId.get(review.attemptId);
     if (!row || semantics.has(review.attemptId) || row.caseId !== review.caseId || row.grade.outputSha256 !== review.outputSha256 ||
         typeof review.semanticCorrect !== 'boolean' || !review.reviewer?.trim() || !review.evidence?.trim() ||
-        review.changesStrictScore !== false || row.error || row.grade.semanticPassed !== false) {
-      throw Error('Secondary review must bind a failed automatic semantic grade without changing strict scores');
+        review.changesStrictScore !== false || row.error || row.grade.status !== 'failed' || row.grade.semanticPassed === true) {
+      throw Error('Secondary review must bind a failed grade without changing strict scores');
     }
     semantics.set(review.attemptId, review);
   }
+  const semanticOutcome = row => row.error ? false : semantics.get(row.attemptId)?.semanticCorrect ?? row.grade.semanticPassed;
+  const targets = freeze?.targets;
+  if (freeze) validateSelectionFreeze(freeze, report, scores);
   const percentile = (rows, get, p) => {
     const values = rows.map(get).filter(Number.isFinite).sort((a, b) => a - b);
     return values.length ? values[Math.ceil(values.length * p) - 1] : null;
@@ -141,19 +216,31 @@ export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], e
         const matches = candidateRows.filter(row => include(row) && baseline.has(row.caseId)).map(row => [row, baseline.get(row.caseId)]);
         if (!matches.length) continue;
         const paired = pairedFamilyBootstrap(matches.map(([a, b]) => ({ family: a.family, candidatePassed: a.grade.passed, baselinePassed: b.grade.passed })));
+        const expected = tasks.filter(include);
+        const measurement = pairedMeasurements(matches, semanticOutcome);
+        const complete = expected.length > 0 && expected.every(task => matches.some(([row]) => row.caseId === task.id));
+        const qualification = targetQualification({ scope, complete, measurement, targets,
+          eligible: report.corpus.qualificationEligible === true,
+          candidateMatchesFreeze: !!freeze && matches.every(pair => pair.every(row => row.configHash === freeze.configHash)) });
         comparisons.push({ candidate, baselineArm, scope, ...paired,
           candidatePasses: matches.filter(([a]) => a.grade.passed).length, baselinePasses: matches.filter(([, b]) => b.grade.passed).length,
           wins: matches.filter(([a, b]) => a.grade.passed && !b.grade.passed).length,
           losses: matches.filter(([a, b]) => !a.grade.passed && b.grade.passed).length,
           pendingReviews: matches.filter(pair => pair.some(row => row.grade.status === 'needs_review' || (row.critical && !row.criticalReviewed))).length,
-          qualification: scope === 'held_out' ? 'Use the frozen study promotion rules; no automatic promotion here.' : 'Descriptive/exploratory comparison, not an independent promotion test.',
+          expectedCases: expected.length, complete, measurement, qualification,
         });
       }
     }
   }
   return { schemaVersion: 1, attempts: scores.length, primaryAttempts: primary.length,
     corpusVersion: report.corpus.version, protocolVersion: report.protocolVersion, runtimeFingerprint: report.runtimeFingerprint,
-    aggregates, comparisons, excludedFamilies, officialHeldOutGate: report.paired,
+    aggregates, comparisons, excludedFamilies, targets: targets ?? null,
+    qualification: groups.filter(key => key.startsWith('codali_')).map(candidate => {
+      const compared = comparisons.filter(row => row.candidate === candidate && row.scope === 'held_out');
+      return { candidate, passed: ['raw_direct', 'raw_tools'].every(arm => compared.some(row => row.baselineArm === arm && row.qualification.passed)),
+        comparisons: compared.map(row => ({ baselineArm: row.baselineArm, ...row.qualification })) };
+    }),
+    legacyScorerComparisons: report.paired,
     limitations: ['Family-correlated synthetic tasks; primary agent authored and reviewed rubrics.',
       'Shared-host latency is observational, not isolated performance measurement.',
       'First-attempt failures remain primary; successful retries only repair dispatch coverage.',
@@ -162,16 +249,19 @@ export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], e
 }
 
 async function main() {
-  const args = argumentsMap(undefined, ['scores', 'report', 'corpus-root', 'output', 'semantic-reviews', 'exclude-family']);
+  const args = argumentsMap(undefined, ['scores', 'report', 'corpus-root', 'output', 'semantic-reviews', 'exclude-family', 'freeze']);
   if (!args.scores || !args.report || !args['corpus-root'] || !args.output) throw Error('Require --scores, --report, --corpus-root and --output NEW_DIR');
   const report = await json(args.report), scores = await jsonl(args.scores);
   const { cases, manifest } = await readPublicCorpus(path.resolve(args['corpus-root']));
   if (manifest.promptsSha256 !== report.corpus.promptsSha256) throw Error('Analysis corpus differs from score corpus');
   const reviews = args['semantic-reviews'] ? await jsonl(args['semantic-reviews']) : [];
-  const analysis = analyzeTrustStudy(scores, report, cases, reviews, args['exclude-family']?.split(',') ?? []);
+  const freeze = args.freeze ? await json(args.freeze) : undefined;
+  const analysis = analyzeTrustStudy(scores, report, cases, reviews, args['exclude-family']?.split(',') ?? [], freeze);
   analysis.at = new Date().toISOString();
   analysis.evidence = { scores: hash(await fs.readFile(args.scores)), report: hash(await fs.readFile(args.report)),
     analyzer: hash(await fs.readFile(new URL(import.meta.url))),
+    analyzerDependencies: { 'trust-common.mjs': hash(await fs.readFile(new URL('./trust-common.mjs', import.meta.url))) },
+    freeze: args.freeze ? hash(await fs.readFile(args.freeze)) : null,
     semanticReviews: args['semantic-reviews'] ? hash(await fs.readFile(args['semantic-reviews'])) : null };
   await fs.mkdir(args.output, { mode: 0o700 });
   await writeNew(path.join(args.output, 'analysis.json'), analysis);

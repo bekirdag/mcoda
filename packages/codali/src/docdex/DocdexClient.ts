@@ -8,6 +8,7 @@ import type {
   DocdexCapabilityStatus,
 } from "../cognitive/Types.js";
 import { mswarmClientProductHeaders } from "@mcoda/shared";
+import { docdexCatalog, docdexCatalogOperation, type DocdexCatalogEntry } from "./DocdexCatalog.js";
 
 export interface DocdexClientOptions {
   /** Trusted host accounting hook; each retrieval HTTP attempt reserves before dispatch. */
@@ -44,6 +45,7 @@ export type DocdexRuntimeErrorCode =
   | "docdex_unavailable";
 
 export type DocdexRuntimeOperation =
+  | `catalog:${string}`
   | "health"
   | "initialize"
   | "search"
@@ -289,6 +291,8 @@ export const normalizeDocdexRuntimeOperation = (
   };
   const aliased = aliases[normalized];
   if (aliased) return aliased;
+  const catalogName = normalized.replace(/^catalog:/, "").replace(/^docdex_/, "");
+  if (docdexCatalogOperation(`docdex_${catalogName}`) && !DOCDEX_RUNTIME_OPERATIONS.has(catalogName as DocdexRuntimeOperation)) return `catalog:${catalogName}`;
   return DOCDEX_RUNTIME_OPERATIONS.has(normalized as DocdexRuntimeOperation)
     ? (normalized as DocdexRuntimeOperation)
     : undefined;
@@ -1099,8 +1103,8 @@ export class DocdexClient {
     return body;
   }
 
-  private async ensureMcpSession(): Promise<void> {
-    if (!this.options.authToken || this.options.apiKey || this.mcpSessionId) return;
+  private async ensureMcpSession(force = false): Promise<void> {
+    if ((!force && (!this.options.authToken || this.options.apiKey)) || this.mcpSessionId) return;
     if (!this.mcpInitialize) {
       this.mcpInitialize = (async () => {
         const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, {
@@ -1127,6 +1131,7 @@ export class DocdexClient {
     if (operation) {
       this.assertOperationAllowed(operation);
     }
+    else throw this.runtimeError("docdex_operation_not_allowed", `Unknown Docdex operation: ${method}`, { retryable: false });
     await this.ensureHealth();
     await this.ensureMcpSession();
     // The daemon recognizes the web-specific deadline only on standard MCP
@@ -1164,6 +1169,41 @@ export class DocdexClient {
       response,
       operation ?? method,
     ) as T;
+  }
+
+  private catalogRequest?: Promise<DocdexCatalogEntry[]>;
+
+  async listCatalog(): Promise<DocdexCatalogEntry[]> {
+    this.assertOperationAllowed("capabilities");
+    return this.catalogRequest ??= this.catalogRpc<{ tools: DocdexCatalogEntry[] }>("tools/list", {}).then(result => {
+      if (!Array.isArray(result.tools)) throw this.runtimeError("docdex_unavailable", "Invalid Docdex tool catalog");
+      return result.tools;
+    }).catch(error => { this.catalogRequest = undefined; throw error; });
+  }
+
+  async callCatalog<T>(name: string, arguments_: Record<string, unknown>): Promise<T> {
+    const operation = MCP_OPERATION_BY_METHOD[name] ?? normalizeDocdexRuntimeOperation(name);
+    if (!operation || !docdexCatalogOperation(name)) throw this.runtimeError("docdex_operation_not_allowed", `Unclassified Docdex catalog tool: ${name}`, { retryable: false });
+    this.assertOperationAllowed(operation);
+    // Discover only after operation authorization, never to bypass job scopes.
+    const catalog = await this.listCatalog();
+    const advertised = catalog.find(tool => tool.name === name), bundled = docdexCatalog.find(tool => tool.name === name)!;
+    if (!advertised) throw this.runtimeError("docdex_unavailable", `This Docdex runtime does not advertise ${name}`, { retryable: false });
+    const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+    if (JSON.stringify(canonical(advertised.inputSchema)) !== JSON.stringify(canonical(bundled.inputSchema))) throw this.runtimeError("docdex_unavailable", `Docdex schema changed for ${name}; refresh the versioned catalog before executing`, { retryable: false });
+    return this.catalogRpc<T>("tools/call", { name, arguments: arguments_ });
+  }
+
+  private async catalogRpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    await this.ensureHealth(); await this.ensureMcpSession(true);
+    const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, { method: "POST",
+      headers: { ...this.buildHeaders(), "mcp-session-id": this.mcpSessionId! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }) });
+    if (!response.ok) { if (response.status === 404) { this.mcpSessionId = undefined; this.catalogRequest = undefined; } await this.throwResponseError(response, "MCP catalog"); }
+    const body = await response.json() as { result?: unknown; error?: { message?: string } };
+    if (body.error) throw this.runtimeError("docdex_unavailable", body.error.message ?? "Docdex catalog operation failed", { retryable: false });
+    return this.attachResponseMetadata(this.normalizeMcpResult(body.result), response, method) as T;
   }
 
   private normalizeMcpResult(payload: unknown): unknown {
