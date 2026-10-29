@@ -24,12 +24,15 @@ test("setup pins only compatible qualified embedding replicas and never treats a
     { ...model, slug: "0-invalid-preprocessing", embedding: { ...embedding, pooling: "" } },
     { ...model, slug: "0-invalid-size", operations: [{ type: "embeddings", limits: { embedding_dimensions: 5000 } }] },
   ];
-  globalThis.fetch = async input => String(input).endsWith("/v1/media/jobs") ? Response.json({}, { status: 404 }) : Response.json({ agents: [lead, ...entries] });
+  const unqualifiedIntent = { slug: "local-qwen3-4b-instruct-2507", adapter: "llama-cpp-local", health_status: "healthy", operations: [{ type: "chat.completions" }] };
+  globalThis.fetch = async input => String(input).endsWith("/v1/media/jobs") ? Response.json({}, { status: 404 }) : Response.json({ agents: [lead, unqualifiedIntent, ...entries] });
   const selected = await setupTerminalConfig(path.join(root, "selected.json"));
   assert.deepEqual(selected.config.bindings.embedding.candidates, ["a-selected", "b-replica"]);
   assert.deepEqual(selected.config.models["a-selected"].embedding, embedding);
   assert.equal(selected.config.models["a-selected"].revision, model.digest);
   assert.equal(selected.config.models.lead.revision, "catalog-unversioned");
+  assert.deepEqual(selected.config.bindings.intent, { useBinding: "lead" }, "healthy small-model availability is not current dispatch qualification");
+  assert.equal(selected.config.interaction?.promptVersion, "interaction-v11");
   assert.equal(selected.config.models["c-different-weights"], undefined);
   const failedPath = path.join(root, "failed-runtime.json");
   await assert.rejects(setupTerminalConfig(failedPath, { prepareRuntime: async () => { throw new Error("unqualified runtime"); } }), /unqualified runtime/);

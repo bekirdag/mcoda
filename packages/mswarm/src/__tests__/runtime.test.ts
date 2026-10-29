@@ -7603,6 +7603,36 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("preserves caller-owned tool history on final turns without tool declarations", async () => {
+    const messages = [
+      { role: "user", content: "Read the counter and report JSON." },
+      { role: "assistant", content: "", tool_calls: [{ id: "lookup-1", type: "function", function: { name: "counter", arguments: "{}" } }] },
+      { role: "tool", content: '{"value":17}', tool_call_id: "lookup-1", name: "counter" }
+    ];
+    const responseFormat = { type: "json_object" };
+    for (const tools of [undefined, []]) {
+      let body: Record<string, unknown> | undefined;
+      let codaliCalls = 0;
+      const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "openai-api", config: { baseUrl: "http://runner.test/v1", runnerKind: "llama-cpp", authMode: "none" } })]),
+        fetchImpl: (async (_input, init) => {
+          body = JSON.parse(String(init?.body));
+          return Response.json({ choices: [{ message: { role: "assistant", content: '{"value":17}' }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 6, total_tokens: 106 } });
+        }) as typeof fetch,
+        codaliExecutor: new StubCodaliExecutor(async input => { codaliCalls++; return successfulCodaliInvocation(input); })
+      });
+      const result = await runtime.executeJob({ job_id: "tool-final", request_id: "tool-final", node_id: "shn_service", agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+        openai_request: { model: "mcoda-qwen-reviewer", messages, tools, tool_choice: "none", response_format: responseFormat, max_tokens: 256, temperature: 0, stop: ["END"], reasoning_effort: "none" } });
+      assert.equal(result.status, "success", JSON.stringify(result.error));
+      assert.equal(codaliCalls, 0, "final tool history must not enter another orchestrator");
+      assert.deepEqual(body?.messages, messages); assert.deepEqual(body?.response_format, responseFormat);
+      assert.equal(body?.tool_choice, "none"); assert.equal(body?.max_tokens, 256);
+      assert.equal(body?.temperature, 0); assert.deepEqual(body?.stop, ["END"]);
+      assert.equal(body?.reasoning_effort, "none"); assert.deepEqual(body?.tools, tools);
+      assert.deepEqual(result.openai_response?.usage, { prompt_tokens: 100, completion_tokens: 6, total_tokens: 106 });
+    }
+  });
+
   it("settles only confirmed first-generation context refusals, including tool pass-through", async () => {
     const originalFetch = globalThis.fetch;
     const oldVendor = process.env.MSWARM_CODALI_VENDOR_ONLY;

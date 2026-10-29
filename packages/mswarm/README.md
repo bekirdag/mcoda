@@ -270,6 +270,11 @@ data: [DONE]
 
 Codali status and tool events are tracked internally, but tool outputs are not emitted as assistant stream content. Raw `provider: "ollama"` jobs remain available as a minimal no-tool fallback path.
 
+Caller-owned OpenAI tool conversations retain native pass-through when the caller
+removes tool declarations for its final answer. Tool-call IDs, paired results,
+response format and sampling settings remain intact; that final turn does not
+enter a second Codali orchestration loop.
+
 Jobs can additionally scope execution with:
 
 - `workspace.root` and `workspace.read_only`

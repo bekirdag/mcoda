@@ -8156,8 +8156,11 @@ export class SelfHostedNodeRuntime {
       // OpenAI-standard tool pass-through. When the caller supplies `tools` it is
       // driving its own tool loop, so the node must return the model's raw
       // tool_calls instead of running the Codali agentic loop, which owns tools
-      // itself and would never surface them to the caller.
-      if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0) {
+      // itself and would never surface them to the caller. Finalization often
+      // removes declarations; preserve that same native path while tool history
+      // remains, including call IDs and result pairing.
+      if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0 ||
+          chatMessages.some(message => isRecord(message) && (message.role === "tool" || Array.isArray(message.tool_calls) && message.tool_calls.length > 0))) {
         const passthrough = await this.executeOpenAiToolPassthrough(job, agent);
         this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
         const passthroughResult: SelfHostedNodeInvocationResult = {

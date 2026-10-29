@@ -7,13 +7,14 @@ import { SessionController, type SessionEvent, type SessionControllerOptions } f
 import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { parseInteractionDecision } from "../InteractionRouter.js";
+import { unconstrainedOutput, type InteractionOutputContract } from "../InteractionContract.js";
 import { registerSecretValue } from "../SecretRedaction.js";
 import { DocdexClient } from "../../docdex/DocdexClient.js";
 import { ManagedDocdex } from "../../docdex/ManagedDocdex.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
-const decision = (mode: string, text: string, tools?: "none" | "available") => reply(JSON.stringify({ mode, text, ...(tools ? { tools } : {}) }));
+const decision = (mode: string, text: string, tools: "none" | "available" = ["inspect", "execute"].includes(mode) ? "available" : "none", output: InteractionOutputContract = unconstrainedOutput()) => reply(JSON.stringify({ mode, text, tools, output }));
 const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }, docdex = false, options: Partial<SessionControllerOptions> = {}) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-")));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-state-"));
@@ -40,6 +41,69 @@ test("conversation instructions are sourced, bounded and reloaded between turns"
   assert.notEqual(events.filter(event => event.type === "instructions_loaded").at(-1)!.data.bundleHash, first);
   assert.equal(controller.state, undefined);
   assert.equal(controller.usageSnapshot().modelCalls, 2);
+});
+
+test("live routing rejects a legacy decision while custom policy cannot replace the current schema", async t => {
+  const config = structuredClone(base); config.interaction = { routerPrompt: 'Return only two fields mode and text.' };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.doesNotMatch(request.messages[0].content, /Return only two fields/);
+    assert.equal(JSON.parse(request.messages[1].content).routingPolicy, config.interaction!.routerPrompt);
+    return ++calls === 1 ? reply('{"mode":"answer","text":"Hello"}') : decision("answer", "Hello");
+  } }, config);
+  assert.equal((await controller.interact("hello")).content, "Hello");
+  assert.equal(calls, 2); assert.ok(events.some(event => event.type === "interaction_route_invalid"));
+  assert.equal(parseInteractionDecision('{"mode":"answer","text":"archived"}').reply, "archived");
+  assert.throws(() => parseInteractionDecision('{"mode":"answer","text":"archived"}', true));
+});
+
+test("all conversational routes validate presentation and permit one tool-free repair", async t => {
+  for (const mode of ["answer", "clarify", "reason", "inspect"] as const) {
+    const output = { ...unconstrainedOutput(), format: "json" as const, requiredKeys: ["city"] };
+    let calls = 0;
+    const direct = ["answer", "clarify"].includes(mode);
+    const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+      if (++calls === 1) return decision(mode, direct ? "Tokyo" : "Answer with the requested JSON.", mode === "inspect" ? "available" : "none", output);
+      if (!direct && calls === 2) return reply("Tokyo");
+      assert.equal(request.toolChoice, "none"); assert.equal(request.tools, undefined);
+      const data = JSON.parse(request.messages[1].content);
+      assert.equal(data.request, "What is Japan's capital? Return JSON with city. Do not make changes.");
+      assert.equal(data.draft, "Tokyo"); assert.ok(data.violations.length);
+      return reply('{"city":"Tokyo"}');
+    } });
+    assert.equal((await controller.interact("What is Japan's capital? Return JSON with city. Do not make changes.")).content, '{"city":"Tokyo"}');
+    assert.equal(calls, direct ? 2 : 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+    assert.equal(events.filter(event => event.type === "turn_result").length, 1);
+    assert.equal(events.filter(event => event.type === "interaction_output_checked").length, 2);
+  }
+});
+
+test("presentation repair cannot repeat, execute a tool call or publish an invalid final answer", async t => {
+  for (const emitsTool of [false, true]) {
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", generate: async () => ++calls === 1
+      ? decision("answer", "too many words", "none", { ...unconstrainedOutput(), maxWords: 1 })
+      : { ...reply(emitsTool ? "Hello" : "still too many"), ...(emitsTool ? { toolCalls: [{ id: "forbidden", name: "write_file", args: { path: "x", content: "x" } }] } : {}) } });
+    await assert.rejects(controller.interact("Say hello in one word."), /after one repair/);
+    assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+    assert.ok(!events.some(event => event.type === "turn_result" || event.type === "interaction_result"));
+    assert.equal(events.filter(event => event.type === "model_response").length, 2);
+  }
+});
+
+test("output repair respects shared budgets and cannot alter work completion evidence", async t => {
+  const config = structuredClone(base); config.interaction = { maxModelCalls: 1 };
+  const output = { ...unconstrainedOutput(), format: "json" as const, requiredKeys: ["status"] };
+  const limited = await fixture(t, { name: "fixture", generate: async () => decision("answer", "Hello", "none", output) }, config);
+  await assert.rejects(limited.controller.interact("Return JSON with status."), /no repair budget remains/);
+  assert.equal(limited.controller.turnUsageSnapshot().modelCalls, 1);
+  assert.ok(limited.events.some(event => event.type === "interaction_output_repair_skipped"));
+  const work = await fixture(t, { name: "fixture", generate: async () => decision("execute", "Create the requested file.", "available", output) });
+  t.mock.method(work.controller, "run", async () => ({ content: "The task is still open.", completed: false }));
+  await assert.rejects(work.controller.interact("Create a file and report only JSON with status."), /work checkpoint and report were saved/);
+  assert.notEqual(work.controller.state?.status, "completed");
+  assert.equal(work.controller.turnUsageSnapshot().modelCalls, 1);
+  assert.ok(!work.events.some(event => event.type === "turn_result" || event.type === "interaction_result"));
 });
 
 test("native inspection can load a local skill and uses its actual body without expanding authority", async t => {
@@ -214,7 +278,7 @@ test("optional calculator uses real receipts and leaves the final shared call fo
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) {
       assert.equal(request.tools, undefined);
-      assert.match(request.messages[0].content, /reason mode can use a bounded numeric calculate tool/);
+      assert.match(request.messages[0].content, /reason can use bounded numeric calculate/);
       return decision("reason", "Calculate the weighted mean.", "available");
     }
     if (calls === 2) {
@@ -392,7 +456,7 @@ test("configured native dispatcher schema is sent on the initial request and rep
     assert.equal(request.responseFormat?.type, "json_schema");
     const envelope = request.responseFormat!.schema! as { strict: boolean; schema: { required: string[]; additionalProperties: boolean; properties: Record<string, unknown> } };
     assert.equal(envelope.strict, true); assert.equal(envelope.schema.additionalProperties, false);
-    assert.deepEqual(envelope.schema.required, ["mode", "text", "tools"]);
+    assert.deepEqual(envelope.schema.required, ["mode", "text", "tools", "output"]);
     if (++calls === 1) return reply('{"mode":"write","answer":"not a valid dispatch"}');
     return decision("answer", "Hello!");
   } }, config);

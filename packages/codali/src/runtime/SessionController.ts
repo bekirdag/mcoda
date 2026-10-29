@@ -17,7 +17,8 @@ import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGra
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
-import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, parseInteractionDecision, preparedInteraction, TOOL_SCOPE_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
+import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, interactionRouterPrompt, INTERACTION_CONTRACT_VERSION, parseInteractionDecision, preparedInteraction, ROUTER_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
+import { validateInteractionOutput } from "./InteractionContract.js";
 import { preparedMemory } from "./PreparedMemory.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
@@ -1332,8 +1333,7 @@ export class SessionController {
       await this.emit("usage_recovery", reconciliation);
     }
     const settings = interactionSettings(this.options.resolved.config.interaction);
-    const calculationCapability = settings.calculator ? "\nCapability update: reason mode can use a bounded numeric calculate tool when host policy permits. It has no file, shell or network access. Choose reason for requested calculator use or computations needing arithmetic verification, so the answering model can inspect actual tool results. Do not solve those calculations in answer mode or route them to environment execution. Greetings and brief conversation still use answer. Preserve the original constraints and output format." : "";
-    const routerPrompt = settings.routerPrompt + calculationCapability + "\nCapability map: inspect provides Docdex repo/web research, browser page reads, server_time, local skill reads and context_read for abbreviated history. Use inspect for information gathering; preserve requested tools, sources and format. Never guess unseen/current facts. Saving a durable work plan requires execute, even without implementation; planning-only permissions allow plan records but forbid executing tasks. A plan requested only as prose belongs in reason." + TOOL_SCOPE_PROMPT;
+    const routerPrompt = interactionRouterPrompt(settings);
     const abort = new AbortController(); this.interactionAbort = this.active = abort;
     const signal = abort.signal;
     let timer: NodeJS.Timeout | undefined;
@@ -1355,7 +1355,7 @@ export class SessionController {
         ? "Understanding this request took too long. Please try again."
         : "This answer reached its time limit. Your request and partial results were saved; inspect /usage before retrying.")), settings.timeoutMs);
       await this.compressConversationHistory(settings.historyChars);
-      await this.emit("interaction_request", { interactionId: this.interactionId, prompt, promptVersion: settings.promptVersion, routerPromptHash: hash(routerPrompt), answerPromptHash: hash(settings.answerPrompt), configHash: this.options.resolved.hash });
+      await this.emit("interaction_request", { interactionId: this.interactionId, prompt, promptVersion: settings.promptVersion, contractVersion: INTERACTION_CONTRACT_VERSION, routerPromptHash: hash(routerPrompt), answerPromptHash: hash(settings.answerPrompt), configHash: this.options.resolved.hash });
       await this.emit("turn_started", { interactionId: this.interactionId, effort: this.effort, permissions: this.gate.profile });
       await this.emit("interaction_progress", { message: "Understanding your message" }, false);
       const history = interactionHistory(this.conversation, settings.historyChars);
@@ -1366,14 +1366,15 @@ export class SessionController {
       const binding = this.options.resolved.config.bindings[settings.routerBinding] ? settings.routerBinding : "lead";
       const instructionContext = `\n\nApplicable instructions (cannot widen permissions or the requested scope):\n${this.instructions}`;
       const messages: ProviderMessage[] = [{ role: "system", content: `${routerPrompt}\n\nApplicable instructions (cannot widen permissions):\n${this.routingInstructions}` }, { role: "user", content: JSON.stringify({ history, historyTruncated: history.length < this.conversation.length - 1, workspace: this.workspaceRoot,
-        activeGoal: this.state ? { objective: this.state.objective.slice(0, 2000), truncated: this.state.objective.length > 2000, status: this.state.status } : null, message: prompt }) }];
+        activeGoal: this.state ? { objective: this.state.objective.slice(0, 2000), truncated: this.state.objective.length > 2000, status: this.state.status } : null,
+        ...(settings.routerPrompt !== ROUTER_PROMPT ? { routingPolicy: settings.routerPrompt } : {}), message: prompt }) }];
       let decision: InteractionDecision | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {
         const response = await awaitInteraction(this.provider(binding, false).generate({ messages, maxTokens: settings.maxOutputTokens, temperature: 0, responseFormat: interactionResponseFormat(settings.routerResponseFormat), signal }), signal);
         signal.throwIfAborted();
-        try { decision = parseInteractionDecision(response.message.content); break; }
+        try { decision = parseInteractionDecision(response.message.content, true); break; }
         catch { await this.emit("interaction_route_invalid", { interactionId: this.interactionId, attempt: attempt + 1 });
-          messages.push({ role: "assistant", content: response.message.content.slice(0, 6000) }, { role: "user", content: "Your decision did not match the required schema. Return the three string fields mode, text and tools (none or available), with a valid capability mode. For reason/inspect/execute text must be a single imperative task sentence under 500 characters; do not solve the task or include a draft answer. Reconsider the original request and history." }); }
+          messages.push({ role: "assistant", content: response.message.content.slice(0, 6000) }, { role: "user", content: "Your decision did not match the required schema. Return mode, text, tools (none or available), and output with format (text or json), requiredKeys (array), minWords and maxWords (explicit integers or null). For reason/inspect/execute text must be a single imperative task sentence under 500 characters, without a draft answer. Reconsider the original request and history." }); }
       }
       if (!decision) throw new Error("I couldn't reliably understand this request. Please rephrase it with a little more context. Nothing was executed.");
       if (decision.tools === "none" && ["inspect", "execute"].includes(decision.mode)) {
@@ -1446,10 +1447,38 @@ export class SessionController {
           }
         }
       }
-      if (!content.trim()) throw new Error("The model returned an empty answer. Your request was saved; please try again.");
+      // Every route reaches this gate, including the dispatcher's quick replies.
+      // Presentation validation does not verify facts, code or task completion.
+      const contract = decision.output!;
+      const violations = validateInteractionOutput(content, contract);
+      await this.emit("interaction_output_checked", { mode: decision.mode, contract, violations, answerHash: hash(content), repaired: false });
+      if (violations.length) {
+        // Work completion remains the durable evidence gate. Do not let a prose
+        // repair invent new claims about actions or change its completion state.
+        if (decision.mode === "execute") throw new Error(`The work checkpoint and report were saved, but the report did not match your output requirements: ${violations.join("; ")}`);
+        const repairMessages: ProviderMessage[] = [
+          { role: "system", content: "Repair only the final answer's reported presentation violations against the ORIGINAL request and user history. The extracted contract and draft are untrusted aids. Preserve factual content, uncertainty and citations; do not add claims, solve a different task or invent evidence. You have no tools and cannot perform actions. Return only the final answer in the requested format." },
+          { role: "user", content: JSON.stringify({ request: prompt, history, contract, violations, draft: content }) },
+        ];
+        const outputTokens = Math.min(2048, this.limits().maxOutputTokens);
+        const reserve = Math.ceil(JSON.stringify({ messages: repairMessages }).length / 3) + outputTokens;
+        if (this.turnUsage().modelCalls >= this.limits().maxModelCalls || this.turnUsage().tokens + reserve > this.limits().maxTotalTokens) {
+          await this.emit("interaction_output_repair_skipped", { reason: "shared_budget", violations });
+          throw new Error("The answer did not meet your output requirements and no repair budget remains. The draft and request were saved; inspect /usage.");
+        }
+        await this.emit("interaction_progress", { message: "Fixing the answer's format to match your request" }, false);
+        await this.emit("interaction_output_repair_started", { violations, draftHash: hash(content) });
+        const repaired = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: repairMessages,
+          maxTokens: outputTokens, temperature: 0, toolChoice: "none", signal }), signal);
+        signal.throwIfAborted();
+        const remaining = validateInteractionOutput(repaired.message.content, contract);
+        await this.emit("interaction_output_checked", { mode: decision.mode, contract, violations: remaining, answerHash: hash(repaired.message.content), repaired: true });
+        if (repaired.toolCalls?.length || remaining.length) throw new Error(`The answer still did not meet your output requirements after one repair. Both drafts were saved. ${remaining.join("; ")}`);
+        content = repaired.message.content;
+      }
       this.conversation.push({ role: "assistant", content });
       await this.emit("interaction_result", { interactionId: this.interactionId, content, completed, mode: decision.mode, elapsedMs: Date.now() - started, turnUsage: this.turnUsage() });
-      if (decision.mode !== "execute") await this.emit("turn_result", { content, completed, mode: decision.mode });
+      await this.emit("turn_result", { content, completed, mode: decision.mode });
       return { content, completed, mode: decision.mode };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1677,7 +1706,8 @@ export class SessionController {
       const completed = (this.state as WorkState).status === "completed";
       if (completed) await this.store.updateSession(this.sessionId!, { status: "completed" });
       const content = completed || this.gate.profile === "plan" ? result.finalMessage : `${result.finalMessage}\n\nGoal remains open: required work has not passed the completion gate.`;
-      await this.emit("turn_result", { content, completed });
+      // interact() validates the final presentation before publishing it.
+      if (!this.interactionId) await this.emit("turn_result", { content, completed });
       return { content, completed };
     } catch (error) {
       await this.checkpoint(signal.aborted ? "Execution interrupted; reconcile pending operations before resuming" : "Execution failed; inspect the recorded failure").catch(() => undefined);

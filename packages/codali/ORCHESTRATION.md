@@ -581,8 +581,9 @@ record, repository index or verification loop. Side questions preserve active
 work. Action requests retain the original text and relevant conversation beside
 the prepared brief; the brief cannot grant permissions or replace constraints.
 
-`codali setup` configures the evaluated local Qwen3 4B Instruct route as `intent`
-when it is advertised and healthy, with configured Strata candidates as fallback.
+`codali setup` initially aliases `intent` to `lead`. The smaller resident models
+have not qualified for the current contract; health and availability alone do not
+select them. Operators can bind a smaller model after a measured comparison.
 The older `router` binding used by automation is unchanged. Existing profiles
 without an `intent` binding use a bounded lead call until the operator configures
 one. No model is downloaded automatically.
@@ -604,13 +605,31 @@ The optional `interaction` object accepts:
 }
 ```
 
-Optional `routerPrompt` and `answerPrompt` strings replace the built-in prompts.
+`answerPrompt` replaces the answering instructions. `routerPrompt` is a legacy
+semantic policy carried as data beside the original request. It can guide route
+selection but cannot replace the versioned dispatcher schema or widen scope.
+Live dispatch returns exactly `mode`, `text`, `tools` (`none` or `available`), and
+`output` (`format`, `requiredKeys`, `minWords`, `maxWords`). Unspecified word bounds
+are null. Archived two-/three-field decisions remain readable; live requests
+require all four fields. Runtime and dispatcher evaluations share the same prompt
+builder and record `interaction-v11` separately from the operator's policy version.
 `routerResponseFormat: "json_schema"` optionally sends a native schema for the
-five decision modes and a bounded string brief. The default remains JSON-object
+five decision modes, bounded brief, tool scope and output contract. The default remains JSON-object
 mode for adapter compatibility. The selected endpoint must support the schema;
 there is no automatic downgrade or replay after a rejected request. Output is
 still parsed and validated because a schema does not establish correct intent,
 and a response can be truncated or an endpoint can ignore the constraint.
+
+Every final interaction reply is checked for nonempty content, extracted JSON-only
+syntax/top-level required keys, and explicit whitespace-separated word bounds.
+These checks do not prove factual correctness, validate an entire JSON Schema,
+compile code or establish work completion. Original user instructions remain
+authoritative when extraction omits a requirement. A failed conversational check
+gets at most one tool-free repair within the same call/token/deadline budget.
+Both drafts and the violations are logged. A failed repair is reported as failure;
+it does not silently publish an invalid final answer. Invalid execution reports
+retain their work checkpoints and cannot use presentation repair to invent action
+claims or change completion evidence. Ordinary valid greetings still take one call.
 
 `answerReview: { "enabled": true, "binding": "reviewer", "maxOutputTokens": 2048 }`
 adds one revision pass to `reason` answers. It sees the original request,

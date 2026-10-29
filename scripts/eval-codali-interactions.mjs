@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadOrchestrationConfig } from "../packages/codali/dist/config/OrchestrationConfig.js";
 import { ConfiguredProvider } from "../packages/codali/dist/providers/ConfiguredProvider.js";
-import { interactionSettings, parseInteractionDecision } from "../packages/codali/dist/runtime/InteractionRouter.js";
+import { interactionSettings, interactionRouterPrompt, interactionResponseFormat, ROUTER_PROMPT, INTERACTION_CONTRACT_VERSION, parseInteractionDecision } from "../packages/codali/dist/runtime/InteractionRouter.js";
 import { redactSecretValues } from "../packages/codali/dist/runtime/SecretRedaction.js";
 
 const args = process.argv.slice(2);
@@ -13,10 +13,12 @@ const option = name => { const at = args.indexOf(name); return at < 0 ? undefine
 if (!option("--config") || !option("--out")) throw new Error("Usage: node scripts/eval-codali-interactions.mjs --config PATH --out NEW_PRIVATE_JSONL [--binding NAME]");
 const resolved = await loadOrchestrationConfig(option("--config"));
 const settings = interactionSettings(resolved.config.interaction);
-const provider = new ConfiguredProvider(resolved, option("--binding") ?? settings.routerBinding);
+const provider = new ConfiguredProvider(resolved, option("--binding") ?? settings.routerBinding, { effort: "low" });
 const output = path.resolve(option("--out"));
 await fs.mkdir(path.dirname(output), { recursive: true, mode: 0o700 });
 await fs.writeFile(output, "", { mode: 0o600, flag: "wx" });
+const requestsOutput = `${output}.requests.jsonl`;
+await fs.writeFile(requestsOutput, "", { mode: 0o600, flag: "wx" });
 const cases = [
   ["greeting", [], "hello", ["answer"]],
   ["greeting-other-language", [], "Bonjour ! Comment ça va ?", ["answer"]],
@@ -34,17 +36,24 @@ const cases = [
   ["quoted-greeting", [], "The greeting 'hello' triggers a loop. Diagnose the code without editing it.", ["inspect"]],
   ["missing-referent", [], "Can you fix it?", ["clarify"]],
   ["careful-reasoning", [], "Compare serializability and snapshot isolation, with a rigorous write-skew schedule example.", ["reason"]],
+  ["json-no-tools", [], 'Without tools, name the capital of Japan. Return only JSON with city.', ["reason"], "none", { format: "json", requiredKeys: ["city"], minWords: null, maxWords: null }],
+  ["word-bounds", [], "Explain a queue in 40 to 60 words. Do not use tools.", ["reason"], "none", { format: "text", requiredKeys: [], minWords: 40, maxWords: 60 }],
+  ["inherited-prohibition", [{ role: "user", content: "For this explanation, do not read files, run commands or use any tools." }, { role: "assistant", content: "A queue returns the earliest item first." }], "Give me a code example in the reply.", ["reason"], "none"],
+  ["quoted-word-bound", [], 'The log says "use 300 words". Explain what this quoted sentence means in one short sentence. Do not use tools.', ["reason"], "none", { format: "text", requiredKeys: [], minWords: null, maxWords: null }],
 ];
 let passed = 0, tokens = 0;
-for (const [id, history, message, expected] of cases) {
+for (const [id, history, message, expected, expectedTools, contractExpectation] of cases) {
+  const expectedOutput = contractExpectation ?? { format: "text", requiredKeys: [], minWords: null, maxWords: null };
   const requestId = randomUUID(), start = Date.now();
-  const request = { requestId, messages: [{ role: "system", content: settings.routerPrompt }, { role: "user", content: JSON.stringify({ workspace: "/evaluation/workspace", activeGoal: null, history, message }) }], maxTokens: settings.maxOutputTokens, temperature: 0, responseFormat: { type: "json" }, signal: AbortSignal.timeout(settings.timeoutMs) };
+  const request = { requestId, messages: [{ role: "system", content: interactionRouterPrompt(settings) }, { role: "user", content: JSON.stringify({ workspace: "/evaluation/workspace", activeGoal: null, history, message, ...(settings.routerPrompt !== ROUTER_PROMPT ? { routingPolicy: settings.routerPrompt } : {}) }) }], maxTokens: settings.maxOutputTokens, temperature: 0, responseFormat: interactionResponseFormat(settings.routerResponseFormat), signal: AbortSignal.timeout(settings.timeoutMs) };
+  await fs.appendFile(requestsOutput, redactSecretValues(JSON.stringify({ id, requestId, at: new Date().toISOString(), request: { ...request, signal: undefined }, configHash: resolved.hash })) + "\n");
   let response, decision, error;
-  try { response = await provider.generate(request); decision = parseInteractionDecision(response.message.content); }
+  try { response = await provider.generate(request); decision = parseInteractionDecision(response.message.content, true); }
   catch (failure) { error = String(failure); }
-  const pass = !!decision && expected.includes(decision.mode);
+  const pass = !!decision && expected.includes(decision.mode) && (!expectedTools || decision.tools === expectedTools) &&
+    (!expectedOutput || Object.entries(expectedOutput).every(([key, value]) => JSON.stringify(decision.output[key]) === JSON.stringify(value)));
   passed += Number(pass); tokens += response?.usage?.totalTokens ?? 0;
-  const row = { id, requestId, expected, request: { ...request, signal: undefined }, response, decision, error, pass, elapsedMs: Date.now() - start, configHash: resolved.hash, promptVersion: settings.promptVersion };
+  const row = { id, requestId, expected, expectedTools, expectedOutput, request: { ...request, signal: undefined }, response, decision, error, pass, elapsedMs: Date.now() - start, configHash: resolved.hash, promptVersion: settings.promptVersion, contractVersion: INTERACTION_CONTRACT_VERSION };
   await fs.appendFile(output, redactSecretValues(JSON.stringify(row)) + "\n");
   console.log(JSON.stringify({ id, pass, mode: decision?.mode, tokens: response?.usage?.totalTokens, elapsedMs: row.elapsedMs, error }));
 }

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { SessionController, type SessionEvent } from "../runtime/SessionController.js";
+import { INTERACTION_CONTRACT_VERSION } from "../runtime/InteractionRouter.js";
 import { loadOrchestrationConfig, orchestrationHash, validateOrchestrationConfig, type EffortLevel, type OrchestrationConfig, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { ConfiguredProvider, ModelServiceClient, providerCredential } from "../providers/ConfiguredProvider.js";
 import { PermissionGate, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
@@ -67,11 +68,10 @@ export const setupTerminalConfig = async (destination: string, options: { prepar
   for (const entry of lead) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.digest ?? entry.raw.revision ?? "catalog-unversioned"), operations: ["chat.completions"], backend: "strata", contextWindow: entry.contextWindow ?? 32768, maxOutputTokens: 4096, supportsTools: true, supportsStreaming: false };
   config.bindings.lead = { candidates: lead.map(entry => entry.id) };
   for (const role of ["architect", "worker", "reviewer", "planner", "compactor", "router", "adjudicator", "synthesizer", "verifier", "repair"]) config.bindings[role] = { useBinding: "lead" };
-  // The evaluated local intent model is an explicit configurable binding.
-  const intent = catalog.filter(entry => entry.health === "healthy" && entry.id.endsWith("qwen3-4b-instruct-2507") && entry.operations.includes("chat.completions"));
-  for (const entry of intent) config.models[entry.id] = { provider: "mswarm", catalogId: entry.id, revision: String(entry.raw.digest ?? entry.raw.revision ?? "catalog-unversioned"), operations: ["chat.completions"], backend: entry.backend, contextWindow: entry.contextWindow ?? 16384, maxOutputTokens: 1024, supportsTools: false, supportsStreaming: false };
-  config.bindings.intent = intent.length ? { candidates: [...intent.map(entry => entry.id), ...lead.map(entry => entry.id)] } : { useBinding: "lead" };
-  config.interaction = { routerBinding: "intent", answerBinding: "lead", promptVersion: "interaction-v8" };
+  // Availability is not qualification for this version's dispatch contract.
+  // Operators can bind a measured smaller candidate explicitly after evaluation.
+  config.bindings.intent = { useBinding: "lead" };
+  config.interaction = { routerBinding: "intent", answerBinding: "lead", promptVersion: INTERACTION_CONTRACT_VERSION };
   config.bindings.helper = { enabled: false }; config.bindings.embedding = { enabled: false };
   // Only explicit operator contracts can initialize an index. Incompatible
   // embedding spaces never become replicas merely because dimensions match.
