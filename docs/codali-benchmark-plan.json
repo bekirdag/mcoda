@@ -121,7 +121,7 @@
         "Every result links request, final output/error, config/model/tool provenance and grade",
         "Promote only if predeclared quality rules pass; otherwise retain baseline and continue development without retuning on the sealed test"
       ],
-      "outcome": "Final 2100-attempt comparison started 2026-10-28T23:15:50Z with frozen runtime/config/corpus on both host partitions. Outcomes and independent reviews pending."
+      "outcome": "All2100 original first attempts complete and scored with349 rubric/130 critical reviews and0pending. Raw769/1000 vsCodali789/1000; held-out159/200 vs169/200, +5pp CI[-5.5,+16.5]pp. Promotion fails. Linked live-coverage retries and final retry audit remain; no first failures replaced."
     },
     {
       "id": "R1",
@@ -754,6 +754,40 @@
         "artifact": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-real-ssh.json"
       },
       "limitation": "No R1 quality results yet. SSH uses an installed deterministic fixture and does not establish model quality."
+    },
+    {
+      "phase": "B5",
+      "type": "complete_original_first_attempt_results",
+      "at": "2026-10-29T04:08:28.589039+00:00",
+      "publicReport": "docs/benchmarks/codali-1000/results.json",
+      "privateScores": "/home/wodo/.local/state/codali-trust-benchmark/final-complete-v1",
+      "privateAnalysis": "/home/wodo/.local/state/codali-trust-benchmark/final-complete-analysis-v2",
+      "attempts": 2100,
+      "pendingRubric": 0,
+      "pendingCritical": 0,
+      "promotionQualified": false,
+      "artifactAudit": "/home/wodo/.local/state/codali-trust-benchmark/final-v3-request-audit-complete-v1.json",
+      "nativeFingerprintUnchanged": true,
+      "retries": "Suku5completed;Raijin21scheduled;additional503retry prepared. All first outcomes stay primary."
+    },
+    {
+      "phase": "R1",
+      "type": "suku_screen_validation_complete",
+      "at": "2026-10-29T04:08:28.589039+00:00",
+      "development": {
+        "r1-a-calculator-review": 13,
+        "r1-b-calculator": 14,
+        "denominatorEach": 20
+      },
+      "validation": {
+        "r1-a-calculator-review": 46,
+        "r1-b-calculator": 45,
+        "denominatorEach": 50,
+        "runtimeErrorsEach": 0,
+        "criticalFailuresEach": 0
+      },
+      "qualification": "Only Suku partition; Raijin development/validation now running. No candidate selected and no held-out evaluation yet.",
+      "artifact": "/home/wodo/.local/state/codali-trust-benchmark/r1-validation-suku-score-v2"
     }
   ],
   "remaining": [
@@ -761,7 +795,7 @@
     "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-29T02:28:12.388468+00:00",
+  "updatedAt": "2026-10-29T04:08:28.589039+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

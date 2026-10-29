@@ -43,6 +43,9 @@ test('secondary semantic review is hash-bound and cannot change strict or critic
   const analysis = analyzeTrustStudy(scores, report(2), tasks, [review]);
   const selected = analysis.aggregates['codali_selected:chosen'].all;
   assert.equal(selected.passed, 0); assert.equal(selected.criticalFailures, 1);
+  assert.equal(selected.semantic.gradedEligible, 1);
+  assert.equal(selected.semantic.gradedPassed, 0);
+  assert.equal(Object.hasOwn(selected.semantic, 'automaticPassed'), false);
   assert.equal(selected.semantic.secondaryCorrect, 1);
   assert.throws(() => analyzeTrustStudy(scores, report(2), tasks, [{ ...review, outputSha256: 'wrong' }]), /Secondary/);
   assert.throws(() => analyzeTrustStudy(scores, report(2), tasks, [review, review]), /Secondary/);

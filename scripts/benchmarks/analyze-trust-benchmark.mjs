@@ -96,11 +96,11 @@ export function analyzeTrustStudy(scores, report, tasks, semanticReviews = [], e
       sum: rows.reduce((n, row) => n + (Number.isFinite(row.usage?.tokens) ? row.usage.tokens : 0), 0),
       known: rows.filter(row => Number.isFinite(row.usage?.tokens)).length, estimated: rows.filter(row => row.usage?.estimated).length },
     semantic: {
-      automaticEligible: rows.filter(row => typeof row.grade.semanticPassed === 'boolean').length,
-      automaticPassed: rows.filter(row => row.grade.semanticPassed === true).length,
+      gradedEligible: rows.filter(row => typeof row.grade.semanticPassed === 'boolean').length,
+      gradedPassed: rows.filter(row => row.grade.semanticPassed === true).length,
       secondaryReviewed: rows.filter(row => semantics.has(row.attemptId)).length,
       secondaryCorrect: rows.filter(row => semantics.get(row.attemptId)?.semanticCorrect).length,
-      qualification: 'Secondary semantic review never changes strict correctness, tool evidence or critical grades.',
+      qualification: 'Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades.',
     },
   });
   const groups = [...new Set(primary.map(row => `${row.arm}:${row.configGroup}`))].sort();

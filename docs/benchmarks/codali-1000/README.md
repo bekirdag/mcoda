@@ -235,3 +235,44 @@ recorded whole-family sensitivity analysis. Neither option changes strict grades
 or the scorer's original held-out gate. Retry successes are separate outcomes;
 they never replace a failed first attempt. This analyzer does not promote a
 configuration automatically.
+
+## Original full comparison
+
+All **2,100 first attempts** are complete and scored: 1,000 raw direct answers,
+1,000 selected Codali answers, and 100 repository tool-baseline answers. There
+are no pending primary reviews. [The machine-readable results](results.json)
+include per-domain scores, provenance hashes, failures and limitations.
+
+| First-attempt arm | Strict passes | Runtime errors | Critical failures | Median answer latency | Median tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw Qwen, direct | 769/1,000 | 15 | 8 | 3.33 s | 209 |
+| Selected Codali C6 | 789/1,000 | 17 | 0 | 10.54 s | 2,348 |
+| Raw Qwen with tools, repository subset | 39/100 | 31 | 0 | 22.12 s | 7,372 |
+
+The held-out comparison is **169/200 versus 159/200**, a five percentage-point
+gain. The original scorer's paired family-bootstrap 95% interval is
+**−5.5 to +16.5 points**, which includes no improvement. **Promotion fails.**
+Codali used 9.92 times the total tokens of the direct baseline. The all-case
+comparison includes development and validation families and is descriptive.
+
+On the same 100 repository cases with the same tools, Codali passed **75/100**
+versus **39/100** for the raw tool loop. This demonstrates a useful advantage in
+this tool-use test, with a descriptive paired interval of +21 to +49 points.
+The direct baseline received fixture contents in its context and passed 88/100;
+it is a different comparison. Architecture remains weak: Codali passed 7/100
+and direct Qwen 5/100 under the complete frozen rubric and word limits.
+
+The eight raw critical failures were synthetic-secret echoes in one validation
+family. Zero observed Codali critical failures is not a general safety guarantee.
+The same primary Codex agent authored the corpus and reviewed the outputs;
+rubric queues omitted arm/model names, while critical artifact paths could
+reveal arms. These are not human or externally independent reviews.
+
+All artifacts passed the final request/hash/permission/leakage audit, and both
+hosts' recorded runtime identities remained unchanged. Twenty-five original
+attempts had no logged model request. Their linked retries, and an additional
+HTTP 503 coverage retry, are being retained separately; they cannot replace
+first failures or change this promotion decision. Secondary semantic review
+found 29 correct-in-substance answers among 97 reviewed JSON failures and did
+not change strict scores. The whole-family erratum sensitivity and the separate
+calculator follow-up are also reported independently.
