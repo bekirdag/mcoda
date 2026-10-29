@@ -538,6 +538,23 @@ returns the original draft unless the user cancelled. It never changes a
 greeting, claims independent verification, or runs automatically by default.
 Use measured quality and latency results before enabling it.
 
+`calculator: true` experimentally exposes the pure `calculate` tool only during
+`reason` turns. It is off by default. The model chooses whether to use it; the
+dispatcher does not match arithmetic keywords or a list of request types.
+The tool accepts numeric expressions, parentheses, powers, signed remainder
+and a small set of arithmetic functions. It cannot execute code, access files
+or use the network. Expressions are limited to 4,096 characters, 1,024 tokens,
+32 levels of nesting and 128 function arguments. Nonfinite results and unsafe
+integers are rejected. Floating-point results are not exact decimal arithmetic.
+
+Calculator calls honor host/repository tool restrictions, consume the shared
+tool budget and create ordinary invocation receipts. The loop reserves capacity
+for a final answer; greetings still use no tools. When answer review is also
+enabled, it receives the actual calculation requests and results. A calculator
+can verify an expression, but it cannot establish that the model chose the
+correct formula, units or interpretation. Enable it only after evaluating that
+tradeoff with the intended model and workload.
+
 The router must return exactly `{"mode":"answer","text":"Hello!"}` with mode
 one of `answer`, `reason`, `inspect`, `execute`, `clarify`. For delegated modes,
 text is a task brief of at most 500 characters, not a proposed solution. Invalid

@@ -19,6 +19,7 @@ export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (tool.name === "run_shell") return "shell";
   if (fileWrite.has(tool.name)) return "write";
   if (["tools_discover", "tools_enable"].includes(tool.name)) return "read";
+  if (tool.name === "calculate" && tool.capability === "calculation" && tool.readOnly) return "read";
   if (["media_job_status", "media_job_wait", "delegate_helper"].includes(tool.name)) return "read";
   if (tool.name === "media_job_cancel") return "media";
   if (/image.*generat|audio.*generat|video.*generat|media.*generat/.test(tool.name) || /^(image|audio|video|media)_generation$/.test(tool.capability)) return "media";

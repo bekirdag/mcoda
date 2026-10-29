@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "discoveredAt": "2026-10-29T01:00:45.784160+00:00",
+  "corpus": "codali-trust-1000-v1",
+  "corpusSha256": "2dde4b4457589311ebf643555a29461472e7805a647128bc2774460a9fce4c8a",
+  "family": "repository_and_docdex.duplicate_symbol",
+  "caseIds": [
+    "repository_and_docdex.duplicate_symbol.01",
+    "repository_and_docdex.duplicate_symbol.02",
+    "repository_and_docdex.duplicate_symbol.03",
+    "repository_and_docdex.duplicate_symbol.04",
+    "repository_and_docdex.duplicate_symbol.05",
+    "repository_and_docdex.duplicate_symbol.06",
+    "repository_and_docdex.duplicate_symbol.07",
+    "repository_and_docdex.duplicate_symbol.08",
+    "repository_and_docdex.duplicate_symbol.09",
+    "repository_and_docdex.duplicate_symbol.10"
+  ],
+  "split": "validation",
+  "defect": "The prompt never defines the meaning of answer; the private expected value assumes the exported label. Correct implementation-path answers can fail an unstated requirement.",
+  "evidence": {
+    "prompt": "Use Docdex to follow the import in src/app.js, which has a similarly named legacy counterpart. Return only JSON {\"implementationPath\":string,\"answer\":string}. No edits.",
+    "expected": {
+      "answer": "alpha-3",
+      "implementationPath": "src/format.js"
+    }
+  },
+  "handling": [
+    "Do not edit the frozen corpus, runtime, outcomes, selection, or original scores.",
+    "Report all ten cases as authoring-ambiguous, symmetrically for every arm and candidate.",
+    "Compute validation-selection and final descriptive sensitivity analyses excluding the whole family, with counts explicit.",
+    "Keep strict original metrics separately labelled; do not infer model inferiority from the unstated answer requirement.",
+    "Any repaired wording must be a separately versioned diagnostic extension with its own hash and results, not a silent replacement."
+  ],
+  "heldOutMembershipAffected": false,
+  "repairWordingProposal": "Use Docdex to follow the import in src/app.js, which has a similarly named legacy counterpart. Return only JSON {\"implementationPath\":string,\"answer\":string}: implementationPath is the repository-relative path of the imported formatLabel implementation; answer is the exact string exported as label by src/app.js. No edits."
+}

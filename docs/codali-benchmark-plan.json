@@ -124,6 +124,25 @@
       "outcome": "Final 2100-attempt comparison started 2026-10-28T23:15:50Z with frozen runtime/config/corpus on both host partitions. Outcomes and independent reviews pending."
     },
     {
+      "id": "R1",
+      "title": "Bounded computation and fresh quality evaluation",
+      "status": "in_progress",
+      "dependsOn": [
+        "B4"
+      ],
+      "reason": "Neither validation finalist qualified. Development arithmetic failures motivate an optional pure calculator; the first eight-candidate study remains closed and unchanged.",
+      "deliverables": [
+        "Opt-in arithmetic tool with no code execution, filesystem or network access; ordinary permission, receipt and shared-budget enforcement",
+        "Separate bounded follow-up study: at most three configurations, forty original development cases per screen, one hundred new family-disjoint validation cases and two hundred new held-out cases frozen before inference",
+        "Keep all original 2100 attempts and original promotion decision; report follow-up results as a separate study"
+      ],
+      "exit": [
+        "Complete B5 before follow-up held-out evaluation or any promotion",
+        "Use only original development evidence and fresh validation for follow-up selection; never tune on exposed original held-out cases",
+        "Apply the same correctness, critical-error and uncertainty gates to new held-out evidence; report all candidate attempts and failures"
+      ]
+    },
+    {
       "id": "B6",
       "title": "Package, qualify and install the selected setup",
       "status": "pending",
@@ -273,6 +292,18 @@
     {
       "source": "https://opencode.ai/docs/agents/",
       "use": "Agent prompts, models, tool permissions and step budgets are configurable; Codali similarly keeps role selection in configuration and permission enforcement in the host."
+    },
+    {
+      "source": "https://arxiv.org/abs/2211.10435",
+      "use": "PAL separates natural-language decomposition from deterministic calculation. Motivation for a calculator experiment, not evidence that Codali itself improved."
+    },
+    {
+      "source": "https://github.com/reasoning-machines/pal",
+      "use": "Inspect the original program-aided implementation and its inference/evaluation separation; do not adopt unrestricted generated-code execution."
+    },
+    {
+      "source": "https://huggingface.co/docs/smolagents/tutorials/secure_code_execution",
+      "use": "Allowlisted interpreted operations and explicit operation bounds motivate a pure numeric parser rather than eval or unrestricted local execution."
     }
   ],
   "evidence": [
@@ -533,14 +564,82 @@
         "codali-trust-final-v3-suku.service"
       ],
       "status": "running_not_complete"
+    },
+    {
+      "phase": "B2",
+      "type": "authoring_erratum",
+      "at": "2026-10-29T01:23:43.452525+00:00",
+      "artifact": "docs/benchmarks/codali-1000/errata.json",
+      "scope": "All ten duplicate_symbol validation cases, symmetrically excluded only in a separate sensitivity analysis. Original corpus/scores remain frozen; held-out membership unchanged.",
+      "validationSensitivity": {
+        "c4": {
+          "passed": 149,
+          "total": 190
+        },
+        "c6": {
+          "passed": 150,
+          "total": 190
+        },
+        "rankChanged": false,
+        "releaseQualified": false
+      }
+    },
+    {
+      "phase": "B6",
+      "type": "preview_20_exact_package_qualification",
+      "at": "2026-10-29T01:23:43.452525+00:00",
+      "sourceCommit": "7e31eb1342b7e8aca295f6c949d761f7f84286bb",
+      "diagnosticCommit": "b662dc78144c66f719b2094bbd8a3c1debd3cd91",
+      "description": "Docdex path reads clamp by default; explicit clamp:false remains strict. Exact installed TUI returned PREVIEW from real Docdex receipts with unchanged fixture. Test-only diagnostic commit leaves all ten tarball hashes identical.",
+      "checks": {
+        "cleanInstall": 29,
+        "linuxMacosJobs": 6,
+        "windowsCI": "passed",
+        "sukuCargoIsolation": "passed"
+      },
+      "ci": "https://github.com/bekirdag/mcoda/actions/runs/40797128091",
+      "platformCI": "https://github.com/bekirdag/mcoda/actions/runs/40797128080",
+      "privateEvidence": [
+        "preview-20-package-qualification.json",
+        "preview-20-live-tui-smoke.json",
+        "cargo-diagnostic-module-provenance.json"
+      ],
+      "limitation": "Private preview, not published or quality-promoted. Frozen full benchmark uses the earlier ecf7369 inference runtime. Prior intermittent Python/Cargo timeout causes remain unknown."
+    },
+    {
+      "phase": "R1",
+      "type": "optional_calculator_implementation",
+      "at": "2026-10-29T01:33:52.635445+00:00",
+      "version": "0.1.135-codali.21",
+      "defaultEnabled": false,
+      "tests": {
+        "focusedPassed": 40,
+        "fullPassed": 1827,
+        "fullSkipped": 3,
+        "failed": 0
+      },
+      "limits": {
+        "expressionChars": 4096,
+        "tokens": 1024,
+        "nesting": 32,
+        "functionArguments": 128
+      },
+      "scope": "Pure numeric parser; no generated code execution, files or network. Model decides tool use. Existing shared budgets, permissions and receipts apply. Original frozen runtime unchanged.",
+      "schemaCorrection": "Packaged JSON schema now describes existing answerReview/routerResponseFormat plus calculator; three valid and six invalid cases checked.",
+      "artifacts": [
+        "/tmp/codali-calculator-focused-tests-v2.log",
+        "/tmp/codali-calculator-full-tests.log",
+        "/tmp/codali-preview-21-build.log"
+      ],
+      "qualityClaim": "No live quality improvement measured yet."
     }
   ],
   "remaining": [
-    "B4",
     "B5",
+    "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-28T22:59:32.835582+00:00",
+  "updatedAt": "2026-10-29T01:33:52.635445+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

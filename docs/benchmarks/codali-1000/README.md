@@ -175,3 +175,23 @@ alongside the derived view; a transport error is never assigned zero cost.
 The execution ledger and current phase state live in
 [`docs/codali-benchmark-plan.json`](../../codali-benchmark-plan.json).
 All original terminal release gates remain in force.
+
+## Recorded corrections and secondary review
+
+[The corpus erratum](errata.json) records ten validation cases whose `answer`
+field is underspecified. The original corpus and strict scores remain frozen.
+Report a separate sensitivity analysis excluding the whole family for every
+arm and candidate; do not select exclusions based on which model passed.
+The exclusion leaves the validation ranking unchanged and neither finalist
+release-qualified. No held-out family is affected.
+
+A secondary semantic review can distinguish a correct fact in the wrong format
+from an incorrect answer. It does not change strict scores or promotion gates.
+Review every eligible JSON failure across arms, bind records to the exact
+output hash, and report semantic, formatting and tool-compliance outcomes
+separately. Primary Codex review is not human or external independent review.
+
+The original eight-candidate search is closed. An optional calculator experiment
+is a separate follow-up phase in the plan, motivated by development failures.
+It cannot change the running comparison or reuse exposed held-out cases as
+fresh evidence. Any new quality claim requires separately frozen evaluation.

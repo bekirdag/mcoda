@@ -124,10 +124,69 @@ test("status and live usage retain estimated accounting for an unresolved earlie
   assert.equal((events.filter(e => e.type === "usage").at(-1)!.data.usage as { estimated: boolean }).estimated, true);
 });
 
+test("optional calculator uses real receipts and leaves the final shared call for answering", async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true, maxModelCalls: 3 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) { assert.equal(request.tools, undefined); return decision("reason", "Calculate the weighted mean."); }
+    if (calls === 2) {
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["calculate"]);
+      return { ...reply(""), toolCalls: [{ id: "weighted", name: "calculate", args: { expression: "(17*3+29*2)/(3+2)" } }] };
+    }
+    assert.equal(calls, 3); assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.match(JSON.stringify(request.messages), /21.8/);
+    return reply('{"answer":21.8}');
+  } }, config);
+  assert.equal((await controller.interact('Find the mean of 17 with weight 3 and 29 with weight 2. Return JSON {"answer":number}.')).content, '{"answer":21.8}');
+  assert.equal(controller.state, undefined);
+  assert.equal(controller.usageSnapshot().modelCalls, 3);
+  assert.equal(controller.usageSnapshot().toolCalls, 1);
+  assert.ok(events.some(e => e.type === "tool_receipt" && (e.data.receipt as { tool: string; status: string }).tool === "calculate" && (e.data.receipt as { status: string }).status === "success"));
+  assert.ok(!events.some(e => e.type === "index_ready"));
+});
+
+test("calculator is not exposed for greetings or when repository policy denies it", async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true };
+  const hello = await fixture(t, { name: "fixture", generate: async request => {
+    assert.equal(request.tools, undefined); return decision("answer", "Hello!");
+  } }, config);
+  await hello.controller.interact("hello");
+  assert.equal(hello.controller.usageSnapshot().modelCalls, 1);
+  assert.equal(hello.controller.usageSnapshot().toolCalls, 0);
+  let calls = 0;
+  const denied = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("reason", "Compute three plus five.");
+    assert.ok(!request.tools?.length);
+    return reply("8");
+  } }, config, { deniedTools: ["calculate"] });
+  assert.equal((await denied.controller.interact("What is three plus five?")).content, "8");
+  assert.equal(denied.controller.usageSnapshot().toolCalls, 0);
+});
+
+test("answer review receives actual calculator evidence without additional tool access", async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true, answerReview: { enabled: true } };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("reason", "Calculate three plus five.");
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "sum", name: "calculate", args: { expression: "3+5" } }] };
+    if (calls === 3) return reply("8");
+    assert.equal(calls, 4); assert.equal(request.tools, undefined);
+    const payload = JSON.parse(request.messages[1].content);
+    assert.ok(payload.calculationEvidence.some((m: { role: string }) => m.role === "tool"));
+    assert.match(JSON.stringify(payload.calculationEvidence), /3\+5/);
+    assert.match(JSON.stringify(payload.calculationEvidence), /result/);
+    return reply("8");
+  } }, config);
+  assert.equal((await controller.interact("What is three plus five?")).content, "8");
+  assert.equal(controller.usageSnapshot().modelCalls, 4);
+});
+
 test("answer review configuration rejects unavailable bindings and excessive output", () => {
   for (const answerReview of [{ enabled: "yes" }, { enabled: true, binding: "missing" }, { enabled: true, maxOutputTokens: 4097 }, { enabled: true, bypassPermissions: true }]) {
     assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { answerReview } }));
   }
+  for (const calculator of ["true", 1, {}, null]) assert.throws(() => validateOrchestrationConfig({ ...base, interaction: { calculator } }));
+  assert.equal(validateOrchestrationConfig({ ...base, interaction: { calculator: true } }).interaction?.calculator, true);
 });
 
 test("configured native dispatcher schema is sent on the initial request and repair, without weakening parsing", async t => {

@@ -68,6 +68,8 @@ export interface InteractionConfig {
   maxTotalTokens?: number; maxModelCalls?: number; maxInspectionSteps?: number; timeoutMs?: number;
   /** Optional single bounded revision pass for answers that already needed reasoning. */
   answerReview?: { enabled: boolean; binding?: string; maxOutputTokens?: number };
+  /** Experimental pure arithmetic tool for reasoning turns; disabled unless explicitly enabled. */
+  calculator?: boolean;
 }
 export interface OrchestrationConfig {
   schemaVersion: 1;
@@ -206,7 +208,8 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
   }
   if (root.interaction !== undefined) {
     const value = object(root.interaction, "interaction");
-    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs", "answerReview", "routerResponseFormat"], "interaction");
+    fields(value, ["routerBinding", "answerBinding", "promptVersion", "routerPrompt", "answerPrompt", "maxInputChars", "historyChars", "maxOutputTokens", "maxTotalTokens", "maxModelCalls", "maxInspectionSteps", "timeoutMs", "answerReview", "routerResponseFormat", "calculator"], "interaction");
+    if (value.calculator !== undefined && typeof value.calculator !== "boolean") throw new Error("interaction.calculator: expected boolean");
     for (const key of ["routerBinding", "answerBinding"]) if (value[key] !== undefined) {
       nonempty(value[key], `interaction.${key}`);
       if (!hasOwn(bindings, String(value[key])) || object(bindings[String(value[key])], key).enabled === false) throw new Error(`interaction.${key}: unavailable binding`);

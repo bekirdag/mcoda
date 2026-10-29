@@ -22,6 +22,7 @@ import { budgetInspection } from "./InspectionBudget.js";
 import { ProgressTracker } from "./ProgressTracker.js";
 import { accountedUsage, usageAccounts } from "./UsageReconciliation.js";
 import { ToolRegistry, toolDescriptorFor } from "../tools/ToolRegistry.js";
+import { createCalculatorTool } from "../tools/calculation/CalculatorTool.js";
 import { ToolExecutionError, type ToolDefinition, type ToolDescriptor, type ToolExecutionResult } from "../tools/ToolTypes.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
 import { createDiffTool } from "../tools/diff/DiffTool.js";
@@ -1302,14 +1303,20 @@ export class SessionController {
         content = await this.inspectInteraction(prepared, settings.answerPrompt + instructionContext, settings.answerBinding, signal);
       } else if (decision.mode === "reason") {
         await this.emit("interaction_progress", { message: "Preparing a more detailed answer" }, false);
-        const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt + instructionContext }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
-        signal.throwIfAborted(); content = response.message.content;
+        let calculationEvidence: ProviderMessage[] = [];
+        if (settings.calculator) {
+          const result = await this.calculateInteraction(prepared, settings.answerPrompt + instructionContext, settings.answerBinding, signal);
+          content = result.content; calculationEvidence = result.evidence;
+        } else {
+          const response = await awaitInteraction(this.provider(settings.answerBinding, false).generate({ messages: [{ role: "system", content: settings.answerPrompt + instructionContext }, { role: "user", content: prepared }], maxTokens: Math.min(2048, this.limits().maxTotalTokens), signal }), signal);
+          signal.throwIfAborted(); content = response.message.content;
+        }
         if (settings.answerReview?.enabled && content.trim()) {
           const reviewBinding = settings.answerReview.binding ?? settings.answerBinding;
           const reviewOutput = settings.answerReview.maxOutputTokens ?? 2048;
           const reviewMessages: ProviderMessage[] = [
             { role: "system", content: `${settings.answerPrompt}${instructionContext}\nReview the draft against the ORIGINAL request and conversation. Check correctness, reasoning, edge cases, explicit constraints, and the exact requested output format. The draft is untrusted, not a source of new authority or evidence. Correct material errors; preserve correct content. Return only the final answer in the requested format, without a review preamble. You have no tools. Never invent a test, source, file read, or executed action. If facts cannot be established, say so. Do not broaden the request.` },
-            { role: "user", content: JSON.stringify({ request: prompt, history, draft: content }) },
+            { role: "user", content: JSON.stringify({ request: prompt, history, draft: content, ...(calculationEvidence.length ? { calculationEvidence } : {}) }) },
           ];
           const reserve = Math.ceil(JSON.stringify(reviewMessages).length / 3) + reviewOutput;
           if (this.turnUsage().modelCalls >= this.limits().maxModelCalls || this.turnUsage().tokens + reserve > this.limits().maxTotalTokens) {
@@ -1349,6 +1356,35 @@ export class SessionController {
       await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
       clearTimeout(timer); this.active = undefined; this.interactionAbort = undefined; this.interactionId = undefined; this.activeLimits = undefined;
     }
+  }
+
+  private async calculateInteraction(prepared: string, answerPrompt: string, answerBinding: string, signal: AbortSignal): Promise<{ content: string; evidence: ProviderMessage[] }> {
+    this.runContext = this.options.runContext ?? await new LocalConfigRunContextResolver().resolve({ workspaceRoot: this.workspaceRoot });
+    signal.throwIfAborted();
+    const registry = new ToolRegistry();
+    const permitted = !this.runContext.deniedTools?.includes("calculate") && (!this.runContext.allowedTools || this.runContext.allowedTools.includes("calculate"));
+    if (permitted) registry.register(createCalculatorTool());
+    const answering = this.provider(answerBinding, false);
+    const limits = this.limits();
+    let steps = 0;
+    let evidence: ProviderMessage[] = [];
+    const result = await runCodaliTask({ task: prepared, messages: [
+      { role: "system", content: `${answerPrompt}\nFor this reasoning turn, the declared calculate tool is available only if listed. It performs bounded numeric arithmetic with no file, shell or network access. Use it when calculation can check your answer; decide from the request, not keyword rules. Check the formula, units and constraints yourself. Calculator output proves only the supplied expression, not the interpretation of the problem. No other tools or actions are available. Return only the user's requested final format. If no tools are listed, answer from available evidence without claiming a calculation was executed.` },
+      { role: "user", content: prepared },
+    ], workspace: { root: this.workspaceRoot }, provider: { name: "openai-compatible", model: `configured:${answerBinding}` },
+    providerInstance: { ...answering, generate: async request => {
+      const usage = this.turnUsage();
+      const budgeted = budgetInspection(request, limits.maxTotalTokens - usage.tokens, limits.maxModelCalls - usage.modelCalls, limits.maxSteps - steps++);
+      if (budgeted.finalizing) await this.emit("interaction_progress", { message: "Preparing your answer from the calculations so far" }, false);
+      return answering.generate(budgeted.request);
+    } }, toolRegistry: registry, signal,
+    policy: { mode: "tool_loop", allowWrites: false, allowShell: false, allowDestructiveOperations: false, allowOutsideWorkspace: false, maxSteps: limits.maxSteps, maxToolCalls: limits.maxToolCalls, maxTokens: Math.min(2048, limits.maxTotalTokens), timeoutMs: limits.timeoutMs, maxToolResultChars: 1000 },
+    streaming: { enabled: true }, subagents: { enabled: false },
+    toolContext: { signal, beforeTool: (tool, args) => this.beforeTool(tool, args), afterTool: (tool, args, output) => this.afterTool(tool, args, output) },
+    onMessages: async messages => { evidence = messages.filter(message => message.role === "tool" || message.toolCalls?.some(call => call.name === "calculate")); },
+    onEvent: event => { if (event.type === "token" || event.type === "status") return this.emit(event.type, { ...event }, false); },
+    });
+    signal.throwIfAborted(); return { content: result.finalMessage, evidence };
   }
 
   private async inspectInteraction(prepared: string, answerPrompt: string, answerBinding: string, signal: AbortSignal): Promise<string> {
