@@ -210,3 +210,28 @@ dispatcher/reviewer or unrelated file tools. It uses the same aggregate limits
 and a 2,048-token answer ceiling. Actual calculator requests and receipts are
 retained. Repository tool baselines keep their existing Docdex surface. This
 metadata selects evaluation controls, not the model's interaction route.
+
+For a reproducible statistical report after scoring, run:
+
+```sh
+node scripts/benchmarks/analyze-trust-benchmark.mjs \
+  --scores /path/to/scored/scores.jsonl \
+  --report /path/to/scored/report.json \
+  --corpus-root docs/benchmarks/codali-1000 \
+  --output /path/to/new-analysis-directory
+```
+
+The resulting `analysis.json` includes first-attempt results by domain and split,
+dispatch coverage including linked retries, and paired comparisons against both
+raw arms. It resamples whole task families, preserving their case counts, with
+10,000 deterministic bootstrap draws. Domain intervals are descriptive and are
+not adjusted for multiple comparisons; a single family cannot measure uncertainty
+across unseen families. Full-corpus coverage is also broken down by split so a
+deliberately restricted follow-up run is not mistaken for full-corpus execution.
+
+Use `--semantic-reviews /path/to/reviews.jsonl` for output-hash-bound secondary
+reviews, and `--exclude-family repository_and_docdex.duplicate_symbol` for the
+recorded whole-family sensitivity analysis. Neither option changes strict grades
+or the scorer's original held-out gate. Retry successes are separate outcomes;
+they never replace a failed first attempt. This analyzer does not promote a
+configuration automatically.
