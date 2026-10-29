@@ -56,7 +56,7 @@ try {
   report.checks.push('full mcoda/Codali/mSwarm install without automatic Docdex npm provisioning');
   const codaliRoot = path.join(project, 'node_modules/@mcoda/codali');
   assert.ok(!realpathSync(codaliRoot).startsWith(root + path.sep), 'Installed package must not resolve to the workspace checkout');
-  for (const file of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'README.md', 'ORCHESTRATION.md', 'config/orchestration.schema.json', 'config/raijin-suku.example.json', 'config/alternate-local.example.json', 'config/docdex-runtime.json']) {
+  for (const file of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'README.md', 'ORCHESTRATION.md', 'config/AGENTS.md', 'config/orchestration.schema.json', 'config/raijin-suku.example.json', 'config/alternate-local.example.json', 'config/docdex-runtime.json']) {
     assert.ok(existsSync(path.join(codaliRoot, file)), `Missing installed file: ${file}`);
   }
   const installedFiles = files(codaliRoot);
