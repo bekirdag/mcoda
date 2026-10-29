@@ -472,7 +472,7 @@ const docdexToolDefinitions = (
   },
   {
     name: "docdex_open",
-    description: "Read an exact slice of a file, either by repo-relative path or by a doc id returned from a search. Use after a search has identified a target rather than guessing paths.",
+    description: "Read a file slice by repo-relative path or search doc id. Path ranges clamp to file bounds by default and return the actual line range; set clamp:false to require an exact range. Use head when the file length is unknown.",
     inputSchema: {
       type: "object",
       properties: {
@@ -498,7 +498,7 @@ const docdexToolDefinitions = (
         clamp?: boolean;
       };
       if (path) {
-        const result = await client.openFile(path, { startLine, endLine, head, clamp });
+        const result = await client.openFile(path, { startLine, endLine, head, clamp: clamp ?? true });
         return toOutput(result);
       }
       if (!docId) {
@@ -643,7 +643,7 @@ const docdexToolDefinitions = (
   },
   {
     name: "docdex_open_file",
-    description: "Open a file by path via docdex (MCP).",
+    description: "Open a file by path via docdex (MCP). Ranges clamp to file bounds by default and return the actual line range; set clamp:false to require an exact range.",
     inputSchema: {
       type: "object",
       required: ["path"],
@@ -663,7 +663,7 @@ const docdexToolDefinitions = (
         head?: number;
         clamp?: boolean;
       };
-      const result = await client.openFile(path, { startLine, endLine, head, clamp });
+      const result = await client.openFile(path, { startLine, endLine, head, clamp: clamp ?? true });
       return toOutput(result);
     },
   },

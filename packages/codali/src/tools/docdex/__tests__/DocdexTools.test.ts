@@ -131,6 +131,34 @@ test("DocdexTools open uses MCP when path provided", { concurrency: false }, asy
   });
 });
 
+test("DocdexTools bounded reads preserve short-file evidence and allow strict ranges", { concurrency: false }, async () => {
+  const source = { content: "one\ntwo", path: "src/app.js", start_line: 1, end_line: 2, total_lines: 2 };
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    if (!url.endsWith("/v1/mcp")) return makeErrorResponse(404, "not found");
+    const payload = JSON.parse(String(init?.body)) as {
+      id?: string; method?: string; params?: { clamp?: boolean; end_line?: number };
+    };
+    assert.equal(payload.method, "docdex_open");
+    assert.equal(payload.params?.end_line, 200);
+    if (payload.params?.clamp !== true) return makeErrorResponse(400, "invalid range");
+    return makeJsonResponse({ jsonrpc: "2.0", id: payload.id, result: source });
+  }, async () => {
+    const tools = createDocdexTools(new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd(),
+    }));
+    for (const name of ["docdex_open", "docdex_open_file"]) {
+      const tool = tools.find((entry) => entry.name === name)!;
+      const args = { path: "src/app.js", startLine: 1, endLine: 200 };
+      const context = { workspaceRoot: process.cwd() };
+      const result = await tool.handler(args, context);
+      const actual = JSON.parse(result.output);
+      for (const [key, value] of Object.entries(source)) assert.equal(actual[key], value);
+      await assert.rejects(tool.handler({ ...args, clamp: false }, context), /invalid range/);
+    }
+  });
+});
+
 test("DocdexTools open fetches snippet when docId provided", { concurrency: false }, async () => {
   const calls: string[] = [];
   await withStubbedFetch((url) => {
