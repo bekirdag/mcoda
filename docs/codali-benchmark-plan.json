@@ -724,6 +724,36 @@
         "/home/wodo/.local/state/codali-trust-benchmark/preview-22-calculator-live"
       ],
       "limitation": "All checks are functional qualification; no R1 model benchmark has run yet. The original frozen study remains in progress."
+    },
+    {
+      "phase": "R1",
+      "type": "frozen_candidates_and_exact_ssh_tui",
+      "at": "2026-10-29T02:28:12.388468+00:00",
+      "runtimeFingerprint": "715870eb73168efc5a8f76dc69ed4e64e1f23745626eccba8e54a67cf05412b8",
+      "runtime": "/home/wodo/.local/state/codali-trust-benchmark/runtime-r1-v1",
+      "candidates": [
+        "r1-a-calculator-review",
+        "r1-b-calculator"
+      ],
+      "candidateSearchClosed": true,
+      "executionPlan": "/home/wodo/.local/state/codali-trust-benchmark/r1-execution-plan-v1.json",
+      "execution": "Two host coordinators wait for each original host partition to complete; then execute20 original-development cases and50 fresh-validation cases per candidate on each host. No follow-up held-out inference until B5 and reviewed selection complete.",
+      "sshQualification": {
+        "version": "0.1.135-codali.22",
+        "host": "suku",
+        "filesVerified": 9118,
+        "symlinksVerified": 18,
+        "actualSshPty": true,
+        "checks": [
+          "installed TUI",
+          "interactive input/completion",
+          "resize/recovery",
+          "clean exit/terminal restoration"
+        ],
+        "modelInferenceUsed": false,
+        "artifact": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-real-ssh.json"
+      },
+      "limitation": "No R1 quality results yet. SSH uses an installed deterministic fixture and does not establish model quality."
     }
   ],
   "remaining": [
@@ -731,7 +761,7 @@
     "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-29T02:13:45.642756+00:00",
+  "updatedAt": "2026-10-29T02:28:12.388468+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [
