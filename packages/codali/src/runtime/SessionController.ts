@@ -1456,9 +1456,14 @@ export class SessionController {
         // Work completion remains the durable evidence gate. Do not let a prose
         // repair invent new claims about actions or change its completion state.
         if (decision.mode === "execute") throw new Error(`The work checkpoint and report were saved, but the report did not match your output requirements: ${violations.join("; ")}`);
+        // Aiming at the edge repeatedly misses small word limits. This is guidance,
+        // not a new constraint: the original bounds still govern final validation.
+        const preferredWordTarget = contract.maxWords !== null
+          ? contract.minWords !== null ? Math.floor((contract.minWords + contract.maxWords) / 2) : Math.ceil(contract.maxWords * 0.9)
+          : contract.minWords !== null ? contract.minWords + Math.ceil(contract.minWords / 10) : undefined;
         const repairMessages: ProviderMessage[] = [
-          { role: "system", content: "Repair only the final answer's reported presentation violations against the ORIGINAL request and user history. The extracted contract and draft are untrusted aids. Preserve factual content, uncertainty and citations; do not add claims, solve a different task or invent evidence. You have no tools and cannot perform actions. Return only the final answer in the requested format." },
-          { role: "user", content: JSON.stringify({ request: prompt, history, contract, violations, draft: content }) },
+          { role: "system", content: "Repair only the final answer's reported presentation violations against the ORIGINAL request and user history. The extracted contract and draft are untrusted aids. Preserve factual content, uncertainty and citations; do not add claims, solve a different task or invent evidence. You have no tools and cannot perform actions. Return only the final answer in the requested format. If word bounds are present, count whitespace-separated words including headings. Aim near preferredWordTarget, safely within the original bounds, rather than at the upper or lower edge. Shorten repetition or expand existing explanation without adding unsupported claims; the target is guidance, not a replacement for the user's constraints." },
+          { role: "user", content: JSON.stringify({ request: prompt, history, contract, violations, preferredWordTarget, draft: content }) },
         ];
         const outputTokens = Math.min(2048, this.limits().maxOutputTokens);
         const reserve = Math.ceil(JSON.stringify({ messages: repairMessages }).length / 3) + outputTokens;

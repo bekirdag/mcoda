@@ -78,6 +78,26 @@ test("all conversational routes validate presentation and permit one tool-free r
   }
 });
 
+test("word-bound repair aims inside the requested range while retaining the original contract", async t => {
+  const output = { ...unconstrainedOutput(), minWords: 250, maxWords: 300 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) return decision("reason", "Explain retry storms within the requested range.", "none", output);
+    if (calls === 2) return reply(Array(303).fill("draft").join(" "));
+    const data = JSON.parse(request.messages[1].content);
+    assert.deepEqual(data.contract, output);
+    assert.ok(data.preferredWordTarget > 250 && data.preferredWordTarget < 300);
+    assert.match(data.request, /No tools/);
+    assert.match(request.messages[0].content, /whitespace-separated/);
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    return reply(Array(data.preferredWordTarget).fill("revised").join(" "));
+  } });
+  const result = await controller.interact("Explain retry storms in 250 to 300 words. No tools.");
+  assert.ok(result.content.split(/\s+/u).length >= 250 && result.content.split(/\s+/u).length <= 300);
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  assert.equal(events.filter(event => event.type === "turn_result").length, 1);
+});
+
 test("presentation repair cannot repeat, execute a tool call or publish an invalid final answer", async t => {
   for (const emitsTool of [false, true]) {
     let calls = 0;

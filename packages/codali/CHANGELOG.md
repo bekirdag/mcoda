@@ -6,6 +6,8 @@
   Add one budgeted, tool-free presentation repair, preserve execution evidence,
   and share the versioned dispatcher prompt with live evaluations. Legacy router
   prompts now supply semantic policy without replacing the response schema.
+- Guide word-bound repairs toward an interior target while retaining exact user
+  limits and the single-repair budget; keep failed drafts when validation fails.
 - Add a structured, history-aware tool-scope decision and withhold optional
   calculation when the dispatcher does not explicitly allow tools. Preserve
   host restrictions and record scope conflicts. Fix local skill discovery when
