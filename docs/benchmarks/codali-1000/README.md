@@ -211,6 +211,27 @@ and a 2,048-token answer ceiling. Actual calculator requests and receipts are
 retained. Repository tool baselines keep their existing Docdex surface. This
 metadata selects evaluation controls, not the model's interaction route.
 
+The [R1 module-format erratum](../codali-r1/errata.json) records three follow-up
+code-generation families whose prompts omit an ES-module requirement even though
+the frozen grader requires one. It was recorded during validation, before any R1
+held-out inference. Preserve primary grades and selection, report exclusion of
+the complete affected families, and use this separate diagnostic to distinguish
+module loading from functional correctness:
+
+```sh
+node scripts/benchmarks/analyze-trust-code-compatibility.mjs \
+  --scores /path/to/r1-scored/scores.jsonl \
+  --corpus-root docs/benchmarks/codali-r1 \
+  --output /path/to/new-compatibility-directory
+```
+
+The diagnostic executes unchanged source as ESM and, when necessary, CommonJS
+inside the existing sandbox. It accepts named/default exports and compares the
+same hidden inputs and expected values outside the sandbox. Runtime errors,
+wrong values and input mutation remain failures. These secondary observations
+cannot rescue a failed primary promotion gate. The original 1,000-prompt corpus
+explicitly specifies ES modules and is unaffected.
+
 For a reproducible statistical report after scoring, run:
 
 ```sh

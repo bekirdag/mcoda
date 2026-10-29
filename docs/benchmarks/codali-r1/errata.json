@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "study": "codali-r1",
+  "recordedAt": "2026-10-29T04:32:21.151762+00:00",
+  "entries": [
+    {
+      "id": "module-format-unspecified",
+      "discoveredDuring": "Validation review, before any follow-up held-out inference",
+      "families": [
+        "code_generation.lru_simulation",
+        "code_generation.html_text_escape",
+        "code_generation.interval_pair_intersection"
+      ],
+      "caseCount": 30,
+      "validationCases": 10,
+      "heldOutCases": 20,
+      "defect": "The prompt says Export JavaScript function solve(input) without specifying an ES module. The frozen grader loads submission.mjs and requires a named solve export, rejecting otherwise valid CommonJS or default-export implementations.",
+      "scopeReason": "All three code-generation families share the ambiguous instruction. Debugging families supply an ES-module implementation to repair; the original 1000-prompt corpus explicitly requires ES modules.",
+      "handling": [
+        "Do not alter frozen prompts, graders, configurations, outputs, primary scores or candidate selection.",
+        "Report a symmetric exclusion of the complete affected families, never selected individual failures.",
+        "Report separate functional module-compatibility observations using unchanged source under isolated ESM/CommonJS loading and the same hidden input/output checks.",
+        "The diagnostic cannot replace primary grades or rescue a failed promotion gate. Any claimed improvement must disclose whether the whole-family exclusion changes the conclusion."
+      ]
+    }
+  ]
+}
