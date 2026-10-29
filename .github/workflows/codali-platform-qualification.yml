@@ -108,6 +108,10 @@ jobs:
           const toolchain = discoverHostToolchain(process.cwd());
           for (const name of ['node', 'pnpm', 'python3', 'rustc', 'cargo', 'rustdoc', 'cc']) assert.ok(toolchain.some(runtime => runtime.name === name), `${name} must be qualified, not skipped`);
           JS
+      - name: Install pinned document and deterministic runtimes
+        run: |
+          node packages/codali/config/deterministic/install-python.mjs
+          node packages/codali/config/documents/install-python.mjs
       - name: Diagnose actual macOS command sandbox
         if: runner.os == 'macOS'
         run: |

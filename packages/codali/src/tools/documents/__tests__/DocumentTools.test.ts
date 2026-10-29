@@ -9,6 +9,10 @@ import path from "node:path";
 import { createDocumentTools, defaultDocumentPythonRoot } from "../DocumentTools.js";
 import { inspectDocumentRuntime } from "../DocumentRuntime.js";
 import { ToolRegistry } from "../../ToolRegistry.js";
+import { executorStatus } from "../../shell/IsolatedExecutor.js";
+
+const isolation = executorStatus();
+const options = { skip: !isolation.available && isolation.reason };
 
 const registry = () => { const tools = new ToolRegistry(); for (const tool of createDocumentTools()) tools.register(tool); return tools; };
 const fixture = async (t: { after: (fn: () => Promise<void>) => void }) => {
@@ -18,7 +22,7 @@ const python = async (root: string, script: string) => promisify(execFile)(path.
 const blocks = [{ type: "heading", level: 2, text: "Observations" }, { type: "paragraph", text: "Verified value: 42. <not markup>" },
   { type: "table", headers: ["Item", "Count"], rows: [["A", 3], ["B", 5]] }, { type: "bullet", text: "Check the source." }];
 
-test("real Markdown, PDF and DOCX files preserve text/tables and bind exact bytes", async t => {
+test("real Markdown, PDF and DOCX files preserve text/tables and bind exact bytes", options, async t => {
   const root = await fixture(t), tools = registry();
   for (const format of ["md", "pdf", "docx"]) {
     const touched: string[] = [];
@@ -39,7 +43,7 @@ test("real Markdown, PDF and DOCX files preserve text/tables and bind exact byte
   assert.match(inspected.stdout, /^1\n/); assert.match(inspected.stdout, /Item\|Count\|A\|3\|B\|5/);
 });
 
-test("XLSX stores typed values and formula-looking input as literal text", async t => {
+test("XLSX stores typed values and formula-looking input as literal text", options, async t => {
   const root = await fixture(t), tools = registry();
   const result = await tools.execute("document_create", { path: "values.xlsx", format: "xlsx", sheets: [{ name: "Inputs", rows: [["Key", "Value"], ["exact integer", "9007199254740993"], ["number", 42], ["formula-looking", "=SUM(1,1)"], ["boolean", true]] }] }, { workspaceRoot: root });
   assert.equal(result.ok, true, result.output);
@@ -52,7 +56,7 @@ test("XLSX stores typed values and formula-looking input as literal text", async
   assert.match(inspected.stdout, /^0\n/); assert.match(inspected.stdout, /9007199254740993/); assert.match(inspected.stdout, /=SUM\(1,1\)/);
 });
 
-test("reading existing formulas, blank PDF pages and bounded content discloses limitations", async t => {
+test("reading existing formulas, blank PDF pages and bounded content discloses limitations", options, async t => {
   const root = await fixture(t), tools = registry();
   await python(root, "import sys; from pathlib import Path; from openpyxl import Workbook; from reportlab.pdfgen.canvas import Canvas; p=Path(sys.argv[1]); w=Workbook(); s=w.active; s.append(['Value']); s.append(['=1+1']); s.append([99]); w.save(p/'formula.xlsx'); c=Canvas(str(p/'blank.pdf')); c.rect(0,0,10,10); c.showPage(); c.save()");
   const sheet = await tools.execute("document_read", { path: "formula.xlsx", maxRows: 2 }, { workspaceRoot: root });
@@ -65,7 +69,7 @@ test("reading existing formulas, blank PDF pages and bounded content discloses l
   assert.equal((md.data as { text: string }).text.length, 100); assert.equal((md.data as { truncated: boolean }).truncated, true);
 });
 
-test("document path scopes, symlinks, replacement and cancellation are enforced", async t => {
+test("document path scopes, symlinks, replacement and cancellation are enforced", options, async t => {
   const root = await fixture(t), outside = await fixture(t), tools = registry();
   const args = { path: "report.md", format: "md", blocks };
   const denied = await tools.execute("document_create", args, { workspaceRoot: root, allowedWritePaths: [] });
@@ -86,7 +90,7 @@ test("document path scopes, symlinks, replacement and cancellation are enforced"
   await assert.rejects(fs.access(path.join(root, "cancelled.md")));
 });
 
-test("invalid documents and unsupported rendering fail without publishing a fake artifact", async t => {
+test("invalid documents and unsupported rendering fail without publishing a fake artifact", options, async t => {
   const root = await fixture(t), tools = registry();
   for (const args of [
     { path: "bad.pdf", format: "pdf", blocks: [{ type: "paragraph", text: "漢字" }] },
