@@ -12,6 +12,15 @@ export const toolActivity = (name: string, args: unknown): string => {
     case "run_shell": return `Running ${fragment([data.command, ...(Array.isArray(data.args) ? data.args.filter(x => typeof x === "string") : [])].join(" "))}`;
     case "docdex_symbols": case "docdex_ast": return `Understanding the structure of ${file || "the code"}`;
     case "docdex_impact_graph": return `Checking what depends on ${file || "this code"}`;
+    case "docdex_web_research": return query ? `Looking up “${query}” on the web` : "Looking up web sources";
+    case "server_time": return `Checking the server clock${data.timezone ? ` in ${fragment(data.timezone)}` : ""}`;
+    case "calculate": return `Calculating ${fragment(data.expression)}`;
+    case "browser_open": return `Opening ${fragment(data.url)} in the browser`;
+    case "browser_read": return "Reading more of the browser page";
+    case "skill_list": return "Finding relevant skills";
+    case "skill_load": return `Loading ${fragment(data.id) || "a skill"}`;
+    case "skill_read": return "Reading a skill reference";
+    case "context_read": return "Recovering earlier conversation details";
     case "work_claim": return "Starting the next task";
     case "work_verify": return "Reviewing the work and its checks";
     case "work_complete": return "Checking that every requirement is complete";
@@ -28,7 +37,7 @@ export const terminalHelp = (): string => [
   "CONVERSATION", "  /new             Start fresh; keep the saved session", "  /sessions        Browse saved conversations", "  /resume ID       Pick up a saved session", "  /continue        Resume the active work", "  /stop            Stop safely and keep progress", "  /quit            Close Codali", "",
   "WORK & REVIEW", "  /status          Current workspace and progress", "  /goal · /plan · /tasks · /decisions", "  /diff            Inspect workspace changes", "  /review          Review the current work", "  /artifacts       Browse, open or export generated files", "",
   "MODELS & LIMITS", "  /usage           Tokens, model calls and account limits", "  /model · /models  Inspect or select model routes", "  /effort          low · medium · high · max", "  /permissions     plan · ask · workspace", "  /config          Inspect, validate or reload configuration", "",
-  "CONTEXT & RECOVERY", "  /context · /compact · /checkpoint · /fork", "  /tools · /mcp · /docdex", "  /reconcile · /reconcile-media · /retention", "",
+  "CONTEXT & RECOVERY", "  /context · /compact · /checkpoint · /fork", "  /skills          Browse available local skills", "  /tools · /mcp · /docdex", "  /reconcile · /reconcile-media · /retention", "",
   "KEYBOARD & MOUSE", "  Enter            Send or queue a message", "  Alt+Enter        New line (Ctrl+J also works)", "  Wheel / PgUp↓    Scroll messages and command views", "  Ctrl+End         Return to the latest message", "  Shift+drag       Select text in mouse-aware terminals", "  Ctrl+O           Show tool details", "  Ctrl+P / Ctrl+R  Commands / input history", "  Tab              Complete a command or @file", "  Ctrl+S           Interrupt and steer", "  Esc / Ctrl+C     Cancel; Esc also closes views",
 ].join("\n");
 

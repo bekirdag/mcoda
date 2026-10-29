@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/mswarm",
-  "version": "0.1.135-codali.22",
+  "version": "0.1.135-codali.23",
   "description": "Owner-run mswarm node for exposing local mcoda agents through the mswarm self-hosted gateway.",
   "type": "module",
   "main": "dist/server.js",
@@ -57,8 +57,10 @@
     "@mcoda/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "fastify": "^5.7.4",
+    "playwright-core": "1.64.1",
     "string-width": "8.3.0",
     "undici": "^6.28.0",
+    "yaml": "2.9.0",
     "zod": "4.5.2"
   }
 }

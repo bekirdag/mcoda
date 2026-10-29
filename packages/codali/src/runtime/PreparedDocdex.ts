@@ -19,6 +19,7 @@ export function preparedDocdexMessage(message: ProviderMessage): ProviderMessage
   if (record(result.meta)) {
     const meta = { ...result.meta };
     delete meta.docdex_request_id; delete meta.docdex_operation;
+    for (const key of ["repo_id", "repo_root", "project_root", "state_dir", "query", "context_assembly"]) delete meta[key];
     if (Object.keys(meta).length) result.meta = meta;
     else delete result.meta;
   }

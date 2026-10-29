@@ -265,7 +265,10 @@ test("DocdexClient uses MCP for tree/open/profile/web/capabilities", { concurren
     if (url.endsWith("/v1/mcp")) {
       const body = typeof init?.body === "string" ? init.body : "{}";
       const payload = JSON.parse(body) as { method?: string; params?: Record<string, unknown>; id?: string };
-      seen.push({ method: payload.method, params: payload.params });
+      if (payload.method === "tools/call") {
+        assert.equal(payload.params?.name, "docdex_web_research");
+        seen.push({ method: String(payload.params?.name), params: payload.params?.arguments as Record<string, unknown> });
+      } else seen.push({ method: payload.method, params: payload.params });
       return makeJsonResponse({ jsonrpc: "2.0", id: payload.id, result: { ok: true } });
     }
     return makeErrorResponse(404, "not found");
@@ -382,7 +385,7 @@ test("DocdexTools expose expanded docdex toolset", { concurrency: false }, async
     if (url.endsWith("/v1/mcp")) {
       const body = typeof init?.body === "string" ? init.body : "{}";
       const payload = JSON.parse(body) as { method?: string; params?: Record<string, unknown>; id?: string };
-      if (payload.method) mcpMethods.push(payload.method);
+      if (payload.method) mcpMethods.push(payload.method === "tools/call" ? String(payload.params?.name) : payload.method);
       return makeJsonResponse({ jsonrpc: "2.0", id: payload.id, result: { ok: true } });
     }
     calls.push(url);

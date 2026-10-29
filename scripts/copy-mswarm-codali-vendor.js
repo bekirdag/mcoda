@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "packages", "codali", "dist");
 const destination = path.join(root, "packages", "mswarm", "dist", "vendor", "codali");
+const skills = path.join(root, "packages", "codali", "config", "skills");
+const vendoredSkills = path.resolve(destination, "../config/skills");
 
 // The copied runtime resolves dependencies from @mcoda/mswarm, not from the
 // source Codali package. Refuse an incomplete runtime before replacing output.
@@ -24,6 +26,9 @@ if (!existsSync(source)) {
 rmSync(destination, { recursive: true, force: true });
 mkdirSync(destination, { recursive: true });
 copyDirectory(source, destination);
+// SkillCatalog resolves ../../config/skills from the runtime's session module.
+rmSync(vendoredSkills, { recursive: true, force: true });
+if (existsSync(skills)) copyDirectory(skills, vendoredSkills);
 
 function copyDirectory(from, to) {
   mkdirSync(to, { recursive: true });

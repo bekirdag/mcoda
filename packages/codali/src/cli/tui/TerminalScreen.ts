@@ -1,4 +1,5 @@
 import { cells, fitCells, padCells, wrapCells } from "./TerminalCells.js";
+import { markdownRows } from "./TerminalMarkdown.js";
 
 export type BlockKind = "user" | "assistant" | "tool" | "error" | "notice";
 export interface TranscriptBlock { id: string; kind: BlockKind; title: string; text: string; summary?: string; }
@@ -43,7 +44,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
     const tone = block.kind === "error" ? "31" : block.kind === "user" ? "36" : block.kind === "tool" ? "2" : "1;36";
     transcript.push(paint(tone, fitCells(label, width)));
     let cached = blockRows.get(block);
-    if (!cached || cached.text !== block.text || cached.width !== width) { cached = { text: block.text, width, rows: wrapCells(block.text.replace(/\t/g, "  "), width) }; blockRows.set(block, cached); }
+    if (!cached || cached.text !== block.text || cached.width !== width) { cached = { text: block.text, width, rows: markdownRows(block.text, width) }; blockRows.set(block, cached); }
     const content = cached.rows;
     const visible = block.kind === "tool" && !state.expanded ? block.summary ? wrapCells(block.summary, width).slice(0, 3) : content.slice(0, 3) : content;
     let code = false, language = "";
@@ -87,7 +88,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   if (overlay) {
     const bodyWidth = width - 4, available = Math.max(1, rows - 5 - (overlay.choices ? overlay.choices.length + 1 : 0));
     let cached = overlayRows.get(overlay);
-    if (!cached || cached.lines !== overlay.lines || cached.width !== bodyWidth) { cached = { lines: overlay.lines, width: bodyWidth, rows: overlay.lines.flatMap(line => wrapCells(line.replace(/\t/g, "  "), bodyWidth)) }; overlayRows.set(overlay, cached); }
+    if (!cached || cached.lines !== overlay.lines || cached.width !== bodyWidth) { cached = { lines: overlay.lines, width: bodyWidth, rows: markdownRows(overlay.lines.join("\n"), bodyWidth) }; overlayRows.set(overlay, cached); }
     const contents = cached.rows;
     const offset = Math.min(Math.max(0, contents.length - available), Math.max(0, overlay.offset));
     const panel = [paint("1;36", fitCells(overlay.title, bodyWidth)), ...contents.slice(offset, offset + available).map(line => /^[A-Z][A-Z &/]+$/.test(line) ? paint("1;36", line) : line)];

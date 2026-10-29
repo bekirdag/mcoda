@@ -319,6 +319,25 @@
           "minimum": 1
         }
       }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "directories": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*\\S[^\\u0000]*$"
+          }
+        }
+      }
     }
   },
   "required": [
@@ -592,9 +611,7 @@
               "const": false
             }
           },
-          "required": [
-            "enabled"
-          ]
+          "required": ["enabled"]
         },
         {
           "required": [

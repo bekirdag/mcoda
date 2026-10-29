@@ -20,6 +20,11 @@ export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (fileWrite.has(tool.name)) return "write";
   if (["tools_discover", "tools_enable"].includes(tool.name)) return "read";
   if (tool.name === "calculate" && tool.capability === "calculation" && tool.readOnly) return "read";
+  if (tool.name === "server_time" && tool.capability === "clock" && tool.readOnly) return "read";
+  if (["skill_list", "skill_load", "skill_read"].includes(tool.name) && tool.capability === "skill_read" && tool.readOnly) return "read";
+  if (tool.name === "context_read" && tool.capability === "context_read" && tool.readOnly) return "read";
+  if (tool.name === "browser_read" && tool.capability === "browser_snapshot" && tool.readOnly) return "read";
+  if (tool.name === "browser_open" && tool.capability === "browser") return "web";
   if (["media_job_status", "media_job_wait", "delegate_helper"].includes(tool.name)) return "read";
   if (tool.name === "media_job_cancel") return "media";
   if (/image.*generat|audio.*generat|video.*generat|media.*generat/.test(tool.name) || /^(image|audio|video|media)_generation$/.test(tool.capability)) return "media";

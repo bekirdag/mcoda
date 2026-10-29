@@ -13,6 +13,8 @@ test('vendoring rejects missing runtime dependencies before replacing an existin
     const vendor = path.join(target, 'dist/vendor/codali');
     await mkdir(path.join(root, 'scripts'), { recursive: true });
     await mkdir(path.join(source, 'dist'), { recursive: true });
+    await mkdir(path.join(source, 'config/skills/planning'), { recursive: true });
+    await writeFile(path.join(source, 'config/skills/planning/SKILL.md'), 'Planning instructions.\n');
     await mkdir(vendor, { recursive: true });
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }));
     await copyFile(new URL('../../scripts/copy-mswarm-codali-vendor.js', import.meta.url), path.join(root, 'scripts/copy.mjs'));
@@ -29,5 +31,6 @@ test('vendoring rejects missing runtime dependencies before replacing an existin
     await writeFile(path.join(target, 'package.json'), JSON.stringify({ dependencies: { 'new-terminal-dependency': '1.2.3' } }));
     const valid = run(); assert.equal(valid.status, 0, valid.stderr);
     assert.equal(await readFile(path.join(vendor, 'index.js'), 'utf8'), 'export const runtime = true;\n');
+    assert.equal(await readFile(path.resolve(vendor, '../config/skills/planning/SKILL.md'), 'utf8'), 'Planning instructions.\n');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

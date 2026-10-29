@@ -81,6 +81,7 @@ export interface OrchestrationConfig {
   effort?: Partial<Record<EffortLevel, Partial<EffortBudget>>>;
   taskControl?: TaskControlConfig;
   interaction?: InteractionConfig;
+  skills?: { enabled?: boolean; directories?: string[] };
   docdex?: { binary?: string; binarySha256?: string; startupTimeoutMs?: number };
 }
 export interface ResolvedOrchestrationConfig {
@@ -125,7 +126,7 @@ export const orchestrationHash = (config: OrchestrationConfig): string => create
 
 export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig => {
   const root = object(input, "orchestration");
-  fields(root, ["schemaVersion", "profile", "providers", "models", "bindings", "routing", "effort", "taskControl", "docdex", "interaction"], "orchestration");
+  fields(root, ["schemaVersion", "profile", "providers", "models", "bindings", "routing", "effort", "taskControl", "docdex", "interaction", "skills"], "orchestration");
   if (root.schemaVersion !== 1) throw new Error("Unsupported orchestration schemaVersion");
   nonempty(root.profile, "profile");
   const providers = object(root.providers, "providers");
@@ -231,6 +232,11 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
         if (Number(review.maxOutputTokens) > 4096) throw new Error("interaction.answerReview.maxOutputTokens: exceeds 4096");
       }
     }
+  }
+  if (root.skills !== undefined) {
+    const skills = object(root.skills, "skills"); fields(skills, ["enabled", "directories"], "skills");
+    if (skills.enabled !== undefined && typeof skills.enabled !== "boolean") throw new Error("skills.enabled: expected boolean");
+    if (skills.directories !== undefined && (!Array.isArray(skills.directories) || skills.directories.length > 16 || skills.directories.some(value => typeof value !== "string" || !value.trim() || value.length > 4096 || value.includes("\0")))) throw new Error("skills.directories: expected at most 16 directory paths");
   }
   if (root.docdex !== undefined) {
     const d = object(root.docdex, "docdex"); fields(d, ["binary", "binarySha256", "startupTimeoutMs"], "docdex");

@@ -1,5 +1,88 @@
 # Orchestration configuration
 
+## Native tools, skills and bounded context
+
+The terminal controller exposes native function calls to capable configured models.
+Read-only inspection uses Docdex for repository search, source reads and structural
+analysis, and `docdex_web_research` for external research. Local searches use the
+index-only batch endpoint; they cannot silently trigger web or model fallback.
+Web calls pass the permission gate before starting the private Docdex runtime.
+With an mswarm lead, discovery uses a capability-authenticated bridge owned by the
+controller; the service credential is never written into the private daemon config.
+An empty result does not automatically replay a metered web request.
+Discovery links remain separate from fetched evidence, and generated summaries
+are labeled. Nested Docdex inference respects its requested output limit and
+cannot spend the token/call reserve needed for a final answer.
+After the first native tool choice, inspection keeps related capability schemas
+in context; other read tools remain available through discovery and explicit
+enabling. This reduces repeated context without classifying prompts by keywords.
+
+`server_time` reads the execution host clock, with UTC, Unix milliseconds and an
+optional IANA timezone. `calculate` evaluates bounded numeric expressions without
+running code. `browser_open` reads a rendered accessibility snapshot in an isolated
+Chrome/Chromium process; `browser_read` pages through that captured snapshot without
+another network request. The default snapshot covers the page's main landmark
+when available; `scope: "page"` requests the whole page. Results retain valid bounded JSON and pagination
+handles within the inspection loop's output limit.
+Set `CODALI_BROWSER_PATH` to an absolute executable path
+if automatic discovery cannot find Chrome. Browser navigation requires web
+permission (`--allow-web` or an interactive approval); the planning permission
+profile continues to allow read operations only. Browser contexts have no login
+profile, block POST/form submissions, downloads, service workers and WebSockets,
+and close after each navigation. Page content is untrusted evidence. This browser
+surface supports reading and following URLs, not arbitrary browser automation.
+
+Use `/skills` to inspect available `SKILL.md` packages. Codali discovers its bundled
+planning skill, workspace `.codali/skills` and `.agents/skills`, and user
+`~/.codali/skills`, `~/.agents/skills`, `~/.codex/skills` and `~/.claude/skills`.
+Additional roots are configurable:
+
+```json
+"skills": {
+  "enabled": true,
+  "directories": ["~/shared-agent-skills", ".team/skills"]
+}
+```
+
+Discovery is bounded to 128 skills, 256 directories and three directory levels.
+Each text resource is limited to 64 KiB. Standard YAML `name` and `description`
+metadata are required; optional `compatibility` is shown with the actual host
+platform. A small workspace/builtin catalog enters tool-capable prompts;
+`skill_list` discovers imported packages, `skill_load` reads instructions, and
+`skill_read` retrieves referenced text in pages. Exact IDs disambiguate duplicate
+names. Resources cannot escape their skill directory through traversal or
+symlinks. Scripts and hooks never run automatically, and `allowed-tools` metadata
+does not grant permission. A Mac-specific skill still needs its declared platform
+and tools; loading its text does not provide those dependencies. Configuration
+reload refreshes the skill roots.
+
+The bundled planning skill uses durable goals, task dependencies, allowed paths,
+decisions and verification receipts. Planning mode records future work and leaves
+the implementation goal open. If inference budget runs out after a plan was
+saved, the controller shows that record with an explicit partial-work notice;
+it does not mark implementation complete. Markdown tables render as aligned boxes in the TUI,
+or labeled fields on narrow screens, including in command overlays.
+
+All model routes account for message content, tool schemas, response format,
+reserved output and a context margin before dispatch. Near the configured model
+window, deterministic compression shortens earlier assistant/tool content while
+preserving user/system messages and native call/result identities. Conversation
+history uses the same extractive approach instead of silently discarding older
+user constraints. Abbreviated content identifies a saved source; `context_read`
+recovers it in bounded pages or exact `offset`/`maxChars` spans, including after resume or conversation fork. Full
+originals remain in the redacted private event transcript. The canonical work
+record retains goals, requirements, decisions, pending tasks and verification
+evidence. Compression makes no additional model calls and is not a semantic
+summary. If immutable instructions and schemas cannot fit, the request fails
+before dispatch with an actionable error rather than dropping constraints.
+
+Design references: [Agent Skills specification](https://agentskills.io/specification),
+[Playwright browser contexts](https://playwright.dev/docs/api/class-browsercontext),
+[Playwright accessibility snapshots](https://playwright.dev/docs/api/class-page#page-aria-snapshot),
+and [Browser Use browser configuration](https://docs.browser-use.com/open-source/customize/browser/basics).
+These additions require separate installed/live qualification; the completed
+original and R1 benchmark results remain frozen and did not pass quality promotion.
+
 The JSON file declares providers, model identities, role bindings, effort limits
 and task-control policy. It contains credential references, never secret values.
 The loader rejects unknown fields, undeclared models, alias cycles, unsafe URLs,

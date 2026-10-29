@@ -799,7 +799,7 @@ test("DocdexClient capability probe falls back when MCP probe is unavailable", {
   });
 });
 
-test("DocdexClient falls back to HTTP search for web research when MCP fails", {
+test("DocdexClient falls back to HTTP search only when the MCP transport is absent", {
   concurrency: false,
 }, async () => {
   const calls: string[] = [];
@@ -810,9 +810,9 @@ test("DocdexClient falls back to HTTP search for web research when MCP fails", {
     }
     if (url.endsWith("/v1/mcp")) {
       const body = typeof init?.body === "string" ? init.body : "{}";
-      const payload = JSON.parse(body) as { method?: string };
-      if (payload.method === "docdex_web_research") {
-        return makeErrorResponse(500, "mcp proxy timeout");
+      const payload = JSON.parse(body) as { method?: string; params?: { name: string } };
+      if (payload.method === "tools/call" && payload.params?.name === "docdex_web_research") {
+        return makeErrorResponse(404, "MCP route not found");
       }
       return makeJsonResponse({ jsonrpc: "2.0", result: { ok: true } });
     }

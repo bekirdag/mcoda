@@ -109,6 +109,17 @@ Accounting settlement does not mark the coding task complete or replay inference
 
 ### Persistent instructions and Docdex
 
+Use `/skills` to inspect available local skills. Codali loads `SKILL.md` metadata
+from workspace and user skill directories, then reads instructions/references
+only when needed. The bundled planning skill records dependencies and acceptance
+criteria; imported Mac skills still require their declared platform and tools.
+See [skills and native tools](ORCHESTRATION.md#native-tools-skills-and-bounded-context)
+for directory configuration, browser setup and permission behavior.
+
+The TUI renders Markdown tables as aligned boxes or labeled fields on narrow
+screens. Near a model's context limit, Codali abbreviates older assistant/tool
+content, preserves user constraints, and retains recoverable private originals.
+
 The terminal loads the packaged [Codali operating guide](config/AGENTS.md),
 including the actual Docdex tool argument names, repository scope, evidence
 requirements and permission boundaries. A greeting does not start repository

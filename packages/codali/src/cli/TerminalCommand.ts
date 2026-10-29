@@ -24,7 +24,7 @@ import { proposeTerminalModel, saveTerminalModel, terminalModelOperation } from 
 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
-const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/model", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/tools", "/mcp", "/docdex", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/clear", "/steer", "/continue", "/stop", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/exit", "/quit"];
+const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/model", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/skills", "/tools", "/mcp", "/docdex", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/clear", "/steer", "/continue", "/stop", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/exit", "/quit"];
 const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH] [--docdex-binary PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nInteractive terminals open the TUI; --plain selects line-oriented output.\nEnter sends/queues; Alt-Enter or Ctrl-J inserts a newline; Ctrl-S steers.\nCtrl-P commands; Ctrl-R history; Tab completes commands and @files.\nPage Up/Down scroll; Ctrl-O expands tools; Escape closes views or cancels.\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
 
 interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; docdexBinary?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
@@ -300,6 +300,14 @@ export class TerminalCommand {
       else if (name === "/decisions") output(controller.state?.decisions ?? []);
       else if (name === "/context") output({ conversation: controller.conversationSnapshot(), goal: controller.state, configHash: resolved.hash });
       else if (name === "/diff") output(await controller.diff());
+      else if (name === "/skills") {
+        if (value) throw new Error("Usage: /skills. Ask Codali to use a named skill in your next message.");
+        if (!controller.busy) await controller.skills.refresh();
+        const catalog = controller.skills.list();
+        const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ");
+        output(["| Skill | Description |", "| --- | --- |", ...catalog.skills.map(skill => `| ${cell(skill.id)} | ${cell(skill.description)} |`),
+          ...(!catalog.skills.length ? ["No skills found."] : []), "", ...catalog.warnings, "", "Ask Codali to use a skill by name. Add SKILL.md folders under .codali/skills or configure skills.directories."].join("\n"));
+      }
       else if (name === "/tools") output(controller.registry.list().map(tool => ({ name: tool.name, description: tool.description })));
       else if (name === "/mcp") output({ connectors: controller.status().connectors, tools: controller.registry.list().filter(tool => tool.name.startsWith("mcp")).map(tool => ({ name: tool.name, description: tool.description })) });
       else if (name === "/docdex") output({ configuredRuntime: resolved.config.docdex, embedding: resolved.config.bindings.embedding, availableTools: controller.registry.list().filter(tool => tool.name.startsWith("docdex")).map(tool => tool.name), initialization: "Private repository indexing starts when execution needs it" });

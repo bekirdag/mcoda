@@ -66,28 +66,6 @@ const hasWebFindings = (payload: unknown): boolean => {
 };
 
 /**
- * Whether a web-research payload carries anything quotable. Docdex answers a
- * cache hit with discovery metadata only, which reads as success but gives a
- * model nothing to cite.
- */
-const hasWebContent = (payload: unknown): boolean => {
-  if (!isRecord(payload)) return false;
-  // Fetched pages first. `hits` is not evidence of a successful fetch: with
-  // forceWeb it still carries local index matches, so judging by it alone
-  // reports success for a call that downloaded nothing.
-  const discovery = isRecord(payload.webDiscovery) ? payload.webDiscovery : undefined;
-  const fetches = Array.isArray(discovery?.fetches) ? discovery.fetches : [];
-  if (fetches.some((page) => isRecord(page) && (page.ai_digested_content || page.content))) {
-    return true;
-  }
-  for (const key of ["web_context", "webContext"]) {
-    const value = payload[key];
-    if (Array.isArray(value) && value.length > 0) return true;
-  }
-  return false;
-};
-
-/**
  * Rewrites a path into the repo-relative form docdex accepts.
  *
  * Docdex answers `invalid path` for a leading slash, a `./` prefix, or an
@@ -224,56 +202,50 @@ export const normalizeWebQuery = (value: unknown): string | undefined => {
     : collapsed;
 };
 
-/** Pages to keep from a web research call, and how much of each. */
-const MAX_WEB_PAGES = 6;
-const MAX_WEB_PAGE_CHARS = 6_000;
+/** Keep web evidence readable inside the smallest native inspection result cap. */
+const MAX_WEB_OUTPUT_CHARS = 3_800;
 
-/**
- * Reduces a web-research response to the pages it actually fetched.
- *
- * The raw response is the wrong shape twice over. The fetched pages — the whole
- * point of the call — are buried at `webDiscovery.fetches`, where the evidence
- * normalizer does not look, while `hits` holds whatever the *local* index
- * matched. For an external question those hits are repo source files, so a
- * question about a central bank's interest rate came back citing eight files
- * from this repository and none of the eight pages just downloaded.
- *
- * Suppressing local hits by asking docdex to skip its local search does not
- * work: docdex indexes the pages it fetches and serves them back through that
- * same path, so skipping it returns nothing at all. The response has to be
- * reshaped here instead.
- */
+/** Preserve discovery links without treating an unvisited result as fetched evidence. */
 const toWebResearchOutput = (payload: unknown): unknown => {
-  if (!isRecord(payload)) return payload;
-  const discovery = isRecord(payload.webDiscovery) ? payload.webDiscovery : undefined;
-  const fetches = Array.isArray(discovery?.fetches) ? discovery.fetches : [];
-  if (fetches.length === 0) return payload;
-
-  const pages = fetches
-    .filter(isRecord)
-    .filter((page) => typeof page.url === "string")
-    .sort((a, b) => Number(b.relevance_score ?? 0) - Number(a.relevance_score ?? 0))
-    .slice(0, MAX_WEB_PAGES)
-    .map((page) => {
-      // The digest is the model-written summary docdex already produced; it
-      // says more per character than the raw page and costs the run less.
-      const body =
-        (typeof page.ai_digested_content === "string" && page.ai_digested_content) ||
-        (typeof page.content === "string" && page.content) ||
-        "";
-      return {
-        url: page.url,
-        content: body.slice(0, MAX_WEB_PAGE_CHARS),
-        ...(page.relevance_score !== undefined ? { relevanceScore: page.relevance_score } : {}),
-      };
-    })
-    .filter((page) => page.content.trim().length > 0);
-
-  if (pages.length === 0) return payload;
-  return {
-    query: isRecord(discovery?.discovery) ? discovery.discovery.query : undefined,
-    pages,
+  if (!isRecord(payload) || !isRecord(payload.webDiscovery)) return payload;
+  const discovery = payload.webDiscovery;
+  const inner = isRecord(discovery.discovery) ? discovery.discovery : discovery;
+  const fetches = Array.isArray(discovery.fetches) ? discovery.fetches.filter(isRecord) : [];
+  const results = Array.isArray(inner.results) ? inner.results.filter(isRecord) : [];
+  // Never truncate a URL into a different citation. Oversized/invalid URLs are omitted.
+  const validUrl = (value: unknown): value is string => {
+    if (typeof value !== "string" || value.length > 800) return false;
+    try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; }
   };
+  const pages = fetches.filter(page => validUrl(page.url))
+    .sort((a, b) => Number(b.relevance_score ?? 0) - Number(a.relevance_score ?? 0)).slice(0, 6)
+    .map(page => {
+      const raw = typeof page.content === "string" ? page.content.trim() : "";
+      const body = raw || (typeof page.ai_digested_content === "string" ? page.ai_digested_content : "");
+      return { url: page.url as string, content: body.slice(0, 1500),
+        evidenceType: raw ? "fetched_excerpt" : "generated_summary", truncated: body.length > 1500 };
+    }).filter(page => page.content.length > 0);
+  const fetched = new Set(pages.map(page => page.url));
+  const discoveries = results.filter(item => validUrl(item.url)).slice(0, 8).map(item => ({
+    url: item.url as string, title: typeof item.title === "string" ? item.title.slice(0, 120) : "",
+    visited: fetched.has(item.url as string),
+  }));
+  const output = { query: typeof inner.query === "string" ? inner.query.slice(0, 400) : undefined,
+    notice: "Discovery links and generated summaries are leads, not verified primary sources. Open the relevant page to verify claims; cite only URLs actually retrieved.",
+    pages, discoveries, truncated: pages.some(page => page.truncated) || pages.length < fetches.length || discoveries.length < results.length };
+  // Account for JSON escaping and metadata, retaining valid JSON at the tool-loop cap.
+  while (JSON.stringify(output, null, 2).length > MAX_WEB_OUTPUT_CHARS) {
+    output.truncated = true;
+    const longest = pages.reduce<typeof pages[number] | undefined>((best, page) => !best || page.content.length > best.content.length ? page : best, undefined);
+    if (longest && longest.content.length > 200) {
+      longest.content = longest.content.slice(0, Math.max(200, longest.content.length - 300)); longest.truncated = true;
+    } else if (discoveries.length > 1) discoveries.pop();
+    else if (pages.length) pages.pop();
+    else if (discoveries.length) discoveries.pop();
+    else break;
+  }
+  // A visited link may have lost its excerpt to the bound; visited still records a real fetch.
+  return output;
 };
 
 /** Hits to re-snippet. Enough to cover the answer, few enough to stay quick. */
@@ -743,7 +715,7 @@ const docdexToolDefinitions = (
         query: { type: "string" },
         forceWeb: { type: "boolean" },
         skipLocalSearch: { type: "boolean" },
-        webLimit: { type: "number" },
+        webLimit: { type: "integer", minimum: 1, maximum: 5 },
         noCache: { type: "boolean" },
       },
     },
@@ -775,8 +747,8 @@ const docdexToolDefinitions = (
       try {
         result = await client.webResearch(normalizedQuery, {
           forceWeb: forceWeb ?? true,
-          skipLocalSearch,
-          webLimit,
+          skipLocalSearch: skipLocalSearch ?? true,
+          webLimit: webLimit ?? 3,
           noCache,
         });
       } catch (error) {
@@ -787,29 +759,9 @@ const docdexToolDefinitions = (
         throw error;
       }
 
-      // A cache hit returns discovery metadata with no page content at all —
-      // no web_context, no hits — so the run sees that a search happened and
-      // nothing it can quote. Retrying uncached fetches the pages the cache
-      // was standing in for.
-      if (!noCache && !hasWebContent(result)) {
-        try {
-          const fresh = await client.webResearch(normalizedQuery, {
-            forceWeb: forceWeb ?? true,
-            skipLocalSearch,
-            webLimit,
-            noCache: true,
-          });
-          if (hasWebContent(fresh)) {
-            result = fresh;
-          }
-        } catch (error) {
-          // Keep the cached response rather than failing a search that worked —
-          // but a refusal is worth remembering, so the next question does not
-          // spend another request discovering the same thing.
-          if (isWebQuotaRefusal(error)) noteWebRefusal(error);
-        }
-      }
-
+      // An empty/unavailable result is still an outcome. Do not spend a second
+      // metered search inside one tool receipt; a deliberate noCache retry must
+      // be a new native call, subject to the normal step and permission budget.
       return toOutput(toWebResearchOutput(result));
     },
   },

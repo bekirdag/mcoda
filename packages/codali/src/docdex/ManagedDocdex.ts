@@ -32,6 +32,7 @@ export class ManagedDocdex {
   constructor(private readonly options: {
     workspaceRoot: string; stateRoot: string; embeddings: ConfiguredEmbeddings; provider: Provider;
     binary?: string; binarySha256?: string; signal?: AbortSignal; allowWeb?: boolean; startupTimeoutMs?: number;
+    webSearch?: (query: string, signal: AbortSignal) => Promise<unknown>;
     onStatus?: (status: string) => void;
   }) {}
 
@@ -52,14 +53,17 @@ export class ManagedDocdex {
     const prefix = `/${capability}`;
     this.bridge = createServer(async (request, response) => {
       const send = (status: number, body: unknown) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
-      if (request.headers.origin || !request.url?.startsWith(`${prefix}/`)) { send(403, { error: "forbidden" }); return; }
+      // Docdex resolves the web route from the origin, discarding baseUrl paths.
+      // Accept only this exact route with the ephemeral header capability.
+      const webRoute = request.url === "/v1/swarm/web/search" && request.headers["x-api-key"] === capability;
+      if (request.headers.origin || (!webRoute && !request.url?.startsWith(`${prefix}/`))) { send(403, { error: "forbidden" }); return; }
       if (this.activeRequests >= 2) { send(429, { error: "managed inference busy" }); return; }
       this.activeRequests++;
       const requestAbort = new AbortController();
       const onClose = () => { if (!response.writableEnded) requestAbort.abort(); };
       response.once("close", onClose);
       try {
-        const route = request.url.slice(prefix.length);
+        const route = webRoute ? request.url! : request.url!.slice(prefix.length);
         if (request.method === "GET" && route === "/api/version") { send(200, { version: "codali-managed-v1" }); return; }
         if (request.method === "GET" && route === "/api/tags") { send(200, { models: [{ name: "configured-docdex-helper", model: "configured-docdex-helper" }] }); return; }
         if (request.method !== "POST") { send(405, { error: "method not allowed" }); return; }
@@ -71,6 +75,11 @@ export class ManagedDocdex {
         }
         const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
         const requestSignal = AbortSignal.any([signal, requestAbort.signal]);
+        if (route === "/v1/swarm/web/search") {
+          if (!this.options.allowWeb || !this.options.webSearch || request.headers["x-api-key"] !== capability) { send(403, { error: "web research unavailable" }); return; }
+          if (typeof body.query !== "string" || !body.query.trim() || body.query.length > 4000 || body.tool_id !== "docdex") { send(400, { error: "invalid web query" }); return; }
+          send(200, await this.options.webSearch(body.query, requestSignal)); return;
+        }
         if (route === "/v1/embeddings") {
           if (body.model !== model || !["query", "document"].includes(String(body.input_type))) { send(400, { error: "managed embedding identity and input_type are required" }); return; }
           const input = typeof body.input === "string" ? [body.input] : body.input;
@@ -84,7 +93,9 @@ export class ManagedDocdex {
         const messages: ProviderMessage[] = route === "/api/generate" && typeof body.prompt === "string"
           ? [{ role: "user", content: body.prompt }] : body.messages as ProviderMessage[];
         if (!Array.isArray(messages) || messages.length > 128 || messages.some(message => !message || !["system", "user", "assistant"].includes(message.role) || typeof message.content !== "string")) { send(400, { error: "invalid inference messages" }); return; }
-        const result = await this.options.provider.generate({ messages, signal: requestSignal, stream: false, maxTokens: 2048 });
+        const requested = body.options && typeof body.options === "object" ? (body.options as Record<string, unknown>).num_predict : undefined;
+        const maxTokens = typeof requested === "number" && Number.isSafeInteger(requested) && requested > 0 ? Math.min(2048, requested) : 2048;
+        const result = await this.options.provider.generate({ messages, signal: requestSignal, stream: false, maxTokens });
         send(200, { model: "configured-docdex-helper", created_at: new Date().toISOString(), done: true,
           message: { role: "assistant", content: result.message.content }, response: result.message.content,
           ...(result.usage ? { prompt_eval_count: result.usage.inputTokens, eval_count: result.usage.outputTokens } : {}) });
@@ -98,7 +109,11 @@ export class ManagedDocdex {
       const configPath = path.join(this.launchDirectory, "config.toml");
       const repositoryState = path.join(root, "repositories", createHash("sha256").update(path.resolve(this.options.workspaceRoot)).digest("hex"));
       const config = `[core]\nglobal_state_dir = ${JSON.stringify(root)}\n[server]\nhttp_bind_addr = "127.0.0.1:${port}"\n[llm]\nprovider = "ollama"\nbase_url = ${JSON.stringify(bridgeBase)}\ndefault_model = "configured-docdex-helper"\nembedding_model = ${JSON.stringify(model)}\n[llm.delegation]\nenabled = false\nauto_enable = false\n[memory]\nenabled = true\n[memory.profile]\nembedding_model = "hash-embed-v1"\nembedding_dim = 768\n[memory.conversations]\nenabled = true\nauto_capture = false\n[memory.personal_preferences]\nenabled = false\n[memory.user_memory_sync]\nenabled = false\n`;
-      await fs.writeFile(configPath, config, { mode: 0o600, flag: "wx" });
+      // The private process sees only a short-lived bridge credential. The host
+      // retains the service credential and owns authorization/audit at tool entry.
+      const webConfig = this.options.allowWeb && this.options.webSearch
+        ? `\n[web]\ndiscovery_provider = "mswarm"\n[integrations.mswarm]\nbase_url = ${JSON.stringify(bridgeBase)}\napi_key = ${JSON.stringify(capability)}\n` : "";
+      await fs.writeFile(configPath, config + webConfig, { mode: 0o600, flag: "wx" });
       const env: NodeJS.ProcessEnv = {};
       for (const key of ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SystemRoot"]) if (process.env[key]) env[key] = process.env[key];
       Object.assign(env, { DOCDEX_CONFIG_PATH: configPath, DOCDEX_AUTH_TOKEN: authToken,

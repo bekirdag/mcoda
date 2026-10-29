@@ -14,6 +14,7 @@ export interface DocdexClientOptions {
   beforeRequest?: (url: string) => void | Promise<void>;
   signal?: () => AbortSignal | undefined;
   timeoutMs?: number;
+  webTimeoutMs?: number;
   localSearchOnly?: boolean;
   baseUrl: string;
   repoRoot?: string;
@@ -346,8 +347,8 @@ export class DocdexClient {
     this.dagSessionId = options.dagSessionId;
   }
 
-  private async fetch(input: string, init: RequestInit = {}): Promise<Response> {
-    const signals = [init.signal, this.options.signal?.(), AbortSignal.timeout(this.options.timeoutMs ?? 60_000)].filter((signal): signal is AbortSignal => !!signal);
+  private async fetch(input: string, init: RequestInit = {}, timeoutMs = this.options.timeoutMs ?? 60_000): Promise<Response> {
+    const signals = [init.signal, this.options.signal?.(), AbortSignal.timeout(timeoutMs)].filter((signal): signal is AbortSignal => !!signal);
     const signal = AbortSignal.any(signals);
     signal.throwIfAborted();
     await this.options.beforeRequest?.(input);
@@ -816,6 +817,22 @@ export class DocdexClient {
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const dagSessionId = options.dagSessionId ?? this.dagSessionId;
+    if (this.options.localSearchOnly && !this.isEncryptedSearchGateway()) {
+      // /search's repo_only flag does not disable its web waterfall on all
+      // supported daemons. The batch endpoint performs index retrieval only:
+      // no surprise web requests, classifier calls or embedding-memory lookups.
+      const response = await this.fetch(`${this.resolveBaseUrl()}/v1/search/batch`, {
+        method: "POST", headers: this.buildHeaders(dagSessionId),
+        body: JSON.stringify({ queries: [query], limit: options.limit ?? 8, include_libs: false, repo_id: this.repoId }),
+      });
+      if (!response.ok) await this.throwResponseError(response, "local search");
+      const payload = await response.json() as { results?: Array<{ query?: string; response?: { hits?: unknown[] }; error?: unknown }>; truncated?: boolean };
+      const result = payload.results?.[0];
+      if (payload.results?.length !== 1 || result?.query !== query.trim() || payload.truncated || !Array.isArray(result.response?.hits)) {
+        throw new Error("Docdex local search returned an invalid or unavailable result; no web fallback was attempted");
+      }
+      return this.attachResponseMetadata(result.response, response, "search");
+    }
     const executeSearch = (searchQuery: string): Promise<Response> => {
       if (this.isEncryptedSearchGateway()) {
         return this.fetch(`${this.resolveBaseUrl()}/search`, {
@@ -1105,24 +1122,27 @@ export class DocdexClient {
     try { await this.mcpInitialize; } finally { this.mcpInitialize = undefined; }
   }
 
-  async callMcp<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  async callMcp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     const operation = MCP_OPERATION_BY_METHOD[method];
     if (operation) {
       this.assertOperationAllowed(operation);
     }
     await this.ensureHealth();
     await this.ensureMcpSession();
+    // The daemon recognizes the web-specific deadline only on standard MCP
+    // tools/call envelopes; a legacy direct method gets the generic 30s limit.
+    const standardToolCall = method === "docdex_web_research";
     const payload = {
       jsonrpc: "2.0",
       id: randomUUID(),
-      method,
-      params,
+      method: standardToolCall ? "tools/call" : method,
+      params: standardToolCall ? { name: method, arguments: params } : params,
     };
     const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, {
       method: "POST",
       headers: { ...this.buildHeaders(), ...(this.mcpSessionId ? { "mcp-session-id": this.mcpSessionId } : {}) },
       body: JSON.stringify(payload),
-    });
+    }, timeoutMs);
     if (!response.ok) {
       if (response.status === 404) this.mcpSessionId = undefined;
       await this.throwResponseError(response, "MCP");
@@ -1136,7 +1156,7 @@ export class DocdexClient {
       const code = this.mapResponseErrorCode(500, body);
       throw this.runtimeError(code, raw.error.message ?? "Docdex MCP error", {
         retryable: code === "docdex_unavailable",
-        details: { method },
+        details: { method, rpcCode: raw.error.code },
       });
     }
     return this.attachResponseMetadata(
@@ -1383,7 +1403,15 @@ export class DocdexClient {
         web_limit: options.webLimit,
         no_cache: options.noCache,
       }),
-    ).catch(() => this.webResearchHttp(query, options));
+      this.options.webTimeoutMs ?? 90_000,
+    ).catch(error => {
+      // Only a confirmed missing transport can use the compatibility endpoint.
+      // A timeout may still be fetching pages or using the metered helper.
+      if (error instanceof DocdexRuntimeError && ([404, 405].includes(error.status ?? 0) || error.details?.rpcCode === -32601)) {
+        return this.webResearchHttp(query, options);
+      }
+      throw error;
+    });
   }
 
   private async webResearchHttp(query: string, options: DocdexWebResearchOptions = {}): Promise<unknown> {
@@ -1423,7 +1451,7 @@ export class DocdexClient {
     this.withRepoId(params);
     const response = await this.fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
       headers: this.buildHeaders(this.dagSessionId),
-    });
+    }, this.options.webTimeoutMs ?? 90_000);
     if (!response.ok) {
       await this.throwResponseError(response, "web research");
     }

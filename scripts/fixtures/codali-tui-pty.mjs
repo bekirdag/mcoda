@@ -108,6 +108,11 @@ if (mode === "models") {
         record({ approval: result }); ui.notice(`Decision: ${result}`); return;
       }
       if (text === "/scroll-state") { record({ scroll: ui.state.scroll }); return; }
+      if (text === "/table-fixture") {
+        ui.restore([]);
+        ui.notice("| Item | Count | Status | Owner |\n| --- | ---: | --- | --- |\n| Juniper | 17 | Ready | Maya |\n| Cedar | 23 | Pending | Leon |");
+        return;
+      }
       if (text === "/scroll-fixture") {
         ui.restore([]);
         ui.user("FIRST_SCROLL_MESSAGE");

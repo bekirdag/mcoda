@@ -1083,6 +1083,48 @@ test("a rejected validation retry preserves the last executed failure in model c
   assert.equal(controller.state?.evidence.length, 0);
 });
 
+test("planning budget pressure preserves plan recording while stopping further exploration", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-plan-budget-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-plan-budget-state-"));
+  t.after(() => Promise.all([fs.rm(root, { recursive: true, force: true }), fs.rm(storage, { recursive: true, force: true })]));
+  const selected = structuredClone(resolved);
+  selected.config.effort = { low: { maxModelCalls: 6, maxTotalTokens: 100000, maxSteps: 6 } };
+  selected.hash = orchestrationHash(selected.config);
+  let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    if (step++ === 0) return call("work_status", {});
+    assert.ok(request.tools?.some(tool => tool.name === "work_plan"));
+    assert.ok(request.tools?.some(tool => tool.name === "work_refine"));
+    assert.ok(request.tools?.every(tool => !["read_file", "docdex_search", "run_shell", "work_claim", "work_verify"].includes(tool.name)));
+    if (step === 2) return call("work_plan", { tasks: [{ id: "T1", title: "Future implementation", requirementIds: ["R1"], dependsOn: [], allowedPaths: ["src"] }] });
+    return reply("Plan saved; implementation remains open.");
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: selected, provider, docdex: false, userInstructionsPath: false, permissions: "plan", effort: "low" });
+  assert.equal((await controller.run("Record a future implementation plan.")).completed, false);
+  assert.equal(controller.state?.tasks[0].title, "Future implementation");
+  assert.equal(controller.state?.status, "active");
+});
+
+test("a persisted plan has an honest deterministic report when no inference budget remains", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-plan-report-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-plan-report-state-"));
+  t.after(() => Promise.all([fs.rm(root, { recursive: true, force: true }), fs.rm(storage, { recursive: true, force: true })]));
+  const candidate = structuredClone(config); candidate.effort = { low: { maxModelCalls: 1, maxTotalTokens: 30000, maxSteps: 4 } };
+  let calls = 0; const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++; return call("work_plan", { tasks: [{ id: "T1", title: "Future retry validation", requirementIds: ["R1"], dependsOn: [], allowedPaths: ["src"] }] });
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: candidate, hash: orchestrationHash(candidate), source: "test" }, provider, docdex: false, userInstructionsPath: false, permissions: "plan", effort: "low", onEvent: event => { events.push(event); } });
+  const result = await controller.run("Record future retry validation, without implementing it.");
+  assert.equal(calls, 1); assert.equal(result.completed, false);
+  assert.match(result.content, /planning budget was reached/);
+  assert.match(result.content, /Future retry validation/);
+  assert.match(result.content, /Implementation remains open/);
+  assert.equal(controller.state?.status, "active");
+  assert.ok(events.some(event => event.type === "budget_finalization" && event.data.partial === true));
+});
+
 test("planning excludes execution lifecycle tools and rejects forged calls before claims or reviewer inference", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-planning-mode-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-planning-mode-state-"));

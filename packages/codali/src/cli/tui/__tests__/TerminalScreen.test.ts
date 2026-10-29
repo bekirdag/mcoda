@@ -51,3 +51,18 @@ test("tool detail expansion retains output and the footer", () => {
   current.expanded = true; const expanded = text(renderTerminalScreen(current, 90, 24, false));
   assert.match(expanded, /four\n/); assert.doesNotMatch(expanded, /more lines/); assert.match(expanded, /Enter send/);
 });
+
+test("streamed tables reflow on resize without covering input and remain scrollable", () => {
+  const current = state(); current.draft = "keep draft"; current.cursor = 3;
+  const block = { id: "table", kind: "assistant" as const, title: "Codali", text: "Name | Count\n---" }; current.blocks = [block];
+  const before = renderTerminalScreen(current, 80, 24, false);
+  block.text += " | ---:\n" + Array.from({ length: 30 }, (_, i) => `entry-${i} | ${i}`).join("\n");
+  const after = renderTerminalScreen(current, 80, 24, false);
+  assert.deepEqual(after.cursor, before.cursor); assert.match(text(after), /entry-29/); assert.match(text(after), /keep draft/);
+  current.scroll = 999; assert.match(text(renderTerminalScreen(current, 80, 24, false)), /┌/);
+  current.scroll = 0;
+  const narrow = renderTerminalScreen(current, 24, 18, false);
+  assert.match(text(narrow), /Count: 29/); assert.ok(narrow.lines.every(line => cells(line) <= 24)); assert.match(text(narrow), /keep draft/);
+  current.overlay = { title: "Results", offset: 0, lines: ["Model | Score", "--- | ---:", "Qwen | 27"] };
+  assert.match(text(renderTerminalScreen(current, 80, 24, false)), /┌/);
+});

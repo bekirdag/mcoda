@@ -56,7 +56,7 @@ try {
   report.checks.push('full mcoda/Codali/mSwarm install without automatic Docdex npm provisioning');
   const codaliRoot = path.join(project, 'node_modules/@mcoda/codali');
   assert.ok(!realpathSync(codaliRoot).startsWith(root + path.sep), 'Installed package must not resolve to the workspace checkout');
-  for (const file of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'README.md', 'ORCHESTRATION.md', 'config/AGENTS.md', 'config/orchestration.schema.json', 'config/raijin-suku.example.json', 'config/alternate-local.example.json', 'config/docdex-runtime.json']) {
+  for (const file of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'README.md', 'ORCHESTRATION.md', 'config/AGENTS.md', 'config/skills/planning/SKILL.md', 'config/orchestration.schema.json', 'config/raijin-suku.example.json', 'config/alternate-local.example.json', 'config/docdex-runtime.json']) {
     assert.ok(existsSync(path.join(codaliRoot, file)), `Missing installed file: ${file}`);
   }
   const installedFiles = files(codaliRoot);
@@ -97,6 +97,8 @@ try {
     import * as api from '@mcoda/codali';
     import * as embeddedApi from './node_modules/@mcoda/mswarm/dist/vendor/codali/index.js';
     import { SessionStore } from './node_modules/@mcoda/codali/dist/session/SessionStore.js';
+    import { SkillCatalog } from './node_modules/@mcoda/codali/dist/session/SkillCatalog.js';
+    import { SkillCatalog as EmbeddedSkills } from './node_modules/@mcoda/mswarm/dist/vendor/codali/session/SkillCatalog.js';
     const require = createRequire(import.meta.url);
     const sqlite3 = require('sqlite3');
     assert.equal(typeof api.runCodaliTask, 'function');
@@ -105,6 +107,11 @@ try {
     await new Promise((resolve, reject) => database.get('SELECT 7 AS result', (error, row) => { if (error) reject(error); else { assert.equal(row.result, 7); resolve(); } }));
     await new Promise((resolve, reject) => database.close(error => error ? reject(error) : resolve()));
     const workspaceRoot = process.argv[2];
+    for (const Catalog of [SkillCatalog, EmbeddedSkills]) {
+      const skills = new Catalog({ workspaceRoot, includeUser: false }); await skills.refresh();
+      assert.ok(skills.list().skills.some(skill => skill.name === 'planning'));
+      assert.match(String((await skills.read('planning')).content), /work_plan/);
+    }
     const store = new SessionStore({ workspaceRoot });
     const session = await store.createSession({ repoRoot: workspaceRoot, task: 'package persistence probe' });
     await store.appendTranscript(session.sessionId, { type: 'note', data: { value: 'persisted' } });

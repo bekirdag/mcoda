@@ -165,7 +165,7 @@
     {
       "id": "U0",
       "title": "Audit browser, skills, rendering and context capabilities",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [],
       "deliverables": [
         "Map existing browser/MCP access, deterministic tools, skill instructions, TUI rendering and compaction paths",
@@ -173,12 +173,13 @@
       ],
       "exit": [
         "Record dependency order, current gaps and exact integration contracts before runtime edits"
-      ]
+      ],
+      "outcome": "Audited native Docdex, browser, instructions, TUI and context paths; compared official Browser Use, Playwright and Agent Skills sources. Selected isolated Playwright accessibility snapshots and progressive SKILL.md loading; imported Mac skill metadata found locally but no named planning package was identified."
     },
     {
       "id": "U1",
       "title": "Bounded browser and deterministic tools",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "U0"
       ],
@@ -194,12 +195,13 @@
         "Browser content remains untrusted and actions obey existing permission scope",
         "Live unseen repository and web questions produce actual model-issued Docdex calls and grounded source citations",
         "A transient failed request cannot silently turn an explicitly tool-dependent request into an unsupported guessed answer"
-      ]
+      ],
+      "outcome": "Native Docdex repo/web, isolated browser/time/calculator, usage reconciliation and final-answer reserves implemented. Broad web discovery first failed source grounding; preserved discovery URLs and evidence labels prevent false authority claims. Progressive schemas based on actual native tool choice passed37 routing tests and the same broad web diagnostic (7calls11111tokens). Frozen combined capability v5 is running; all earlier failures retained."
     },
     {
       "id": "U2",
       "title": "Reusable local skills and planning workflow",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "U0"
       ],
@@ -211,12 +213,13 @@
       "exit": [
         "Skill selection, nested resources, precedence, limits and incompatible environments tested",
         "Loading a skill cannot silently widen permissions or execute hooks; unavailable Mac-specific dependencies are reported"
-      ]
+      ],
+      "outcome": "Bounded YAML SKILL.md discovery and paged references, configured Mac roots, bundled planning and /skills implemented. Live skill reference and Linux rejection of Mac-only dependencies passed. Durable plan recording now survives low-budget pressure; saved plans receive explicitly partial deterministic reporting if inference is exhausted. v4 saved required phases/tasks without implementation; final combined and package qualification pending."
     },
     {
       "id": "U3",
       "title": "Readable common TUI outputs",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "U0"
       ],
@@ -226,12 +229,13 @@
       ],
       "exit": [
         "Interactive table/code/list/resize/scroll fixtures pass on supported terminal widths without control-sequence injection or damaged input"
-      ]
+      ],
+      "outcome": "Unicode Markdown tables and narrow labeled-field fallback implemented. TUI33 tests and actual PTY table/resize/scroll/draft checks passed. Private .23 package passed30 clean-install checks including these PTY tests; latest runtime changes still require U5 artifact qualification."
     },
     {
       "id": "U4",
       "title": "Context compression before model limits",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "U1",
         "U2"
@@ -244,12 +248,13 @@
       "exit": [
         "Long live and deterministic conversations continue across compaction without losing key constraints or executing an action twice",
         "Compaction failures/cancellation/oversized immutable input fail clearly without loops or exceeding shared budgets"
-      ]
+      ],
+      "outcome": "Extractive context compression preserves user/system constraints, native call identity and redacted archived originals across resume/fork. Live six-constraint recall passed; first exact160character recovery failed because model counted incorrectly. Added typed maxChars for deterministic archived spans; v5 live recovery pending. No extra summarizer inference."
     },
     {
       "id": "U5",
       "title": "Qualify and package the extended setup",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "U1",
         "U2",
@@ -266,7 +271,8 @@
       "exit": [
         "All requested capabilities demonstrated on the installed build",
         "No claim of quality improvement based on exposed held-out cases or changed graders"
-      ]
+      ],
+      "outcome": "Final extended runtime suite passed1871 tests with4 optional skips; .23 clean package passed30 checks including actual table/resize/scroll PTY and bundled planning skills in both Codali and vendored mSwarm. Frozen11case capability v5 running; fresh32case regression protocol and64attempt comparison queued. Exact preview installation and release gates remain; original/R1 failed promotion unchanged."
     }
   ],
   "corpus": {
@@ -969,18 +975,32 @@
       "cases": 6,
       "passed": 2,
       "qualification": "First failures preserved; follow-up fixes required."
+    },
+    {
+      "phase": "U5",
+      "type": "extended_runtime_regression_and_package_checks",
+      "at": "2026-10-29T08:32:33.003982+00:00",
+      "tests": {
+        "passed": 1871,
+        "skipped": 4,
+        "failed": 0,
+        "log": "/tmp/codali-extensions-full-tests-v5.log"
+      },
+      "packageReport": "/home/wodo/.local/state/codali-trust-benchmark/preview-23-package-check-v2.json",
+      "packageChecks": 30,
+      "freshRegressionProtocol": "/home/wodo/.local/state/codali-trust-benchmark/u5-regression-protocol-v1.json",
+      "qualityPromotion": false
     }
   ],
   "remaining": [
     "B6",
-    "U0",
     "U1",
     "U2",
     "U3",
     "U4",
     "U5"
   ],
-  "updatedAt": "2026-10-29T06:02:12.949088+00:00",
+  "updatedAt": "2026-10-29T08:32:33.003982+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

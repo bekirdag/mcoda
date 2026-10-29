@@ -3,22 +3,23 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, type SessionEvent } from "../SessionController.js";
+import { SessionController, type SessionEvent, type SessionControllerOptions } from "../SessionController.js";
 import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { parseInteractionDecision } from "../InteractionRouter.js";
 import { registerSecretValue } from "../SecretRedaction.js";
 import { DocdexClient } from "../../docdex/DocdexClient.js";
+import { ManagedDocdex } from "../../docdex/ManagedDocdex.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
 const decision = (mode: string, text: string) => reply(JSON.stringify({ mode, text }));
-const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }, docdex = false) => {
+const fixture = async (t: test.TestContext, provider: Provider, config = base, runContext?: { deniedTools: string[] }, docdex = false, options: Partial<SessionControllerOptions> = {}) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-")));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const events: SessionEvent[] = [];
-  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e) });
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e), ...options });
   return { controller, events, root, storage };
 };
 
@@ -39,6 +40,89 @@ test("conversation instructions are sourced, bounded and reloaded between turns"
   assert.notEqual(events.filter(event => event.type === "instructions_loaded").at(-1)!.data.bundleHash, first);
   assert.equal(controller.state, undefined);
   assert.equal(controller.usageSnapshot().modelCalls, 2);
+});
+
+test("native inspection can load a local skill and uses its actual body without expanding authority", async t => {
+  let calls = 0;
+  const { controller, events, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) { assert.doesNotMatch(request.messages[0].content, /SKILL_BODY_EVIDENCE/); return decision("inspect", "Use the example skill to explain its planning rule."); }
+    if (calls === 2) {
+      assert.ok(request.tools?.some(tool => tool.name === "skill_load")); assert.doesNotMatch(JSON.stringify(request.messages), /SKILL_BODY_EVIDENCE/);
+      return { ...reply(""), toolCalls: [{ id: "load-skill", name: "skill_load", args: { id: "example" } }] };
+    }
+    assert.match(JSON.stringify(request.messages), /SKILL_BODY_EVIDENCE/);
+    assert.ok(!request.tools?.some(tool => tool.name === "run_shell"));
+    return reply("The skill requires measurable milestones.");
+  } });
+  const directory = path.join(root, ".codali", "skills", "example"); await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, "SKILL.md"), "---\nname: example\ndescription: Planning rules.\n---\nSKILL_BODY_EVIDENCE: require measurable milestones.");
+  assert.match((await controller.interact("Use the example skill to explain its planning rule.")).content, /measurable/);
+  assert.ok(events.some(event => event.type === "tool_receipt" && (event.data.receipt as { tool?: string; status?: string })?.tool === "skill_load" && (event.data.receipt as { status?: string }).status === "success"));
+  assert.equal(controller.usageSnapshot().toolCalls, 1);
+});
+
+test("inspection focuses tool schemas after native selection and can enable another capability", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("inspect", "Read the server clock, then calculate 2+3.");
+    const names = request.tools?.map(tool => tool.name) ?? [];
+    if (calls === 2) {
+      assert.ok(names.includes("server_time") && names.includes("read_file"));
+      return { ...reply(""), toolCalls: [{ id: "clock", name: "server_time", args: {} }] };
+    }
+    assert.ok(!names.includes("read_file") && !names.includes("run_shell"));
+    if (calls === 3) {
+      assert.ok(names.includes("server_time") && names.includes("tools_enable") && !names.includes("calculate"));
+      return { ...reply(""), toolCalls: [{ id: "enable", name: "tools_enable", args: { names: ["calculate"] } }] };
+    }
+    if (calls === 4) {
+      assert.ok(names.includes("calculate"));
+      return { ...reply(""), toolCalls: [{ id: "calculate", name: "calculate", args: { expression: "2+3" } }] };
+    }
+    return reply("The clock was read and the calculated result is 5.");
+  } });
+  assert.match((await controller.interact("Read the server time and calculate 2+3 using tools.")).content, /result is 5/);
+  assert.ok(events.some(event => event.type === "inspection_tools_focused"));
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 3);
+});
+
+test("automatic history compression preserves user constraints, logs originals and survives resume and fork", async t => {
+  const config = structuredClone(base); config.interaction = { historyChars: 1800 };
+  const longReply = "Earlier explanation. " + "Detailed background. ".repeat(350) + " Final pending decision.";
+  let calls = 0;
+  const { controller, events, root, storage } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) return decision("answer", longReply);
+    const data = JSON.parse(request.messages[1].content);
+    assert.ok(data.history.some((message: { role: string; content: string }) => message.role === "user" && message.content === "Never deploy. Keep PostgreSQL; all times are milliseconds."));
+    assert.ok(data.history.some((message: { content: string }) => message.content.includes("Full saved source:")));
+    return decision("answer", "PostgreSQL, milliseconds, and no deployment.");
+  } }, config);
+  await controller.interact("Never deploy. Keep PostgreSQL; all times are milliseconds.");
+  await controller.interact("What constraints did I give you?");
+  assert.equal(calls, 2, "compression must not start an unaccounted model call");
+  const event = events.find(event => event.type === "context_compacted")!;
+  const source = (event.data.archived as { sha256: string; message: { content: string } }[])[0]; assert.equal(source.message.content, longReply);
+  const resumed = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, docdex: false, userInstructionsPath: false,
+    provider: { name: "fixture", generate: async () => decision("answer", "Ready.") } });
+  await resumed.resume(controller.sessionId!);
+  assert.equal(resumed.conversationSnapshot()[0].content, "Never deploy. Keep PostgreSQL; all times are milliseconds.");
+  const read = () => resumed.registry.list().find(tool => tool.name === "context_read")!.handler({ sha256: source.sha256, offset: 2500 }, { workspaceRoot: root });
+  const original = JSON.parse((await read()).output); assert.equal(original.content, longReply.slice(2500, 4900));
+  const span = JSON.parse((await resumed.registry.list().find(tool => tool.name === "context_read")!
+    .handler({ sha256: source.sha256, offset: 27, maxChars: 160 }, { workspaceRoot: root })).output);
+  assert.equal(span.content, longReply.slice(27, 187)); assert.equal(span.nextOffset, 187);
+  await resumed.fork(); assert.equal(JSON.parse((await read()).output).content, original.content);
+  await resumed.clearSession(); await assert.rejects(read(), /unavailable in the current session/);
+});
+
+test("all model routes reject an oversized fixed context before charging or dispatching", async t => {
+  const config = structuredClone(base); config.models.model.contextWindow = 2048;
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", generate: async () => { calls++; return decision("answer", "Unexpected"); } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "Required project constraint. ".repeat(400));
+  await assert.rejects(controller.interact("hello"), /context after compression/);
+  assert.equal(calls, 0); assert.equal(controller.usageSnapshot().modelCalls, 0);
+  assert.equal(controller.usageSnapshot().tokens, 0);
 });
 
 test("optional answer review revises a reasoning answer once with original constraints and no tools", async t => {
@@ -167,6 +251,87 @@ test("calculator is not exposed for greetings or when repository policy denies i
   assert.equal(denied.controller.usageSnapshot().toolCalls, 0);
 });
 
+test("calculator remains usable after two unknown requests without erasing their reservations", async t => {
+  const config = structuredClone(base); config.interaction = { calculator: true, maxOutputTokens: 1024 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls <= 2) throw new Error("Unknown remote outcome");
+    if (calls === 3) return decision("reason", "Use the calculator to compute the requested expression.");
+    if (calls === 4) {
+      assert.ok(request.tools?.some(tool => tool.name === "calculate"));
+      assert.equal(request.maxTokens, 1024);
+      return { ...reply(""), toolCalls: [{ id: "calculate-recovery", name: "calculate", args: { expression: "(17*6+23*4)/10" } }] };
+    }
+    assert.match(JSON.stringify(request.messages), /19.4/); return reply('{"answer":19.4}');
+  } }, config);
+  await assert.rejects(controller.interact("Hello"), /Unknown remote outcome/);
+  await assert.rejects(controller.interact("Remember Juniper"), /Unknown remote outcome/);
+  const reserved = controller.usageSnapshot().tokens;
+  assert.equal((await controller.interact('Use the calculator for (17*6+23*4)/10. Return JSON {"answer":number}.')).content, '{"answer":19.4}');
+  assert.equal(controller.turnUsageSnapshot().tokens, reserved + 3 * 320);
+  assert.equal(controller.usageSnapshot().estimated, true);
+  assert.equal(controller.usageSnapshot().modelCalls, 5);
+  assert.ok(events.some(e => e.type === "usage_recovery"));
+});
+
+for (const allow of [false, true]) test(`native Docdex web calls require permission before daemon startup (${allow})`, async t => {
+  const config = structuredClone(base);
+  config.models.embed = { provider: "local", catalogId: "embed", revision: "sha256:fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1,
+    embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } };
+  config.bindings.embedding = { candidates: ["embed"], embeddingSpace: "web-test" };
+  let approved = false, calls = 0;
+  const start = t.mock.method(ManagedDocdex.prototype, "start", async () => {
+    assert.equal(approved, true);
+    return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: "/fixture", localSearchOnly: true });
+  });
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  const web = t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://example.org/source", content: "Verified external fact" }] }));
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("inspect", "Use Docdex to research the requested fact and cite its source.");
+    if (calls === 2) {
+      assert.ok(request.tools?.some(tool => tool.name === "docdex_web_research"));
+      return { ...reply(""), toolCalls: [{ id: "web", name: "docdex_web_research", args: { query: "external fact" } }] };
+    }
+    assert.match(JSON.stringify(request.messages), allow ? /example.org/ : /denied by user/);
+    return reply(allow ? "Verified external fact: https://example.org/source" : "Web access was denied.");
+  } }, config, undefined, true, { approve: async request => { assert.equal(request.kind, "web"); approved = allow; return { allow }; } });
+  await controller.interact("Use Docdex to research an external fact and cite it.");
+  assert.equal(start.mock.callCount(), allow ? 1 : 0); assert.equal(web.mock.callCount(), allow ? 1 : 0);
+  assert.ok(events.some(e => e.type === "tool_receipt" && (e.data.receipt as { status: string }).status === (allow ? "success" : "failed")));
+  assert.equal(controller.state, undefined);
+});
+
+test("nested Docdex inference cannot spend the call or token reserve needed for the final answer", async t => {
+  const config = structuredClone(base); config.interaction = { maxModelCalls: 4, maxTotalTokens: 16000 };
+  config.models.embed = { provider: "local", catalogId: "embed", revision: "sha256:fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1,
+    embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } };
+  config.bindings.embedding = { candidates: ["embed"], embeddingSpace: "web-test" };
+  let nested: Provider, calls = 0, nestedCalls = 0;
+  t.mock.method(ManagedDocdex.prototype, "start", async function (this: ManagedDocdex) {
+    nested = (this as unknown as { options: { provider: Provider } }).options.provider;
+    return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: "/fixture", localSearchOnly: true });
+  });
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => {
+    await assert.rejects(nested.generate({ messages: [{ role: "user", content: "nested " + "x".repeat(40000) }], maxTokens: 2048 }), /final-answer reserve/);
+    await nested.generate({ messages: [{ role: "user", content: "nested bounded classification" }], maxTokens: 64 });
+    await assert.rejects(nested.generate({ messages: [{ role: "user", content: "nested optional summary" }], maxTokens: 64 }), /final-answer reserve/);
+    return { web_context: [{ url: "https://example.org/primary", content: "The observed value is 27." }] };
+  });
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (request.messages[0].content.startsWith("nested")) { nestedCalls++; return reply('{"category":"general"}'); }
+    if (calls === 1) return decision("inspect", "Look up the value with Docdex.");
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "web", name: "docdex_web_research", args: { query: "observed value" } }] };
+    assert.equal(request.tools, undefined); assert.equal(calls, 4); assert.match(JSON.stringify(request.messages), /observed value is 27/);
+    return reply("27, from https://example.org/primary");
+  } }, config, undefined, true, { allowWeb: true });
+  assert.match((await controller.interact("Use Docdex web research to find the observed value.")).content, /27/);
+  assert.equal(calls, 4); assert.equal(nestedCalls, 1); assert.equal(controller.usageSnapshot().modelCalls, 4);
+  assert.equal(events.filter(event => event.type === "docdex_inference_skipped").length, 2);
+  assert.ok(controller.usageSnapshot().tokens <= 16000);
+});
+
 test("answer review receives actual calculator evidence without additional tool access", async t => {
   const config = structuredClone(base); config.interaction = { calculator: true, answerReview: { enabled: true } };
   let calls = 0;
@@ -247,32 +412,32 @@ test("host-denied Docdex calls never start indexing or reach the daemon", async 
 
 test("inspection discovers extra read tools without enabling mutations or widening host permissions", async t => {
   const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
-  t.mock.method(DocdexClient.prototype, "tree", async () => ({ tree: "src\n  notes.ts" }));
+  t.mock.method(DocdexClient.prototype, "stats", async () => ({ num_docs: 37 }));
   let calls = 0;
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     calls++;
     if (calls === 1) return decision("inspect", "Inspect the repository tree without changes.");
     if (calls === 2) {
-      assert.ok(!request.tools?.some(tool => tool.name === "docdex_tree"));
+      assert.ok(!request.tools?.some(tool => tool.name === "docdex_stats"));
       return { ...reply(""), toolCalls: [{ id: "discover", name: "tools_discover", args: {} }] };
     }
     if (calls === 3) {
-      assert.match(JSON.stringify(request.messages), /docdex_tree/);
-      return { ...reply(""), toolCalls: [{ id: "bad-enable", name: "tools_enable", args: { names: ["docdex_tree", "write_file"] } }] };
+      assert.match(JSON.stringify(request.messages), /docdex_stats/);
+      return { ...reply(""), toolCalls: [{ id: "bad-enable", name: "tools_enable", args: { names: ["docdex_stats", "write_file"] } }] };
     }
     if (calls === 4) {
-      assert.ok(!request.tools?.some(tool => tool.name === "docdex_tree"));
+      assert.ok(!request.tools?.some(tool => tool.name === "docdex_stats"));
       assert.match(JSON.stringify(request.messages), /Only permitted read-only tools/);
-      return { ...reply(""), toolCalls: [{ id: "enable", name: "tools_enable", args: { names: ["docdex_tree"] } }] };
+      return { ...reply(""), toolCalls: [{ id: "enable", name: "tools_enable", args: { names: ["docdex_stats"] } }] };
     }
     if (calls === 5) {
-      assert.ok(request.tools?.some(tool => tool.name === "docdex_tree"));
+      assert.ok(request.tools?.some(tool => tool.name === "docdex_stats"));
       assert.ok(!request.tools?.some(tool => tool.name === "write_file"));
-      return { ...reply(""), toolCalls: [{ id: "tree", name: "docdex_tree", args: {} }] };
+      return { ...reply(""), toolCalls: [{ id: "tree", name: "docdex_stats", args: {} }] };
     }
-    assert.match(JSON.stringify(request.messages), /notes.ts/); return reply("The source tree contains src/notes.ts.");
+    assert.match(JSON.stringify(request.messages), /num_docs/); return reply("The index contains 37 documents.");
   } }, base, undefined, true);
-  assert.match((await controller.interact("Show the source tree using Docdex.")).content, /notes.ts/);
+  assert.match((await controller.interact("Show the source tree using Docdex.")).content, /37/);
   assert.equal(start.mock.callCount(), 1); assert.equal(controller.state, undefined);
 });
 

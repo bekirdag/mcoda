@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add native Docdex repository/web investigation, bounded browser snapshots,
+  server time, progressive local skills with a bundled planning workflow, and
+  readable TUI tables with narrow-screen layouts.
+- Preserve user constraints through automatic context compression; keep archived
+  content recoverable after resume/fork. Reserve final-answer capacity when
+  Docdex performs nested inference, and retain plan-writing tools under budget pressure.
+- Label web summaries and unvisited discovery links separately from fetched
+  evidence. Preserve failed benchmark attempts; the original and R1 studies did
+  not establish the required quality improvement over raw Qwen.
+
 - Honor `interaction.answerBinding` for read-only inspections as well as explanations.
 
 - Prepare codali.17 with history-aware interaction dispatch before repository
