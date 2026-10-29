@@ -4,12 +4,12 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { loadOrchestrationConfig } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { runEvaluationProcess } from '../../packages/codali/dist/eval/EvaluationProcess.js';
-import { argumentsMap, json, jsonl, hash, writeNew, readPublicCorpus, benchmarkFingerprint } from './trust-common.mjs';
+import { argumentsMap, json, jsonl, hash, writeNew, readPublicCorpus, benchmarkFingerprint, hasToolBaseline } from './trust-common.mjs';
 
-const args=argumentsMap(undefined,['config','output','split','arms','ids','limit','freeze','timeout-ms','retry-of','retry-reason']);
+const args=argumentsMap(undefined,['config','output','split','arms','ids','limit','freeze','timeout-ms','retry-of','retry-reason','corpus-root']);
 if(!args.config||!args.output)throw Error('Usage: node scripts/benchmarks/run-trust-benchmark.mjs --config FILE --output NEW_OR_RESUMED_DIRECTORY [--split development|validation|held_out|all] [--arms raw_direct,codali_initial] [--ids comma-separated] [--limit N] [--freeze FILE]');
 const resolved=await loadOrchestrationConfig(path.resolve(args.config));
-const {manifest:corpus,cases}=await readPublicCorpus();
+const {manifest:corpus,cases}=await readPublicCorpus(args['corpus-root']?path.resolve(args['corpus-root']):undefined);
 const arms=(args.arms??'raw_direct,codali_initial').split(',');
 if(new Set(arms).size!==arms.length||arms.some(a=>!['raw_direct','raw_tools','codali_initial','codali_selected','codali_candidate'].includes(a)))throw Error('Invalid arms');
 const split=args.split??'development';if(!['development','validation','held_out','all'].includes(split))throw Error('Invalid split');
@@ -29,7 +29,7 @@ if(args['retry-of']){
   if(prior.identity.configHash!==resolved.hash||prior.identity.corpusHash!==corpus.promptsSha256)throw Error('Retry source configuration/corpus mismatch');
   const records=await jsonl(path.join(priorRoot,'ledger.jsonl'));
   for(const task of selected)for(const arm of arms){
-    if(arm==='raw_tools'&&task.domain!=='repository_and_docdex')continue;
+    if(arm==='raw_tools'&&!hasToolBaseline(task))continue;
     const matches=records.filter(x=>x.type==='result'&&x.result.caseId===task.id&&x.result.arm===arm);
     if(matches.length!==1)throw Error('Retry source must have one retained outcome for every selected case/arm');
     retryLineage.push({caseId:task.id,arm,attemptId:matches[0].result.attemptId,source:priorRoot,reason:args['retry-reason']});
@@ -66,7 +66,7 @@ try{
   for(let index=0;index<selected.length;index++){
     const task=selected[index];const order=index%2?[...arms].reverse():arms;
     for(const arm of order){
-      if(arm==='raw_tools'&&task.domain!=='repository_and_docdex')continue;
+      if(arm==='raw_tools'&&!hasToolBaseline(task))continue;
       const key=`${task.id}:${arm}`;if(completed.has(key))continue;
       abort.signal.throwIfAborted();
       if(hash(JSON.stringify(await benchmarkFingerprint()))!==hash(JSON.stringify(fingerprint)))throw Error('Runtime fingerprint changed; stopped before another model request');

@@ -29,9 +29,10 @@ export async function benchmarkFingerprint() {
   for (const name of ['shared','db']) dependencies[name] = await terminalClientBuildHash(path.join(repository,'packages',name,'dist'));
   return {client:await terminalClientBuildHash(),files,dependencies,node:process.version,platform:process.platform,arch:process.arch};
 }
-export async function readPublicCorpus() {
-  const manifest=await json(path.join(corpusRoot,'manifest.json'));
-  const bytes=await fs.readFile(path.join(corpusRoot,'prompts.jsonl'));
+export const hasToolBaseline = task => task.domain === 'repository_and_docdex' || task.toolParity === 'calculation';
+export async function readPublicCorpus(directory=corpusRoot) {
+  const manifest=await json(path.join(directory,'manifest.json'));
+  const bytes=await fs.readFile(path.join(directory,'prompts.jsonl'));
   if(hash(bytes)!==manifest.promptsSha256)throw Error('Public corpus hash mismatch');
   return {manifest,cases:bytes.toString().trim().split('\n').map(JSON.parse)};
 }

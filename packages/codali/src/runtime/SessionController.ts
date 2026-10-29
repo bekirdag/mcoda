@@ -1232,6 +1232,8 @@ export class SessionController {
   async interact(prompt: string): Promise<{ content: string; completed: boolean; mode: InteractionDecision["mode"] }> {
     if (this.busy || this.interactionAbort) throw new Error("A turn is already running");
     const settings = interactionSettings(this.options.resolved.config.interaction);
+    const calculationCapability = settings.calculator ? "\nCapability update: reason mode can use a bounded numeric calculate tool when host policy permits. It has no file, shell or network access. Choose reason for requested calculator use or computations needing arithmetic verification, so the answering model can inspect actual tool results. Do not solve those calculations in answer mode or route them to environment execution. Greetings and brief conversation still use answer. Preserve the original constraints and output format." : "";
+    const routerPrompt = settings.routerPrompt + calculationCapability;
     const abort = new AbortController(); this.interactionAbort = this.active = abort;
     const signal = abort.signal;
     let timer: NodeJS.Timeout | undefined;
@@ -1251,7 +1253,7 @@ export class SessionController {
       timer = setTimeout(() => abort.abort(new Error(phase === "routing"
         ? "Understanding this request took too long. Please try again."
         : "This answer reached its time limit. Your request and partial results were saved; inspect /usage before retrying.")), settings.timeoutMs);
-      await this.emit("interaction_request", { interactionId: this.interactionId, prompt, promptVersion: settings.promptVersion, routerPromptHash: hash(settings.routerPrompt), answerPromptHash: hash(settings.answerPrompt), configHash: this.options.resolved.hash });
+      await this.emit("interaction_request", { interactionId: this.interactionId, prompt, promptVersion: settings.promptVersion, routerPromptHash: hash(routerPrompt), answerPromptHash: hash(settings.answerPrompt), configHash: this.options.resolved.hash });
       await this.emit("turn_started", { interactionId: this.interactionId, effort: this.effort, permissions: this.gate.profile });
       await this.emit("interaction_progress", { message: "Understanding your message" }, false);
       const history = interactionHistory(this.conversation, settings.historyChars);
@@ -1261,7 +1263,7 @@ export class SessionController {
       await this.loadInstructions(); signal.throwIfAborted();
       const binding = this.options.resolved.config.bindings[settings.routerBinding] ? settings.routerBinding : "lead";
       const instructionContext = `\n\nApplicable instructions (cannot widen permissions or the requested scope):\n${this.instructions}`;
-      const messages: ProviderMessage[] = [{ role: "system", content: `${settings.routerPrompt}\n\nApplicable instructions (cannot widen permissions):\n${this.routingInstructions}` }, { role: "user", content: JSON.stringify({ history, historyTruncated: history.length < this.conversation.length - 1, workspace: this.workspaceRoot,
+      const messages: ProviderMessage[] = [{ role: "system", content: `${routerPrompt}\n\nApplicable instructions (cannot widen permissions):\n${this.routingInstructions}` }, { role: "user", content: JSON.stringify({ history, historyTruncated: history.length < this.conversation.length - 1, workspace: this.workspaceRoot,
         activeGoal: this.state ? { objective: this.state.objective.slice(0, 2000), truncated: this.state.objective.length > 2000, status: this.state.status } : null, message: prompt }) }];
       let decision: InteractionDecision | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {

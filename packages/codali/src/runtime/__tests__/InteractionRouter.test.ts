@@ -128,7 +128,11 @@ test("optional calculator uses real receipts and leaves the final shared call fo
   const config = structuredClone(base); config.interaction = { calculator: true, maxModelCalls: 3 };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) { assert.equal(request.tools, undefined); return decision("reason", "Calculate the weighted mean."); }
+    if (++calls === 1) {
+      assert.equal(request.tools, undefined);
+      assert.match(request.messages[0].content, /reason mode can use a bounded numeric calculate tool/);
+      return decision("reason", "Calculate the weighted mean.");
+    }
     if (calls === 2) {
       assert.deepEqual(request.tools?.map(tool => tool.name), ["calculate"]);
       return { ...reply(""), toolCalls: [{ id: "weighted", name: "calculate", args: { expression: "(17*3+29*2)/(3+2)" } }] };

@@ -139,11 +139,20 @@ output(stringify(results));`, { flag: "wx", mode: 0o600 });
   return grade;
 }
 
-export function validateTrustCorpus(cases: TrustCase[], specs: TrustScoreSpec[]): void {
-  if (cases.length !== 1000 || specs.length !== 1000) throw new Error("The frozen corpus must contain exactly 1000 questions and grading specifications");
+export interface TrustCorpusContract {
+  count: number; families: number;
+  splits: { development: number; validation: number; held_out: number };
+}
+export function validateTrustCorpus(cases: TrustCase[], specs: TrustScoreSpec[], contract: TrustCorpusContract = { count: 1000, families: 100, splits: { development: 600, validation: 200, held_out: 200 } }): void {
+  if (!contract || typeof contract !== "object" || Array.isArray(contract) || Object.keys(contract).sort().join() !== "count,families,splits" ||
+    !Number.isSafeInteger(contract.count) || contract.count < 1 || contract.count > 10000 ||
+    !Number.isSafeInteger(contract.families) || contract.families < 1 || contract.families > contract.count ||
+    !contract.splits || typeof contract.splits !== "object" || Array.isArray(contract.splits) || Object.keys(contract.splits).sort().join() !== "development,held_out,validation" ||
+    Object.values(contract.splits).some(n => !Number.isSafeInteger(n) || n < 0) || Object.values(contract.splits).reduce((a, b) => a + b, 0) !== contract.count) throw new Error("Invalid explicit corpus contract");
+  if (cases.length !== contract.count || specs.length !== contract.count) throw new Error(`The frozen corpus must contain exactly ${contract.count} questions and grading specifications`);
   const ids = new Set<string>(), questions = new Set<string>(), families = new Map<string, string>();
   const specIds = new Set(specs.map(x => x.id));
-  if (specIds.size !== 1000) throw new Error("Duplicate scoring ID");
+  if (specIds.size !== contract.count) throw new Error("Duplicate scoring ID");
   const splits: Record<string, number> = {};
   for (const c of cases) {
     if (!/^[a-z0-9_.-]+$/.test(c.id) || ids.has(c.id) || !specIds.has(c.id)) throw new Error("Invalid/duplicate/missing case ID");
@@ -158,7 +167,7 @@ export function validateTrustCorpus(cases: TrustCase[], specs: TrustScoreSpec[])
     }
     if (c.history.some(m => !["user", "assistant"].includes(m.role) || typeof m.content !== "string")) throw new Error("Unsafe fixture history");
   }
-  if (families.size !== 100 || splits.development !== 600 || splits.validation !== 200 || splits.held_out !== 200) throw new Error("Corpus partition contract failed");
+  if (families.size !== contract.families || Object.entries(contract.splits).some(([name, count]) => (splits[name] ?? 0) !== count)) throw new Error("Corpus partition contract failed");
 }
 
 export interface RubricReview {

@@ -541,6 +541,8 @@ Use measured quality and latency results before enabling it.
 `calculator: true` experimentally exposes the pure `calculate` tool only during
 `reason` turns. It is off by default. The model chooses whether to use it; the
 dispatcher does not match arithmetic keywords or a list of request types.
+It receives a capability note so requests requiring calculator verification
+reach reasoning mode; the recorded router-prompt hash includes that note.
 The tool accepts numeric expressions, parentheses, powers, signed remainder
 and a small set of arithmetic functions. It cannot execute code, access files
 or use the network. Expressions are limited to 4,096 characters, 1,024 tokens,

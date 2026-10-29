@@ -632,6 +632,54 @@
         "/tmp/codali-preview-21-build.log"
       ],
       "qualityClaim": "No live quality improvement measured yet."
+    },
+    {
+      "phase": "R1",
+      "type": "retained_calculator_routing_failure_and_fix",
+      "at": "2026-10-29T01:44:45.090252+00:00",
+      "originalVersion": "0.1.135-codali.21",
+      "nextVersion": "0.1.135-codali.22",
+      "prompt": "Use the available calculator to evaluate (12.5*8+19*3)/(8+3). Return only JSON with the numeric key answer. Do not access files or run commands.",
+      "original": {
+        "mode": "answer",
+        "answer": 14.384615384615385,
+        "modelCalls": 1,
+        "toolCalls": 0
+      },
+      "fixedSourceDiagnostic": {
+        "mode": "reason",
+        "answer": 14.272727272727273,
+        "tokens": 4408,
+        "modelCalls": 4,
+        "toolCalls": 1,
+        "elapsedMs": 23987,
+        "workspaceUnchanged": true
+      },
+      "change": "Dispatcher receives a configuration-dependent capability note for reason mode; effective router prompt hash includes that note. No keyword routing code.",
+      "artifacts": [
+        "/home/wodo/.local/state/codali-trust-benchmark/preview-21-calculator-live",
+        "/home/wodo/.local/state/codali-trust-benchmark/calculator-dispatch-source-live"
+      ],
+      "limitation": "Functional diagnostic, not a quality score. Corrected source has not yet been packaged or evaluated in the follow-up study."
+    },
+    {
+      "phase": "R1",
+      "type": "separate_corpus_and_calculation_parity_harness",
+      "at": "2026-10-29T01:53:29.285807+00:00",
+      "description": "Explicit --corpus-root with prompt/grading hashes, default original1000-case contract unchanged, optional validated follow-up counts/splits. Calculation raw_tools control exposes only the same calculator, no Docdex/files, and a matched2048-token output ceiling.",
+      "tests": {
+        "sourceTestsPassed": 37,
+        "originalHarnessPassed": 5,
+        "originalScorerPassed": 2,
+        "followupHarnessPassed": 2
+      },
+      "artifacts": [
+        "/tmp/codali-followup-source-tests.log",
+        "/tmp/codali-followup-original-harness-tests.log",
+        "/tmp/codali-followup-original-scoring-tests.log",
+        "/tmp/codali-followup-harness-tests-v2.log"
+      ],
+      "limitation": "Synthetic HTTP integration checks, not live quality evidence. Follow-up corpus and model study remain pending."
     }
   ],
   "remaining": [
@@ -639,7 +687,7 @@
     "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-29T01:33:52.635445+00:00",
+  "updatedAt": "2026-10-29T01:53:29.285807+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [

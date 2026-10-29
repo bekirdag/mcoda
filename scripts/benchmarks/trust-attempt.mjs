@@ -10,6 +10,7 @@ import { ManagedDocdex } from '../../packages/codali/dist/docdex/ManagedDocdex.j
 import { createDocdexTools } from '../../packages/codali/dist/tools/docdex/DocdexTools.js';
 import { createFileTools } from '../../packages/codali/dist/tools/filesystem/FileTools.js';
 import { createSearchTool } from '../../packages/codali/dist/tools/search/SearchTool.js';
+import { createCalculatorTool } from '../../packages/codali/dist/tools/calculation/CalculatorTool.js';
 import { ToolRegistry, toolDescriptorFor } from '../../packages/codali/dist/tools/ToolRegistry.js';
 import { PermissionGate } from '../../packages/codali/dist/permissions/PermissionGate.js';
 import { loadOrchestrationConfig } from '../../packages/codali/dist/config/OrchestrationConfig.js';
@@ -74,6 +75,12 @@ try{
       const response=await provider.generate({messages,maxTokens:2048,temperature:0,signal:abort.signal});output=response.message.content;
     }else if(arm==='raw_tools'){
       const registry=new ToolRegistry();const gate=new PermissionGate('plan',undefined,{shellIsolated:false,allowWeb:false,allowMemory:false,allowMedia:false});
+      const calculation=task.toolParity==='calculation';
+      let exposed;
+      if(calculation){
+        if(!settings.calculator||task.domain==='repository_and_docdex')throw Error('Calculation parity requires an enabled calculator and a non-repository case');
+        registry.register(createCalculatorTool());exposed=new Set(['calculate']);
+      }else{
       for(const tool of createFileTools())if(tool.readOnly)registry.register(tool);
       registry.register(createSearchTool());
       const embeddings=new ConfiguredEmbeddings(resolved,async receipt=>{
@@ -88,13 +95,14 @@ try{
       const client=await managed.start();await client.waitForIndex(15000);
       const allowed=new Set(['docdex_search','docdex_open','docdex_tree','docdex_symbols','docdex_ast','docdex_impact_graph','docdex_stats','docdex_files','docdex_get_profile','docdex_memory_recall','docdex_wakeup','docdex_dag_export']);
       for(const tool of createDocdexTools(client,{allowSearchWebFallback:false}))if(tool.readOnly&&allowed.has(tool.name))registry.register(tool);
-      const exposed=new Set(['read_file','list_files','stat_path','search','docdex_search','docdex_open','docdex_symbols','docdex_impact_graph','tools_discover','tools_enable']);
+      exposed=new Set(['read_file','list_files','stat_path','search','docdex_search','docdex_open','docdex_symbols','docdex_impact_graph','tools_discover','tools_enable']);
       registry.register({name:'tools_discover',description:'List additional read-only tools; enable them before use.',readOnly:true,capability:'discovery',inputSchema:{type:'object',properties:{},additionalProperties:false},handler:async()=>({output:JSON.stringify(registry.list().filter(x=>!exposed.has(x.name)).map(x=>({name:x.name,description:x.description})))})});
       registry.register({name:'tools_enable',description:'Expose additional named read-only tools.',readOnly:true,capability:'discovery',inputSchema:{type:'object',properties:{names:{type:'array',items:{type:'string'}}},required:['names'],additionalProperties:false},handler:async({names})=>{if(names.length>16||names.some(n=>!registry.list().some(t=>t.name===n)))throw Error('Unknown tool');names.forEach(n=>exposed.add(n));return{output:JSON.stringify({enabled:names})};}});
+      }
       messages.push({role:'user',content:task.prompt});
       for(let step=0;step<settings.maxInspectionSteps;step++){
         const tools=registry.list().filter(t=>exposed.has(t.name)).map(t=>({name:t.name,description:t.description,inputSchema:t.inputSchema}));
-        const response=await provider.generate({messages,tools,maxTokens:settings.maxOutputTokens,temperature:0,signal:abort.signal});
+        const response=await provider.generate({messages,tools,maxTokens:calculation?Math.min(2048,settings.maxTotalTokens):settings.maxOutputTokens,temperature:0,signal:abort.signal});
         const calls=response.toolCalls??response.message.toolCalls??[];
         if(!calls.length){output=response.message.content;break;}
         messages.push({...response.message,toolCalls:calls});

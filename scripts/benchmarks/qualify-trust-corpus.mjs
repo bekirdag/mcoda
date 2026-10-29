@@ -1,12 +1,12 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { gradeTrustAnswer, validateTrustCorpus } from '../../packages/codali/dist/eval/TrustBenchmark.js';
-import { corpusRoot,json,jsonl,hash,argumentsMap,writeNew } from './trust-common.mjs';
-const args=argumentsMap(undefined,['output']);
-const cases=await jsonl(path.join(corpusRoot,'prompts.jsonl'));const specs=await jsonl(path.join(corpusRoot,'grading.jsonl'));
-const manifest=await json(path.join(corpusRoot,'manifest.json'));
-if(hash(await fs.readFile(path.join(corpusRoot,'grading.jsonl')))!==manifest.gradingSha256)throw Error('Grading hash mismatch');
-validateTrustCorpus(cases,specs);
+import { corpusRoot,jsonl,hash,argumentsMap,writeNew,readPublicCorpus } from './trust-common.mjs';
+const args=argumentsMap(undefined,['output','corpus-root']);
+const directory=args['corpus-root']?path.resolve(args['corpus-root']):corpusRoot;
+const {manifest,cases}=await readPublicCorpus(directory);const specs=await jsonl(path.join(directory,'grading.jsonl'));
+if(hash(await fs.readFile(path.join(directory,'grading.jsonl')))!==manifest.gradingSha256)throw Error('Grading hash mismatch');
+validateTrustCorpus(cases,specs,manifest.validationContract);
 const outcomes=[];
 for(const spec of specs){
   if(spec.kind==='rubric'){

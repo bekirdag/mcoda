@@ -195,3 +195,18 @@ The original eight-candidate search is closed. An optional calculator experiment
 is a separate follow-up phase in the plan, motivated by development failures.
 It cannot change the running comparison or reuse exposed held-out cases as
 fresh evidence. Any new quality claim requires separately frozen evaluation.
+
+The runner, qualifier and scorer accept `--corpus-root DIRECTORY` for a separate
+versioned corpus. Its public prompts and private grading bytes must match its
+own manifest; scoring rejects a run from a different corpus. The original
+1,000-case partition remains the default qualification contract. A follow-up
+manifest may declare `validationContract` with explicit `count`, `families` and
+`splits` (`development`, `validation`, `held_out`); uniqueness, family isolation
+and fixture boundaries still apply.
+
+Follow-up calculation cases can declare `toolParity: "calculation"`. Their
+`raw_tools` baseline receives the same pure calculator, without Codali's
+dispatcher/reviewer or unrelated file tools. It uses the same aggregate limits
+and a 2,048-token answer ceiling. Actual calculator requests and receipts are
+retained. Repository tool baselines keep their existing Docdex surface. This
+metadata selects evaluation controls, not the model's interaction route.

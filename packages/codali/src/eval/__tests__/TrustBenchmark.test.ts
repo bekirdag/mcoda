@@ -71,3 +71,22 @@ test("1000-case corpus enforces separate answer specifications and family partit
   copy[1] = { ...cases[1], files: { "../answer.json": "leak" } };
   assert.throws(() => validateTrustCorpus(copy, specs));
 });
+
+test("an explicit follow-up corpus keeps count, partition and fixture checks without weakening the original contract", () => {
+  const cases: TrustCase[] = [
+    { id: "new.a.01", family: "new.a", domain: "math_and_data", variant: 1, split: "validation", prompt: "First new question", files: {}, history: [], capabilities: [] },
+    { id: "new.b.01", family: "new.b", domain: "math_and_data", variant: 1, split: "held_out", prompt: "Second new question", files: {}, history: [], capabilities: [] },
+  ];
+  const specs: TrustScoreSpec[] = cases.map(c => ({ id: c.id, kind: "json", critical: false, expected: { answer: 1 } }));
+  const contract = { count: 2, families: 2, splits: { development: 0, validation: 1, held_out: 1 } };
+  assert.throws(() => validateTrustCorpus(cases, specs), /exactly 1000/);
+  validateTrustCorpus(cases, specs, contract);
+  assert.throws(() => validateTrustCorpus(cases, specs, { ...contract, count: 3 }), /contract/);
+  assert.throws(() => validateTrustCorpus(cases, specs, { ...contract, families: 1 }), /partition/);
+  assert.throws(() => validateTrustCorpus([cases[0], { ...cases[1], family: cases[0].family }], specs, contract), /leaked/);
+  assert.throws(() => validateTrustCorpus([cases[0], { ...cases[1], files: { "../answer": "private" } }], specs, contract), /Unsafe/);
+  assert.throws(() => validateTrustCorpus(cases, [specs[0], specs[0]], contract), /Duplicate/);
+  for (const invalid of [null, [], {}, { ...contract, count: "2" }, { ...contract, splits: { ...contract.splits, extra: 0 } }]) {
+    assert.throws(() => validateTrustCorpus(cases, specs, invalid as unknown as typeof contract), /contract/);
+  }
+});
