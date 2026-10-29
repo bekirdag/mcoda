@@ -306,6 +306,31 @@ the review-enabled configuration with 68/100 strict passes versus 67/100; both
 had zero runtime or critical failures. The one-point difference has a descriptive
 family interval of −3 to +6 points. Whole-family exclusion for the module-format
 erratum preserves that ranking, while the separate compatible-module totals
-reverse it (75 versus 76). Selection is experimental. The 200 fresh held-out pairs
-and 50 tool controls are running under unchanged settings; no follow-up quality
-or promotion claim is available yet.
+reverse it (75 versus 76). The follow-up is now complete: all **450 held-out
+attempts**, 97 rubric reviews, and 40 critical reviews are recorded. Codali passed
+**143/200**, versus **133/200** for raw Qwen. Its five-point gain has an official
+family-bootstrap interval of **−6 to +15.5 percentage points**, so promotion
+**failed again**. The matched tool subset scored 41/50 versus 32/50, with an
+interval of −4 to +54 points across only five families.
+
+Codali used 704,408 tokens versus 44,894 for raw direct answers (15.7×), with
+median latency 16.7 versus 3.0 seconds. All 929 model requests have responses;
+the full-payload audit found no missing artifacts, leaks, hash mismatches or
+workspace changes. Native service identities remained unchanged. The module
+compatibility diagnostic accepted seven Codali outputs and no raw outputs among
+the 20 affected held-out code cases; it does not change primary grades or the
+failed promotion decision.
+
+An isolated `.22` preview is available on Raijin with `~/.local/bin/codali-preview`
+from a project directory. It uses a separate editable configuration and leaves
+the frozen benchmark and existing launchers intact. Package and terminal checks
+passed, but the subsequent six-case live smoke passed only history recall and
+independent code grading: two routing requests returned HTTP 503, the Docdex
+investigation lacked sufficient evidence, and the calculator request was
+answered incorrectly without its required tool. These failures remain recorded.
+The preview is experimental; recovery and tool-budget work is still required.
+
+The plan's U0–U5 extension covers native Docdex/browser tool use, server time,
+reusable planning skills, table rendering, automatic context compression and
+fresh installed qualification. These additions cannot reuse the exposed R1
+held-out cases to support a new generalization claim.

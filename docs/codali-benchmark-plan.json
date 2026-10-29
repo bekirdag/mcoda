@@ -126,7 +126,7 @@
     {
       "id": "R1",
       "title": "Bounded computation and fresh quality evaluation",
-      "status": "in_progress",
+      "status": "completed",
       "dependsOn": [
         "B4"
       ],
@@ -141,12 +141,12 @@
         "Use only original development evidence and fresh validation for follow-up selection; never tune on exposed original held-out cases",
         "Apply the same correctness, critical-error and uncertainty gates to new held-out evidence; report all candidate attempts and failures"
       ],
-      "outcome": "Two development screens and all200 fresh validation attempts complete. Frozen rule selected calculator+review A68/100 over B67/100, zero runtime/critical failures,52rubric/20critical reviews. Module-format erratum and secondary diagnostic disclosed; original grades/selection unchanged.450 fresh held-out attempts admitted and running on both hosts."
+      "outcome": "All450 fresh held-out attempts,97 rubric and40 critical reviews complete. Codali143/200 vs raw133/200; official+5pp CI[-6,+15.5]pp fails promotion. Tool parity41/50 vs32/50, CI[-4,+54]pp.929/929 model requests/responses audited; no missing payloads/artifacts/leaks/workspace changes; native identities unchanged. No retries needed for coverage."
     },
     {
       "id": "B6",
       "title": "Package, qualify and install the selected setup",
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "B5"
       ],
@@ -159,6 +159,113 @@
         "Configuration improvement demonstrated rather than assumed",
         "Live greeting, history, read-only Docdex, code fixture, help/usage and scroll checks pass",
         "Report completed/failed/unscored coverage and remaining original release gates honestly"
+      ],
+      "outcome": "Exact .22 private package passed29 checks and actual SSH TUI qualification. Separate codali-preview launcher and editable profile installed on Raijin; real startup/help/Escape/quit probe passed. Six installed live quality smoke cases prepared for after the running R1 comparison. Experimental preview only; no quality promotion. Post-study six-case live smoke failed: two routing HTTP503s; Docdex insufficient evidence and calculator wrong without required tool; history and isolated code passed. Keep preview experimental and fix recovery/tool-budget behavior under U1."
+    },
+    {
+      "id": "U0",
+      "title": "Audit browser, skills, rendering and context capabilities",
+      "status": "in_progress",
+      "dependsOn": [],
+      "deliverables": [
+        "Map existing browser/MCP access, deterministic tools, skill instructions, TUI rendering and compaction paths",
+        "Compare official Browser Use, Playwright and Agent Skills designs; discover available local/Mac skills"
+      ],
+      "exit": [
+        "Record dependency order, current gaps and exact integration contracts before runtime edits"
+      ]
+    },
+    {
+      "id": "U1",
+      "title": "Bounded browser and deterministic tools",
+      "status": "pending",
+      "dependsOn": [
+        "U0"
+      ],
+      "deliverables": [
+        "Small browser interface with bounded page observations, navigation and permission-aware interaction using existing available infrastructure where practical",
+        "Actual server time with timezone and timestamp provenance; reusable deterministic calculations through typed tools",
+        "Cancellation, request/output receipts, resource cleanup and shared budget integration",
+        "Native model tool-call integration for Qwen Flash Next: Docdex repository search/open/symbols/impact and web research, with evidence-bound follow-up investigation",
+        "Preserve explicit tool requirements and recover confirmed failed-request reservations before later turns lose useful tool budget"
+      ],
+      "exit": [
+        "Live browser fixture and server-time checks pass; no hidden model loop or invented observation",
+        "Browser content remains untrusted and actions obey existing permission scope",
+        "Live unseen repository and web questions produce actual model-issued Docdex calls and grounded source citations",
+        "A transient failed request cannot silently turn an explicitly tool-dependent request into an unsupported guessed answer"
+      ]
+    },
+    {
+      "id": "U2",
+      "title": "Reusable local skills and planning workflow",
+      "status": "pending",
+      "dependsOn": [
+        "U0"
+      ],
+      "deliverables": [
+        "SKILL.md metadata discovery and on-demand instruction/resource loading with visible provenance",
+        "Configurable local skill directories compatible with available Mac-style skill packages",
+        "Planning skill integrated with existing durable goals, task dependencies, decisions and verification receipts; /skills inspection"
+      ],
+      "exit": [
+        "Skill selection, nested resources, precedence, limits and incompatible environments tested",
+        "Loading a skill cannot silently widen permissions or execute hooks; unavailable Mac-specific dependencies are reported"
+      ]
+    },
+    {
+      "id": "U3",
+      "title": "Readable common TUI outputs",
+      "status": "pending",
+      "dependsOn": [
+        "U0"
+      ],
+      "deliverables": [
+        "Readable Markdown tables and common structured output in the message stream",
+        "Width-aware wrapping or compact fallback for narrow terminals, streamed partial content and preserved scrolling"
+      ],
+      "exit": [
+        "Interactive table/code/list/resize/scroll fixtures pass on supported terminal widths without control-sequence injection or damaged input"
+      ]
+    },
+    {
+      "id": "U4",
+      "title": "Context compression before model limits",
+      "status": "pending",
+      "dependsOn": [
+        "U1",
+        "U2"
+      ],
+      "deliverables": [
+        "Model-specific context accounting covering instructions, skills, history, tool schemas/results and reserved output",
+        "Automatic compaction before overflow for conversation, inspection and execution paths, with user-visible progress",
+        "Preserve original goals, constraints, decisions, pending actions and evidence pointers; full private logs remain available"
+      ],
+      "exit": [
+        "Long live and deterministic conversations continue across compaction without losing key constraints or executing an action twice",
+        "Compaction failures/cancellation/oversized immutable input fail clearly without loops or exceeding shared budgets"
+      ]
+    },
+    {
+      "id": "U5",
+      "title": "Qualify and package the extended setup",
+      "status": "pending",
+      "dependsOn": [
+        "U1",
+        "U2",
+        "U3",
+        "U4",
+        "R1",
+        "B6"
+      ],
+      "deliverables": [
+        "Focused live capability cases, regression evidence and fresh frozen quality evaluation for any changed model/prompt settings",
+        "Exact packaged TUI qualification and reversible updated preview installation",
+        "Report measured quality, latency, token use and remaining release gates"
+      ],
+      "exit": [
+        "All requested capabilities demonstrated on the installed build",
+        "No claim of quality improvement based on exposed held-out cases or changed graders"
       ]
     }
   ],
@@ -810,13 +917,70 @@
       "candidate": "r1-a-calculator-review",
       "expectedAttempts": 450,
       "qualification": "Experimental; no held-out outcome or promotion yet."
+    },
+    {
+      "phase": "B6",
+      "type": "experimental_preview_available",
+      "at": "2026-10-29T05:43:06.028261+00:00",
+      "launcher": "/home/wodo/.local/bin/codali-preview",
+      "config": "/home/wodo/.config/codali/preview-22-r1.json",
+      "packageQualification": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-package-qualification.json",
+      "launcherReceipt": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-user-launcher-v1.json",
+      "launcherPty": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-user-launcher-pty-v1.json",
+      "preservedInitialProbeFailure": "/home/wodo/.local/state/codali-trust-benchmark/preview-22-user-launcher-pty-initial.json",
+      "liveSmokePrepared": "/home/wodo/.local/state/codali-trust-benchmark/qualify-preview22-selected-v1.mjs",
+      "qualityPromotion": false
+    },
+    {
+      "phase": "U0",
+      "type": "user_requested_capability_extension",
+      "at": "2026-10-29T05:47:25.267717+00:00",
+      "request": [
+        "browser access",
+        "server time and deterministic tools",
+        "Mac-compatible agent skills especially planning",
+        "readable tables and common TUI outputs",
+        "automatic context compression near model limits"
+      ],
+      "researchSources": [
+        "https://github.com/microsoft/playwright-mcp",
+        "https://docs.browser-use.com/open-source/customize/browser/basics",
+        "https://agentskills.io/specification"
+      ],
+      "localSkills": "Synced Claude browser/research/document skill packages present; exact Mac planning skill requested asynchronously.",
+      "frozenStudyUnchanged": true
+    },
+    {
+      "phase": "R1",
+      "type": "fresh_heldout_complete_failed_promotion",
+      "at": "2026-10-29T06:02:12.949088+00:00",
+      "completion": "/home/wodo/.local/state/codali-trust-benchmark/r1-study-completion-v1.json",
+      "publicReport": "docs/benchmarks/codali-r1/results.json",
+      "promotionQualified": false,
+      "originalStudyUnchanged": true
+    },
+    {
+      "phase": "B6",
+      "type": "installed_selected_smoke_failed",
+      "at": "2026-10-29T06:02:12.949088+00:00",
+      "results": "/home/wodo/.local/state/codali-trust-benchmark/preview22-selected-smoke-v1/results.json",
+      "events": "/home/wodo/.local/state/codali-trust-benchmark/preview22-selected-smoke-v1/events.jsonl",
+      "failedRequestReceiptLookup": "/home/wodo/.local/state/codali-trust-benchmark/preview22-smoke-failed-request-usage-v1.json",
+      "cases": 6,
+      "passed": 2,
+      "qualification": "First failures preserved; follow-up fixes required."
     }
   ],
   "remaining": [
-    "R1",
-    "B6"
+    "B6",
+    "U0",
+    "U1",
+    "U2",
+    "U3",
+    "U4",
+    "U5"
   ],
-  "updatedAt": "2026-10-29T04:54:36.002439+00:00",
+  "updatedAt": "2026-10-29T06:02:12.949088+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [
