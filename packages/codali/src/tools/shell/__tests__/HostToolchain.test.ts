@@ -194,6 +194,19 @@ test("Cargo compiles and tests offline with a private home and the concrete comp
     assert!(std::env::var("MCODA_MSWARM_API_KEY").is_err());
     assert!(std::env::var("CARGO_HOME").unwrap().starts_with(&std::env::var("HOME").unwrap()));
 }\n`);
-  const result = await createIsolatedExecutor({ status })("cargo", ["test", "--offline", "--quiet"], { workspaceRoot: root, allowedWritePaths: ["."], shellTimeoutMs: 60000 });
-  assert.match(result.output, /1 passed/);
+  try {
+    const result = await createIsolatedExecutor({ status })("cargo", ["test", "--offline", "--verbose"], { workspaceRoot: root, allowedWritePaths: ["."], shellTimeoutMs: 60000 });
+    assert.match(result.output, /1 passed/);
+  } catch (error) {
+    // Node's test reporter omits the captured process details on deadline errors.
+    const details = typeof error === "object" && error !== null && "details" in error
+      ? (error as { details?: { stdout?: unknown; stderr?: unknown } }).details : undefined;
+    if (details && typeof details.stdout === "string" && typeof details.stderr === "string") {
+      t.diagnostic(`Cargo stdout: ${details.stdout.slice(-4000)}`);
+      t.diagnostic(`Cargo stderr: ${details.stderr.slice(-4000)}`);
+    } else {
+      t.diagnostic(String(error).slice(0, 1000));
+    }
+    throw error;
+  }
 });
