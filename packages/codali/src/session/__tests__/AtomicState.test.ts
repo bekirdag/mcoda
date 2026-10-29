@@ -59,24 +59,30 @@ test("permanent rename failures exhaust a bounded retry only on Windows and neve
 test("Windows replacement recovers after a real reader releases its non-delete-sharing handle", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-windows-reader-"));
   const file = path.join(root, "state.json"); await atomicWriteJson(file, { revision: 1 });
-  const script = "$stream=[System.IO.File]::Open($env:CODALI_TEST_STATE_FILE,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read); [Console]::WriteLine('HELD'); [Console]::ReadLine() | Out-Null; $stream.Dispose()";
+  const script = "$stream=[System.IO.File]::Open($env:CODALI_TEST_STATE_FILE,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read); [Console]::WriteLine('HELD'); [Console]::ReadLine() | Out-Null; $stream.Dispose(); [Console]::WriteLine('RELEASED')";
   const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
     env: { ...process.env, CODALI_TEST_STATE_FILE: file }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
   });
-  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+  let output = ""; let errors = ""; let childClosed = false;
+  child.stdout.on("data", data => { output = (output + String(data)).slice(-4096); });
+  child.stderr.on("data", data => { errors = (errors + String(data)).slice(-4096); });
+  const closed = new Promise<void>(resolve => child.once("close", () => { childClosed = true; resolve(); }));
   t.after(async () => { if (child.exitCode === null) child.kill(); await closed; await fs.rm(root, { recursive: true, force: true }); });
-  await new Promise<void>((resolve, reject) => {
-    let output = ""; let errors = "";
-    const timer = setTimeout(() => reject(new Error("Windows sharing fixture did not become ready")), 8000);
-    const fail = (error: Error) => { clearTimeout(timer); reject(error); };
-    child.once("error", fail);
-    child.stderr.on("data", data => { errors += String(data); });
-    child.stdout.on("data", data => {
-      output += String(data);
-      if (output.includes("HELD")) { clearTimeout(timer); resolve(); }
-    });
-    child.once("exit", () => fail(new Error(`Sharing fixture exited before release: ${errors}`)));
+  const awaitMarker = (marker: string, timeoutMs: number) => new Promise<void>((resolve, reject) => {
+    const diagnostic = (reason: string) => new Error(`Windows sharing fixture ${reason} before ${marker}; stdout=${output}; stderr=${errors}`);
+    const cleanup = () => {
+      clearTimeout(timer); child.stdout.off("data", check); child.off("error", fail);
+      child.stdin.off("error", fail); child.off("close", onClose);
+    };
+    const fail = (error: Error) => { cleanup(); reject(error); };
+    const check = () => { if (output.includes(marker)) { cleanup(); resolve(); } };
+    const onClose = () => { if (output.includes(marker)) check(); else fail(diagnostic("closed")); };
+    const timer = setTimeout(() => fail(diagnostic("timed out")), timeoutMs);
+    child.stdout.on("data", check); child.once("error", fail);
+    child.stdin.once("error", fail); child.once("close", onClose);
+    if (childClosed) onClose(); else check();
   });
+  await awaitMarker("HELD", 8000);
   const original = fs.rename.bind(fs); let attempts = 0; let observedSharingFailure = false;
   const mock = t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
     attempts++;
@@ -85,7 +91,13 @@ test("Windows replacement recovers after a real reader releases its non-delete-s
       if (attempts === 1) {
         assert.ok(["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? ""));
         observedSharingFailure = true;
+        // Confirm actual handle disposal before testing recovery. The injected
+        // tests above independently exercise the unchanged bounded retry policy.
+        const releaseStarted = Date.now();
+        const released = awaitMarker("RELEASED", 4000);
         child.stdin.end("release\n");
+        await released;
+        t.diagnostic(`Reader confirmed handle release in ${Date.now() - releaseStarted} ms before the rename retry`);
       }
       throw error;
     }
