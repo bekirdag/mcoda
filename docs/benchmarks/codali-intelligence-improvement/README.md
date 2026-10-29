@@ -1,5 +1,60 @@
 # Codali intelligence improvement experiments
 
+## Tool integration and full replay, 2026-10-29
+
+Development commit `65f10fd` adds bounded Decimal.js/math.js/Ajv, SymPy/Z3,
+DuckDB/Polars, isolated JavaScript/Vitest checks, ADES entity hints, the versioned
+Docdex catalog, browser-use, local document tools and a read-only TNL adapter.
+The installed TUI preview has not been replaced by this development build.
+TNL's dedicated 30-year key still awaits the prepared operator deployment;
+live TNL access and local image/audio/video generation remain unqualified.
+
+A frozen adaptive configuration is replaying all original 1,000 questions on
+Codali, raw Qwen and raw Qwen with the same direct tools. These are exposed
+development cases, not a new holdout. An immutable snapshot contains the first
+200 complete three-arm questions (600 outcomes); review of that snapshot is
+ongoing. The first 100 questions have complete criterion-based review:
+
+| Arm | Strict success | Semantic correctness | Tokens | Median / p95 answer time |
+| --- | ---: | ---: | ---: | ---: |
+| Raw Qwen | 78/100 | 83/100 | 42,907 | 6.40 / 16.13 s |
+| Raw Qwen with tools | 81/100 | 84/100 | 153,176 | 7.55 / 27.22 s |
+| Codali adaptive-v3 | 82/100 | 83/100 | 123,267 | 7.46 / 32.01 s |
+
+Codali shows no semantic gain over raw Qwen (family bootstrap 95% interval
+−6 to +6 percentage points), with 2.87× tokens, 1.16× median time and 1.98× p95
+time. It uses 0.80× the tool-enabled baseline's tokens but is one point lower
+in correctness. **This configuration does not meet the intelligence or
+efficiency goal.** Repository inspection is the largest overhead. Raw-direct
+receives the complete text fixtures; that contrast includes retrieval cost
+versus already supplied context. The tool-enabled comparison is reported
+separately. Errors remain failures; authenticated usage sidecars settle costs
+without replacing failed outcomes.
+
+Reviews were performed by the primary agent with arm/configuration labels
+withheld, not by independent human reviewers. Response text may reveal the arm.
+Some inherited rubrics omit unsupported-claim checks; the new question set must
+include evidence faithfulness explicitly. Timing is observational on a shared
+host, including concurrent CPU-only build/test activity.
+
+Validation: 1,964 Codali tests passed with six optional skips; separate real
+Chrome checks passed 5/5. Clean tarball installations passed seven deterministic
+and four document checks. The relay build also passed 147 runtime tests, two
+vendoring tests and clean-package Chrome checks. Eleven prospective workflow
+harness tests passed with fake model transport; six artifact suites exercised
+real document decoding and deterministic media fixtures, not model generation.
+Technical artifact validity is kept separate from semantic media quality.
+The active relay remains the qualified private `.25` service; the global
+installation is not its effective systemd executable.
+
+Next: finish the unchanged 1,000-case replay and review, tune from its development
+evidence, then author and freeze 100 new broad workflow questions. Raw Qwen with
+tools receives matching file/browser/skill/media capabilities in that protocol.
+Raw-direct inability to create an artifact will not be called an intelligence
+gain. No stable release, configuration promotion or npm publication is implied.
+
+## Earlier .25/.26 experiment
+
 This is development evidence from the .25 runtime, followed by a .26 word-repair correction. It does not establish broader intelligence or replace any earlier frozen result. [Results](results.json) and the [failure taxonomy](failure-taxonomy.json) distinguish dispatcher qualification, serving checks, the answer-quality ablation and installed follow-up checks.
 
 The runtime now uses one versioned dispatch/output contract, checks final presentation on every interaction route, permits one bounded tool-free conversational repair, and preserves native tool history through the Raijin proxy. Correctness and full schema/code verification remain separate from these presentation checks.
