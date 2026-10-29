@@ -3,6 +3,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { effortBudget, resolveBinding } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { interactionSettings } from '../../packages/codali/dist/runtime/InteractionRouter.js';
+import { usageAccounts, accountedUsage } from '../../packages/codali/dist/runtime/UsageReconciliation.js';
 import { hash, json, benchmarkFingerprint, repository, fixtureSnapshot } from './trust-common.mjs';
 import { validateWorkflowExecution } from './trust-workflow.mjs';
 
@@ -14,11 +15,15 @@ export function workflowPath(value) {
 }
 
 export function validateWorkflowCase(task) {
-  if (!exact(task, 'id,domain,family,split,variant,prompt,history,files,execution,comparison')) throw Error('Invalid public workflow fields');
+  const fields = 'id,domain,family,split,variant,prompt,history,files,execution,comparison';
+  if (!exact(task, fields) && !exact(task, `${fields},followUps`)) throw Error('Invalid public workflow fields');
   for (const key of ['id','domain','family']) if (typeof task[key] !== 'string' || !/^[a-z0-9][a-z0-9_.-]{0,119}$/.test(task[key])) throw Error('Invalid workflow identity');
   if (!['development','validation','held_out'].includes(task.split) || !Number.isSafeInteger(task.variant) || task.variant < 1) throw Error('Invalid workflow split/variant');
   if (!['answer','artifact','implementation'].includes(task.comparison)) throw Error('Invalid workflow comparison class');
   if (typeof task.prompt !== 'string' || !task.prompt.trim() || task.prompt.length > 32000) throw Error('Invalid workflow prompt');
+  if ('followUps' in task && (!Array.isArray(task.followUps) || task.followUps.length > 7 || task.followUps.some(turn =>
+    !exact(turn,'prompt,restoreSession') || typeof turn.prompt !== 'string' || !turn.prompt.trim() || turn.prompt.length > 32000
+    || typeof turn.restoreSession !== 'boolean'))) throw Error('Invalid workflow follow-up turns');
   if (!Array.isArray(task.history) || task.history.length > 40 || task.history.some(message => !exact(message,'role,content')
     || !['user','assistant'].includes(message.role) || typeof message.content !== 'string' || message.content.length > 32000)) throw Error('Invalid workflow history');
   if (!task.files || typeof task.files !== 'object' || Array.isArray(task.files) || Object.keys(task.files).length > 100) throw Error('Invalid workflow fixtures');
@@ -33,6 +38,33 @@ export function validateWorkflowCase(task) {
   validateWorkflowExecution(task.execution);
   if (task.comparison !== 'answer' && !task.execution.writes) throw Error('Artifact/implementation tasks require write capability');
   return task;
+}
+
+export const workflowTurns = task => [{prompt: task.prompt, restoreSession: false}, ...(task.followUps ?? [])];
+
+export function sumWorkflowUsage(turns) {
+  const total = {tokens:0,inputTokens:0,outputTokens:0,modelCalls:0,toolCalls:0,embeddingCalls:0,embeddingTokens:0,estimated:false,pendingReservations:[]};
+  for (const usage of turns) {
+    if (!usage || !Number.isSafeInteger(usage.tokens) || usage.tokens < 0) return {estimated:true};
+    for (const key of ['tokens','inputTokens','outputTokens','modelCalls','toolCalls','embeddingCalls','embeddingTokens']) {
+      const value = usage[key] ?? 0;
+      if (!Number.isSafeInteger(value) || value < 0) return {estimated:true};
+      total[key] += value;
+      if (!Number.isSafeInteger(total[key])) return {estimated:true};
+    }
+    total.estimated ||= usage.estimated === true;
+    total.pendingReservations.push(...(usage.pendingReservations ?? []));
+  }
+  return total;
+}
+
+// Session usage may reset after completed work or be restored from disk. Invocation
+// identities across the host transcript retain every turn without double charging.
+export function candidateWorkflowUsage(events) {
+  const accounts = usageAccounts(events), measured = accountedUsage(accounts.values());
+  const toolIds = new Set(events.filter(event=>event.type==='tool_intent').map((event,index)=>event.data.receipt?.id ?? event.data.id ?? `unidentified:${index}`));
+  const pendingReservations = [...accounts.values()].filter(account=>account.counted&&!account.usage).map(account=>account.id);
+  return measured ? {...measured,toolCalls:toolIds.size,pendingReservations} : {estimated:true,pendingReservations};
 }
 
 export async function readWorkflowCorpus(directory) {

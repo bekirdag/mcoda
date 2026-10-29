@@ -12,19 +12,20 @@ live TNL access and local image/audio/video generation remain unqualified.
 A frozen adaptive configuration is replaying all original 1,000 questions on
 Codali, raw Qwen and raw Qwen with the same direct tools. These are exposed
 development cases, not a new holdout. An immutable snapshot contains the first
-200 complete three-arm questions (600 outcomes); review of that snapshot is
-ongoing. The first 100 questions have complete criterion-based review:
+200 complete three-arm questions (600 outcomes), with complete criterion-based
+review and no pending judgments for that cohort:
 
 | Arm | Strict success | Semantic correctness | Tokens | Median / p95 answer time |
 | --- | ---: | ---: | ---: | ---: |
-| Raw Qwen | 78/100 | 83/100 | 42,907 | 6.40 / 16.13 s |
-| Raw Qwen with tools | 81/100 | 84/100 | 153,176 | 7.55 / 27.22 s |
-| Codali adaptive-v3 | 82/100 | 83/100 | 123,267 | 7.46 / 32.01 s |
+| Raw Qwen | 159/200 | 167/200 | 84,907 | 6.65 / 16.59 s |
+| Raw Qwen with tools | 157/200 | 164/200 | 312,189 | 8.54 / 31.15 s |
+| Codali adaptive-v3 | 165/200 | 167/200 | 250,004 | 8.37 / 32.12 s |
 
 Codali shows no semantic gain over raw Qwen (family bootstrap 95% interval
-−6 to +6 percentage points), with 2.87× tokens, 1.16× median time and 1.98× p95
-time. It uses 0.80× the tool-enabled baseline's tokens but is one point lower
-in correctness. **This configuration does not meet the intelligence or
+−5 to +5 percentage points), with 2.94× tokens, 1.26× median time and 1.94× p95
+time. It uses 0.80× the tool-enabled baseline's tokens with a 1.5-point semantic
+gain (interval −4 to +7 points), 0.98× median time and 1.03× p95 time.
+**This configuration does not meet the intelligence or
 efficiency goal.** Repository inspection is the largest overhead. Raw-direct
 receives the complete text fixtures; that contrast includes retrieval cost
 versus already supplied context. The tool-enabled comparison is reported
@@ -35,15 +36,21 @@ Reviews were performed by the primary agent with arm/configuration labels
 withheld, not by independent human reviewers. Response text may reveal the arm.
 Some inherited rubrics omit unsupported-claim checks; the new question set must
 include evidence faithfulness explicitly. Timing is observational on a shared
-host, including concurrent CPU-only build/test activity.
+host, including concurrent CPU-only build/test/CI activity. The prior first-100
+snapshot and all original judgments remain retained; the expanded 200-case
+analysis is `full1000-adaptive-v3-partial-analysis-09` in private benchmark state.
 
 Validation: 1,964 Codali tests passed with six optional skips; separate real
 Chrome checks passed 5/5. Clean tarball installations passed seven deterministic
 and four document checks. The relay build also passed 147 runtime tests, two
-vendoring tests and clean-package Chrome checks. Eleven prospective workflow
+vendoring tests and clean-package Chrome checks. Fourteen prospective workflow
 harness tests passed with fake model transport; six artifact suites exercised
 real document decoding and deterministic media fixtures, not model generation.
 Technical artifact validity is kept separate from semantic media quality.
+Workflow cases can now include bounded follow-ups and restoration from persisted
+controller/transcript state, with per-turn budgets and complete aggregate costs.
+This restoration check does not simulate a process crash. Failed follow-ups
+retain earlier answers and costs and prevent subsequent turns from dispatching.
 The active relay remains the qualified private `.25` service; the global
 installation is not its effective systemd executable.
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { hash, json, jsonl } from './trust-common.mjs';
-import { validateWorkflowCase, validateWorkflowConfig, workflowAccounting, workflowLimits, readWorkflowCorpus, workflowFingerprint } from './trust-workflow-protocol.mjs';
+import { validateWorkflowCase, validateWorkflowConfig, workflowAccounting, workflowLimits, readWorkflowCorpus, workflowFingerprint, workflowTurns, sumWorkflowUsage, candidateWorkflowUsage } from './trust-workflow-protocol.mjs';
 
 const execution={writes:false,web:false,media:false,effort:'low',deadlineMs:30000};
 const fixture=()=>({id:'fixture.answer.01',domain:'fixture',family:'fixture.answer',variant:1,split:'development',prompt:'Return fixture answer.',history:[],files:{},execution:{...execution},comparison:'answer'});
@@ -28,6 +28,19 @@ test('media preflight excludes cloud fallbacks and host skill directories before
   for(const [binding,operation]of[['image','images.generations'],['audio','audio.generations'],['video','videos.generations']]){value.models[binding]={provider:'local',catalogId:binding,revision:'fixture',backend:'openai-compatible-local',operations:[operation],contextWindow:1024,maxOutputTokens:1};value.bindings[binding]={candidates:[binding]};}
   validateWorkflowConfig(value,[task]);value.models.image.backend='cloud';assert.throws(()=>validateWorkflowConfig(value,[task]),/local specialist/);
   value.skills={directories:['/home/private/skills']};assert.throws(()=>validateWorkflowConfig(value,[fixture()]),/path/);
+});
+
+test('follow-ups are bounded public user turns; aggregate usage survives session resets and unknown outcomes',()=>{
+  const task={...fixture(),followUps:[{prompt:'Follow up.',restoreSession:true}]};validateWorkflowCase(task);
+  assert.deepEqual(workflowTurns(task).map(turn=>turn.restoreSession),[false,true]);
+  for(const followUps of [null,[{prompt:'x',restoreSession:'yes'}],[{prompt:' ',restoreSession:false}],[{prompt:'x',restoreSession:false,answer:42}],Array(8).fill({prompt:'x',restoreSession:false})])assert.throws(()=>validateWorkflowCase({...task,followUps}));
+  const known={tokens:10,inputTokens:7,outputTokens:3,modelCalls:1,toolCalls:0,estimated:false};
+  assert.equal(sumWorkflowUsage([known,known]).tokens,20);assert.equal(sumWorkflowUsage([known,{estimated:true}]).tokens,undefined);
+  const sum=sumWorkflowUsage([known,{...known,tokens:100,estimated:true,pendingReservations:['unknown']}]);assert.equal(sum.tokens,110);assert.equal(sum.estimated,true);assert.deepEqual(sum.pendingReservations,['unknown']);
+  const events=[{type:'model_intent',data:{id:'first',reservedTokens:100}},{type:'model_receipt',data:{id:'first',status:'completed',usage:{inputTokens:7,outputTokens:3,totalTokens:10,estimated:false}}},
+    {type:'usage',data:{usage:{tokens:0}}},{type:'model_intent',data:{id:'second',reservedTokens:90}},{type:'tool_intent',data:{receipt:{id:'tool'}}},{type:'tool_intent',data:{receipt:{id:'tool'}}}];
+  const retained=candidateWorkflowUsage(events);assert.equal(retained.tokens,100);assert.equal(retained.modelCalls,2);assert.equal(retained.toolCalls,1);assert.equal(retained.estimated,true);assert.deepEqual(retained.pendingReservations,['second']);
+  events.push({type:'model_receipt',data:{id:'second',status:'not_dispatched'}});assert.equal(candidateWorkflowUsage(events).tokens,10);
 });
 
 test('aggregate reservations retain failures and embeddings, settle actual usage once, and stop excess calls',async()=>{
@@ -74,4 +87,52 @@ test('actual three-arm runner logs requests/results, resumes without replay, rej
   const recovered=(await jsonl(path.join(interrupted,'ledger.jsonl'))).find(row=>row.type==='result');assert.equal(recovered.result.unknownOutcome,true);assert.equal(recovered.recovered,true);
   const changed=await json(configuration);changed.profile='changed';await fs.writeFile(configuration,JSON.stringify(changed));assert.match((await run(args)).output,/inputs drifted/);assert.equal(calls,callsBefore);
   const held=fixture();held.split='held_out';await corpus(publicRoot,[held]);const denied=await run([...args,'--split','held_out']);assert.notEqual(denied.code,0);assert.match(denied.output,/selection freeze/);assert.equal(calls,callsBefore);
+});
+
+test('all arms execute follow-ups, restore saved history and account every answer; fake transport only',async t=>{
+  const directory=await root(t),publicRoot=path.join(directory,'corpus'),output=path.join(directory,'run'),configuration=path.join(directory,'config.json'),requests=[];
+  const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');if(req.url==='/v1/models'){res.end(JSON.stringify({data:[{id:'fixture'}]}));return;}
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());requests.push(body);
+    const last=body.messages.filter(message=>message.role==='user').at(-1).content;
+    const content=last.includes('second-fixture-turn')?'reply-two':last.includes('third-fixture-turn')?'reply-three':'reply-one';
+    res.end(JSON.stringify({choices:[{message:{role:'assistant',content}}],usage:{prompt_tokens:7,completion_tokens:3,total_tokens:10}}));});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const task={...fixture(),prompt:'first-fixture-turn',followUps:[{prompt:'second-fixture-turn',restoreSession:true},{prompt:'third-fixture-turn',restoreSession:false}]};
+  await corpus(publicRoot,[task]);await fs.writeFile(configuration,JSON.stringify(config(`http://127.0.0.1:${server.address().port}/v1`)));
+  const args=['--config',configuration,'--output',output,'--corpus-root',publicRoot],outcome=await run(args);assert.equal(outcome.code,0,outcome.output);
+  const results=(await jsonl(path.join(output,'ledger.jsonl'))).filter(record=>record.type==='result');assert.equal(results.length,3);assert.equal(requests.length,9);
+  for(const record of results){
+    t.after(()=>fs.rm(record.result.runtimeArchive,{recursive:true,force:true}));const result=record.result;
+    assert.equal(result.error,undefined,JSON.stringify(result));assert.equal(result.content,'reply-three');assert.equal(result.usage.tokens,30);assert.equal(result.usage.modelCalls,3);assert.equal(result.usage.estimated,false);
+    assert.deepEqual(result.turns.map(turn=>turn.content),['reply-one','reply-two','reply-three']);assert.deepEqual(result.turns.map(turn=>turn.usage.tokens),[10,10,10]);
+    assert.equal(result.budgetScope,'per_turn');assert.equal(result.deadlineScope,'whole_workflow');assert.equal(result.restorationScope,'controller_and_transcript_from_disk_not_process_crash');
+    const events=await jsonl(path.join(record.directory,'events.jsonl'));assert.equal(events.filter(event=>event.type==='workflow_session_restored').length,1);
+    if(result.arm==='codali_candidate')assert.equal(events.filter(event=>event.type==='session_resumed').length,1);
+  }
+  for(const body of requests){
+    const users=body.messages.filter(message=>message.role==='user').map(message=>message.content),last=users.at(-1);
+    if(last==='first-fixture-turn'){assert.ok(!JSON.stringify(body).includes('second-fixture-turn'));assert.ok(!JSON.stringify(body).includes('third-fixture-turn'));}
+    if(last==='second-fixture-turn'){assert.ok(users.includes('first-fixture-turn'));assert.ok(body.messages.some(message=>message.role==='assistant'&&message.content==='reply-one'));}
+    if(last==='third-fixture-turn')assert.ok(body.messages.some(message=>message.role==='assistant'&&message.content==='reply-two'));
+  }
+  const resumed=await run(args);assert.equal(resumed.code,0,resumed.output);assert.equal(requests.length,9);
+});
+
+test('a failed follow-up retains earlier answers and usage and never dispatches later turns; fake transport only',async t=>{
+  const directory=await root(t),publicRoot=path.join(directory,'corpus'),output=path.join(directory,'run'),configuration=path.join(directory,'config.json'),seen=[];
+  const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');if(req.url==='/v1/models'){res.end(JSON.stringify({data:[{id:'fixture'}]}));return;}
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());const last=body.messages.filter(message=>message.role==='user').at(-1).content;seen.push(last);
+    if(last==='fail-second-turn'){res.statusCode=502;res.end(JSON.stringify({error:{message:'fixture failure'}}));return;}
+    res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'first retained answer'}}],usage:{prompt_tokens:7,completion_tokens:3,total_tokens:10}}));});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await corpus(publicRoot,[{...fixture(),followUps:[{prompt:'fail-second-turn',restoreSession:true},{prompt:'must-never-dispatch',restoreSession:false}]}]);
+  await fs.writeFile(configuration,JSON.stringify(config(`http://127.0.0.1:${server.address().port}/v1`)));
+  const args=['--config',configuration,'--output',output,'--corpus-root',publicRoot],outcome=await run(args);assert.equal(outcome.code,0,outcome.output);
+  const results=(await jsonl(path.join(output,'ledger.jsonl'))).filter(record=>record.type==='result');assert.equal(results.length,3);
+  for(const {result} of results){
+    t.after(()=>fs.rm(result.runtimeArchive,{recursive:true,force:true}));assert.match(result.error,/502|fixture failure/);
+    assert.equal(result.turns.length,2);assert.equal(result.turns[0].content,'first retained answer');assert.equal(result.turns[0].usage.tokens,10);assert.ok(result.turns[1].error);
+    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);assert.equal(result.usage.modelCalls,2);
+  }
+  assert.ok(!seen.includes('must-never-dispatch'));const calls=seen.length;assert.equal((await run(args)).code,0);assert.equal(seen.length,calls);
 });

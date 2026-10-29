@@ -49,7 +49,7 @@ try{
       if(!record.result.pendingMediaJobs?.length)continue;
       const runtime=record.result.runtimeArchive;
       for(const job of record.result.pendingMediaJobs){
-        const mediaRoot=record.result.arm==='codali_candidate'?path.join(runtime,'state/sessions',record.result.sessionId,'media'):path.join(runtime,'state/media');
+        const mediaRoot=record.result.arm==='codali_candidate'?path.join(runtime,'state/sessions',job.sessionId??record.result.sessionId,'media'):path.join(runtime,'state/media');
         const current=await json(path.join(mediaRoot,job.id,'job.json'));
         if(!['succeeded','failed','cancelled'].includes(current.status))throw Error('A retained media job is still active or uncertain; do not start competing inference');
       }

@@ -110,7 +110,10 @@ export async function runRawWorkflow({ provider, tools, messages, limits, signal
     const response = await provider.generate({ messages: transcript, tools: tools.schemas(), maxTokens: limits.maxOutputTokens, temperature: 0, signal });
     await onResponse(response);
     const calls = response.toolCalls ?? response.message.toolCalls ?? [];
-    if (!calls.length) return { content: response.message.content, toolCalls, steps: step + 1 };
+    if (!calls.length) {
+      transcript.push(response.message);
+      return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript };
+    }
     transcript.push({ ...response.message, toolCalls: calls });
     for (const call of calls) {
       if (++toolCalls > limits.maxToolCalls) throw Error('Common workflow tool budget exhausted');
