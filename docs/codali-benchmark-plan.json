@@ -680,6 +680,50 @@
         "/tmp/codali-followup-harness-tests-v2.log"
       ],
       "limitation": "Synthetic HTTP integration checks, not live quality evidence. Follow-up corpus and model study remain pending."
+    },
+    {
+      "phase": "R1",
+      "type": "fresh_corpus_frozen_and_preview22_qualified",
+      "at": "2026-10-29T02:13:45.642756+00:00",
+      "corpus": "docs/benchmarks/codali-r1/manifest.json",
+      "protocol": "docs/benchmarks/codali-r1/protocol.json",
+      "counts": {
+        "cases": 300,
+        "families": 30,
+        "validation": 100,
+        "heldOut": 200,
+        "referenceControls": 210,
+        "rubricsValidated": 90,
+        "nontrivialCodeMutantsRejected": 60
+      },
+      "preview": {
+        "version": "0.1.135-codali.22",
+        "source": "71174f7b474509f96ba784f93d695e1062ff440f",
+        "cleanInstallChecks": 29,
+        "ci": 40803678584,
+        "platform": 40803678591,
+        "installedGreeting": {
+          "tokens": 762,
+          "modelCalls": 1,
+          "elapsedMs": 7242
+        },
+        "installedCalculator": {
+          "answer": 14.272727272727273,
+          "toolCalls": 1,
+          "elapsedMs": 21790,
+          "cumulativeSessionUsage": {
+            "tokens": 5179,
+            "modelCalls": 5
+          }
+        }
+      },
+      "artifacts": [
+        "/home/wodo/.local/state/codali-trust-benchmark/r1-corpus-qualification-v2.json",
+        "/home/wodo/.local/state/codali-trust-benchmark/r1-corpus-mutation-audit.json",
+        "/home/wodo/.local/state/codali-trust-benchmark/preview-22-package-qualification.json",
+        "/home/wodo/.local/state/codali-trust-benchmark/preview-22-calculator-live"
+      ],
+      "limitation": "All checks are functional qualification; no R1 model benchmark has run yet. The original frozen study remains in progress."
     }
   ],
   "remaining": [
@@ -687,7 +731,7 @@
     "R1",
     "B6"
   ],
-  "updatedAt": "2026-10-29T01:53:29.285807+00:00",
+  "updatedAt": "2026-10-29T02:13:45.642756+00:00",
   "inventory": {
     "catalogEvidence": "/tmp/codali-benchmark-catalog.json",
     "availableTextModels": [
