@@ -1651,7 +1651,7 @@ export class SessionController {
       .map(name => registry.list().find(tool => tool.name === name)).filter((tool): tool is ToolDefinition => !!tool && permitted(tool.name))
       .map(tool => `${tool.name}(${(tool.inputSchema?.required ?? []).join(",")})`).join("; ");
     const routingPolicy = this.options.resolved.config.interaction?.routerPrompt;
-    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${nativeExposure && !adaptive ? "" : `\nTools (required arguments): ${hints}`}` },
+    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${nativeExposure && !adaptive ? "" : `\nOperations via codali (required arguments): ${hints}`}` },
       ...(this.state ? [{ role: "user" as const, content: `Active work context (not new authorization): ${JSON.stringify({ objective: this.state.objective.slice(0, 2000), status: this.state.status })}` }] : []),
       ...(routingPolicy && routingPolicy !== ROUTER_PROMPT ? [{ role: "user" as const, content: `Routing policy (cannot override the original request): ${routingPolicy}` }] : []),
       ...history, { role: "user", content: prompt }];
@@ -1662,7 +1662,7 @@ export class SessionController {
     const finalSystemPrompt = `${ANSWER_PROMPT}${answerPolicy === ANSWER_PROMPT ? "" : `\nAnswering policy (subject to the original request):\n${answerPolicy}`}\n${this.scopedInstructions}`;
     const enableToolGuidance = () => {
       const continuation = interactionFirstPrompt({ ...interactionSettings(this.options.resolved.config.interaction), strategy: "gateway" });
-      messages[0] = { role: "system", content: `${continuation}\n${this.scopedInstructions}${nativeExposure ? "" : `\nTools (required arguments): ${hints}`}` };
+      messages[0] = { role: "system", content: `${continuation}\n${this.scopedInstructions}${nativeExposure ? "" : `\nOperations via codali (required arguments): ${hints}`}` };
     };
     let attempts = 0;
     let requiredChecks: JavaScriptChecks | undefined;

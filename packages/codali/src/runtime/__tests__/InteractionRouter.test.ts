@@ -181,6 +181,9 @@ test("adaptive directly invokes a real tool and preserves the original instructi
     assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]);
     if (++calls === 1) {
       assert.equal(request.toolChoice, "auto");
+      assert.match(request.messages[0].content, /only native codali\(\{name,args\}\)/);
+      assert.match(request.messages[0].content, /Operations via codali \(required arguments\):/);
+      assert.doesNotMatch(request.messages[0].content, /Use listed tools directly/);
       return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
     }
     assert.deepEqual(request.toolChoice, { name: "codali" });

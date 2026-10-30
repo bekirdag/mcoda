@@ -83,6 +83,15 @@ All six candidate execution failures in the first 400 cases hit the conflicting
 tool-free final turn, spending 41,700 tokens across those failed attempts. The
 protocol regression tests do not establish how many live answers the repair fixes.
 
+A separate trace audit found first-turn protocol correction in all 40 repository
+cases and one history case: 22,534 tokens were spent on those initial unexecuted
+responses. The adaptive prompt said to call listed tools directly while only the
+native `codali({name,args})` interface was exposed. Development adaptive-v5 now
+describes those names as operations passed through that interface. Its 83 runtime
+regressions pass, including real calculation, permission boundaries and bounded
+markup correction. The effect on Qwen is still unmeasured; the frozen replay and
+all original failures remain unchanged.
+
 Next: finish the unchanged 1,000-case replay and review, tune from its development
 evidence, then author and freeze 100 new broad workflow questions. Raw Qwen with
 tools receives matching file/browser/skill/media capabilities in that protocol.
