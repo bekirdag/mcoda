@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "codali-terminal-long-v1",
+  "kind": "deterministic-fault-coverage",
+  "liveModelQualification": "separate; not established by these fixtures",
+  "scenarios": [
+    {
+      "id": "L01-goal-continuity",
+      "invariant": "Original intent and mandatory criteria survive five compactions and two real process restarts.",
+      "test": "eval/__tests__/TerminalRecoveryJourney.test.ts"
+    },
+    {
+      "id": "L02-requirement-coverage",
+      "invariant": "Missing criteria, orphan tasks and cyclic dependencies cannot replace an accepted plan.",
+      "test": "session/__tests__/WorkState.test.ts"
+    },
+    {
+      "id": "L03-architecture-supersession",
+      "invariant": "A superseded decision fences affected and transitive dependent work while retaining its history.",
+      "test": "session/__tests__/WorkState.test.ts"
+    },
+    {
+      "id": "L04-dependency-ordering",
+      "invariant": "Tasks and phases cannot start before prerequisites are verified, including after restart.",
+      "test": "eval/__tests__/TerminalRecoveryJourney.test.ts"
+    },
+    {
+      "id": "L05-scope-and-user-edits",
+      "invariant": "Pre-existing and concurrent user edits survive bounded writes, cancellation and recovery.",
+      "tests": ["runtime/__tests__/WorkspaceLedger.test.ts", "runtime/__tests__/SessionController.test.ts", "eval/__tests__/TerminalRecoveryJourney.test.ts", "eval/__tests__/MixedMediaRecoveryJourney.test.ts"]
+    },
+    {
+      "id": "L06-bad-helper-handoff",
+      "invariant": "Invented helper sources are rejected; a poisoned transcript cannot cancel canonical criteria.",
+      "test": "eval/__tests__/TerminalRecoveryJourney.test.ts"
+    },
+    {
+      "id": "L07-stale-evidence",
+      "invariant": "Changed source invalidates acceptance and reopens affected downstream work, including completed goals.",
+      "tests": ["session/__tests__/WorkState.test.ts", "runtime/__tests__/StructuralEvidence.test.ts"]
+    },
+    {
+      "id": "L08-premature-completion",
+      "invariant": "Missing receipts, skipped verification and an unsupported completion claim cannot finish the goal.",
+      "tests": ["runtime/__tests__/SessionController.test.ts", "eval/__tests__/TerminalRecoveryJourney.test.ts"]
+    },
+    {
+      "id": "L09-steering-and-ownership",
+      "invariant": "User steering adds required work and fences previous attempts without erasing the original objective.",
+      "test": "eval/__tests__/TerminalRecoveryJourney.test.ts"
+    },
+    {
+      "id": "L10-duplicate-delivery",
+      "invariant": "Duplicate project handoff or media admission recovery cannot create duplicate accepted work.",
+      "tests": ["runtime/__tests__/SessionController.test.ts", "connectors/media/__tests__/RemoteMediaJob.test.ts"],
+      "serverTests": ["/srv/mswarm/tests/durable-media.test.ts", "/srv/mswarm/tests/openai-proxy.test.ts"]
+    },
+    {
+      "id": "L11-stalls-and-cancellation",
+      "invariant": "Expired leases, unavailable services, interrupted status reads and process descendants have bounded outcomes.",
+      "tests": ["session/__tests__/WorkState.test.ts", "tools/shell/__tests__/AsyncProcess.test.ts", "connectors/media/__tests__/RemoteMediaJob.test.ts"]
+    },
+    {
+      "id": "L12-media-crash-boundaries",
+      "invariant": "Lost admission or acknowledgement, corrupt payloads and incomplete local receipts never silently resubmit or claim success.",
+      "tests": ["connectors/media/__tests__/RemoteMediaJob.test.ts", "connectors/media/__tests__/MediaJobStore.test.ts", "eval/__tests__/MixedMediaRecoveryJourney.test.ts"],
+      "integrationCoverage": "A code-and-image goal keeps its admitted job/model/endpoint through configuration upgrade/rollback, five compactions and two process restarts. A lost admission response is recovered with one PUT; artifact delivery alone cannot complete unverified code, and concurrent user notes are preserved.",
+      "remainingLiveCase": "Mixed code/media journey against the deployed durable API, including server expiry and tenant isolation."
+    }
+  ]
+}

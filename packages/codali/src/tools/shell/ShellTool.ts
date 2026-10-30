@@ -1,6 +1,7 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { ToolExecutionError, type ToolContext, type ToolDefinition } from "../ToolTypes.js";
+import { runProcess } from "./AsyncProcess.js";
+import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
@@ -45,15 +46,17 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
-  description: "Run a shell command from the workspace root (allowlist only).",
+  description: 'Run an allowlisted executable. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
   readOnly: false,
   capability: "shell",
   inputSchema: {
     type: "object",
     required: ["command"],
     properties: {
-      command: { type: "string" },
+      command: { type: "string", description: "One executable name, without arguments or shell syntax." },
       args: { type: "array", items: { type: "string" } },
+      cwd: { type: "string", description: "Existing working directory inside the workspace, relative to its root. Default: workspace root. Does not change the base of writePaths." },
+      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: root-relative existing files/directories to make writable, regardless of cwd. Default: no workspace writes. Must fit the claimed task scope." },
     },
   },
   handler: async (args, context: ToolContext) => {
@@ -62,7 +65,7 @@ export const createShellTool = (): ToolDefinition => ({
         retryable: false,
       });
     }
-    const { command, args: commandArgs = [] } = args as { command: string; args?: string[] };
+    const { command, args: commandArgs = [], cwd } = args as { command: string; args?: string[]; cwd?: string };
     if (
       !context.allowDestructiveOperations
       && isDestructiveShellAction(command, commandArgs)
@@ -89,33 +92,7 @@ export const createShellTool = (): ToolDefinition => ({
       });
     }
 
-    const result = spawnSync(command, commandArgs, {
-      cwd: context.workspaceRoot,
-      encoding: "utf8",
-    });
-
-    if (result.error) {
-      throw result.error;
-    }
-
-    const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? "";
-    const exitCode = result.status ?? 0;
-    if (exitCode !== 0) {
-      const message = stderr || stdout || `Command failed with exit code ${exitCode}`;
-      throw new ToolExecutionError("tool_execution_failed", message, {
-        retryable: false,
-        details: { command, exitCode },
-      });
-    }
-
-    return {
-      output: stdout || stderr,
-      data: {
-        stdout,
-        stderr,
-        exitCode,
-      },
-    };
+    const shellWorkingDirectory = resolveShellWorkingDirectory(context.workspaceRoot, cwd);
+    return (context.shellExecutor ?? runProcess)(command, commandArgs, { ...context, shellWorkingDirectory });
   },
 });

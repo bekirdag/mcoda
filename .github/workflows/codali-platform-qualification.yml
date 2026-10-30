@@ -1,0 +1,189 @@
+name: Codali platform qualification
+
+on:
+  pull_request:
+    paths:
+      - "packages/**"
+      - "scripts/verify-codali-terminal-pty.py"
+      - "scripts/verify-codali-tui-pty.py"
+      - "scripts/fixtures/codali-tui-pty.mjs"
+      - "scripts/verify-codali-package-install.mjs"
+      - "scripts/pack-npm-tarballs.js"
+      - "scripts/benchmarks/**"
+      - ".github/workflows/codali-platform-qualification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build the publication-platform tarballs once
+        run: |
+          pnpm install
+          pnpm -r run build
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { packTarballs } from './scripts/pack-npm-tarballs.js';
+          packTarballs({dest: 'artifacts/codali-terminal'});
+          packTarballs({dest: 'artifacts/codali-repeat'});
+          assert.equal(readFileSync('artifacts/codali-terminal/package-artifacts.json', 'utf8'), readFileSync('artifacts/codali-repeat/package-artifacts.json', 'utf8'));
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codali-terminal-tarballs
+          path: artifacts/codali-terminal/
+  isolated:
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15-intel, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select installed Rust toolchain
+        run: |
+          rustup default stable
+          rustup which rustc
+          rustup show active-toolchain
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil
+          for name in ['rustup', 'rustc', 'cargo']:
+              executable = pathlib.Path(shutil.which(name)).resolve()
+              info = executable.stat()
+              print(name, executable, info.st_ino, info.st_size, executable.read_bytes()[:4].hex())
+          settings = pathlib.Path(os.environ.get('RUSTUP_HOME', str(pathlib.Path.home()/'.rustup'))) / 'settings.toml'
+          if settings.exists():
+              print('\n'.join(line for line in settings.read_text().splitlines() if line.startswith('default_toolchain')))
+          PY
+      - name: Record actual platform and toolchain
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then sw_vers; fi
+          uname -m
+          node --version
+          python3 --version
+      - name: Install Linux isolation backend
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap ffmpeg
+      - name: Install and build
+        run: |
+          pnpm install
+          pnpm --filter '@mcoda/codali...' run build
+          pnpm --filter '@mcoda/mswarm...' run build
+      - name: Require isolation backend
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { executorStatus } from './packages/codali/dist/tools/shell/IsolatedExecutor.js';
+          import { discoverHostToolchain } from './packages/codali/dist/tools/shell/HostToolchain.js';
+          const status = executorStatus();
+          console.log(status);
+          assert.equal(status.available, true, status.reason);
+          assert.equal(status.backend, process.platform === 'darwin' ? 'sandbox-exec' : 'bubblewrap');
+          const toolchain = discoverHostToolchain(process.cwd());
+          for (const name of ['node', 'pnpm', 'python3', 'rustc', 'cargo', 'rustdoc', 'cc']) assert.ok(toolchain.some(runtime => runtime.name === name), `${name} must be qualified, not skipped`);
+          JS
+      - name: Install pinned document and deterministic runtimes
+        run: |
+          node packages/codali/config/deterministic/install-python.mjs
+          node packages/codali/config/documents/install-python.mjs
+      - name: Diagnose actual macOS command sandbox
+        if: runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'JS'
+          import { mkdtemp, rm } from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          import { createIsolatedExecutor } from './packages/codali/dist/tools/shell/IsolatedExecutor.js';
+          const root = await mkdtemp(path.join(os.tmpdir(), 'codali-platform-probe-'));
+          try {
+            const execute = createIsolatedExecutor();
+            for (const [command, args] of [['/usr/bin/true', []], ['node', ['--version']], ['node', ['-e', 'console.log(2+2)']], ['/bin/sh', ['-c', 'echo shell-ok']]]) {
+              try { console.log({command, args, result: await execute(command, args, {workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000})}); }
+              catch (error) { console.log({command, args, error: String(error)}); }
+            }
+          } finally { await rm(root, {recursive: true, force: true}); }
+          JS
+      - name: Codali regression and real shell boundary
+        run: |
+          node scripts/run-node-tests.js packages/codali/dist
+          node scripts/run-node-tests.js packages/mswarm/dist
+      - name: Workflow evaluation protocol with fake model transport
+        run: node --test scripts/benchmarks/trust-workflow.test.mjs scripts/benchmarks/trust-workflow-protocol.test.mjs scripts/benchmarks/trust-workflow-evidence.test.mjs scripts/benchmarks/trust-workflow-grading.test.mjs scripts/benchmarks/trust-workflow-report.test.mjs
+      - name: Document and media artifact verification
+        if: runner.os == 'Linux'
+        run: node --test scripts/benchmarks/trust-artifacts.test.mjs
+      - name: Homebrew Python native libraries and media bridge fixtures
+        if: runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+          import { discoverHostToolchain } from './packages/codali/dist/tools/shell/HostToolchain.js';
+          const bin = process.arch === 'arm64' ? '/opt/homebrew/bin' : '/usr/local/bin';
+          process.env.PATH = `${bin}:${process.env.PATH}`;
+          const python = discoverHostToolchain(process.cwd()).find(runtime => runtime.name === 'python3');
+          assert.ok(python?.executable.includes('/Cellar/'), 'Homebrew Python must be discovered and tested');
+          console.log({python: python.executable, support: python.support});
+          const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=Python imports', 'packages/codali/dist/tools/shell/__tests__/HostToolchain.test.js'], {stdio: 'inherit', env: process.env});
+          assert.equal(result.status, 0);
+          JS
+          node --test tests/unit/media_gpu_lock.test.js tests/unit/stable_audio_3_openai_server.test.js
+      - name: Terminal input, resize and restoration
+        run: |
+          python3 scripts/verify-codali-terminal-pty.py
+          python3 scripts/verify-codali-tui-pty.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: codali-terminal-tarballs
+          path: artifacts/codali-terminal
+      - name: Reproducible tarballs and clean terminal installation
+        run: node scripts/verify-codali-package-install.mjs --artifacts-dir artifacts/codali-terminal --output artifacts/codali-clean-install.json
+      - name: Upload package qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codali-clean-install-${{ matrix.os }}-node${{ matrix.node }}
+          path: artifacts/codali-clean-install.json
+      - name: macOS sandbox failure details
+        if: failure() && runner.os == 'macOS'
+        run: |
+          sudo /usr/bin/log show --last 5m --style compact --predicate '(process == "kernel" OR process == "sandboxd") AND eventMessage CONTAINS[c] "deny"' | tail -100
+          python3 - <<'PY'
+          import glob, json, os
+          for file in sorted(glob.glob(os.path.expanduser('~/Library/Logs/DiagnosticReports/node*.ips')))[-5:]:
+              print(file)
+              text = open(file).read()
+              try:
+                  data = json.loads(text[text.index('\n')+1:])
+                  print(json.dumps({key: data.get(key) for key in ['exception', 'termination', 'asi', 'asiBacktraces', 'faultingThread']}, indent=2))
+                  index = data.get('faultingThread', 0)
+                  print(json.dumps(data.get('threads', [])[index].get('frames', [])[:12], indent=2))
+              except Exception as error: print(type(error).__name__)
+          PY

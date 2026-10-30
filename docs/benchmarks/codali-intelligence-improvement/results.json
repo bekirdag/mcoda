@@ -1,0 +1,769 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-29",
+  "state": "First implementation batch complete; .26 experimental preview installed; broader intelligence promotion unmet",
+  "serving": {
+    "modelAlias": "qwen-latest-flash-next",
+    "artifactName": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S",
+    "engineVersion": "0.1.49.2",
+    "engineCommit": "dfa3f4025c9f1bc4af8cee201b20a2d223061813",
+    "activeContext": 32768,
+    "metadataContext": 262144,
+    "metadataArchitecture": "qwen4exp",
+    "tokenizerPre": "qwen35",
+    "headerAndTensorTableSha256": "d17e0d2ac2dc46fba367316963e024a2ad653be065b77a30a6cc48e4c18098a6",
+    "embeddedTemplateSha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+    "structuredOutput": {
+      "method": "prompt_and_validate",
+      "constrainedDecoding": false
+    },
+    "limits": [
+      "Metadata/tensor-table digest is not a full model-weight digest.",
+      "Effective template overrides are not independently exposed."
+    ]
+  },
+  "dispatcher": {
+    "trials": [
+      {
+        "version": 1,
+        "modelIndex": 0,
+        "total": 20,
+        "passed": 15,
+        "tokens": 15606,
+        "medianLatencyMs": 2727.0,
+        "operationalFailures": 0,
+        "failures": [
+          "arithmetic",
+          "code-follow-up",
+          "quoted-greeting",
+          "word-bounds",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 1,
+        "modelIndex": 1,
+        "total": 20,
+        "passed": 0,
+        "tokens": 14336,
+        "medianLatencyMs": 2891.0,
+        "operationalFailures": 0,
+        "failures": [
+          "greeting",
+          "greeting-other-language",
+          "thanks",
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "side-question",
+          "question-not-permission",
+          "quoted-greeting",
+          "missing-referent",
+          "careful-reasoning",
+          "json-no-tools",
+          "word-bounds",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 1,
+        "modelIndex": 2,
+        "total": 20,
+        "passed": 0,
+        "tokens": 13925,
+        "medianLatencyMs": 1330.5,
+        "operationalFailures": 0,
+        "failures": [
+          "greeting",
+          "greeting-other-language",
+          "thanks",
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "side-question",
+          "question-not-permission",
+          "quoted-greeting",
+          "missing-referent",
+          "careful-reasoning",
+          "json-no-tools",
+          "word-bounds",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 1,
+        "modelIndex": 3,
+        "total": 20,
+        "passed": 0,
+        "tokens": 13205,
+        "medianLatencyMs": 1197.5,
+        "operationalFailures": 0,
+        "failures": [
+          "greeting",
+          "greeting-other-language",
+          "thanks",
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "side-question",
+          "question-not-permission",
+          "quoted-greeting",
+          "missing-referent",
+          "careful-reasoning",
+          "json-no-tools",
+          "word-bounds",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 2,
+        "modelIndex": 0,
+        "total": 20,
+        "passed": 17,
+        "tokens": 22950,
+        "medianLatencyMs": 3812.0,
+        "operationalFailures": 0,
+        "failures": [
+          "code-follow-up",
+          "json-no-tools",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 2,
+        "modelIndex": 1,
+        "total": 20,
+        "passed": 13,
+        "tokens": 17338,
+        "medianLatencyMs": 3138.0,
+        "operationalFailures": 1,
+        "failures": [
+          "workspace-question",
+          "contextual-answer",
+          "code-follow-up",
+          "quoted-greeting",
+          "json-no-tools",
+          "word-bounds",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 2,
+        "modelIndex": 2,
+        "total": 20,
+        "passed": 0,
+        "tokens": 18284,
+        "medianLatencyMs": 1516.5,
+        "operationalFailures": 0,
+        "failures": [
+          "greeting",
+          "greeting-other-language",
+          "thanks",
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "side-question",
+          "question-not-permission",
+          "quoted-greeting",
+          "missing-referent",
+          "careful-reasoning",
+          "json-no-tools",
+          "word-bounds",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 2,
+        "modelIndex": 3,
+        "total": 20,
+        "passed": 6,
+        "tokens": 17973,
+        "medianLatencyMs": 1853.5,
+        "operationalFailures": 0,
+        "failures": [
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "question-not-permission",
+          "careful-reasoning",
+          "json-no-tools",
+          "word-bounds",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      },
+      {
+        "version": 4,
+        "modelIndex": 0,
+        "total": 20,
+        "passed": 20,
+        "tokens": 22336,
+        "medianLatencyMs": 3035.0,
+        "operationalFailures": 0,
+        "failures": []
+      },
+      {
+        "version": 4,
+        "modelIndex": 1,
+        "total": 20,
+        "passed": 1,
+        "tokens": 17156,
+        "medianLatencyMs": 2358.0,
+        "operationalFailures": 0,
+        "failures": [
+          "greeting",
+          "greeting-other-language",
+          "thanks",
+          "arithmetic",
+          "programming-question",
+          "workspace-question",
+          "action",
+          "fresh-continue",
+          "contextual-action",
+          "contextual-answer",
+          "code-follow-up",
+          "side-question",
+          "question-not-permission",
+          "quoted-greeting",
+          "missing-referent",
+          "careful-reasoning",
+          "json-no-tools",
+          "inherited-prohibition",
+          "quoted-word-bound"
+        ]
+      }
+    ],
+    "v3HarnessFailure": {
+      "attempts": 2,
+      "usage": "unknown"
+    },
+    "selected": "current large dispatcher with v4 short prompt and native schema",
+    "claim": "20/20 development fixture pass; small models not qualified. v1/v2 only explicit contract cases checked; v4 checks every case. Not held-out quality.",
+    "timingLimit": "No overlapping model studies; v4 overlapped CPU package building, latency is not an isolated benchmark."
+  },
+  "ablation": {
+    "status": "complete",
+    "cases": 20,
+    "attempts": 112,
+    "trialsPerCaseAndConfiguration": 1,
+    "purpose": "Exposed development comparison, not held-out generalization",
+    "noAutomaticRetries": true,
+    "groups": {
+      "raw_direct:low-off": {
+        "attempts": 20,
+        "uniqueCases": 20,
+        "passed": 18,
+        "failed": 2,
+        "liveResponseCases": 20,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.9,
+        "latencyMs": {
+          "p50": 4270,
+          "p95": 18067,
+          "known": 20
+        },
+        "tokens": {
+          "p50": 338,
+          "p95": 809,
+          "sum": 8005,
+          "known": 20,
+          "estimated": 0
+        }
+      },
+      "codali_candidate:low-off": {
+        "attempts": 20,
+        "uniqueCases": 20,
+        "passed": 17,
+        "failed": 3,
+        "liveResponseCases": 20,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.85,
+        "latencyMs": {
+          "p50": 14382,
+          "p95": 28822,
+          "known": 20
+        },
+        "tokens": {
+          "p50": 2593,
+          "p95": 6785,
+          "sum": 59595,
+          "known": 20,
+          "estimated": 0
+        }
+      },
+      "raw_direct:none-off": {
+        "attempts": 20,
+        "uniqueCases": 20,
+        "passed": 14,
+        "failed": 6,
+        "liveResponseCases": 20,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.7,
+        "latencyMs": {
+          "p50": 2608,
+          "p95": 13106,
+          "known": 20
+        },
+        "tokens": {
+          "p50": 156,
+          "p95": 511,
+          "sum": 4341,
+          "known": 20,
+          "estimated": 0
+        }
+      },
+      "codali_candidate:none-off": {
+        "attempts": 20,
+        "uniqueCases": 20,
+        "passed": 17,
+        "failed": 3,
+        "liveResponseCases": 20,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.85,
+        "latencyMs": {
+          "p50": 15552,
+          "p95": 23129,
+          "known": 20
+        },
+        "tokens": {
+          "p50": 2348,
+          "p95": 7304,
+          "sum": 67830,
+          "known": 20,
+          "estimated": 0
+        }
+      },
+      "codali_candidate:none-on": {
+        "attempts": 20,
+        "uniqueCases": 20,
+        "passed": 15,
+        "failed": 5,
+        "liveResponseCases": 20,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.75,
+        "latencyMs": {
+          "p50": 20227,
+          "p95": 37015,
+          "known": 20
+        },
+        "tokens": {
+          "p50": 3305,
+          "p95": 9347,
+          "sum": 88581,
+          "known": 20,
+          "estimated": 0
+        }
+      },
+      "raw_tools:low-off": {
+        "attempts": 6,
+        "uniqueCases": 6,
+        "passed": 4,
+        "failed": 2,
+        "liveResponseCases": 6,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.6666666666666666,
+        "latencyMs": {
+          "p50": 3160,
+          "p95": 17320,
+          "known": 6
+        },
+        "tokens": {
+          "p50": 556,
+          "p95": 3087,
+          "sum": 7790,
+          "known": 6,
+          "estimated": 0
+        }
+      },
+      "raw_tools:none-off": {
+        "attempts": 6,
+        "uniqueCases": 6,
+        "passed": 4,
+        "failed": 2,
+        "liveResponseCases": 6,
+        "zeroDispatchAttempts": 0,
+        "unansweredDispatchedAttempts": 0,
+        "needsReview": 0,
+        "errors": 1,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "strictAccuracy": 0.6666666666666666,
+        "latencyMs": {
+          "p50": 14037,
+          "p95": 37823,
+          "known": 6
+        },
+        "tokens": {
+          "p50": 1050,
+          "p95": 10374,
+          "sum": 17482,
+          "known": 6,
+          "estimated": 0
+        }
+      }
+    },
+    "reviewsPending": 0,
+    "criticalReviewsPending": 0,
+    "audit": {
+      "attempts": 112,
+      "complete": true,
+      "runtimeFingerprints": 1,
+      "modelRequests": 224,
+      "modelResponses": 224,
+      "unknownOutcomes": [],
+      "issues": []
+    },
+    "reviewEffect": {
+      "totalCandidateAttempts": 20,
+      "reviewed": 17,
+      "notReviewed": 3,
+      "counts": {
+        "corrected": 0,
+        "damaged": 1,
+        "unchanged_correct": 12,
+        "unchanged_wrong": 4
+      },
+      "scope": "Exact before/revision answers; independent deterministic grader and blinded primary-agent architecture rubric, before common presentation repair. Same-model review is not independent verification."
+    },
+    "selection": {
+      "at": "2026-10-29T13:23:38.808988+00:00",
+      "selection": "low-off",
+      "scope": "Experimental development setting, not stable/broad intelligence promotion",
+      "reason": "Tied highest Codali complete-contract score (17/20); lowest total token use among ties (59595 vs 67830). Same-model review corrected 0 and damaged 1 of 17 reviewed drafts; disable routine review. Use native lead reasoning low/512 and large dispatcher reasoning none.",
+      "matchedRawNativeReasoning": {
+        "passed": 18,
+        "total": 20,
+        "tokens": 8005
+      },
+      "toolMatchedSubset": {
+        "codaliPassed": 6,
+        "rawPassed": 4,
+        "total": 6,
+        "codaliTokens": 23623,
+        "rawTokens": 7790,
+        "ratio": 3.032477535301669
+      },
+      "promotion": false,
+      "limitations": [
+        "20 exposed development cases, one trial per configuration; not a held-out generalization estimate",
+        "No critical-case safety coverage in this derivative corpus",
+        "Synthetic architecture grading by primary agent, blind to configuration",
+        "Host-load variation remains; no isolated latency claim"
+      ],
+      "reviewEffectCounts": {
+        "corrected": 0,
+        "damaged": 1,
+        "unchanged_correct": 12,
+        "unchanged_wrong": 4
+      },
+      "chosenConfigSha256": "d9cf1a106a7f9257ac5af584aacd51df1e98d202eeb84a1465c2f91d040646dc"
+    },
+    "sourceRevision": "e652d79"
+  },
+  "priorStudies": "Original1000, R1, U5 and U6 scores and artifacts unchanged",
+  "studySourceRevision": "e652d79",
+  "runtimeQualification25": {
+    "version": "0.1.135-codali.25",
+    "testsPassed": 2057,
+    "optionalTestsSkipped": 4,
+    "packageChecksPassed": 30,
+    "nodeNativeToolFinalization": "verified on live Raijin; direct/proxy final input117tokens, identical correct response",
+    "ci": {
+      "runId": 40879217213,
+      "conclusion": "success",
+      "runtimeSource": "e652d79"
+    },
+    "platformJobs": {
+      "runId": 40879217313,
+      "sixIsolatedJobs": "success",
+      "platforms": [
+        "Ubuntu22.04",
+        "macOS15Intel",
+        "macOSARM"
+      ],
+      "nodeVersions": [
+        20,
+        22
+      ],
+      "conclusion": "success"
+    },
+    "capabilities": {
+      "passed": 8,
+      "total": 11,
+      "failed": [
+        "context-start",
+        "context-recall",
+        "context-resume"
+      ],
+      "failure": "Word-bound repair still returned303words against250..300; withholding the invalid answer prevented the compression/resume scenario. Constraint values were recalled correctly."
+    }
+  },
+  "runtimeQualification": {
+    "version": "0.1.135-codali.26",
+    "sourceRevision": "56e34c6",
+    "testsPassed": 2058,
+    "optionalTestsSkipped": 4,
+    "testsFailed": 0,
+    "packageChecksPassed": 30,
+    "capabilities": {
+      "passed": 10,
+      "total": 11,
+      "cases": [
+        {
+          "id": "web-discovery",
+          "passed": false,
+          "usage": {
+            "tokens": 9115,
+            "modelCalls": 5,
+            "toolCalls": 1
+          },
+          "failedChecks": [
+            "primary"
+          ],
+          "wordCount": null
+        },
+        {
+          "id": "clock",
+          "passed": true,
+          "usage": {
+            "tokens": 6302,
+            "modelCalls": 3,
+            "toolCalls": 1
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "browser",
+          "passed": true,
+          "usage": {
+            "tokens": 7026,
+            "modelCalls": 3,
+            "toolCalls": 1
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "skill-reference",
+          "passed": true,
+          "usage": {
+            "tokens": 9161,
+            "modelCalls": 4,
+            "toolCalls": 2
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "mac-compatibility",
+          "passed": true,
+          "usage": {
+            "tokens": 9233,
+            "modelCalls": 4,
+            "toolCalls": 2
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "planning",
+          "passed": true,
+          "usage": {
+            "tokens": 35933,
+            "modelCalls": 7,
+            "toolCalls": 6
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "context-start",
+          "passed": true,
+          "usage": {
+            "tokens": 2727,
+            "modelCalls": 2,
+            "toolCalls": 0
+          },
+          "failedChecks": [],
+          "wordCount": 295
+        },
+        {
+          "id": "context-followup",
+          "passed": true,
+          "usage": {
+            "tokens": 3677,
+            "modelCalls": 2,
+            "toolCalls": 0
+          },
+          "failedChecks": [],
+          "wordCount": 282
+        },
+        {
+          "id": "context-recall",
+          "passed": true,
+          "usage": {
+            "tokens": 1831,
+            "modelCalls": 1,
+            "toolCalls": 0
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "context-resume",
+          "passed": true,
+          "usage": {
+            "tokens": 8543,
+            "modelCalls": 3,
+            "toolCalls": 1
+          },
+          "failedChecks": [],
+          "wordCount": null
+        },
+        {
+          "id": "web-primary",
+          "passed": true,
+          "usage": {
+            "tokens": 9486,
+            "modelCalls": 5,
+            "toolCalls": 2
+          },
+          "failedChecks": [],
+          "wordCount": null
+        }
+      ],
+      "remainingFailure": "Open-ended web discovery did not retrieve the requested primary page; answer explicitly disclosed uncertainty. Direct specified-primary-page check passed. No strict score changed.",
+      "notBroaderQualityQualification": true
+    },
+    "nodeTransportVersion": "0.1.135-codali.25",
+    "changeFromStudyRuntime": "Interior word-count repair guidance only; original bounds and single-repair/tool restrictions unchanged. .25 ablation not relabeled as .26 evidence.",
+    "repairReplay": {
+      "sourceRevision": "56e34c6",
+      "priorSource": "e652d79",
+      "injectedResponses": 2,
+      "liveCalls": 1,
+      "liveUsage": {
+        "inputTokens": 662,
+        "outputTokens": 843,
+        "totalTokens": 1505
+      },
+      "words": 253,
+      "passed": true,
+      "outputSha256": "b461cc892885ea901dc8f5932f2b947ac13040b68a7caf5de70d3d2a4d875c45",
+      "scope": "Controlled historical-draft replay; does not replace the original failed capability attempt or establish generalization."
+    },
+    "ci": {
+      "runId": 40884306269,
+      "conclusion": "success",
+      "sourceRevision": "56e34c6"
+    },
+    "platformJobs": {
+      "runId": 40884306271,
+      "sixIsolatedJobs": "success",
+      "sourceRevision": "56e34c6",
+      "nodeVersions": [
+        20,
+        22
+      ],
+      "platforms": [
+        "Ubuntu22.04",
+        "macOS15Intel",
+        "macOSARM"
+      ],
+      "conclusion": "success"
+    },
+    "liveTui": {
+      "passed": true,
+      "version": "0.1.135-codali.26",
+      "sourceRevision": "56e34c6b74fe894212e3aa300393bf435a3521c9",
+      "transport": "local real PTY, installed preview launcher, live Raijin model",
+      "turnUsage": {
+        "tokens": 1239,
+        "modelCalls": 1,
+        "toolCalls": 0
+      },
+      "elapsedMs": 3065,
+      "checks": [
+        "live greeting with one model call and no tools",
+        "help rendered with usage command",
+        "usage rendered",
+        "PageUp/PageDown input accepted",
+        "resize recovery",
+        "clean exit and terminal flags restored"
+      ],
+      "scrollLimit": "Live check accepts navigation; exact scroll-content assertions are in the 30-check package suite."
+    },
+    "firstTuiHarnessRun": {
+      "greetingPassed": true,
+      "tokens": 1264,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "terminalCheckPassed": false,
+      "reason": "Harness typed /usage into the open help modal; corrected test interaction only, failure retained."
+    },
+    "previewLauncher": "~/.local/bin/codali-preview",
+    "previewConfig": "~/.config/codali/preview-26-v11-low.json",
+    "priorLauncherPreserved": true,
+    "globalStableUnchanged": true
+  }
+}

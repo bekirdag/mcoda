@@ -1,4 +1,15 @@
 export interface ToolContext {
+  signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+  beforeTool?: (tool: ToolDescriptor, args: unknown) => Promise<void>;
+  afterTool?: (tool: ToolDescriptor, args: unknown, result: ToolExecutionResult) => Promise<void>;
+  checkPath?: (resolvedPath: string, action: "read" | "write") => Promise<void>;
+  shellTimeoutMs?: number;
+  shellMaxOutputBytes?: number;
+  /** Process cwd inside workspaceRoot; does not change root-relative write scopes. */
+  shellWorkingDirectory?: string;
+  /** Optional trusted executor wrapper, applied after permission evaluation. */
+  shellExecutor?: (command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>;
   workspaceRoot: string;
   runId?: string;
   recordTouchedFile?: (path: string) => void;
@@ -132,6 +143,8 @@ export interface ToolHandlerResult {
 export interface ToolExecutionResult extends ToolHandlerResult {
   ok: boolean;
   error?: ToolError;
+  /** Set by the host's afterTool hook; retained outside output truncation. */
+  invocationReceipt?: { id: string; reference: string };
 }
 
 export type ToolHandler = (args: unknown, context: ToolContext) => Promise<ToolHandlerResult>;

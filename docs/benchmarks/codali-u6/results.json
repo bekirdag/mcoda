@@ -1,0 +1,139 @@
+{
+  "study": "codali-u6-regression",
+  "at": "2026-10-29T09:22:33.045115+00:00",
+  "sourceCommit": "46afa98a8e8b061ec21c9b318c1810bf6bae43e3",
+  "purpose": "Fresh fixed16case regression after selecting the v10 dispatcher; not a quality-promotion study",
+  "attempts": 32,
+  "prompts": 16,
+  "primary": {
+    "raw_direct": {
+      "attempts": 16,
+      "uniqueCases": 16,
+      "passed": 14,
+      "failed": 2,
+      "liveResponseCases": 16,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 0,
+      "needsReview": 0,
+      "errors": 0,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.875,
+      "latencyMs": {
+        "p50": 3305,
+        "p95": 13977,
+        "known": 16
+      },
+      "tokens": {
+        "p50": 112,
+        "p95": 203,
+        "sum": 1936,
+        "known": 16,
+        "estimated": 0
+      }
+    },
+    "codali_selected": {
+      "attempts": 16,
+      "uniqueCases": 16,
+      "passed": 15,
+      "failed": 1,
+      "liveResponseCases": 16,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 0,
+      "needsReview": 0,
+      "errors": 0,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.9375,
+      "latencyMs": {
+        "p50": 23804,
+        "p95": 44185,
+        "known": 16
+      },
+      "tokens": {
+        "p50": 4305,
+        "p95": 9990,
+        "sum": 61537,
+        "known": 16,
+        "estimated": 0
+      }
+    }
+  },
+  "domains": {
+    "raw_direct": {
+      "general_knowledge": {
+        "attempts": 4,
+        "passed": 3,
+        "failed": 1
+      },
+      "daily_usage": {
+        "attempts": 4,
+        "passed": 3,
+        "failed": 1
+      },
+      "code_writing": {
+        "attempts": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "software_architecture": {
+        "attempts": 4,
+        "passed": 4,
+        "failed": 0
+      }
+    },
+    "codali_selected": {
+      "general_knowledge": {
+        "attempts": 4,
+        "passed": 3,
+        "failed": 1
+      },
+      "daily_usage": {
+        "attempts": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "code_writing": {
+        "attempts": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "software_architecture": {
+        "attempts": 4,
+        "passed": 4,
+        "failed": 0
+      }
+    }
+  },
+  "corpus": {
+    "promptsSha256": "720c07d2184156b5291bff92f93d3b49d6d6ea42e78e787adfe6f88ea62ec8d9",
+    "gradingSha256": "1e80f92ff42a494c72383e21400b0d4a9d39b633c1e9270dd3eae91f759ded9f"
+  },
+  "runtimeFingerprint": "53f7afb8717d3d09be0412c490e2fbef9ccb8a4666bc0bdbd9801a457ecf041f",
+  "configHashes": [
+    "e02ad7d1fac34b2289dfd8e3c7da7cfb06c5dba05772112250e2e66701b31c7e"
+  ],
+  "audit": {
+    "at": "2026-10-29T09:22:33.045115+00:00",
+    "attempts": 32,
+    "modelRequests": 73,
+    "modelResponses": 73,
+    "issues": [],
+    "passed": true
+  },
+  "selection": {
+    "developmentDiagnostic": "v10 and native512reasoning each5/6; select v10 without native reasoning because no measured correctness gain",
+    "knownUnfixedFailure": "Dependency readiness B,C returned only B, including with review and native512budget.",
+    "reviewEnabled": true,
+    "calculatorEnabled": true
+  },
+  "findings": [
+    "Codali15/16 versusraw14/16 does not establish superiority on a sample this small.",
+    "Codali61537tokens versusraw1936 (31.8x).",
+    "Codali failed JSON-only formatting for the Japan-capital question while giving the correct fact in prose.",
+    "Raw failed JSON-only formatting for bits-per-byte and gave135 instead of125 for the budget calculation.",
+    "All four isolated code cases passed both arms.",
+    "Timing is diagnostic: capability qualification overlapped part of the run; observed p50 was23804ms versus3305ms, not an isolated throughput comparison."
+  ],
+  "promotion": false
+}

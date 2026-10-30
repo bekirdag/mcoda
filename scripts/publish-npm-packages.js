@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { PACKAGE_DIRS, packTarballs } from './pack-npm-tarballs.js';
+import { createHash } from 'node:crypto';
+import { PACKAGE_DIRS, loadPackedTarballs, packTarballs, readPackedJsonFile } from './pack-npm-tarballs.js';
 
 export function resolvePackageDirs(env = process.env) {
   const packageDirs = [
@@ -25,7 +26,7 @@ export function resolvePackageDirs(env = process.env) {
   }
 
   if (env.MCODA_PUBLISH_CODALI === '1') {
-    packageDirs.splice(packageDirs.indexOf('packages/mswarm'), 0, 'packages/codali');
+    packageDirs.splice(packageDirs.indexOf('packages/cli'), 0, 'packages/codali');
   } else {
     console.log('Skipping @mcoda/codali publish; set MCODA_PUBLISH_CODALI=1 after npm package access is configured.');
   }
@@ -45,12 +46,60 @@ export function readPackage(dir) {
   return packageJson;
 }
 
-function versionExists(name, version) {
-  const result = spawnSync('npm', ['view', `${name}@${version}`, 'version', '--json'], {
+export function publicationChannel(version) {
+  // Strict SemVer, including numeric prerelease identifiers without leading zeros.
+  const numeric = '(?:0|[1-9][0-9]*)';
+  const identifier = `(?:${numeric}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`;
+  const pattern = new RegExp(`^${numeric}\\.${numeric}\\.${numeric}(?:-(${identifier}(?:\\.${identifier})*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`);
+  const match = typeof version === 'string' && pattern.exec(version);
+  if (!match) throw new Error(`Invalid release version: ${String(version)}`);
+  return match[1] ? 'next' : 'latest';
+}
+
+export function assertReleaseVersions(packages) {
+  if (packages.length === 0) throw new Error('No packages selected for publication');
+  const versions = new Set(packages.map(({ manifest }) => manifest.version));
+  for (const version of versions) publicationChannel(version);
+  if (versions.size !== 1) throw new Error('All release packages must have the same version before publication');
+  return publicationChannel(packages[0].manifest.version);
+}
+
+export function tarballIntegrity(tarballPath) {
+  return `sha512-${createHash('sha512').update(readFileSync(tarballPath)).digest('base64')}`;
+}
+
+export function registryVersionState(name, version, integrity, { spawn = spawnSync } = {}) {
+  const result = spawn('npm', ['view', `${name}@${version}`, 'dist.integrity', '--json'], {
     encoding: 'utf8',
-    stdio: ['ignore', 'ignore', 'ignore']
+    stdio: ['ignore', 'pipe', 'pipe']
   });
-  return result.status === 0;
+  if (result.error) throw result.error;
+  if (result.status === 0) {
+    if (JSON.parse(result.stdout) !== integrity) throw new Error(`${name}@${version} already exists with different tarball bytes; choose a new version`);
+    return 'identical';
+  }
+  let errorCode;
+  for (const output of [result.stdout, result.stderr]) {
+    try { errorCode ??= JSON.parse(output).error?.code; } catch { /* npm may also emit plain diagnostics */ }
+  }
+  if (errorCode === 'E404') return 'absent';
+  throw new Error(`Cannot verify registry identity for ${name}@${version}; publication refused`);
+}
+
+export function npmPublishArgs(tarballPath, version, { dryRun = false } = {}) {
+  const args = ['publish', tarballPath, '--access', 'public', '--tag', publicationChannel(version)];
+  if (dryRun) args.push('--dry-run');
+  return args;
+}
+
+export async function assertCodaliRuntimePublishable(value) {
+  // Use the actual client validator so release and runtime trust cannot drift.
+  const { validateRuntimeManifest } = await import('../packages/codali/dist/docdex/ManagedRuntime.js');
+  const manifest = validateRuntimeManifest(value);
+  for (const platform of ['linux-x64-gnu', 'darwin-x64', 'darwin-arm64']) {
+    if (!manifest.artifacts[platform]) throw new Error(`Codali publication requires a pinned Docdex runtime for ${platform}`);
+  }
+  return manifest;
 }
 
 function run(command, commandArgs) {
@@ -62,7 +111,7 @@ function run(command, commandArgs) {
     throw result.error;
   }
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(`${command} failed with status ${result.status ?? 'unknown'}`);
   }
 }
 
@@ -99,7 +148,7 @@ export function assertPackedManifestPublishable(dir, { root = process.cwd(), pac
 // for five minutes, so without --prefer-online the retries only re-read the same
 // cached copy that did not have the version yet.
 export function verifyPublishedInstall(name, version, {
-  attempts = 12,
+  attempts = 24,
   retryDelayMs = 15000,
   spawn = spawnSync,
   wait = sleep
@@ -139,39 +188,67 @@ export function verifyPublishedInstall(name, version, {
   }
 }
 
-function main() {
+export function publishCheckedPackages(packages, {
+  dryRun = false,
+  skipInstallCheck = false,
+  publish = run,
+  verifyInstall = verifyPublishedInstall,
+} = {}) {
+  const channel = assertReleaseVersions(packages);
+  // Check the whole batch before the first mutation, including retries after
+  // partial publication. A retry may reuse only byte-identical versions.
+  for (const pkg of packages) {
+    if (!['absent', 'identical', ...(dryRun ? ['dry-run'] : [])].includes(pkg.registryState)) throw new Error('Unverified registry state; publication refused');
+    if (tarballIntegrity(pkg.tarballPath) !== pkg.integrity) throw new Error(`Packed artifact changed before publishing ${pkg.manifest.name}`);
+  }
+  for (const pkg of packages) {
+    const { name, version } = pkg.manifest;
+    if (tarballIntegrity(pkg.tarballPath) !== pkg.integrity) throw new Error(`Packed artifact changed before publishing ${name}`);
+    if (pkg.registryState === 'identical') {
+      console.log(`${name}@${version} already has identical registry bytes; leaving its dist-tags unchanged.`);
+    } else {
+      console.log(`${dryRun ? 'Dry-run publishing' : 'Publishing'} ${name}@${version} on ${channel}: ${pkg.integrity}`);
+      publish('npm', npmPublishArgs(pkg.tarballPath, version, { dryRun }));
+    }
+  }
+  // Publish the dependency-ordered batch first so registry propagation for one
+  // package does not prevent the rest from starting. Every package still has
+  // to install from the registry before the release can pass.
+  if (!dryRun && !skipInstallCheck) for (const pkg of packages) {
+    const { name, version } = pkg.manifest;
+    console.log(`Installing ${name}@${version} into an empty project to confirm it resolves`);
+    verifyInstall(name, version);
+    console.log(`${name}@${version} installs cleanly.`);
+  }
+}
+
+async function main() {
   const packageDirs = resolvePackageDirs();
   if (skipInstallCheck) {
     console.log('WARNING: --skip-install-check was passed; published tarballs will not be install-verified.');
   }
 
-  for (const dir of packageDirs) {
-    const { name, version } = readPackage(dir);
-    if (!dryRun && versionExists(name, version)) {
-      console.log(`${name}@${version} already exists on npm; skipping.`);
-      continue;
+  // Reject mixed/invalid versions and check every packed manifest before the
+  // first registry mutation. Publish these exact files, never rebuild them.
+  assertReleaseVersions(packageDirs.map(dir => ({ manifest: readPackage(dir) })));
+  const dest = mkdtempSync(join(tmpdir(), 'mcoda-release-tarballs-'));
+  try {
+    const packages = process.env.MCODA_PUBLISH_ARTIFACTS_DIR
+      ? loadPackedTarballs({ dest: resolve(process.env.MCODA_PUBLISH_ARTIFACTS_DIR), packageDirs })
+      : packTarballs({ dest, packageDirs });
+    assertReleaseVersions(packages);
+    const codali = packages.find(pkg => pkg.manifest.name === '@mcoda/codali');
+    if (codali) await assertCodaliRuntimePublishable(readPackedJsonFile(codali.tarballPath, 'package/config/docdex-runtime.json'));
+    const states = packages.map(pkg => ({
+      ...pkg,
+      integrity: tarballIntegrity(pkg.tarballPath),
+    }));
+    for (const pkg of states) {
+      pkg.registryState = dryRun ? 'dry-run' : registryVersionState(pkg.manifest.name, pkg.manifest.version, pkg.integrity);
     }
-
-    console.log(`Checking packed manifest for ${name}@${version}`);
-    assertPackedManifestPublishable(dir);
-
-    const publishArgs = ['--filter', `./${dir}`, 'publish', '--access', 'public', '--no-git-checks'];
-    if (dryRun) {
-      publishArgs.push('--dry-run');
-    }
-    console.log(`${dryRun ? 'Dry-run publishing' : 'Publishing'} ${name}@${version} from ${dir}`);
-    run('pnpm', publishArgs);
-
-    if (dryRun) {
-      console.log(`Skipping install check for ${name}@${version}; nothing was published.`);
-      continue;
-    }
-    if (skipInstallCheck) {
-      continue;
-    }
-    console.log(`Installing ${name}@${version} into an empty project to confirm it resolves`);
-    verifyPublishedInstall(name, version);
-    console.log(`${name}@${version} installs cleanly.`);
+    publishCheckedPackages(states, { dryRun, skipInstallCheck });
+  } finally {
+    rmSync(dest, { recursive: true, force: true });
   }
 }
 
@@ -181,5 +258,5 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  main();
+  main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
 }

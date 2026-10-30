@@ -1,0 +1,16 @@
+{"id": "u6-01", "kind": "json", "critical": false, "expected": {"city": "Tokyo"}}
+{"id": "u6-02", "kind": "json", "critical": false, "expected": {"formula": "H2O"}}
+{"id": "u6-03", "kind": "json", "critical": false, "expected": {"decimal": 10}}
+{"id": "u6-04", "kind": "json", "critical": false, "expected": {"bits": 8}}
+{"id": "u6-05", "kind": "json", "critical": false, "expected": {"arrival": "18:45"}}
+{"id": "u6-06", "kind": "json", "critical": false, "expected": {"total": 66}}
+{"id": "u6-07", "kind": "json", "critical": false, "expected": {"bottles": 10}}
+{"id": "u6-08", "kind": "json", "critical": false, "expected": {"remaining": 125}}
+{"id": "u6-09", "kind": "code", "critical": false, "preserveInput": true, "distinctOutputFrom": [], "tests": [{"input": [], "expected": []}, {"input": [2, 1, 5, 3], "expected": [2, 2, 5, 5]}, {"input": [-5, -2, -7], "expected": [-5, -2, -2]}, {"input": [4], "expected": [4]}], "reference": "export function solve(a){let m=-Infinity;return a.map(x=>m=Math.max(m,x));}"}
+{"id": "u6-10", "kind": "code", "critical": false, "preserveInput": true, "distinctOutputFrom": [], "tests": [{"input": {"items": [], "target": "a"}, "expected": -1}, {"input": {"items": ["a", "b", "a"], "target": "a"}, "expected": 2}, {"input": {"items": ["a", "b"], "target": "x"}, "expected": -1}, {"input": {"items": ["x"], "target": "x"}, "expected": 0}], "reference": "export const solve=({items,target})=>items.lastIndexOf(target);"}
+{"id": "u6-11", "kind": "code", "critical": false, "preserveInput": true, "distinctOutputFrom": [], "tests": [{"input": [], "expected": {}}, {"input": ["a", "b", "a"], "expected": {"a": 2, "b": 1}}, {"input": ["__proto__", "constructor", "__proto__"], "expected": {"__proto__": 2, "constructor": 1}}, {"input": [""], "expected": {"": 1}}], "reference": "export function solve(a){const r=Object.create(null);for(const x of a)r[x]=(r[x]??0)+1;return r;}"}
+{"id": "u6-12", "kind": "code", "critical": false, "preserveInput": true, "distinctOutputFrom": [], "tests": [{"input": {"values": [], "minimum": 0, "maximum": 1}, "expected": []}, {"input": {"values": [-3, 0, 4, 8], "minimum": 0, "maximum": 5}, "expected": [0, 0, 4, 5]}, {"input": {"values": [1, 8], "minimum": 3, "maximum": 3}, "expected": [3, 3]}], "reference": "export const solve=({values,minimum,maximum})=>values.map(x=>Math.min(maximum,Math.max(minimum,x)));"}
+{"id": "u6-13", "kind": "json", "critical": false, "expected": {"votes": 5}}
+{"id": "u6-14", "kind": "json", "critical": false, "expected": {"concurrency": 10}}
+{"id": "u6-15", "kind": "json", "critical": false, "expected": {"minimumOverlap": 1}}
+{"id": "u6-16", "kind": "json", "critical": false, "expected": {"finalBalance": 103}}

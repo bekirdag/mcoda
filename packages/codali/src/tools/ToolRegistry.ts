@@ -374,6 +374,9 @@ export class ToolRegistry {
     return Array.from(this.tools.values());
   }
 
+  /** Trusted host lifecycle operation; never exposed as an agent tool. */
+  unregister(name: string): void { this.tools.delete(name); }
+
   describe(): Array<Pick<ToolDefinition, "name" | "description" | "inputSchema">> {
     return this.list().map((tool) => ({
       name: tool.name,
@@ -437,15 +440,23 @@ export class ToolRegistry {
       return { ok: false, output: "", error: validationError };
     }
 
+    let execution: ToolExecutionResult;
     try {
+      context.signal?.throwIfAborted();
+      await context.beforeTool?.(toolDescriptorFor(tool), sanitized.value);
+      context.signal?.throwIfAborted();
       const result = await tool.handler(sanitized.value, context);
-      return { ok: true, output: result.output, data: result.data };
+      execution = { ok: true, output: result.output, data: result.data };
     } catch (error) {
-      return {
+      execution = {
         ok: false,
         output: "",
         error: normalizeExecutionError(error),
       };
     }
+    // Persistence failures must stop the run, not silently acknowledge a side effect.
+    await context.afterTool?.(toolDescriptorFor(tool), sanitized.value, execution);
+    context.signal?.throwIfAborted();
+    return execution;
   }
 }

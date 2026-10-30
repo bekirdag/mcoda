@@ -18,7 +18,7 @@ test("WorkspaceLock blocks concurrent runs", { concurrency: false }, async () =>
   await lock1.release();
 });
 
-test("WorkspaceLock clears stale lock", { concurrency: false }, async () => {
+test("WorkspaceLock does not evict an unknown owner based only on age", { concurrency: false }, async () => {
   const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-lock-"));
   const lockPath = path.join(workspaceRoot, "locks", "codali.lock");
   mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -26,10 +26,10 @@ test("WorkspaceLock clears stale lock", { concurrency: false }, async () => {
   writeFileSync(lockPath, JSON.stringify(staleInfo), "utf8");
 
   const lock = new WorkspaceLock(workspaceRoot, "new-run", 1);
-  await lock.acquire();
+  await assert.rejects(lock.acquire(), /Workspace is locked/);
 
   const current = JSON.parse(readFileSync(lockPath, "utf8")) as { runId: string };
-  assert.equal(current.runId, "new-run");
+  assert.equal(current.runId, "old-run");
 
   await lock.release();
 });

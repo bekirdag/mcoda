@@ -7,6 +7,65 @@ outbound `@mcoda/mswarm` self-hosted node. Commands that operate the model or
 service manager are intended for the owner of `sukunahikona`; this document does
 not deploy anything or require a public listener on that host.
 
+## Host RAM admission for model loading
+
+GPU headroom does not establish that a cold model load fits in host RAM. The
+optional `scripts/native_load_guard.py` coordinates a Python native runtime
+with the same durable lease used by the media bridges. Enable it only through
+a qualified runtime integration; setting an environment variable alone does
+not add the integration to an arbitrary inference server.
+
+The trusted host profile supplies `MCODA_NATIVE_LOAD_POLICY`, an absolute path
+to a private, owner-owned JSON file. The following is a configuration example;
+measure load peaks and restoration allocations on each host before choosing
+these limits:
+
+```json
+{
+  "schemaVersion": 1,
+  "lockPath": "/run/user/1000/mcoda-media-gpu1.lock",
+  "waitSeconds": 1200,
+  "minAvailableMiB": 98304,
+  "restoreReserveMiB": 8192,
+  "serviceTimeoutSeconds": 330,
+  "services": [
+    {
+      "unit": "mcoda-wan2.2-video-native.service",
+      "restoreMiB": 20480,
+      "readyUrl": "http://127.0.0.1:11447/sdcpp/v1/capabilities"
+    },
+    {
+      "unit": "sd35-q4-server.service",
+      "restoreMiB": 8192,
+      "readyUrl": "http://127.0.0.1:11445/sdcpp/v1/capabilities"
+    }
+  ]
+}
+```
+
+Before loading, the runtime must confirm its old process has stopped. The
+guard waits for active media to release the lease, refuses unresolved receipts,
+parks only configured peers that were active, and checks Linux `MemAvailable`.
+It holds the lease through native readiness and sequential restoration of the
+original peers. Each restored peer must pass its configured loopback readiness
+endpoint before the next peer starts. The guard ignores proxy variables and
+refuses readiness redirects. Inactive peers remain inactive.
+
+The runtime calls `confirm_ready()` after the native READY protocol, or
+`confirm_stopped()` after a failed attempt's process is proved dead. Missing
+proof, abrupt process death, or failed peer restoration retains a durable fence
+with the parked unit names. Reconcile the exact receipt only after native
+process and job outcomes are established; never unlink or truncate the lock to
+force admission. Model loading does not replay a failed inference request.
+
+All media traffic, including SSH forwards and other applications, must use the
+bridges that hold this lease. A direct native generation endpoint bypasses the
+admission contract. Arrange service startup so configured peers cannot begin
+loading independently after the guard has inspected their state. Qualify cold
+start, restart, automatic model recovery, active-media waiting, and graceful
+rollback before enabling the policy. Preserve strict offline mode in Strata;
+this guard needs no model download or arbitrary shell hook.
+
 ## Identifier and Routing Contract
 
 Keep the local upstream model separate from the public mswarm model:
@@ -141,8 +200,40 @@ claim that closing an HTTP socket cancels CUDA work. If that deadline expires,
 the bridge returns 504 but a single background transport continues waiting for
 the native response and retains the inference slot. Later generations receive
 429 until native completion is known; the slot is released only then. If the
-native server never replies, the bridge stays fail-closed until an operator
-restarts the native service and bridge.
+native server never replies, the bridge stays fail-closed until native inference
+has a confirmed terminal outcome and its shared reservation is reconciled.
+
+### Shared media admission and recovery
+
+The image, audio and video bridges import `media_gpu_lock.py` from the same
+installed scripts directory. They must run as the same user with the same
+`MCODA_MEDIA_GPU_LOCK_PATH` (default: `$XDG_RUNTIME_DIR/mcoda-media-gpu1.lock`).
+Keep this private, owner-owned regular file in place; never unlink it while any
+bridge or waiter can be running. Its kernel lock serializes calls, and its
+fsynced receipt survives a killed bridge or an uncertain native response. A
+restart, elapsed timeout or client disconnect does not clear that receipt.
+
+All three `/healthz` responses include `media_gpu`: `ready` and `busy` permit
+normal service health; `recovery_required` and `unavailable` return HTTP 503.
+The health probe does not clear reservations or expose native job/process IDs.
+Other readiness checks still apply. A corrupt or unsafe lock file fails closed.
+
+Video completion requires a terminal response for the exact native job ID. A
+404 is an unknown outcome, not proof that CUDA work ended. Audio records its
+Linux child PID, process group, start ticks and boot ID before waiting. A reaped
+audio launcher is insufficient if its process group remains alive; an unexpected
+wait failure retains the reservation. Failed process creation can release the
+reservation because no native job was admitted.
+
+`reconcile_media_gpu_slot(expected_id, terminal_probe)` is an internal host-side
+recovery API. It refuses a live lock owner or a stale reservation ID and clears
+only when a trusted backend probe returns true for the current receipt. A
+recovery operator must establish exact native completion, or stop the responsible
+native engine and confirm that its job/process group cannot remain. Never use an
+unconditional probe, remove the file or equate an accepted cancellation with
+completion. Automated native recovery, physical GPU memory admission and
+fairness still require deployment qualification; the shared lock alone does not
+coordinate Strata vision or other processes on the same GPU.
 
 ## Image Readiness Checks
 
@@ -762,3 +853,76 @@ the node so it publishes a fresh catalog. Use `systemctl --user` for the
 inference units, then use `mswarm node status`, `mswarm node health`,
 `mswarm node doctor`, and `mswarm node logs --lines 200` to verify the
 end-to-end state.
+
+## Native WebM duration qualification (2026-10-26)
+
+The video encoder at stable-diffusion.cpp commit
+`3b6c9ca97cfcda8e68e719e6670d06379fcbe943` omits the last frame's display
+interval from the WebM segment duration. A nine-frame, 8-fps render contains
+all nine decodable frames but reports 1.0 seconds instead of 1.125 seconds.
+The JSON response alone does not reveal this discrepancy.
+
+The packaged `scripts/stable-diffusion-cpp-webm-duration.patch` sets the video
+track's default frame duration and the final segment duration before libwebm
+finalization. Apply it only to a separately built, compatible native source
+tree; the Python bridge must not rewrite arbitrary binary artifacts. Preserve
+the previous native executable and drain/reconcile accepted jobs before a
+service replacement. This patch changes container metadata, not the model or
+its generated pixels.
+
+Qualification used the actual native encoder for all nine combinations of
+1, 9 and 33 frames at 8, 16 and 24 fps. The original encoder missed the final
+interval in every case. The patched encoder reports each expected duration
+within 1 ms, passes complete FFmpeg decoding, and retains every decoded frame
+hash. Patch SHA-256:
+`dbbfbd236c233c25321cee7babe5f6a8855b61c3c761dc6d502a15844642c478`.
+The isolated Suku candidate executable is
+`70a51aeb860df90c1bc696a00abb3ff8d3c02270a76e6a70d816a43b4b0e8008`.
+It was relinked with checksum-pinned existing build objects; this is a
+host-specific build, not a newly published upstream release. It was activated
+on Suku after admission drain and an empty canonical active-job check. A fresh
+nine-frame model render passed full decoding at 832×480, 8 fps and exactly
+1.125 seconds; its SHA-256 is
+`6320cb293aef2e9e27f7e8ea3df149f4ae7cc7ba1d9e0ec050369be15fc6af68`.
+
+A physical bridge-owner crash also passed: the native job was `generating`
+when the private bridge was killed, all three production media bridges
+reported recovery required, and a new image request was rejected. Native
+cancellation returned 409; the test retained the reservation until the exact
+job reported completed, then reconciled its matching durable receipt. Node
+admission was reopened after health checks and a fresh empty active-job check.
+These checks qualify duration and this recovery path; normal-quality media,
+longer video and full CLI job recovery still require their separate gates.
+
+### Legacy gateway and proxy admission drain
+
+`packages/mswarm/scripts/backend-http-drain.mjs` is an operator bootstrap for
+the existing Node HTTP services that lack a shutdown handler. It uses the
+container's loopback inspector and verifies the process id, server port and
+deployment nonce. It refuses ambiguous servers or alternative HTTP request
+dispatch handlers. Qualify the exact runtime and image before using it;
+`process._getActiveHandles()` is an internal Node API used only for this
+legacy deployment procedure. Keep the inspector on container loopback without
+publishing its port.
+
+The `inspect` operation leaves admission unchanged. `barrier` rejects new
+application requests with HTTP503 and Retry-After while preserving health
+checks and the gateway's authenticated node heartbeat, model inventory,
+job polling, start, events and result paths. It applies to internal callers
+and existing keep-alive connections as well as public ingress. Requests
+already executing keep their original handlers.
+
+After installing both barriers, verify the canonical active invocation index
+has no accepted jobs outstanding. Then request `close` on the proxy and gateway
+and wait for each receipt to report `closed`, without a close error. The
+controller closes idle connections only; it never force-closes an active
+response. Recheck both live receipts and the canonical queue immediately
+before replacing containers. A timestamp alone is not a quiescence proof.
+`restore` reopens an unchanged old process if deployment is abandoned; once
+containers have been replaced, the deployment's pinned image/config rollback
+owns recovery. Replacing the old process also removes its temporary inspector.
+
+Tests cover a response held open across the barrier and close, internal
+admission rejection, node callback continuity, nonce/PID mismatch, unsupported
+dispatch, and restoration. The deployment qualification additionally runs
+these tests against Fastify in both exact old container images.

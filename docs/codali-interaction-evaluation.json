@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-28",
+  "candidate": "0.1.135-codali.18",
+  "published": false,
+  "model": "mcoda-raijin-qwen3-4b-instruct-2507",
+  "promptVersion": "interaction-v8",
+  "classification": {
+    "passed": 16,
+    "total": 16,
+    "modelCalls": 16,
+    "totalTokens": 7611,
+    "medianLatencyMs": 1637.0,
+    "cases": [
+      {
+        "id": "greeting",
+        "expected": [
+          "answer"
+        ],
+        "actual": "answer",
+        "passed": true
+      },
+      {
+        "id": "greeting-other-language",
+        "expected": [
+          "answer"
+        ],
+        "actual": "answer",
+        "passed": true
+      },
+      {
+        "id": "thanks",
+        "expected": [
+          "answer"
+        ],
+        "actual": "answer",
+        "passed": true
+      },
+      {
+        "id": "arithmetic",
+        "expected": [
+          "answer",
+          "reason"
+        ],
+        "actual": "answer",
+        "passed": true
+      },
+      {
+        "id": "programming-question",
+        "expected": [
+          "reason"
+        ],
+        "actual": "reason",
+        "passed": true
+      },
+      {
+        "id": "workspace-question",
+        "expected": [
+          "inspect"
+        ],
+        "actual": "inspect",
+        "passed": true
+      },
+      {
+        "id": "action",
+        "expected": [
+          "execute"
+        ],
+        "actual": "execute",
+        "passed": true
+      },
+      {
+        "id": "fresh-continue",
+        "expected": [
+          "clarify"
+        ],
+        "actual": "clarify",
+        "passed": true
+      },
+      {
+        "id": "contextual-action",
+        "expected": [
+          "execute"
+        ],
+        "actual": "execute",
+        "passed": true
+      },
+      {
+        "id": "contextual-answer",
+        "expected": [
+          "reason"
+        ],
+        "actual": "reason",
+        "passed": true
+      },
+      {
+        "id": "code-follow-up",
+        "expected": [
+          "reason"
+        ],
+        "actual": "reason",
+        "passed": true
+      },
+      {
+        "id": "side-question",
+        "expected": [
+          "answer",
+          "reason"
+        ],
+        "actual": "answer",
+        "passed": true
+      },
+      {
+        "id": "question-not-permission",
+        "expected": [
+          "answer",
+          "reason"
+        ],
+        "actual": "reason",
+        "passed": true
+      },
+      {
+        "id": "quoted-greeting",
+        "expected": [
+          "inspect"
+        ],
+        "actual": "inspect",
+        "passed": true
+      },
+      {
+        "id": "missing-referent",
+        "expected": [
+          "clarify"
+        ],
+        "actual": "clarify",
+        "passed": true
+      },
+      {
+        "id": "careful-reasoning",
+        "expected": [
+          "reason"
+        ],
+        "actual": "reason",
+        "passed": true
+      }
+    ]
+  },
+  "greeting": {
+    "reportedFailure": {
+      "tokens": 119088,
+      "inputTokens": 117189,
+      "outputTokens": 1899,
+      "modelCalls": 19,
+      "answered": false
+    },
+    "currentCli": {
+      "tokens": 481,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "elapsedMs": 3920,
+      "answered": true,
+      "exitCode": 0,
+      "workCreated": false
+    }
+  },
+  "codingFixture": {
+    "budgetTokens": 64000,
+    "beforeContextPreparation": {
+      "tokens": 58773,
+      "modelCalls": 10,
+      "completed": false,
+      "failure": "Budget exhausted before review finished"
+    },
+    "afterContextPreparation": {
+      "tokens": 58116,
+      "modelCalls": 13,
+      "completed": true,
+      "elapsedMs": 124412,
+      "generatedTestsPassed": 11,
+      "independentCasesPassed": 1681,
+      "userNotesUnchanged": true
+    }
+  },
+  "correctedFailures": [
+    "0.6B produced invalid decisions and invented repository facts",
+    "1.7B failed the strict output contract and misread contextual action",
+    "4B returned wrong field types: reduced output contract to mode/text",
+    "Small-model code shortening was incorrect: code-related replies now use the stronger model",
+    "Small model put incorrect proposed solutions into task briefs: bounded imperative brief and original-request precedence",
+    "Fresh continue inferred a nonexistent prior task: explicit missing-context directive and null activeGoal",
+    "Coding model repeatedly received empty memory diagnostics and state paths: project semantic content only"
+  ],
+  "limitations": [
+    "Small evaluation corpus; this is not a broad model-quality benchmark",
+    "Mode/schema checks alone do not establish answer correctness",
+    "Live model latency includes shared service queuing",
+    "Existing rollout, broader long-workflow quality, human media review and24hcanary gates remain open"
+  ],
+  "installedPreviewHistory": [
+    {
+      "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
+      "version": "0.1.135-codali.17",
+      "command": "~/.local/bin/codali-next",
+      "greeting": {
+        "tokens": 478,
+        "modelCalls": 1,
+        "toolCalls": 0,
+        "elapsedMs": 3265,
+        "workspaceUnchanged": true
+      },
+      "additionalConversationCases": {
+        "passed": 6,
+        "total": 6,
+        "totalTokens": 5688,
+        "covered": [
+          "greeting",
+          "conversation acknowledgement",
+          "history recall",
+          "planning explanation",
+          "read-only workspace inspection",
+          "thanks"
+        ],
+        "report": "/home/wodo/.local/state/codali-intent-eval/installed17-conversation-results.json"
+      },
+      "compatibility": "Shared configuration retains the new intent model/binding and omits redundant interaction defaults; both .15 and .17 validators accept it with identical effective .17 settings."
+    }
+  ],
+  "installedPreview": {
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "version": "0.1.135-codali.18",
+    "command": "~/.local/bin/codali-next",
+    "greeting": {
+      "tokens": 480,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "elapsedMs": 2653,
+      "workspaceUnchanged": true
+    },
+    "customAnswerBinding": {
+      "passed": true,
+      "router": "mcoda-raijin-qwen3-4b-instruct-2507",
+      "answer": "mcoda-sukunahikona-qwen-latest-flash-next",
+      "tokens": 2308,
+      "modelCalls": 3,
+      "toolCalls": 1,
+      "elapsedMs": 12826,
+      "fileUnchanged": true,
+      "report": "/home/wodo/.local/state/codali-intent-eval/installed18-custom-binding-result.json"
+    },
+    "qualification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-clean-install-final.json",
+    "activation": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json"
+  }
+}

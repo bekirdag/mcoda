@@ -2,6 +2,85 @@
 
 ## Unreleased
 
+- Unify dispatch/tool/output contracts and validate final replies across modes.
+  Add one budgeted, tool-free presentation repair, preserve execution evidence,
+  and share the versioned dispatcher prompt with live evaluations. Legacy router
+  prompts now supply semantic policy without replacing the response schema.
+- Guide word-bound repairs toward an interior target while retaining exact user
+  limits and the single-repair budget; keep failed drafts when validation fails.
+- Add a structured, history-aware tool-scope decision and withhold optional
+  calculation when the dispatcher does not explicitly allow tools. Preserve
+  host restrictions and record scope conflicts. Fix local skill discovery when
+  a workspace path resolves through platform aliases or symlinks.
+- Record the separate 32-question regression and its prompt-template erratum;
+  it does not demonstrate better intelligence than raw Qwen.
+
+- Add native Docdex repository/web investigation, bounded browser snapshots,
+  server time, progressive local skills with a bundled planning workflow, and
+  readable TUI tables with narrow-screen layouts.
+- Preserve user constraints through automatic context compression; keep archived
+  content recoverable after resume/fork. Reserve final-answer capacity when
+  Docdex performs nested inference, and retain plan-writing tools under budget pressure.
+- Label web summaries and unvisited discovery links separately from fetched
+  evidence. Preserve failed benchmark attempts; the original and R1 studies did
+  not establish the required quality improvement over raw Qwen.
+
+- Honor `interaction.answerBinding` for read-only inspections as well as explanations.
+
+- Prepare codali.17 with history-aware interaction dispatch before repository
+  execution. Greetings and questions no longer create coding tasks or reviewer
+  loops; configured small-model prompts prepare bounded stronger-model requests.
+- Record private redacted request/model-response/final-outcome audit events,
+  preserve cumulative usage with bounded turn budgets, and remove transport
+  metadata from repeated model context. Conversation metadata v2 prevents older
+  clients from reinterpreting these sessions as coding jobs; v1 work sessions
+  remain readable.
+- Add mouse-wheel scrollback that stays anchored during streaming, readable tool
+  activity and errors, and dedicated help/usage views. Preserve keyboard access,
+  approval controls and terminal restoration.
+
+- Retry transient Windows state-file replacement conflicts without deleting the
+  previous state or suppressing permanent errors. Retain file durability checks.
+- Resolve native macOS Git within the selected developer installation so sandboxed
+  repository inspection works without launching the Xcode wrapper.
+
+## 0.1.135-codali.3 - 2026-10-26
+
+- Allow bounded Git diff/status inspection within the final validation budget;
+  keep edits blocked and require actual test evidence before verifying code.
+- Disable terminal echo before displaying the API-key prompt, preventing fast
+  input from being echoed. Verify masked entry, backspace, cancellation, key
+  rotation, logout, credential-cache refresh and bounded piped input.
+
+- Tagged candidate; publication was cancelled after Windows CI exposed a
+  transient state-file replacement failure addressed above.
+
+## 0.1.135-codali.2 - 2026-10-26
+
+- Keep core tool definitions available across task handoffs, while requiring a
+  fresh task claim before execution. Record advertised tools for diagnosis.
+- Explain stale verification with affected tasks and changed inputs so agents
+  can revalidate existing work without replacing the plan.
+- Preserve Windows workspace identity across short-path aliases and repair
+  interrupted transcript tails. Retain mandatory file flushes on every platform.
+- Resolve macOS Python native library dependencies within the shell sandbox,
+  including Homebrew SSL libraries, without mounting broad installation roots.
+- Internal validation prerelease for the `next` channel. Quality evaluation,
+  consumer rollout and the 24-hour canary remain open promotion gates.
+
+## 0.1.135-codali.1 - 2026-10-26
+
+- Internal terminal CLI prerelease with mSwarm authentication, configuration-driven
+  model roles and effort, durable goals and tasks, scoped permissions, asynchronous
+  shell execution, session recovery, and interactive or JSONL operation.
+- Add managed Docdex with verified runtime artifacts, pinned embedding identity,
+  public embedding transport, memory persistence, and success/failure usage receipts.
+- Add durable image, audio, and video jobs with artifact checksums and recovery.
+- Preserve native Strata reasoning metadata and shared orchestration budgets;
+  correct false worker-substitution diagnostics for embedded consumers.
+- This tagged candidate was not published: platform qualification exposed
+  macOS runtime and Windows persistence issues addressed in codali.2.
+
 ## 0.1.134 - 2026-10-25
 
 - Forward final synthesis schemas and preserve OpenAI tool-call history.

@@ -24,6 +24,30 @@ All three are loopback-only deployment components, not public listeners. See
 `docs/ops/mswarm-self-hosted-generative-agents-runbook.md` in the mcoda
 repository for pinned service, registration, readiness, and rollback guidance.
 
+The POSIX media bridges share `media_gpu_lock.py`. Install that module beside
+all three scripts and run them under the same service user. They serialize GPU
+inference through `$XDG_RUNTIME_DIR/mcoda-media-gpu1.lock`; deployments can set
+`MCODA_MEDIA_GPU_LOCK_PATH` to one shared, private regular file and
+`MCODA_MEDIA_GPU_WAIT_SECONDS` to a finite admission deadline (default 600).
+Do not unlink an active lock file. A video HTTP deadline does not release GPU
+ownership: the worker retains the lock and local slot until the native job is
+confirmed terminal. Cancellation requested by a native server is distinguished
+from confirmed cancellation. The same inode contains an fsynced lease receipt.
+A killed bridge or uncertain image/video submission leaves that receipt behind;
+subsequent admission fails with `media_gpu_recovery_required`. Process death,
+elapsed time and an HTTP disconnect never count as native completion. Video
+receipts retain the native job ID, and terminal responses must match that ID.
+
+Recovery uses `reconcile_media_gpu_slot(expected_id, terminal_probe)`. A trusted
+host probe must confirm that the recorded native job is terminal, or that its
+native engine has been stopped and can no longer retain the job. The scheduler
+checks the receipt ID under its exclusive lock and clears it only when that
+probe returns `True`. A live owner, stale ID, failed probe or corrupt receipt
+cannot be overwritten by ordinary admission. Do not clear the file merely to
+retry a request. This cooperating scheduler does not yet enforce VRAM
+reservations or implement deployment-specific automatic native recovery.
+Drain and reconcile native jobs before upgrading services.
+
 ## Quick Setup
 
 ```sh
@@ -69,6 +93,22 @@ mswarm node run
 ```
 
 For the default outbound mode, `node run` sends heartbeats and long-polls mswarm for self-hosted execution jobs. For direct mode, it also starts the local direct-job HTTP server. `node run` is foreground-only; use `node install` for the stable background daemon that survives closing the terminal.
+
+Foreground nodes handle `SIGTERM` and `SIGINT` by closing admission and waiting
+for accepted work, outstanding relay claims, queued owner-local jobs and result
+uploads before exiting. Linux service installations use `KillMode=mixed` and
+`TimeoutStopSec=infinity` so the service manager does not kill worker children
+or interrupt that drain. Existing installations must refresh those unit settings
+before relying on graceful upgrades. A force kill cannot provide this guarantee.
+
+On POSIX, `SIGUSR2` requests a drain without exiting. Use this signal only after
+verifying that the running version supports it. The node keeps reporting zero
+free slots and rejects new direct submissions with `503 node_draining`; status,
+artifact and cancellation routes remain available. Restart after the journal
+reports `node drained`. The SDK daemon handle exposes `drain({ timeoutMs })`;
+`false` means work is still active and must not be treated as permission to kill
+it. A timeout leaves admission closed. `stop()` only stops timers and is intended
+for cleanup after a successful drain.
 
 To bootstrap without installing the service:
 
@@ -229,6 +269,11 @@ data: [DONE]
 ```
 
 Codali status and tool events are tracked internally, but tool outputs are not emitted as assistant stream content. Raw `provider: "ollama"` jobs remain available as a minimal no-tool fallback path.
+
+Caller-owned OpenAI tool conversations retain native pass-through when the caller
+removes tool declarations for its final answer. Tool-call IDs, paired results,
+response format and sampling settings remain intact; that final turn does not
+enter a second Codali orchestration loop.
 
 Jobs can additionally scope execution with:
 

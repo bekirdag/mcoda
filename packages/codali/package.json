@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/codali",
-  "version": "0.1.134",
+  "version": "0.1.135-codali.26",
   "description": "Standalone tool-runner adapter for mcoda.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,15 +15,17 @@
     "!dist/**/*.test.*",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "ORCHESTRATION.md",
+    "config"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-deterministic.mjs",
     "lint": "echo \"lint not configured\"",
     "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
   },
   "repository": {
     "type": "git",
@@ -41,6 +43,18 @@
   "dependencies": {
     "@mcoda/db": "workspace:*",
     "@mcoda/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "ajv": "8.20.0",
+    "browser-use": "0.9.0",
+    "decimal.js": "10.6.0",
+    "mathjs": "15.2.0",
+    "playwright-core": "1.64.1",
+    "string-width": "8.3.0",
+    "vitest": "3.2.7",
+    "yaml": "2.9.0",
+    "zod": "4.5.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

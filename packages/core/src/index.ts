@@ -13,6 +13,7 @@ export * from "./services/planning/TaskSufficiencyService.js";
 export * from "./services/planning/KeyHelpers.js";
 export * from "./services/execution/TaskSelectionService.js";
 export * from "./services/execution/TaskStateService.js";
+export * from "./services/execution/ProjectTaskAuthority.js";
 export * from "./services/execution/AddTestsService.js";
 export * from "./services/execution/WorkOnTasksService.js";
 export * from "./services/execution/QaTasksService.js";

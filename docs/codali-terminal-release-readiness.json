@@ -1,0 +1,1130 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-28T20:17:04.443552+00:00",
+  "candidate": {
+    "version": "0.1.135-codali.18",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
+    "publishedChannel": "next",
+    "stableVersion": "0.1.134",
+    "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-registry-artifacts/verification.json"
+  },
+  "releaseReady": false,
+  "requirements": [
+    {
+      "id": "P0.1",
+      "description": "Trace cli.ts, AskCommand.ts, RunCommand.ts, CodaliRuntime, CodaliJobRuntime, SmartPipeline and CodaliGateway to all provider/tool calls, including summarization, repair, Docdex delegation and media. Produce a current call map, enumerate every model-binding source and choose the outer lifecycle owner for terminal sessions. Preserve embedded-host behavior.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/0/evidence"
+      }
+    },
+    {
+      "id": "P0.2",
+      "description": "Reindex affected source and repair/verify Docdex graph coverage. Record current tests, package exports, Node support, config precedence and public API consumers.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/1/evidence"
+      }
+    },
+    {
+      "id": "P0.3",
+      "description": "With a dedicated test account/workspace, probe mSwarm discovery, quotas, streaming, cancellation, idempotency and job-status behavior on both Raijin and Suku. Inventory Strata-served text models plus smaller, embedding, audio, image and video models; verify placement, entitlement, revisions, supported operations/formats/limits, native reasoning, embedding compatibility and synchronous/asynchronous behavior. Verify each actual transport/adapter rather than assume installation means Codali integration.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/2/evidence"
+      }
+    },
+    {
+      "id": "P0.4",
+      "description": "Run a small baseline corpus through current Codali. Capture success, tool validity, queue time, latency, tokens and failure modes. Record production traffic baselines for TNL/BDYA/Logmira before adding CLI load.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/3/evidence"
+      }
+    },
+    {
+      "id": "P0.5",
+      "description": "Write decisions for execution location, one orchestration owner, terminal renderer, session storage migration, config/key precedence, permission enforcement and platform isolation. Freeze initial event/API fixtures and a capability matrix.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/4/evidence"
+      }
+    },
+    {
+      "id": "P0.6",
+      "description": "Define the shared orchestration-config schema and migration from existing agent/provider settings. Produce a Raijin/Suku profile and alternate-deployment fixture; specify all internal model bindings, fallback rules, optional disabled capabilities and turn-boundary upgrades.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/5/evidence"
+      }
+    },
+    {
+      "id": "P0.7",
+      "description": "Refresh the read-only hardware/residency audit in Section 4.4 and extend it with controlled peak-memory measurements under text, retrieval, vision and media workloads. The selected qualification profiles are SERA-14B Q4_K_M on Suku GPU1 and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1, with SERA-8B as a Suku alternative. Preserve the measured reservations/guards and validate production coexistence; the passive baseline alone does not qualify an installation.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/6/evidence"
+      }
+    },
+    {
+      "id": "P0.8",
+      "description": "Map SessionStore, CodaliGatewayStore, CodaliJobRuntime and mcoda TaskOrderingService/TaskStateService. Choose the authoritative owner and adapters for standalone versus project-attached work. Freeze GoalContract, PlanRevision, TaskContract, DecisionRecord, EvidenceReceipt and Checkpoint examples; document status mapping, versioning and durability. No second mutable backlog or outer agent loop.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/7/evidence"
+      }
+    },
+    {
+      "id": "P0.9",
+      "description": "Turn this accepted build plan into requirement-to-task-to-evidence fixtures and choose the tracked documentation destination. Establish the long-task baseline from Section 11: goal retention, missed requirements, scope drift, architecture violations, failed handoffs, duplicate work and false completion. Include bounded planning-only evaluations before qualifying smaller planners.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/8/evidence"
+      }
+    },
+    {
+      "id": "P1.1",
+      "description": "Add mSwarm login/logout/status using the existing credential resolver, masked interactive entry, stdin for automation and environment-based injection. Implement rotation and removal without logging keys.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/9/evidence"
+      }
+    },
+    {
+      "id": "P1.2",
+      "description": "Normalize mSwarm catalog entries for both hosts, distinguishing text, embedding, image, audio and video operations, revisions, backend identity and resource pools. Intersect discovery with configured approved models and account entitlements; cache with expiry per endpoint/account. Never silently add an unconfigured model or reuse another account's catalog after changing keys.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/10/evidence"
+      }
+    },
+    {
+      "id": "P1.3",
+      "description": "Integrate the existing runtime usage-limits endpoint. Distinguish authentication failure, missing model entitlement, quota exhaustion, account service outage and model unavailability.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/11/evidence"
+      }
+    },
+    {
+      "id": "P1.4",
+      "description": "Expand doctor to check package version, supported runtime, credential presence/validity, endpoint trust, catalog, required routes, Docdex and platform executor capabilities. Keep useful local diagnostics available offline.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/12/evidence"
+      }
+    },
+    {
+      "id": "P1.5",
+      "description": "Specify setup's package/install behavior and backward-compatible configuration migration. Fix dev version output and stale help/README claims.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/13/evidence"
+      }
+    },
+    {
+      "id": "P1.6",
+      "description": "Implement the shared orchestration-config schema/loader/validator and effective-config inspection. Route CLI, embedded-host and background-job resolution through it; migrate existing settings with explicit diagnostics rather than preserve hidden defaults. Validate capability bindings and fallback chains, keep secrets indirect, and stamp resolved versions/hashes on requests.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/14/evidence"
+      }
+    },
+    {
+      "id": "P1.7",
+      "description": "Validate task-control policies with the same loader: bounded planning/review depth, concurrency, retries, checkpoints and escalation. Policies may narrow hard safety invariants; they cannot enable additional workspace writers, disable required completion evidence or expand account permissions. Expose resolved values without a model call.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/15/evidence"
+      }
+    },
+    {
+      "id": "P2.1",
+      "description": "Introduce the session controller around the chosen existing orchestration path. Define start turn, steer, queue input, cancel, inspect and checkpoint operations. Maintain compatibility adapters for legacy CLI and embedded runtime calls.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/16/evidence"
+      }
+    },
+    {
+      "id": "P2.2",
+      "description": "Extend typed runtime/provider events with stable identity, ordering, final-state rules, bounded buffers and backpressure. Persist important events through SessionStore.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/17/evidence"
+      }
+    },
+    {
+      "id": "P2.3",
+      "description": "Thread cancellation/deadlines through providers, remote invocation control, subagent scheduling and pending tool work. Distinguish cancel-requested from confirmed cancelled.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/18/evidence"
+      }
+    },
+    {
+      "id": "P2.4",
+      "description": "Add a shared budget object and usage accumulator at the controller boundary. Every nested model/tool call reserves from it before starting.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/19/evidence"
+      }
+    },
+    {
+      "id": "P2.5",
+      "description": "Add basic crash-safe checkpoints and event replay using fake providers and a plain text/JSONL harness. Keep writing tools disabled until Phase 3's gate passes.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/20/evidence"
+      }
+    },
+    {
+      "id": "P2.6",
+      "description": "Extend the common tool/job envelope for media submission, durable remote IDs, progress, artifact references and cancellation reconciliation. Keep model bindings/configuration pinned for in-flight jobs; binary payloads do not enter text event logs.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/21/evidence"
+      }
+    },
+    {
+      "id": "P2.7",
+      "description": "Implement durable goal/requirement/decision/plan/task records and atomic revision checks, reusing P0.8's chosen storage boundaries. Include standalone sessions and project task adapters, idempotent projections and crash recovery. Distinguish invocation success from verified task/goal completion.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/22/evidence"
+      }
+    },
+    {
+      "id": "P2.8",
+      "description": "Add deterministic dependency validation/readiness and guarded task transitions. Validate coverage, missing/cyclic prerequisites, ownership and goal/plan versions. Apply steering atomically; invalidate incompatible queued tasks and reject stale results. Reserve budget for required validation.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/23/evidence"
+      }
+    },
+    {
+      "id": "P2.9",
+      "description": "Add headless inspect/amend/checkpoint commands and the evidence completion gate using fake providers. Prove a falsely confident model cannot complete an unmet criterion. Small tasks use the same records with minimal planning ceremony.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/24/evidence"
+      }
+    },
+    {
+      "id": "P3.1",
+      "description": "Implement the central allow/deny/ask gate and approval response contract, including persisted scoped grants and current-policy rechecks immediately before side effects. Integrate existing GatewayPolicyCompiler/ToolRegistry controls rather than bypassing them.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/25/evidence"
+      }
+    },
+    {
+      "id": "P3.2",
+      "description": "Replace the blocking shell path with an asynchronous process runner. Stream bounded stdout/stderr, record exit/signal state, support cancellation and process-group cleanup, enforce time/output limits, and define owned background process behavior. Preserve the existing tool contract where possible.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/26/evidence"
+      }
+    },
+    {
+      "id": "P3.3",
+      "description": "Implement and test Linux/macOS isolation adapters. Validate filesystem and network boundaries against interpreter execution, shell scripts, hooks, package managers and child processes. Do not rely on destructive-command pattern matching.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/27/evidence"
+      }
+    },
+    {
+      "id": "P3.4",
+      "description": "Apply the gate to file writes, patches, MCP/HTTP tools, Docdex mutations, media generation/artifact handling and subagents. Unknown external tools require explicit permission until classified. Network-read permission is separate from upload, metered generation and an external write action; existing image readOnly metadata cannot bypass policy.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/28/evidence"
+      }
+    },
+    {
+      "id": "P3.5",
+      "description": "Add workspace locks, file preconditions and tool intent/receipt records. Tests cover symlinks, path traversal, changed file contents, overlapping edits and partial failures.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/29/evidence"
+      }
+    },
+    {
+      "id": "P3.6",
+      "description": "Add the repository baseline/diff ownership ledger, task path/goal-version preconditions and scoped scratch cleanup. Wire required architecture/public-contract checks and trusted verification receipts into result acceptance. A helper, shell command or generated document cannot mutate authoritative work state outside its validated API.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/30/evidence"
+      }
+    },
+    {
+      "id": "P4.1",
+      "description": "Implement setup/doctor integration for local Docdex health, version, repository binding, initial index and incremental refresh. Use the existing client and registration flows.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/31/evidence"
+      }
+    },
+    {
+      "id": "P4.2",
+      "description": "Wire the standard coding workflow to search, symbols/AST, precise reads and impact analysis, with output/context budgets. Treat index health as part of the tool result.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/32/evidence"
+      }
+    },
+    {
+      "id": "P4.3",
+      "description": "Expose configured web research, source attribution and timeouts. Preserve operation allowlists and the difference between local and managed encrypted repositories.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/33/evidence"
+      }
+    },
+    {
+      "id": "P4.4",
+      "description": "Integrate agent profile and repository memory with separate read/write permissions and retention. Include provenance in context and prevent tool text from rewriting policy.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/34/evidence"
+      }
+    },
+    {
+      "id": "P4.5",
+      "description": "Expose trusted MCP/HTTP connectors and per-tool health. Failure of one optional connector must not disable unrelated local tools.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/35/evidence"
+      }
+    },
+    {
+      "id": "P4.6",
+      "description": "Integrate discovered embedding services through the supported Docdex/provider contract. Pin embedding-space identity per index, batch incrementally with cancellation, implement compatible-replica failover and rebuild/switch behavior for incompatible changes, and account for query versus background indexing usage.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/36/evidence"
+      }
+    },
+    {
+      "id": "P4.7",
+      "description": "Reuse ImageGenerationTool and GenerativeOperation contracts to expose configured image/audio/video creation tools. Add missing adapters and capability-specific validation, with supported conditioning/reference inputs and operation limits drawn from configuration plus inventory.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/37/evidence"
+      }
+    },
+    {
+      "id": "P4.8",
+      "description": "Implement durable media jobs and artifact storage/download/receipt handling, with bounded payloads, tenant isolation, safe paths, checksums, expiry/retention and explicit preview/export. Exercise mixed workflows that create and integrate code plus media without a separate planner.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/38/evidence"
+      }
+    },
+    {
+      "id": "P4.9",
+      "description": "Build bounded active-task context from canonical goal/plan records plus Docdex facts, profile, diary/wakeup and decision references. Implement freshness/contradiction handling, critical-context reservation and source-linked checkpoint summaries. Keep task state and authorization outside probabilistic memory retrieval.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/39/evidence"
+      }
+    },
+    {
+      "id": "P5.1",
+      "description": "Bind text roles, retrieval and media tools through the shared orchestration configuration and existing agent resolution. Enforce this deployment's Strata-backed large-Qwen rules during dispatch/pool expansion/fallback; prove another deployment profile can choose other supported models without engine changes.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/40/evidence"
+      }
+    },
+    {
+      "id": "P5.2",
+      "description": "Add bounded helper capsules, output schemas, source references and validation/escalation rules. Start with extraction/classification before enabling patch drafting. Never let a helper approve a privileged action.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/41/evidence"
+      }
+    },
+    {
+      "id": "P5.3",
+      "description": "Implement the four effort profiles with shared counters, account caps and requested/effective reporting. Add native reasoning mapping only for empirically supported adapters.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/42/evidence"
+      }
+    },
+    {
+      "id": "P5.4",
+      "description": "Integrate queue/admission/cancel status, cross-host routing and physical-pool concurrency, including large/small/embedding/media contention and loading peaks. Preserve interactive capacity while scheduling heavy video jobs. Fail over only after reconciling whether an invocation was already admitted; avoid duplicate renders and retry amplification.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/43/evidence"
+      }
+    },
+    {
+      "id": "P5.5",
+      "description": "Evaluate eligible large-model-only baselines versus offloaded runs on the same held-out tasks, recording model/host placement so routing changes do not confound the comparison. Tune helper eligibility, thresholds, context packing and review depth. Preserve source facts when small-model summaries are wrong or incomplete.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/44/evidence"
+      }
+    },
+    {
+      "id": "P5.6",
+      "description": "Qualify the two primary profiles from Section 4.4 first: SERA-14B Q4_K_M on Suku GPU1 within a 12-GiB process reservation plus 4-GiB guard, and Qwen3-4B-Thinking-2507 Q4_K_M on Raijin GPU1 within 4 GiB plus a 2-GiB guard. Start at 8K context/one slot/Q8 KV. Compare the 4B candidate against resident 4B Instruct and SERA against the configured lead/worker baseline; record TypeScript task quality, full-task latency and actual loading/prefill/generation peaks. SERA-8B on Suku is a replacement alternative, not another concurrent resident.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/45/evidence"
+      }
+    },
+    {
+      "id": "P5.7",
+      "description": "Implement shared GPU1 admission and media drain/unload/reload before enabling Suku's specialist. During rollout, install one candidate at a time using pinned verified artifacts, stable GPU UUIDs and disabled-until-qualified configuration entries; canary before promotion. Re-run compatibility, production/vision/media coexistence and configuration-only rollback tests. Reject or resize profiles whose measured peaks breach reservations; retain existing models if the new candidates do not improve the workload.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/46/evidence"
+      }
+    },
+    {
+      "id": "P5.8",
+      "description": "Implement scoped worker capsules/results, controller-issued attempt leases/fencing, deduplication, side-effect reconciliation on expiry and bounded progress detection. Preserve one writing task per worktree; use parallel helpers only where independent work and resource limits allow.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/47/evidence"
+      }
+    },
+    {
+      "id": "P5.9",
+      "description": "Evaluate planning/architecture/goal retention separately from coding. Compare lead-only execution, qualified helper decomposition and separate review on the same corpus/budgets. Measure constraint loss, invented tasks/APIs, ordering errors, rework and completion quality; remove optional stages that add cost without benefit. Use configured role bindings for all calls.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/48/evidence"
+      }
+    },
+    {
+      "id": "P6.1",
+      "description": "Implement the required default TUI: structured scrollable transcript, persistent multiline prompt editor, workspace/session/status area, searchable commands, history search and @file completion; preserve plain/JSONL modes, resize and terminal restoration.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/49/evidence"
+      }
+    },
+    {
+      "id": "P6.2",
+      "description": "Implement the alpha command set from Section 6 against controller state. Status and permission inspection must not trigger an inference call.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/50/evidence"
+      }
+    },
+    {
+      "id": "P6.3",
+      "description": "Build approval cards with concrete operation, paths/command, reason and grant scope. Build actual-diff and tool-output views with truncation/expansion controls.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/51/evidence"
+      }
+    },
+    {
+      "id": "P6.4",
+      "description": "Make steering, queued messages, cancellation and busy-state slash commands explicit. Display phase, actual model/node route, effort, context and queue state without flooding the screen.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/52/evidence"
+      }
+    },
+    {
+      "id": "P6.5",
+      "description": "Stabilize scripted mode: JSONL event output, final result format, stderr diagnostics and documented exit codes. Retain old command behavior and add migration notes.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/53/evidence"
+      }
+    },
+    {
+      "id": "P6.6",
+      "description": "Add /artifacts and media-job detail to /tasks, with artifact paths/provenance, separate render usage and explicit download/open actions. Surface effective model bindings/configuration version, pending configuration updates and modality-specific unsupported-operation errors.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/54/evidence"
+      }
+    },
+    {
+      "id": "P6.7",
+      "description": "Add /goal, /decisions and the expanded /plan and /tasks commands. Show current requirements, scope history, phase/task dependencies, blockers, ownership and evidence counts through deterministic reads. Make user steering reviewable with a plan diff; preserve authorization for routine work and make planning/execution mode changes explicit.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/55/evidence"
+      }
+    },
+    {
+      "id": "P6.8",
+      "description": "Qualify the required TUI with deterministic visual/input tests and real Linux/macOS PTY flows covering stream/redraw, Unicode, narrow resize, paste, completion, approval, busy steering/queueing, signals and resume; inspect exact-version visual fixtures.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/56/evidence"
+      }
+    },
+    {
+      "id": "P7.1",
+      "description": "Complete resume/fork/compaction and storage migration. Reconcile uncertain tool outcomes before continuing. Test stale repository state and multiple clients opening the same session.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/57/evidence"
+      }
+    },
+    {
+      "id": "P7.2",
+      "description": "Reconcile local usage with server invocation/account records, including retries, cancelled requests, delayed usage and reconnects. Show unknown/estimated values honestly.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/58/evidence"
+      }
+    },
+    {
+      "id": "P7.3",
+      "description": "Complete /context, /review and redacted export; expand /tasks recovery/evidence views and configuration provenance. Make active/background work ownership visible on exit/resume.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/59/evidence"
+      }
+    },
+    {
+      "id": "P7.4",
+      "description": "Add local retention/delete controls, diagnostic redaction, crash reporting that is opt-in and test-only telemetry fixtures. Do not silently enable existing dataset collection.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/60/evidence"
+      }
+    },
+    {
+      "id": "P7.5",
+      "description": "Run longer coding sessions against each selected model's actual context limit, including cross-host failover to a smaller compatible context window. Verify compaction preserves task constraints, pending work and validation evidence, and resume retains the pinned embedding-space identity.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/61/evidence"
+      }
+    },
+    {
+      "id": "P7.6",
+      "description": "Recover a render completed while the CLI was disconnected, refresh an expired artifact reference and migrate/roll back a model configuration without resubmitting active jobs. Preserve media provenance, accounting and artifact integrity across resume/export.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/62/evidence"
+      }
+    },
+    {
+      "id": "P7.7",
+      "description": "Run the long-task/fault corpus from Section 11 with repeated compaction, fresh contexts, restarts, steering, failed dependencies and user edits. Verify requirement/decision continuity, evidence invalidation, no duplicate side effects, useful next-task selection and honest blocked/partial outcomes. Run selected multi-hour live journeys on both hosts.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/63/evidence"
+      }
+    },
+    {
+      "id": "P8.1",
+      "description": "Run the release matrix across text, smaller, embedding, image, audio and video services on both hosts, including newly qualified specialists, background indexing and peak render allocations. Measure existing tenants under mixed CLI traffic, cold model loads and either-host failure; prove no OOM-driven eviction or starvation.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/64/evidence"
+      }
+    },
+    {
+      "id": "P8.2",
+      "description": "Fix admission, starvation, cancellation, stale leases and retry behavior demonstrated by those tests. Drain remote jobs before node upgrades and reconcile in-flight records afterward.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/65/evidence"
+      }
+    },
+    {
+      "id": "P8.3",
+      "description": "Build reproducible package artifacts and install-test the tarballs on clean supported systems. Verify package files, executable permissions, version/help output, migration and uninstall behavior.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/66/evidence"
+      }
+    },
+    {
+      "id": "P8.4",
+      "description": "Deploy additive backend changes before clients that need them. Gate incompatible capabilities explicitly. Publish a prerelease package, then promote the tested artifact after the canary gates pass. Do not select a future version number until release time.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/67/evidence"
+      }
+    },
+    {
+      "id": "P8.5",
+      "description": "Roll out to internal keys, a small opted-in cohort, then general availability. Keep switches for interactive mode, helper offloading and new routing behavior independently reversible. Pin the known-good previous client/backend versions and test downgrade readers before enabling a new session schema.",
+      "status": "pending",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/68/evidence"
+      }
+    },
+    {
+      "id": "P8.6",
+      "description": "Publish the requirement-to-evidence report and failure taxonomy for the tested release. Exercise diagnosis from one user-visible stalled task to goal/plan versions, decisions, model/tool receipts and actionable recovery. Track architecture drift, scope changes, user corrections and false-completion incidents alongside latency/cost; gate optional stages/models on measured value.",
+      "status": "in_progress",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/69/evidence"
+      }
+    },
+    {
+      "id": "P9.1",
+      "description": "Research current Aider, OpenCode, Goose and RouteLLM primary docs/source; benchmark resident0.6B/1.7B/4B models on history-sensitive intent and answer cases before choosing workflow.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/70/evidence"
+      }
+    },
+    {
+      "id": "P9.2",
+      "description": "Implement configurable history-aware capability routing and prompt preparation before indexing or work creation. Bound classification/answer/inspection, preserve original requests and active goals, fail safely on invalid output; use no hardcoded request taxonomy.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/71/evidence"
+      }
+    },
+    {
+      "id": "P9.3",
+      "description": "Log every terminal request, actual model input/output and final response/error with correlation, prompt/config version, usage and timing in private redacted durable logs; preserve existing sessions.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/72/evidence"
+      }
+    },
+    {
+      "id": "P9.4",
+      "description": "Make TUI transcript scrollable with wheel and keyboard, stable while streaming; provide friendly progress/errors and polished help/usage/command views.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/73/evidence"
+      }
+    },
+    {
+      "id": "P9.5",
+      "description": "Run varied live prompt, history, cancellation, malformed-router, budget and privacy regressions; fix observed failures, install a qualified preview and report measured token/latency improvements before release.",
+      "status": "completed",
+      "evidenceLedger": {
+        "path": "docs/codali-terminal-build-status.json",
+        "jsonPointer": "/tasks/74/evidence"
+      }
+    }
+  ],
+  "openGates": [
+    {
+      "id": "interactive-tui",
+      "status": "open",
+      "required": "Required full TUI from plan Section6.1, with real visual/input/PTY qualification.",
+      "current": "Published .18 preview is installed on Raijin. All six Linux/macOS Node20/22 exact-artifact installations passed 30 checks including 12 PTY flows. Actual .18 SSH qualification remains open; earlier .15 SSH evidence is retained."
+    },
+    {
+      "id": "long-workflows",
+      "status": "open",
+      "required": "Four successful multi-hour live workflows with canonical continuity, complete integration and independent grades.",
+      "current": "AM started 2026-10-28T20:15:35Z against exact .18 public artifacts and node S on both hosts: billing-audit and service-adapters active, then data-delivery and localized-export if each first case passes. Three inference stages each receive 1.6M tokens/170 model calls/341 tool calls/170 steps, keeping aggregate within the old 4.8M/512/1024/512 ceilings. Stage allocation differs from prior lifetime-budget runs; this is diagnostic, not a matched comparison. Original failures retained; no multi-hour pass claim."
+    },
+    {
+      "id": "broad-quality",
+      "status": "open",
+      "required": "Current-release independent repeated quality and helper comparisons.",
+      "current": "Prior held-out E52/60 and reused diagnostic runs do not qualify current release or specialist promotion."
+    },
+    {
+      "id": "context-and-failover",
+      "status": "open",
+      "required": "Actual context limit and cross-host smaller compatible context failover with pinned embeddings.",
+      "current": "Node S/.18 actual native context refusals passed on both hosts for streaming/nonstreaming: one submission, one canonical invocation and complete zero-token accounting. Both Strata windows remain 32768. Cross-host smaller-compatible-context and pinned embedding migration qualification remain open."
+    },
+    {
+      "id": "tenant-coexistence",
+      "status": "open",
+      "required": "Matched mixed-load latency/error bounds, starvation, media peak residency and host failure.",
+      "current": "Backend N and BDYA capacity classification fixes are deployed after qualified graceful drains. Both-host direct/gateway/staged routes and BDYA bulk/translation/impact smokes pass. Matched mixed load, starvation, media residency and host failure remain open; normal-load success is not busy-load clearance."
+    },
+    {
+      "id": "auth-lifecycle",
+      "status": "awaiting_owner_login_location",
+      "required": "Disposable distinct/revoked public key qualification.",
+      "current": "Service credential cannot manage keys. No production key revoked or synthetic administrator identity created."
+    },
+    {
+      "id": "media-lifecycle-quality",
+      "status": "open",
+      "required": "Human prompt/quality review and remaining lifecycle/expiry/coexistence contracts.",
+      "current": "Real generation/recovery decode and all three acknowledged local exports after remote expiry pass. Unacknowledged audio after actual retention expiry now fails clearly with one GET, no replay/ACK and export refused. Human quality and broader lifecycle/coexistence remain open."
+    },
+    {
+      "id": "canary-and-promotion",
+      "status": "not_started",
+      "required": "Internal rollout,24-hourcanary including busy period, then promote tested artifacts."
+    },
+    {
+      "id": "history-aware-interaction",
+      "status": "completed",
+      "requirement": "P9.1-P9.5: measured routing, efficient answers, complete audit and polished scrollable TUI before next candidate.",
+      "current": "P9.1-P9.5 complete in published .18 at e60d623, installed as codali-next. Measured configurable intent, prepared prompts, per-turn budgets, private audit, scrollable TUI and custom inspection binding validated. Broader release gates remain separate."
+    }
+  ],
+  "failureTaxonomy": [
+    {
+      "class": "verification-evidence-loss",
+      "observation": "Only the newest of four successful current checks reached review; task ownership recovery then repeated invalid claims.",
+      "correction": "7546a22 retains distinct same-attempt/same-snapshot checks and names the actual active owner.",
+      "evidence": "/home/wodo/.local/state/codali-multicheck-full.log",
+      "state": "regression_fixed_live_confirmation_pending"
+    },
+    {
+      "class": "review-context-truncation",
+      "observation": "Whole-goal review could not inspect omitted source/test/delivery content.",
+      "correction": "6b34f39 adds bounded readonly hash-checked source pages with shared model accounting.",
+      "evidence": "/home/wodo/.local/state/codali-terminal-deployment/review-source-pages-public-20261027/coverage-correction.json",
+      "state": "focused_live_pass_broad_quality_pending"
+    },
+    {
+      "class": "reviewer-false-acceptance",
+      "observation": "AD service-adapters approved a task whose overlaps API failed the independent interval contract.",
+      "state": "open",
+      "evidence": "/home/wodo/.local/state/codali-long-workflow-public-ad-suku-20261027/service-adapters/result.json"
+    },
+    {
+      "class": "native-gpu-failure",
+      "observation": "Illegal-memory native failure correlated with Xid31; exact classifier previously missed it.",
+      "correction": "Bounded no-replay native recovery deployed; originating GPU/kernel cause remains unproven.",
+      "state": "mitigated_root_cause_open"
+    },
+    {
+      "class": "host-resource-admission",
+      "observation": "Cold native load with resident media triggered host RAM pressure despite sufficient GPU headroom.",
+      "correction": "Shared load admission and host RAM guard deployed; cold and active-render reload pass.",
+      "state": "focused_live_pass_mixed_load_pending"
+    },
+    {
+      "class": "unknown-usage-outcome",
+      "observation": "Lost/queued responses must retain reservations until canonical settlement.",
+      "correction": "Authenticated request receipts reconcile exact usage without inference replay.",
+      "state": "both_host_live_pass_key_lifecycle_pending"
+    },
+    {
+      "class": "registry-propagation",
+      "observation": "Published packages were temporarily not installable within165seconds.",
+      "correction": "Publish checked batch before bounded345second install verification; immutable identical artifacts reused.",
+      "state": "codali8_publication_and_registry_bytes_verified"
+    },
+    {
+      "class": "qualification-harness",
+      "observation": "Initial SERA preflight used unsupported Python API; source-page diagnostic assumed a specific offset.",
+      "correction": "Bounded portable hashing and actual page coverage assertions; original failures retained.",
+      "state": "corrected_no_retroactive_model_claim"
+    },
+    {
+      "class": "undispatched-usage-reservation",
+      "observation": "Terminal discovery/context refusals retained usage as an unknown remote outcome even when no inference was dispatched.",
+      "correction": "Track the existing configured transport boundary and durably refund pre-dispatch reservations; preserve ambiguous post-dispatch usage.",
+      "evidence": "/home/wodo/.local/state/codali-preflight-green.log",
+      "state": "prerelease8_published_live_broad_confirmation_pending"
+    },
+    {
+      "class": "discovery-upstream-transient",
+      "observation": "Two AE first journeys ended on public native-preflight503. Service logs also contain upstream auth/usage synchronization failures.",
+      "correction": "Bounded client retries pass regressions; upstream cause and broader lifecycle remain open.",
+      "state": "client_regression_fixed_upstream_unqualified"
+    },
+    {
+      "class": "review-evidence-cursor",
+      "observation": "Saved-artifact reviewer guessed offset8000 after a3453-character initial test slice, skipping relevant evidence; duplicate objective and hashes also consumed review space.",
+      "correction": "Exact controller continuation cursors and lossless duplicate-contract references; durable full hashes retained.",
+      "state": "prerelease8_published_live_broad_confirmation_pending"
+    },
+    {
+      "class": "final-tree-proof-revalidation-cycle",
+      "observation": "A comprehensive final review accepted the final files, but earlier task proofs retained older global hashes and were reopened at completion, prompting repeated edits and revalidation.",
+      "correction": "Whole-goal review now includes every canonical requirement and records new full-snapshot evidence for prior verified owners; ordinary reviews cannot renew siblings or certify unfinished work.",
+      "state": "regression_passed_live_confirmation_pending",
+      "evidence": "/home/wodo/.local/state/codali-integration-coverage-full.log"
+    },
+    {
+      "class": "native-structured-response-rejection",
+      "observation": "Saved review returned502 after native generation; installed Strata returns502 for structured-output validation failures, but the node ModelServiceError classified that native code as an outage. Original failure usage remains incomplete.",
+      "correction": "Safely classify structured_output_failed as invalid_response. Terminal reviewer owns JSON parsing so malformed received output retains usage and can receive one bounded format repair.",
+      "state": "regression_passed_live_confirmation_pending",
+      "evidence": "/home/wodo/.local/state/codali-review-json-full.log"
+    },
+    {
+      "class": "tool-budget-restart-loss",
+      "observation": "AG service-adapters restored385 tool calls after a recorded386 because the last attempt had no durable usage event.",
+      "correction": "749089c persists usage before authorization/execution. No historical counter was fabricated.",
+      "state": "regression_fixed_prerelease13_pending",
+      "evidence": "/home/wodo/.local/state/codali-terminal-deployment/tool-usage-reader-qualification.json"
+    },
+    {
+      "class": "assessed-source-access-denial",
+      "observation": "Later narrow reviews promised prior fresh assessed source but did not include it in allowed read paths.",
+      "correction": "977e632 extends only review read context with same-snapshot assessed paths; unrelated paths remain rejected.",
+      "state": "regression_fixed_prerelease13_pending",
+      "evidence": "/home/wodo/.local/state/codali-assessed-source-full.log"
+    },
+    {
+      "class": "native-capacity-propagation",
+      "observation": "BDYA invocationshi_4b920c5fae0f480ca228037202e95e92 recorded native429 as upstream_error and relay reported MCODA_EMPTY_RESPONSE.",
+      "correction": "Client .12 published; backendN source54753f5 and isolated BDYA relay sourcee380a2b staged with HTTP/drain/rollback qualification.",
+      "state": "qualified_pending_deployment_and_live_retest",
+      "evidence": "/home/wodo/.local/state/codali-terminal-deployment/bdya-empty-exact-invocation.json"
+    }
+  ],
+  "diagnosedIncident": {
+    "sessionId": "26a0999c-41d1-4943-8379-78e18efc9a68",
+    "goalId": "80736ecd-fa37-4c4f-857e-661e38b57133",
+    "goalRevision": 2,
+    "planRevision": 5,
+    "status": "active",
+    "activeOwners": [
+      {
+        "id": "steering-2",
+        "attemptId": "85cefcab-fb71-4c25-8f2c-591529e80de1",
+        "requirementIds": [
+          "steering-2"
+        ],
+        "dependsOn": []
+      }
+    ],
+    "symptom": "Repeated work_claim failure without progress after module checks passed.",
+    "evidenceDirectory": "/home/wodo/.local/state/codali-long-workflow-public-ad-raijin-20261027/billing-audit",
+    "diagnosis": "Missing validation receipts in review and an already-active steering attempt prevented claiming a different integration owner. Four module grades did not establish final goal completion.",
+    "recovery": "Inspect canonical active ownership, retain the saved worktree, rerun fresh checks, and verify the actual task/attempt using the corrected client. Preserve failed evidence; never mark completion from test output alone."
+  },
+  "unpublishedCorrections": [],
+  "publishedCorrections": [
+    {
+      "description": "Release provisional terminal token usage for discovery/context/route-observer failures before transport dispatch; persist refund before diagnostic observers.",
+      "validation": "91 focused and1632 full Codali tests pass;3skipped.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
+    },
+    {
+      "description": "Retry only transient read-only catalog/native-capability discovery, at most three attempts; honor cancellation and bounded Retry-After. Never replay inference POST.",
+      "sourceCommit": "cfa90394c47eae00134447027e2194d837aa0e8d",
+      "validation": "1641fulltests pass,3skipped; CI/platform passed.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
+    },
+    {
+      "description": "Continue exact unread source-page cursors and avoid duplicate whole-goal contract/hash payloads without changing canonical requirements or freshness checks.",
+      "validation": "1645fulltests pass,3skipped; both saved failed-workspace probes reject but Suku still misses the explicit error-message defect.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.8"
+    },
+    {
+      "description": "Preserve scalar negative review findings without accepting malformed approvals.",
+      "sourceCommit": "c9d844e",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Prepare a source-attributed specification checklist before inspecting implementation; use configured effort and reviewer output/context limits in both review stages.",
+      "validation": "1689 full Codali tests pass; 3 skipped. Known live review false acceptance and control false rejection remain under investigation.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Review all canonical criteria at whole-goal integration; record fresh full-snapshot proofs for previously verified tasks while retaining original assessments. Reject missing inputs, partial coverage, unfinished tasks and stale revisions.",
+      "validation": "Two pre-fix regressions reproduced; 133 focused and 1689 full tests pass. Frozen AE uses older .7; current long-task confirmation remains open.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Receive and strictly parse terminal review JSON in Codali, retaining model usage and allowing one bounded formatting repair. Classify native structured_output_failed separately from outages; no replay of unknown transport outcomes.",
+      "validation": "1692 full tests and27 additional focused tests passed; known diagnostic I passes4/4 with11 complete canonical receipts. J/K expose separate whole-goal size and attribution failures; no broad qualification.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Prepare bounded source groups while retaining original authority; reassess previously verified tasks at the final snapshot before whole-goal integration, keeping their source requestable without loading every module again. Failed assessments cannot renew prior proofs.",
+      "validation": "Coordinator/assessment chain CI passes. Q passes five scoped reviews but final preparation misattributes overlapping source wording. Indexed-excerpt correction has93 focused tests passing; full suite and R continuation pending. No new whole-workflow completion.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Version the workflow oracle as v5 and detect extra worker dispatch after synchronous throw, waiting for existing work and preserving falsy failures.",
+      "validation": "One pre-fix regression reproduced; 1701 full Codali tests pass, 3 skipped. Known P artifact fails the new independent contract while all 15 public tests pass. Historical frozen evaluation records remain unchanged.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Present every authoritative source as lossless excerpts and resolve model-selected source/index references into exact controller-owned quotations. Preserve strict legacy quote validation, coverage and context bounds.",
+      "validation": "Two regressions reproduced;93 focused and1709 full Codali tests pass (3 skips). Live R validates its three preparation batches; repeated quotations then exceed the complete review context. No final acceptance.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Store each exact checklist quotation once per source, retaining every expected behavior with a quotation reference in the final review payload.",
+      "validation": "One context regression reproduced;1710 full Codali tests and CI/platform pass. Known-workspace S passes final integration at67797/72192 input characters with5 complete canonical receipts. Fresh AF workflows are not started.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12",
+      "publicationNote": "Confirmed included in the verified .12 source; earlier diagnostic validation notes remain historical."
+    },
+    {
+      "description": "Classify explicit native rate_limited responses as bounded capacity errors without replay or fabricated usage. Backend and BDYA relay counterparts remain staged.",
+      "sourceCommit": "d9a86c4f87183fb39a888e92157a6ed6a1a8ae3d",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12"
+    },
+    {
+      "description": "Fit serialized review source-page replies to remaining context and advance cursors only by delivered text.",
+      "sourceCommit": "58e9e09c760cb1b7da0f9b76a8f6d5a45b8fe03b",
+      "validation": "96 focused and1727 full Codali tests pass,3optional skips.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.12"
+    },
+    {
+      "description": "Persist each attempted tool call before permission and execution so restart cannot reset the shared tool budget.",
+      "sourceCommit": "749089c21e88fa896788e708c76e6c97f47e626f",
+      "validation": "80focused and1729full tests pass; old .11/current readers retain successful and denied tool counts in four independent compatibility cases.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.13"
+    },
+    {
+      "description": "Allow later narrow reviews to page freshly assessed source as read-only context; retain snapshot checks, attribution and rejection of unassessed files.",
+      "sourceCommit": "977e6325ed57abe0a2b91a26b6c14fe6e3de2f3e",
+      "validation": "Red regression reproduced;103focused and1731full Codali tests pass,3optional skips.",
+      "candidatePublished": true,
+      "publishedVersion": "0.1.135-codali.13"
+    }
+  ],
+  "deployedEnvironment": {
+    "backend": "N",
+    "backendSource": "54753f5a22a9b93d11e2671b37e8350a75ba33b0",
+    "node": "S",
+    "nodeVersion": "0.1.135-codali.18",
+    "globalStableCli": "0.1.134",
+    "plannedNode": null,
+    "stagedBackend": null,
+    "canaryStarted": false,
+    "backendRollout": "n2 request-preserving rollback",
+    "bdyaCapacityPatch": "deployed v2",
+    "bdyaGatewaySourceSha256": "ec2bbd1408017730233d18bc8e8e7cd81fab196a5b2e3e6fa4f73fe51a706be4",
+    "nodeSource": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "nodeRuntimePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028f",
+    "nodeActivationEvidence": [
+      "/home/wodo/.local/state/codali-terminal-deployment/node-upgrade-s-raijin/activation.json",
+      "/home/wodo/.local/state/codali-terminal-deployment/node-upgrade-s-suku/activation.json"
+    ],
+    "nodeQualificationEvidence": [
+      "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/raijin-postdeploy-matrix-node-s.json",
+      "/home/wodo/.local/state/codali-terminal-deployment/node-s-orchestration/suku-postdeploy-matrix-node-s.json"
+    ]
+  },
+  "failedCandidate": {
+    "version": "0.1.135-codali.14",
+    "status": "not_published",
+    "changes": "Required full interactive TUI, startup cancellation, safe queue/steer/resume, real terminal and installed artifact tests",
+    "sourceCommit": "670298a4a6f11506a3b771a3cd56cbe6d7186e4f",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40718355640",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40720612788",
+    "reason": "Release tests found missing TUI dependency in the separately vendored mSwarm runtime. Failed tag.14 retained; no public packages published by this run."
+  },
+  "supersededCandidates": [
+    {
+      "version": "0.1.135-codali.15",
+      "status": "superseded_before_publication",
+      "changes": "Full TUI plus aligned mSwarm vendored-runtime dependencies, build-time dependency contract and embedded-runtime installed probe",
+      "sourceCommit": "53d4a09e3c296c07d59e825d6d27e35b06c854f4",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40724251209",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028a",
+      "qualification": [
+        "full local monorepo",
+        "all six release packaging jobs",
+        "local clean install",
+        "Raijin/Suku installed PTYs",
+        "actual SSH TUI",
+        "six native candidate checks per host"
+      ],
+      "reason": "Followup .16 includes the completed terminal command additions; retain private .15 preview and all partial qualification evidence."
+    },
+    {
+      "version": "0.1.135-codali.16",
+      "status": "held_intent_orchestration_failure",
+      "sourceCommit": "0108a366408f6c05ee73da2797aaf590e7644e56",
+      "changes": "Fresh sessions, cancellation fences, CLI aliases, plan diff, verified artifact actions and live-entitled shared model selection on top of the full TUI",
+      "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862067",
+      "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40734862477",
+      "qualification": [
+        "Linux Node20/22 platform checks",
+        "local clean install including11expandedPTYflows",
+        "General CI40734862477 Linuxfullmonorepo andWindowscompatibility passed",
+        "All six standalone platform checks completed successfully before .16 was superseded for greeting failure"
+      ],
+      "privatePreviewVersion": "superseded by .17",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40736246861",
+      "releaseDisposition": "Release40736246861cancelled before publishing after reproduced119088-token greeting failure; .16tag remains immutable."
+    },
+    {
+      "version": "0.1.135-codali.17",
+      "sourceCommit": "00e087c8832d29f10eee99e28631ed50e99163d8",
+      "status": "superseded_before_publication",
+      "privatePreviewVersion": "0.1.135-codali.17",
+      "privateCliCommand": "~/.local/bin/codali-next",
+      "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028c",
+      "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40747773000",
+      "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40747773238",
+      "qualification": [
+        "Exact local ten-tarball clean installation including installed PTYs/nativeSQLite/Docdexruntime pins",
+        "Live greeting478tokens/onecall/zero tools/3265ms",
+        "Six additional installed conversation/history/inspection prompts pass; file unchanged",
+        "Local repeated compressed artifacts match; CI decompressed tar contents identical but gzip containers differ",
+        "General CI40747773238 passed full Linux suite and Windows compatibility; shared config validated with both .15 and .17 readers"
+      ],
+      "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease17-preview-activation.json",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40749117627",
+      "reason": "Inspection ignored custom interaction.answerBinding; reproduced and corrected in .18. .17 preview remains available with default lead.",
+      "releaseDisposition": "Release40749117627 cancelled before publication; immutable tag retained"
+    },
+    {
+      "version": "0.1.135-codali.13",
+      "sourceCommit": "1eb315d64236834c6a3def67f4313a13feebf4fc",
+      "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40499581269",
+      "publishedChannel": "next",
+      "stableVersion": "0.1.134",
+      "artifactVerification": "/home/wodo/.local/state/codali-terminal-deployment/prerelease13-registry-artifacts/verification.json",
+      "status": "published_superseded_by_18"
+    }
+  ],
+  "publishedCandidateQualification": {
+    "version": "0.1.135-codali.18",
+    "status": "published_verified_and_node_deployed",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7",
+    "privatePreviewVersion": "0.1.135-codali.18",
+    "privateCliCommand": "~/.local/bin/codali-next",
+    "changes": "Honor configured answering binding for read-only inspection; preserve all .17 interaction/TUI improvements",
+    "qualification": [
+      "Regression reproduces .17 inspection binding failure",
+      "All14interactiontests pass after correction",
+      "Allworkspacesbuild",
+      "Full Codali package1791passed/3optional skips/0failures",
+      "Final .18exactten-tarballinstall30checks pass,9092files/18links frozen",
+      "Installed hello480tokens/onecall/zero tools/2653ms; actualcustomSukuanswerbinding check passes",
+      "All14isolated S/.18drain/rollbackfailurechecks passed before activation.",
+      "All ten npm registry tarballs match exact CI release bytes; both hosts run S/.18 with six public route checks and four native context refusal checks passed."
+    ],
+    "privatePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028e",
+    "platformRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167133",
+    "ciRun": "https://github.com/bekirdag/mcoda/actions/runs/40752167290",
+    "releaseRun": "https://github.com/bekirdag/mcoda/actions/runs/40752501777",
+    "activationEvidence": "/home/wodo/.local/state/codali-terminal-deployment/prerelease18-preview-activation.json",
+    "platformQualification": "All six exact-artifact installation jobs in release 40752501777 passed. Duplicate standalone 40752167133 was cancelled after Linux checks; general CI40752167290 passed.",
+    "runtimePrefix": "/home/wodo/.local/state/codali-terminal-deployment/planning-client-20261028f"
+  },
+  "publishedTerminalFollowups": {
+    "sourceCommit": "f944dbd",
+    "changes": [
+      "fresh-session /new and /clear",
+      "responsive /stop and /exit with cancellation fencing",
+      "documented output/permission/config-validation syntax",
+      "explicit goal amendments without inference",
+      "saved plan revision diff without inference",
+      "verified media export/open and owned-job cancellation",
+      "live-entitled shared model selection with preview and explicit persistence"
+    ],
+    "validation": [
+      "172 affected regression tests after media actions",
+      "8 focused artifact tests",
+      "3 model-selection tests",
+      "11 expanded PTY flows"
+    ],
+    "includedInCandidate15": false,
+    "publishedVersion": "0.1.135-codali.18"
+  },
+  "publishedInteractionCorrection": {
+    "version": "0.1.135-codali.18",
+    "status": "implemented_tested_published",
+    "report": "docs/codali-interaction-evaluation.json",
+    "releaseReady": false,
+    "installedPreview": "0.1.135-codali.18",
+    "sourceCommit": "e60d6235f16a31e5f7160c0d260626f9ba4533f7"
+  }
+}

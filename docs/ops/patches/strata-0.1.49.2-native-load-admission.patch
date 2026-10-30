@@ -1,0 +1,41 @@
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -435,0 +436,4 @@
++class HostLoadRefused(EngineDied):
++    """Host admission already waited or retained an unresolved lease; do not retry loading."""
++
++
+@@ -989,0 +994,30 @@
++        if lazy or not (env or {}).get("MCODA_NATIVE_LOAD_POLICY"):
++            self._initialize(exe, args, cwd, log, env, lazy, cpus, _attempt)
++            return
++        from serve.native_load_guard import native_load_guard, NativeLoadError
++        try:
++            with native_load_guard(env) as lease:
++                try:
++                    self._initialize(exe, args, cwd, log, env, lazy, cpus, _attempt)
++                except BaseException:
++                    proc = getattr(self, "proc", None)
++                    if proc is not None and proc.poll() is None:
++                        try:
++                            self.close()
++                        except Exception:
++                            pass
++                    if proc is None or proc.poll() is not None:
++                        lease.confirm_stopped()
++                    raise
++                lease.confirm_ready()
++        except NativeLoadError as error:
++            proc = getattr(self, "proc", None)
++            if proc is not None and proc.poll() is None:
++                try:
++                    self.close()
++                except Exception:
++                    pass
++            raise HostLoadRefused(str(error)) from error
++
++    def _initialize(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
++                    env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
+@@ -1320,0 +1355,2 @@
++                except HostLoadRefused:
++                    raise

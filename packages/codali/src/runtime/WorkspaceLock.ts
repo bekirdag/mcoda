@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withStateLock } from "../session/AtomicState.js";
 
 export interface WorkspaceLockInfo {
   runId: string;
@@ -83,15 +84,16 @@ export class WorkspaceLock {
   }
 
   private async shouldClearExisting(info: WorkspaceLockInfo): Promise<boolean> {
-    if (this.isStale(info)) return true;
     const processAlive = this.isProcessAlive(info);
     if (processAlive === false) return true;
     if (processAlive === true) return false;
+    if (this.isStale(info) && this.isSameHost(info)) return this.hasTerminalRunLog(info.runId);
     return this.hasTerminalRunLog(info.runId);
   }
 
   async acquire(): Promise<void> {
     await fs.mkdir(path.dirname(this.lockPath), { recursive: true });
+    await withStateLock(`${this.lockPath}.transaction`, async () => {
     const existing = await this.readLock();
     if (existing && !(await this.shouldClearExisting(existing))) {
       throw new Error(`Workspace is locked by run ${existing.runId}`);
@@ -105,8 +107,9 @@ export class WorkspaceLock {
       pid: process.pid,
       hostname: this.hostname,
     };
-    await fs.writeFile(this.lockPath, JSON.stringify(payload, null, 2), "utf8");
+    await fs.writeFile(this.lockPath, JSON.stringify(payload, null, 2), { encoding: "utf8", flag: "wx", mode: 0o600 });
     this.acquired = true;
+    });
   }
 
   async release(): Promise<void> {

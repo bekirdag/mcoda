@@ -1,6 +1,263 @@
 # @mcoda/codali
 
-Standalone tool-runner adapter for mcoda. codali runs a tool loop that can edit the repo directly via built-in tools, with optional streaming output and pre-flight cost estimates.
+Codali is mcoda's terminal coding agent and embeddable tool runtime.
+
+## Terminal quick start
+
+```sh
+codali login                 # masked mSwarm API-key entry
+codali setup                 # discover authorized model routes and prepare private Docdex
+codali doctor
+codali chat --permissions ask --effort medium
+```
+
+Interactive `codali` and `codali chat` open the terminal UI with a scrollable
+conversation, multiline editor, tool cards, approval dialogs and persistent
+model, effort, permission and usage status. `codali resume SESSION_ID` restores
+the conversation and waits for input; `/continue` resumes execution. JSONL and
+noninteractive resume retain their automation behavior.
+
+| Key | Action |
+| --- | --- |
+| Enter | Send, or queue a message while work is running |
+| Alt+Enter or Ctrl+J | Insert a newline |
+| Ctrl+S | Submit a correction; cancel current work and apply it at the next safe checkpoint |
+| Ctrl+P / Ctrl+R | Search commands / input history |
+| Tab | Complete a slash command or an `@workspace/path` reference |
+| Page Up / Page Down | Scroll conversation or inspect a dialog |
+| Ctrl+O | Expand or collapse tool output |
+| Escape | Close a view, deny an approval, or cancel active work |
+| Ctrl+C | Cancel work; press again within one second to exit |
+| Ctrl+D | Exit with an empty editor |
+
+Approvals start on **Deny**. Use Left/Right to choose, then Enter to confirm;
+Page Up/Down exposes the complete arguments. Pasted text remains editable and
+cannot select an approval. Use `NO_COLOR=1` for a monochrome TUI or `--plain`
+for a line-oriented interface. Redirected output and `TERM=dumb` use plain mode.
+The UI restores terminal modes and the original screen when it closes.
+
+For automation, inject `MCODA_MSWARM_API_KEY` through your secret manager, or pipe
+the key to `codali login --stdin`. Keys are never command-line arguments. Existing
+encrypted mcoda credentials are reused when their service origin matches.
+`codali logout` removes the terminal credential and disables that fallback;
+an explicitly supplied environment credential still takes precedence.
+
+```sh
+codali exec 'Fix the failing parser test and verify the fix' \
+  --permissions workspace --effort high --json
+codali sessions
+codali resume SESSION_ID --permissions workspace --effort high --json
+codali inspect SESSION_ID
+```
+
+The terminal uses a versioned orchestration file: `--config PATH`, then
+`CODALI_ORCHESTRATION_CONFIG`, then `~/.codali/orchestration.json`. Repository files
+cannot silently select credential destinations or change terminal permissions.
+See [the configuration reference](ORCHESTRATION.md) and the packaged `config/`
+examples. `setup` never overwrites an existing profile. `/config reload` applies
+an edited, validated profile between turns; submitted media jobs keep their
+original configuration. All optional model roles must be explicitly bound or
+disabled. Setup selects only catalog routes that identify their backend as Strata
+for large-model work; it does not choose a paid fallback.
+
+Setup enables embeddings only when the catalog declares a pinned model digest,
+dimensions, query/document prefixes, normalization and pooling. Replicas must
+match that entire contract. When embeddings are available, setup installs the
+release-pinned Docdex binary in `~/.local/state/codali/runtimes/docdex/`, verifies
+archive and binary checksums, and checks managed-client capabilities. It records
+the binary path and checksum in the profile; sessions verify the checksum before
+launching a private daemon. `doctor` checks this configured runtime.
+
+For a locally built qualified binary, use `codali setup --docdex-binary /absolute/path/docdexd`.
+Development builds without pinned release artifacts require this option. Setup
+does not initialize the global daemon or overwrite its configuration. A failed
+runtime qualification leaves the new profile unwritten; previous installed
+runtime versions remain available for existing profiles.
+
+| Command | Purpose |
+| --- | --- |
+| `/status`, `/usage` | Current execution state, reconciled accounting and server limits |
+| `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
+| `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
+| `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
+| `/goal amend TEXT` | Record an explicit goal amendment between turns, preserving the original objective; execution waits for `/continue` |
+| `/model`, `/models`, `/config [reload\|validate PATH\|diff PATH]` | Inspect routes or validate/compare a proposed configuration before reloading |
+| `/plan [show\|history\|edit TEXT\|mode plan\|execute]` | Inspect or revise the plan; execute mode uses the approval policy |
+| `/plan diff [FROM [TO]]` | Review changed task scope, dependencies and phases between saved revisions; defaults to the previous and current plan |
+| `/tools`, `/mcp`, `/docdex` | Inspect available tools, connectors and indexing configuration |
+| `/context`, `/diff`, `/review` | Inspect retained context/changes or request a new review task |
+| `/checkpoint`, `/compact` | Save progress or reduce conversation context while preserving canonical work state |
+| `/stop`, `/cancel`, `/continue`, `/steer TEXT` | Stop the turn and discard queued instructions, continue, or apply an explicit goal amendment |
+| `/sessions`, `/resume ID`, `/fork`, `/new [TEXT]`, `/clear [TEXT]` | Start a fresh prompt or objective without deleting previous sessions; forks require fresh verification and reset grants |
+| `/exit`, `/quit` | Cancel owned work, discard queued instructions and close after cleanup |
+| `/artifacts` | Inspect durable image, audio and video jobs and artifact checksums |
+| `/model select BINDING MODEL_ID [--save]` | Preview an entitled configured model; `--save` persists the shared binding and activates it between turns. Compatible embedding replicas preserve the index; another vector space requires a separate configuration, fresh session and rebuild |
+| `/artifacts export JOB_ID PATH` | Copy a verified result to a new workspace file, subject to permissions; existing files are preserved |
+| `/artifacts open JOB_ID` | Verify the result and launch the Linux/macOS desktop viewer; over SSH, export and download it if no display is available |
+| `/tasks media JOB_ID`, `/tasks cancel JOB_ID` | Inspect an owned media job or request cancellation; the worker must confirm the final outcome |
+| `/reconcile ID success\|failed NOTE` | Record an observed outcome for an interrupted tool invocation |
+| `/export`, `/retention DAYS`, `/delete-session ID` | Export redacted events, preview retention candidates, or delete an inactive session |
+
+Between turns, `/usage` reconciles up to 16 model requests with authenticated
+mSwarm receipts. Repeat it if `remaining` is nonzero. Durable request IDs join
+local calls to server attempts; successful reconciliation is replay-safe across
+restarts. Missing, active, truncated or unreported receipts remain unresolved,
+and an incomplete legacy ledger cannot reduce the shared budget. Reconciliation
+requires the receipt endpoint and the original configured provider/key; older
+servers return an explicit unavailable result. During a turn it is deferred.
+Accounting settlement does not mark the coding task complete or replay inference.
+
+### Persistent instructions and Docdex
+
+Use `/skills` to inspect available local skills. Codali loads `SKILL.md` metadata
+from workspace and user skill directories, then reads instructions/references
+only when needed. The bundled planning skill records dependencies and acceptance
+criteria; imported Mac skills still require their declared platform and tools.
+See [skills and native tools](ORCHESTRATION.md#native-tools-skills-and-bounded-context)
+for directory configuration, browser setup and permission behavior.
+
+The TUI renders Markdown tables as aligned boxes or labeled fields on narrow
+screens. Near a model's context limit, Codali abbreviates older assistant/tool
+content, preserves user constraints, and retains recoverable private originals.
+
+The terminal loads the packaged [Codali operating guide](config/AGENTS.md),
+including the actual Docdex tool argument names, repository scope, evidence
+requirements and permission boundaries. A greeting does not start repository
+indexing. Repository inspection starts the private Docdex runtime lazily and
+exposes additional read tools when needed.
+
+Add your own instructions in these files, listed from general defaults to the
+most specific overrides:
+
+1. `~/.codali/AGENTS.md`: your preferences across workspaces.
+2. `<workspace>/.codali/instructions.md`: shared workspace guidance.
+3. `<workspace>/AGENTS.md` and `AGENTS.md` files along the focused file's directory
+   ancestry: repository and component guidance.
+4. `<workspace>/.codali/local.md`: local workspace overrides.
+
+For example, a repository `AGENTS.md` can specify the test command, component
+boundaries and documentation conventions. Keep it concise and link supporting
+documents. Each file is limited to 64 KiB; the combined formatted instruction
+bundle is limited to 24,000 characters and 64 sources. Oversized or unreadable
+instructions produce an explicit error rather than being silently truncated.
+Symlinks must stay inside the permitted instruction directory. Source hashes
+are retained with the session's instruction metadata.
+
+Instructions guide model behavior; the host still enforces permissions. A file
+cannot grant shell networking, writes or access to another repository. Docdex
+memory writes and web research require their corresponding permissions. If
+Docdex is unavailable, Codali must report the limitation and use permitted file
+reads without claiming that structural analysis succeeded.
+
+The [1,000-prompt benchmark](../../docs/benchmarks/codali-1000/README.md) compares
+the real controller with direct and tool-equipped model baselines. Its
+[validation selection](../../docs/benchmarks/codali-1000/validation-selection.json)
+records quality, critical failures, latency and tokens. The selected experimental
+profile is not a production recommendation: validation found critical failures,
+and the full comparison is still in progress.
+
+`plan` permits reads; `ask` asks before side effects; `workspace` permits scoped
+file edits and isolated shell commands. Web research, memory writes and media
+generation have separate approval categories. Automation can explicitly enable
+them with `--allow-web`, `--allow-memory` and `--allow-media`. Shell networking is
+disabled unless `--allow-network` is supplied. Noninteractive requests for approval
+are denied. Session grants match the exact tool arguments and remain subordinate
+to the current policy. Linux execution requires bubblewrap; run `doctor` to check
+the available platform executor.
+
+The executor discovers installed Node/package-manager, Python and Rust tools from
+the host's trusted PATH. Private Python standard libraries and the selected Rust
+toolchain libraries are exposed read-only; Cargo and Python caches use a temporary
+private home. Rustup proxies resolve to an already-installed host toolchain (the
+host's `RUSTUP_TOOLCHAIN` or default), without repository-triggered downloads.
+On macOS, the selected installed Xcode developer tools and SDK are also read-only.
+Use `doctor` to inspect selected executable paths. Dependency installation still
+requires network permission, and build outputs must fit the task's write scope.
+
+### Deterministic and evidence tools (development)
+
+The development client exposes direct Decimal.js arithmetic, math.js numerical
+operations, Ajv JSON Schema validation, SymPy algebra/calculus, Z3 constraints,
+DuckDB queries and Polars transforms through tool discovery. These operations
+run in bounded, offline workers over supplied data. Library versions and input
+hashes accompany results. Decimal inputs use strings; floating-point results
+remain approximations. A solver reporting `unknown` is not a proof.
+
+Install and verify the Python tools explicitly on the host:
+
+```sh
+codali tools install
+codali tools check --json
+codali doctor
+```
+
+From a source checkout, use `node packages/codali/dist/cli.js` in place of
+`codali` after building. `tools check` uses fixed independent values with no
+model calls; it reports each tool separately and exits nonzero on any failure.
+`doctor` reports installation metadata, isolation, the browser executable and
+local TNL credential status. Credential metadata alone does not verify server
+access or expiry enforcement. The lower-level installer remains available as
+`config/deterministic/install-python.mjs` inside the package.
+The default private environment is
+`~/.local/state/codali/tool-runtimes/python-v1`; the host can override it with
+`CODALI_TOOL_PYTHON_ROOT`. A missing or incompatible runtime produces an explicit
+tool error. The model cannot choose runtime paths or install dependencies through
+these tools. JavaScript verification and Vitest execute supplied checks in the
+existing isolated executor. Passing model-authored checks is useful evidence,
+but does not establish independent test coverage.
+
+`extract_entities` uses the locally served ADES extractor for bounded entity
+hints. Confidence scores and canonical links can be wrong; the original query
+and source evidence remain authoritative. Docdex supplies repository and web
+retrieval, structural analysis, memory and additional versioned capabilities.
+Optional daemon features can be unavailable even when their schemas are known.
+
+Browser navigation uses the npm `browser-use` direct session API in a temporary
+worker with a restricted environment. Codali owns Chrome and closes it on
+cancellation; workspace `.env` files and model-service credentials are not
+loaded by the browser worker. New setup configurations select local specialist
+image/audio/video backends and pin their advertised identity. Missing local
+routes remain unavailable; setup does not substitute a text model or cloud route.
+
+`tnl_read` retrieves source-linked news, entity/impact relationships and data
+catalog records from The Neural Ledger. Configure its host credential at
+`~/.config/codali/credentials/tnl.json` with `apiKey`, `baseUrl` and `expiresAt`,
+owned by the current user with mode `0600`. The key must have a real server-side
+expiry as well as this local expiry. Never put it in a prompt or repository.
+`CODALI_TNL_CREDENTIAL_FILE` can select another private host file. Requests are
+GET-only and restricted to the credential's origin; web permission still
+applies. Retrieved dates, sources and inferred relationships require evaluation,
+and an outage or empty response must not be presented as an established fact.
+
+These additions remain under qualification and are not present in the older
+installed `.26` preview merely because this source documentation is available.
+
+Each task is tied to the original goal and a bounded path scope. A successful tool
+call is not task completion: changed code needs recorded validation and separate
+review, and the goal gate checks requirement coverage, current file hashes and
+unresolved operations. Interruptions preserve checkpoints and uncertain outcomes;
+they do not trigger an automatic retry of a side effect. Session data lives under
+`~/.local/state/codali/workspaces/`, outside the editable repository. Media workers
+survive terminal disconnects and keep binary artifacts out of model transcripts.
+
+`--json` emits JSONL events; `--output-format jsonl` is its explicit alias
+(`text` selects readable output).
+`--permission-profile` aliases `--permissions`. Validate a shared configuration
+without inference with `codali config validate --file PATH`.
+
+Stable event fields are `schemaVersion`, `type` and `data`; session events also
+carry `id`, `sessionId`, `sequence` and `at`. `turn_result`
+contains `completed`; consumers must check it. `command_failed` covers command
+failures. Exit codes are 0 for verified completion (or a requested planning turn),
+1 for errors, 2 for open/blocked work, and 130 for cancellation. `--plain` disables
+terminal editing escapes and token streaming. Ctrl-C requests cancellation;
+a second Ctrl-C closes the terminal after cleanup.
+
+## Legacy runtime commands
+
+The following commands preserve the previous provider/configuration contract.
+They do not automatically inherit the terminal orchestration profile. Embedded
+hosts opt in with the trusted `orchestration.resolved` runtime input.
 
 ## Usage
 
@@ -109,3 +366,7 @@ codali writes JSONL logs under `logs/codali/<runId>.jsonl`, rooted in the global
 
 ## Docdex integration
 codali calls docdex over HTTP for search/snippets/graphs and uses MCP for symbols/AST/memory. Ensure `docdexd` is running and `DOCDEX_HTTP_BASE_URL` is set if needed.
+
+Local document tools support PDF, Word (`.docx`), Excel (`.xlsx`) and UTF-8 Markdown. Install their separate pinned runtime with `codali tools install --documents`, then run `codali tools check --documents --json`. These host commands do not require a model or a tenant connection. The tool names are `document_read` and `document_create`; creation uses typed text blocks or literal spreadsheet rows, requires workspace write permission, and never overwrites an existing file.
+
+The offline worker receives only copied input and returns checksums, library versions, bounded text/tables and explicit truncation. Formula expressions are not calculated values; formula-looking strings supplied to creation remain literal text. PDF extraction does not perform OCR, and document reading does not claim complete interpretation of images, headers, tracked changes or complex layouts. PDF creation uses a bundled font and fails on unsupported characters; DOCX/Markdown preserve broader Unicode. Image, audio and video generation use the separately configured local specialist models.

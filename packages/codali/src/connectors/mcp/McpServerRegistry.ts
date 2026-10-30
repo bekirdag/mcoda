@@ -54,22 +54,35 @@ class Semaphore {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
 
-  constructor(private readonly limit: number) {}
+  constructor(private readonly limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("MCP concurrency limit must be a positive integer");
+  }
 
-  async acquire(): Promise<() => void> {
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
     if (this.active < this.limit) {
       this.active += 1;
-      return () => this.release();
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        const grant = () => { signal?.removeEventListener("abort", abort); resolve(); };
+        const abort = () => {
+          const index = this.waiting.indexOf(grant);
+          if (index < 0) return;
+          this.waiting.splice(index, 1); reject(signal?.reason ?? new Error("MCP wait aborted"));
+        };
+        this.waiting.push(grant);
+        signal?.addEventListener("abort", abort, { once: true });
+      });
     }
-    await new Promise<void>((resolve) => this.waiting.push(resolve));
-    this.active += 1;
-    return () => this.release();
+    let released = false;
+    return () => { if (!released) { released = true; this.release(); } };
   }
 
   private release(): void {
-    this.active -= 1;
     const next = this.waiting.shift();
-    if (next) next();
+    // Transfer the occupied slot before waking its waiter; a new caller cannot
+    // steal it between promise resolution and the waiter's continuation.
+    if (next) next(); else this.active -= 1;
   }
 }
 
@@ -158,7 +171,7 @@ export class McpServerRegistry {
         });
 
         return mcpToolsToDefinitions(tools, {
-          client: this.wrapClient(client),
+          client: this.wrapClient(client, definition.readOnly === true),
           server: definition.name,
           capability: definition.name,
           // Operator declaration only. Claiming read-only for an unvetted
@@ -176,29 +189,31 @@ export class McpServerRegistry {
 
   /**
    * Wraps a client so every tool call is bounded by the concurrency budget and
-   * retried once on a transport failure. Retrying is safe here because Phase 2
-   * connectors are read-only.
+   * retried once on a transport failure only for operator-declared read-only
+   * servers. A lost write response leaves an uncertain remote outcome.
    */
-  private wrapClient(client: McpClient): McpClient {
+  private wrapClient(client: McpClient, readOnly: boolean): McpClient {
     const semaphore = this.semaphore;
     const wrapped: McpClient = Object.create(client) as McpClient;
-    wrapped.callTool = async (name: string, args: unknown) => {
-      const release = await semaphore.acquire();
+    wrapped.callTool = async (name: string, args: unknown, signal?: AbortSignal) => {
+      const release = await semaphore.acquire(signal);
       try {
+        signal?.throwIfAborted();
         let lastError: unknown;
-        for (let attempt = 1; attempt <= MAX_CALL_ATTEMPTS; attempt += 1) {
+        const attempts = readOnly ? MAX_CALL_ATTEMPTS : 1;
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
           try {
-            return await client.callTool(name, args);
+            return await client.callTool(name, args, signal);
           } catch (error) {
             lastError = error;
             const retryable = error instanceof McpClientError && error.retryable;
-            if (!retryable || attempt === MAX_CALL_ATTEMPTS) break;
+            if (!retryable || signal?.aborted || attempt === attempts) break;
           }
         }
         throw new ToolExecutionError(
           "tool_execution_failed",
           lastError instanceof Error ? lastError.message : String(lastError),
-          { retryable: false, details: { tool: name } },
+          { retryable: false, details: { tool: name, uncertainOutcome: !readOnly } },
         );
       } finally {
         release();

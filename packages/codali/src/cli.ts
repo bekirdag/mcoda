@@ -11,9 +11,16 @@ import { FeedbackCommand } from "./cli/FeedbackCommand.js";
 import { EvalCommand } from "./cli/EvalCommand.js";
 import { DatasetCommand } from "./cli/DatasetCommand.js";
 import { ImprovementCommand } from "./cli/ImprovementCommand.js";
+import { TerminalCommand, terminalDoctor } from "./cli/TerminalCommand.js";
 
 const HELP_TEXT =
-  "Usage: codali ask \"<question>\" [--trace] [--json] [--workspace-root <path>]\n" +
+  "Usage: codali [chat] [prompt] [--effort low|medium|high|max] [--permissions plan|ask|workspace]\n" +
+  "   or: codali exec <prompt> [--json] [--config <path>]\n" +
+  "   or: codali exec <prompt> --output-format jsonl --permission-profile workspace\n" +
+  "   or: codali config validate --file <path>\n" +
+  "   or: codali setup | login [--stdin] | logout | auth status\n" +
+  "   or: codali sessions | resume <id> | inspect <id>\n" +
+  "   or: codali ask \"<question>\" [--trace] [--json] [--workspace-root <path>]\n" +
   "   or: codali tools <list|describe|call|health> [options]\n" +
   "   or: codali auth <microsoft>\n" +
   "   or: codali serve [--port <n>] [--api-key <key>]\n" +
@@ -85,6 +92,7 @@ const printDoctor = (): void => {
 };
 
 export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<void> => {
+  if (argv.length === 0 && process.stdin.isTTY) { await TerminalCommand.run(["chat"]); return; }
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {
     // eslint-disable-next-line no-console
     console.log(HELP_TEXT);
@@ -93,16 +101,20 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
 
   const [command, ...rest] = argv;
   if (command === "--version" || command === "-v" || command === "version") {
-    // Keep this lightweight for scaffold phase.
-    // eslint-disable-next-line no-console
-    console.log("dev");
+    const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    console.log(pkg.version);
     return;
   }
 
   if (command === "doctor" || command === "--doctor") {
+    if (rest.includes("--json")) { await TerminalCommand.run(["doctor", ...rest]); return; }
     printDoctor();
+    console.log(JSON.stringify(await terminalDoctor(rest.includes("--config") ? rest[rest.indexOf("--config") + 1] : undefined), null, 2));
     return;
   }
+
+  if (["chat", "exec", "config", "setup", "login", "logout", "sessions", "resume", "status", "inspect", "checkpoint", "amend"].includes(command)) { await TerminalCommand.run(argv); return; }
+  if (["--effort", "--permissions", "--permission-profile", "--output-format", "--config", "--workspace-root", "--plain", "--json", "--stdin"].includes(command)) { await TerminalCommand.run(["chat", ...argv]); return; }
 
   if (command === "ask") {
     await AskCommand.run(rest);
@@ -110,6 +122,7 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
   }
 
   if (command === "auth") {
+    if (rest[0] === "status") { await TerminalCommand.run(["auth-status", ...rest.slice(1)]); return; }
     await AuthCommand.run(rest);
     return;
   }
@@ -149,6 +162,7 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
     return;
   }
 
+  if (!command.startsWith("-")) { await TerminalCommand.run(["chat", ...argv]); return; }
   throw new Error(HELP_TEXT);
 };
 
