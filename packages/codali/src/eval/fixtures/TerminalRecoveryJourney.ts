@@ -24,6 +24,9 @@ const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""),
 /** A scripted fault fixture, deliberately separate from live-model evaluation.
  * Each stage is launched in a fresh OS process by the parent test. */
 export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoot: string, stage: number): Promise<void> {
+  const started = performance.now();
+  const progress = (operation: string) => process.stderr.write(`[recovery stage=${stage} elapsedMs=${Math.round(performance.now() - started)}] ${operation}\n`);
+  progress("initializing controller");
   const events: SessionEvent[] = []; let step = 0; let lastRead: string | undefined;
   let controller!: SessionController;
   const provider: Provider = { name: "scripted-recovery-fixture", supportsToolCalls: true, generate: async request => {
@@ -59,7 +62,7 @@ export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoo
     return call("work_verify", { taskId: task.id, attemptId: task.attemptId, invocationIds: [lastRead], summary: `Read the user's preserved notes and checked the canonical criteria ${task.requirementIds.join(", ")}. This fixture checks controller continuity, not coding quality.` });
   } };
   controller = new SessionController({ workspaceRoot, storageRoot, resolved: { config, hash: orchestrationHash(config), source: "deterministic-fixture" }, provider, docdex: false, permissions: "workspace", effort: "high",
-    onEvent: event => { events.push(event); if (event.type === "tool_receipt") { const receipt = event.data.receipt as { id: string; tool: string; status: string }; if (receipt.tool === "read_file" && receipt.status === "success") lastRead = receipt.id; } },
+    onEvent: event => { events.push(event); if (event.type === "tool_receipt") { const receipt = event.data.receipt as { id: string; tool: string; status: string }; progress(`${receipt.tool}: ${receipt.status}`); if (receipt.tool === "read_file" && receipt.status === "success") lastRead = receipt.id; } },
   });
   const handoffPath = path.join(storageRoot, "journey.json");
   if (stage === 1) await controller.start(objective);
@@ -75,8 +78,10 @@ export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoo
     await controller.steer("Use stable ordering while retaining every prior criterion and the user's notes.");
     assert.throws(() => assertWorkAttempt(controller.state!, "T1", priorAttempt), /Stale/);
   }
+  progress("running canonical work");
   const result = await controller.run();
-  for (let i = 0; i < (stage === 3 ? 1 : 2); i++) await controller.compact();
+  for (let i = 0; i < (stage === 3 ? 1 : 2); i++) { progress(`compacting context ${i + 1}`); await controller.compact(); }
+  progress("checking preserved state");
   const state = controller.state!;
   assert.equal(state.originalObjective, objective); assert.equal(state.requirements.length, stage === 1 ? 12 : 13);
   assert.deepEqual(state.phases, phases); assert.deepEqual(state.tasks.slice(0, 3).map(task => task.requirementIds), tasks.map(task => task.requirementIds));
@@ -98,6 +103,7 @@ export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoo
     assert.equal(JSON.parse(activeWorkContext(state, 16000)).originalObjective, objective);
   }
   await atomicWriteJson(handoffPath, { schemaVersion: 1, sessionId: controller.sessionId, stage, completed: result.completed, goalRevision: state.goalRevision, requirements: state.requirements.length, compactions: state.checkpoints.filter(checkpoint => checkpoint.note.startsWith("Context compacted")).length, usage: controller.usageSnapshot() });
+  progress("handoff persisted");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

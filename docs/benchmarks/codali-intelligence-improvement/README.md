@@ -12,19 +12,19 @@ live TNL access and local image/audio/video generation remain unqualified.
 A frozen adaptive configuration is replaying all original 1,000 questions on
 Codali, raw Qwen and raw Qwen with the same direct tools. These are exposed
 development cases, not a new holdout. An immutable snapshot contains the first
-400 complete three-arm questions (1,200 outcomes), with complete criterion-based
+500 complete three-arm questions (1,500 outcomes), with complete criterion-based
 review and no pending judgments for that cohort:
 
 | Arm | Strict success | Semantic correctness | Tokens | Median / p95 answer time |
 | --- | ---: | ---: | ---: | ---: |
-| Raw Qwen | 322/400 | 335/400 | 168,372 | 7.31 / 17.73 s |
-| Raw Qwen with tools | 319/400 | 333/400 | 635,470 | 8.91 / 27.01 s |
-| Codali adaptive-v3 | 333/400 | 338/400 | 509,324 | 8.99 / 32.28 s |
+| Raw Qwen | 405/500 | 421/500 | 210,631 | 7.56 / 19.59 s |
+| Raw Qwen with tools | 398/500 | 415/500 | 794,937 | 9.00 / 27.22 s |
+| Codali adaptive-v3 | 416/500 | 422/500 | 633,819 | 9.24 / 33.05 s |
 
-Codali's semantic gain over raw Qwen is 0.75 percentage points (family bootstrap
-95% interval −2.75 to +4.50 points), with 3.02× tokens, 1.23× median time and
-1.82× p95 time. It uses 0.80× the tool-enabled baseline's tokens with a 1.25-point
-semantic gain (interval −2.50 to +5.25 points), 1.01× median time and 1.20× p95 time.
+Codali's semantic gain over raw Qwen is 0.20 percentage points (family bootstrap
+95% interval −2.60 to +3.20 points), with 3.01× tokens, 1.22× median time and
+1.69× p95 time. It uses 0.80× the tool-enabled baseline's tokens with a 1.40-point
+semantic gain (interval −2.00 to +5.20 points), 1.03× median time and 1.21× p95 time.
 **This configuration does not meet the intelligence or
 efficiency goal.** Repository inspection is the largest overhead. Raw-direct
 receives the complete text fixtures; that contrast includes retrieval cost
@@ -34,13 +34,15 @@ without replacing failed outcomes.
 
 Reviews were performed by the primary agent with arm/configuration labels
 withheld, not by independent human reviewers. Response text may reveal the arm.
-Some inherited rubrics omit unsupported-claim checks; the new question set must
-include evidence faithfulness explicitly. Timing is observational on a shared
+Some inherited rubrics omit unsupported-claim checks: PR feedback can pass while
+inventing line numbers, a ticket ID or correctness of unseen code. Other retained
+caveats include partial-secret masking and an unverified library API example.
+The new question set must include evidence faithfulness explicitly. Timing is observational on a shared
 host, including concurrent CPU-only build/test/CI activity. Earlier snapshots
-and all original judgments remain retained; the expanded 400-case analysis is
-`full1000-adaptive-v3-partial-analysis-11` in private benchmark state. Codali has
+and all original judgments remain retained; the expanded 500-case analysis is
+`full1000-adaptive-v3-partial-analysis-12` in private benchmark state. Codali has
 six execution failures and one critical failure in this cohort; these remain
-in the denominator. Architecture passes only 7/40 and needs substantive work.
+in the denominator. Architecture passes only 7/50 and needs substantive work.
 An offline first-300 cost audit attributes 293,404 input and 90,205 output tokens
 to Codali, versus 47,274 input and 79,081 output tokens for raw-direct. Repeated
 retrieval context and routine prompt/schema overhead both need reduction.
@@ -91,6 +93,13 @@ describes those names as operations passed through that interface. Its 83 runtim
 regressions pass, including real calculation, permission boundaries and bounded
 markup correction. The effect on Qwen is still unmeasured; the frozen replay and
 all original failures remain unchanged.
+
+The subsequent `4c95026` run passed normal CI and five platform jobs; Intel
+macOS/Node 20 exceeded the recovery fixture's 30-second child-process deadline.
+That failure is retained. The fixture now reports its stage and last tool/context
+operation, with a two-minute limit per stage for its synced state writes. Node
+20/22 focused recovery checks pass locally in about six seconds; current macOS
+qualification is pending. This changes the test allowance, not production limits.
 
 Next: finish the unchanged 1,000-case replay and review, tune from its development
 evidence, then author and freeze 100 new broad workflow questions. Raw Qwen with
