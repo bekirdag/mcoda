@@ -5,13 +5,25 @@ import io
 import json
 import math
 import resource
+import sys
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
-resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
-resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
+def lower_limit(kind, maximum):
+    inherited = resource.getrlimit(kind)
+    bound = min([maximum] + [value for value in inherited if value != resource.RLIM_INFINITY])
+    resource.setrlimit(kind, (bound, bound))
+    return bound
+
+
+# Darwin exposes RLIMIT_AS but does not provide Linux's address-space limit.
+# Keep the supported CPU/file caps and disclose the missing memory cap.
+LIMITS = {
+    "addressSpaceBytes": lower_limit(resource.RLIMIT_AS, 768 * 1024 * 1024) if sys.platform == "linux" else None,
+    "cpuSeconds": lower_limit(resource.RLIMIT_CPU, 10),
+    "fileBytes": lower_limit(resource.RLIMIT_FSIZE, 16 * 1024 * 1024),
+}
 VERSIONS = {name: importlib.metadata.version(name) for name in ["python-docx", "openpyxl", "pypdf", "reportlab", "defusedxml", "charset-normalizer", "et_xmlfile", "lxml", "pillow", "typing_extensions"]}
 MIME = {"md": "text/markdown", "pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
 
@@ -250,6 +262,6 @@ try:
         result = {"format": fmt, "mimeType": MIME[fmt], "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "verifiedStructure": read_document(data, fmt, {"maxChars": 1000, "maxRows": 5, "maxSheets": 2, "maxPages": 2})}
     else:
         raise ValueError("Unknown operation")
-    print(json.dumps({"versions": VERSIONS, **result}, ensure_ascii=False, allow_nan=False))
+    print(json.dumps({"versions": VERSIONS, "resourceLimits": LIMITS, **result}, ensure_ascii=False, allow_nan=False))
 except Exception as error:
     print(json.dumps({"error": str(error)[:1200], "versions": VERSIONS}))

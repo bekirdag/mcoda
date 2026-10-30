@@ -17,7 +17,7 @@ const run = async (source: string, cases = [{ args: [] as unknown[], expected: 3
 test("verification compares actual observations, keeps expected values outside the program, and identifies source", options, async () => {
   const source = "export function solve(x) { return { doubled: x * 2 }; }";
   const result = await run(source, [{ args: [4], expected: { doubled: 8 } }, { args: [-2], expected: { doubled: -4 } }]);
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, result.error?.message || result.output);
   const data = JSON.parse(result.output);
   assert.equal(data.passed, true); assert.equal(data.checks.length, 2);
   assert.match(data.sourceSha256, /^[a-f0-9]{64}$/); assert.match(data.scope, /Only the supplied cases/);
@@ -30,6 +30,15 @@ test("verification detects mutation and uses fresh module state for each case", 
   assert.equal(JSON.parse(mutating.output).passed, false); assert.match(mutating.output, /mutated/);
   const fresh = await run("let n=0; export function solve() { return ++n; }", [{ args: [], expected: 1 }, { args: [], expected: 1 }]);
   assert.equal(JSON.parse(fresh.output).passed, true);
+});
+
+test("module promise queues settle while guest microtasks remain bounded", options, async () => {
+  const settled = await run("await Promise.resolve(); export function solve(){return 3}");
+  assert.equal(settled.ok, true, settled.error?.message || settled.output);
+  assert.equal(JSON.parse(settled.output).passed, true);
+  const runaway = await run("Promise.resolve().then(()=>{while(true){}}); export function solve(){return 3}");
+  assert.equal(runaway.ok, true, runaway.error?.message || runaway.output);
+  assert.equal(JSON.parse(runaway.output).passed, false);
 });
 
 test("verification rejects non-JSON outputs instead of accepting lossy JSON coercion", options, async () => {

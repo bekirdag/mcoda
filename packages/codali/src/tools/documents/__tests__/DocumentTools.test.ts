@@ -29,7 +29,11 @@ test("real Markdown, PDF and DOCX files preserve text/tables and bind exact byte
     const result = await tools.execute("document_create", { path: `report.${format}`, format, title: "Test report", blocks },
       { workspaceRoot: root, allowedWritePaths: [`report.${format}`], recordTouchedFile: file => touched.push(file) });
     assert.equal(result.ok, true, result.error?.message || result.output);
-    const data = result.data as { bytes: number; sha256: string; versions: Record<string, string> };
+    const data = result.data as { bytes: number; sha256: string; versions: Record<string, string>; resourceLimits: { addressSpaceBytes: number | null; cpuSeconds: number; fileBytes: number } };
+    if (process.platform === "linux") assert.ok(data.resourceLimits.addressSpaceBytes! > 0 && data.resourceLimits.addressSpaceBytes! <= 768 * 1024 * 1024);
+    else assert.equal(data.resourceLimits.addressSpaceBytes, null);
+    assert.ok(data.resourceLimits.cpuSeconds > 0 && data.resourceLimits.cpuSeconds <= 10);
+    assert.ok(data.resourceLimits.fileBytes > 0 && data.resourceLimits.fileBytes <= 16 * 1024 * 1024);
     const file = await fs.readFile(path.join(root, `report.${format}`));
     assert.equal(data.bytes, file.length); assert.equal(data.sha256, createHash("sha256").update(file).digest("hex"));
     assert.deepEqual(touched, [`report.${format}`]);

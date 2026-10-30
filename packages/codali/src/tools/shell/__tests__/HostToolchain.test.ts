@@ -39,13 +39,13 @@ test("isolated user-installed tools cannot read neighboring files, inherit secre
     await fs.writeFile(path.join(tool, "bin", "pnpm.cjs"), `#!/usr/bin/env node
 const fs=require('fs');
 if(process.argv[2]==='write') fs.writeFileSync(__filename,'changed');
-else console.log(JSON.stringify({visible:fs.existsSync(process.argv[2]),secret:process.env.MCODA_MSWARM_API_KEY??null,tool:true}));
+else { let readable=false; try { fs.readFileSync(process.argv[2]); readable=true; } catch {} console.log(JSON.stringify({readable,secret:process.env.MCODA_MSWARM_API_KEY??null,tool:true})); }
 `, { mode: 0o755 });
     await fs.symlink("pnpm.cjs", path.join(tool, "bin", "pnpm"));
     process.env.PATH = `${tool}/bin:/usr/bin:/bin`; process.env.MCODA_MSWARM_API_KEY = "fixture-secret-must-not-inherit";
     const execute = createIsolatedExecutor({ status }); const context = { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 };
     const output = await execute("pnpm", [path.join(installation, "private.txt")], context);
-    assert.deepEqual(JSON.parse(output.output), { visible: false, secret: null, tool: true });
+    assert.deepEqual(JSON.parse(output.output), { readable: false, secret: null, tool: true });
     await assert.rejects(execute("pnpm", ["write"], context), /read-only|EROFS|EPERM|permission/i);
     assert.match(await fs.readFile(path.join(tool, "bin", "pnpm.cjs"), "utf8"), /tool:true/);
   } finally {

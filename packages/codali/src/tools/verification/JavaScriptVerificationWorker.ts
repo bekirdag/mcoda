@@ -56,7 +56,17 @@ for (const args of input.inputs) {
     const module = new vm.SourceTextModule(input.source, { context, identifier: "submission.mjs" });
     // Reject imports without passing a host Error/function into the guest realm.
     await module.link(async () => { throw undefined; });
-    await module.evaluate({ timeout: 250 });
+    const evaluation = module.evaluate({ timeout: 250 });
+    // Node 20 can leave evaluate() awaiting the inner context's promise queue.
+    // Drain after the outer await handlers are registered, still under timeout.
+    // Keep afterEvaluate: removing it lets guest microtasks escape that timeout.
+    const drained = new Promise<void>((resolve, reject) => {
+      setImmediate(() => {
+        try { vm.runInContext("", context, { timeout: 250 }); resolve(); }
+        catch { reject(undefined); }
+      });
+    });
+    await Promise.all([evaluation, drained]);
     const fn = (module.namespace as Record<string, unknown>)[input.entry];
     if (typeof fn !== "function") throw undefined;
     context.__codaliObserve = observe;
