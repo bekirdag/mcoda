@@ -3,7 +3,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { argumentsMap, hash, json, jsonl, writeNew } from './trust-common.mjs';
-import { readWorkflowCorpus } from './trust-workflow-protocol.mjs';
+import { readWorkflowCorpus, workflowFingerprint } from './trust-workflow-protocol.mjs';
 import { validateWorkflowGrading, observeWorkflow } from './trust-workflow-grading.mjs';
 
 const args=argumentsMap(undefined,['runs','corpus-root','output','media-policy']);
@@ -11,6 +11,8 @@ if(!args.runs||!args['corpus-root']||!args.output)throw Error('Usage: node scrip
 const runs=path.resolve(args.runs),corpusRoot=path.resolve(args['corpus-root']);
 const run=await json(path.join(runs,'manifest.json')),{manifest:corpus,cases}=await readWorkflowCorpus(corpusRoot);
 if(run.identity.protocolVersion!=='trust-workflows-v1'||run.identity.corpusHash!==corpus.promptsSha256)throw Error('Workflow corpus/run identity mismatch');
+const fingerprint=await workflowFingerprint();
+if(hash(JSON.stringify(fingerprint))!==hash(JSON.stringify(run.identity.fingerprint??null)))throw Error('Grader/runtime source differs from the frozen run; use its retained runtime');
 const gradingBytes=await fs.readFile(path.join(corpusRoot,'grading.jsonl'));
 if(hash(gradingBytes)!==corpus.gradingSha256||run.identity.gradingHash!==corpus.gradingSha256)throw Error('Private grading corpus hash mismatch');
 const specs=gradingBytes.toString().trim().split('\n').map(JSON.parse);
@@ -18,7 +20,9 @@ if(specs.length!==cases.length||new Set(specs.map(spec=>spec.caseId)).size!==cas
 const byId=new Map(cases.map(task=>[task.id,task]));for(const spec of specs)validateWorkflowGrading(byId.get(spec.caseId),spec);
 const grading=new Map(specs.map(spec=>[spec.caseId,spec]));
 const policy=args['media-policy']?await json(args['media-policy']):undefined;
-if(policy&&(policy.configHash!==run.identity.configHash||hash(JSON.stringify(policy))!==corpus.mediaPolicySha256))throw Error('Local media policy must match the prospectively recorded corpus policy/config');
+if(policy&&(policy.configHash!==run.identity.configHash||hash(JSON.stringify(policy))!==corpus.mediaPolicySha256
+  ||hash(JSON.stringify(policy))!==run.identity.mediaPolicyHash))throw Error('Local media policy must match the prospectively recorded corpus policy/config');
+if(cases.some(task=>run.identity.taskIds.includes(task.id)&&task.execution.media)&&!policy)throw Error('Media observations require the frozen local specialist/node policy');
 const ledgerBytes=await fs.readFile(path.join(runs,'ledger.jsonl')),ledger=ledgerBytes.toString().trim().split('\n').filter(Boolean).map(JSON.parse);
 const outcomes=ledger.filter(record=>record.type==='result');
 if(!outcomes.length||new Set(outcomes.map(record=>record.key)).size!==outcomes.length)throw Error('Missing or duplicate workflow outcomes');
@@ -50,4 +54,5 @@ try{
   }
 }finally{await file.close();}
 const bytes=await fs.readFile(path.join(output,'observations.jsonl'));
+if(hash(JSON.stringify(await workflowFingerprint()))!==hash(JSON.stringify(fingerprint)))throw Error('Grader/runtime source changed while observing results');
 await writeNew(path.join(output,'complete.json'),{observations:outcomes.length,sha256:hash(bytes)});

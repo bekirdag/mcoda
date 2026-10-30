@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { hash,json,jsonl } from './trust-common.mjs';
 import { summarizeWorkflowRows,workflowReport } from './trust-workflow-report.mjs';
+import { workflowFingerprint } from './trust-workflow-protocol.mjs';
 
 const arms=['raw_direct','raw_tools','codali_candidate'];
 const row=(arm,id,changes={})=>({caseId:id,attemptId:`${arm}-${id}`,arm,domain:'fixture',family:id,split:'held_out',comparison:'answer',
@@ -54,7 +55,7 @@ test('observe/score CLI freezes evidence once, requires matching reviews and det
   const prompts=JSON.stringify(task)+'\n',gradeBytes=JSON.stringify(grading)+'\n';
   await fs.writeFile(path.join(corpus,'prompts.jsonl'),prompts);await fs.writeFile(path.join(corpus,'grading.jsonl'),gradeBytes);
   await fs.writeFile(path.join(corpus,'manifest.json'),JSON.stringify({schemaVersion:1,protocol:'trust-workflows-v1',caseCount:1,promptsSha256:hash(prompts),gradingSha256:hash(gradeBytes),limitations:['Synthetic fixtures only.']}));
-  const configHash=hash('fixture config');await fs.writeFile(path.join(runs,'manifest.json'),JSON.stringify({identity:{protocolVersion:'trust-workflows-v1',corpusHash:hash(prompts),gradingHash:hash(gradeBytes),configHash,arms,taskIds:[task.id],split:'development'},limitations:[]}));
+  const configHash=hash('fixture config');await fs.writeFile(path.join(runs,'manifest.json'),JSON.stringify({identity:{protocolVersion:'trust-workflows-v1',corpusHash:hash(prompts),gradingHash:hash(gradeBytes),fingerprint:await workflowFingerprint(),configHash,arms,taskIds:[task.id],split:'development'},limitations:[]}));
   const records=[];
   for(const arm of arms){
     const directory=path.join(runs,'attempts',arm),workspace=path.join(root,`${arm}-workspace`);await fs.mkdir(directory,{recursive:true});await fs.mkdir(workspace);
@@ -74,4 +75,7 @@ test('observe/score CLI freezes evidence once, requires matching reviews and det
   const report=await json(path.join(output,'report.json'));assert.equal(report.aggregate.raw_direct.passed,0);assert.equal(report.aggregate.codali_candidate.passed,1);assert.equal(report.evaluationGate.passed,false);
   await fs.appendFile(path.join(observations,'observations.jsonl'),' ');
   await assert.rejects(invoke('score-workflow-benchmark.mjs',['--observations',observations,'--reviews',reviewPath,'--output',path.join(root,'altered')]),/Immutable observations changed/);
+  const changed=await json(path.join(runs,'manifest.json'));changed.identity.fingerprint.files['trust-artifacts.mjs']=hash('changed grader');
+  await fs.writeFile(path.join(runs,'manifest.json'),JSON.stringify(changed));
+  await assert.rejects(invoke('observe-workflow-benchmark.mjs',['--runs',runs,'--corpus-root',corpus,'--output',path.join(root,'changed-grader')]),/Grader\/runtime source differs/);
 });
