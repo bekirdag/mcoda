@@ -9,7 +9,8 @@ import { ConfiguredEmbeddings } from '../../packages/codali/dist/providers/Confi
 import { ManagedDocdex } from '../../packages/codali/dist/docdex/ManagedDocdex.js';
 import { MediaJobStore } from '../../packages/codali/dist/connectors/media/MediaJobStore.js';
 import { loadOrchestrationConfig } from '../../packages/codali/dist/config/OrchestrationConfig.js';
-import { argumentsMap, json, writeNew, fixtureSnapshot, hash } from './trust-common.mjs';
+import { argumentsMap, json, writeNew, hash } from './trust-common.mjs';
+import { snapshotWorkflowWorkspace } from './trust-workflow-workspace.mjs';
 import { validateWorkflowCase, validateWorkflowConfig, workflowLimits, workflowAccounting, workflowTurns, sumWorkflowUsage, candidateWorkflowUsage } from './trust-workflow-protocol.mjs';
 import { createWorkflowTools, runRawWorkflow, workflowControllerOptions } from './trust-workflow.mjs';
 
@@ -25,7 +26,7 @@ const roots=path.join(os.homedir(),'.local/state/codali/evaluation-workspaces');
 const opaqueRoot=await fs.mkdtemp(path.join(roots,'run-'));await fs.chmod(opaqueRoot,0o700);
 const workspace=path.join(opaqueRoot,'workspace'),storage=path.join(opaqueRoot,'state');await fs.mkdir(workspace,{mode:0o700});
 for(const [file,value]of Object.entries(task.files)){const target=path.join(workspace,file);await fs.mkdir(path.dirname(target),{recursive:true,mode:0o700});await fs.writeFile(target,Buffer.from(value.content,value.encoding),{flag:'wx',mode:0o600});}
-const before=await fixtureSnapshot(workspace);
+const before=await snapshotWorkflowWorkspace(workspace);
 const fd=openSync(path.join(directory,'events.jsonl'),'wx',0o600);
 let turnIndex=-1;
 const candidateEvents=[],turnResults=[],rawUsage=[];
@@ -125,8 +126,10 @@ finally{
   // Do not move/remove opaqueRoot or reconcile/resubmit jobs here. Late outcomes
   // need an append-only host reconciliation receipt, not a replacement answer.
   await writeNew(path.join(directory,'media-jobs.json'),mediaJobs);
-  const after=await fixtureSnapshot(workspace);
+  let after;
+  try { after=await snapshotWorkflowWorkspace(workspace); }
+  catch(cause) { error??=String(cause);emit('workspace_observation_error',{error:String(cause)}); }
   Object.assign(result,{content:output,error,mode,completed,usage,turns:turnResults,sessionIds:[...sessionIds],answerElapsedMs,elapsedMs:Date.now()-started,endedAt:new Date().toISOString(),loadEnd:os.loadavg(),pendingMediaJobs,
-    workspacePreserved:JSON.stringify(Object.entries(before).sort())===JSON.stringify(Object.entries(after).sort()),workspaceBefore:before,workspaceAfter:after,outputSha256:hash(output)});
+    workspacePreserved:!!after&&JSON.stringify(Object.entries(before).sort())===JSON.stringify(Object.entries(after).sort()),workspaceBefore:before,workspaceAfter:after,outputSha256:hash(output)});
   emit('benchmark_result',result);closeSync(fd);await writeNew(path.join(directory,'result.json'),result);
 }

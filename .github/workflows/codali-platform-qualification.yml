@@ -135,7 +135,7 @@ jobs:
           node scripts/run-node-tests.js packages/codali/dist
           node scripts/run-node-tests.js packages/mswarm/dist
       - name: Workflow evaluation protocol with fake model transport
-        run: node --test scripts/benchmarks/trust-workflow.test.mjs scripts/benchmarks/trust-workflow-protocol.test.mjs scripts/benchmarks/trust-workflow-evidence.test.mjs
+        run: node --test scripts/benchmarks/trust-workflow.test.mjs scripts/benchmarks/trust-workflow-protocol.test.mjs scripts/benchmarks/trust-workflow-evidence.test.mjs scripts/benchmarks/trust-workflow-grading.test.mjs scripts/benchmarks/trust-workflow-report.test.mjs
       - name: Document and media artifact verification
         if: runner.os == 'Linux'
         run: node --test scripts/benchmarks/trust-artifacts.test.mjs

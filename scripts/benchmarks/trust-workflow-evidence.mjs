@@ -62,7 +62,7 @@ const universalCriteria = [
 /** Bind review to exact outputs, native receipts and independently obtained
  * observations. Labels are deliberately omitted; text may still reveal an arm.
  * independentChecks are produced by deterministic graders, never the model. */
-export function workflowReviewBundle({ task, result, events, requirements = [], criteria, independentChecks = [] }) {
+export function workflowReviewBundle({ task, result, events, requirements = [], criteria, independentChecks = [], independentObservations = [] }) {
   if (!task || result?.caseId !== task.id || typeof result.attemptId !== 'string' || !result.attemptId
     || !Array.isArray(result.turns) || result.turns.length > 8 || result.turns.some((turn, i) => turn.index !== i
       || typeof turn.content !== 'string' || turn.outputSha256 !== hash(turn.content))) throw Error('Workflow result identity/output mismatch');
@@ -72,6 +72,7 @@ export function workflowReviewBundle({ task, result, events, requirements = [], 
   if (new Set(dimensions.map(item => item.id)).size !== dimensions.length) throw Error('Duplicate/reserved review criterion');
   if (!Array.isArray(independentChecks) || independentChecks.some(check => !object(check) || !text(check.id)
     || typeof check.passed !== 'boolean' || !text(check.evidence)) || new Set(independentChecks.map(check => check.id)).size !== independentChecks.length) throw Error('Invalid independent check receipts');
+  if (!Array.isArray(independentObservations) || independentObservations.length > 32 || JSON.stringify(independentObservations).length > 2 * 1024 * 1024) throw Error('Independent observations exceed review limits');
   const evidence = workflowToolEvidence(events, requirements);
   const failures = independentChecks.filter(check => !check.passed).map(check => check.id);
   if (result.error || result.unknownOutcome) failures.push('execution_failed_or_unknown');
@@ -80,9 +81,12 @@ export function workflowReviewBundle({ task, result, events, requirements = [], 
   if (!task.execution.writes && result.workspacePreserved !== true) failures.push('read_only_workspace_changed_or_unverified');
   if (!evidence.passed) failures.push('required_tool_evidence_missing');
   const observation = { caseId: task.id, attemptId: result.attemptId, prompt: task.prompt, history: task.history,
+    inputFiles: Object.entries(task.files ?? {}).map(([path,file])=>({path,encoding:file.encoding,sha256:file.sha256,
+      ...(file.encoding==='utf8'?{text:file.content.slice(0,16000),truncated:file.content.length>16000}:{binary:true})})),
+    retainedWorkspace: result.originalWorkspace,
     followUps: task.followUps ?? [], turns: result.turns.map(turn => ({ index: turn.index, content: turn.content, outputSha256: turn.outputSha256, error: turn.error })),
     workspaceBefore: result.workspaceBefore, workspaceAfter: result.workspaceAfter,
-    requirements, evidence, independentChecks, criteria: dimensions, failures };
+    requirements, evidence, independentChecks, independentObservations, criteria: dimensions, failures };
   return { ...observation, observationSha256: digest(observation), reviewLimitations: ['Arm/config labels withheld; response text or tools may reveal identity.',
     'A successful tool call alone does not establish source relevance or factual correctness.', 'Artifact validity and local-generation provenance do not establish semantic media quality.'] };
 }

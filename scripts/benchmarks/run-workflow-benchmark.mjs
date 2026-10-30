@@ -23,10 +23,11 @@ let freeze;
 if(args.freeze)freeze=await json(args.freeze);
 if(selected.some(task=>task.split!=='development')){
   if(!freeze||freeze.protocol!=='trust-workflows-v1'||freeze.configHash!==resolved.hash||freeze.corpusHash!==corpus.promptsSha256
+    ||!/^[a-f0-9]{64}$/.test(corpus.gradingSha256??'')||freeze.gradingHash!==corpus.gradingSha256
     ||freeze.clientFingerprint!==hash(JSON.stringify(fingerprint))||!freeze.selectionEvidence||!Number.isFinite(Date.parse(freeze.createdAt))||Date.parse(freeze.createdAt)>Date.now())throw Error('Prospective validation/held-out execution requires a matching prior selection freeze');
 }
 const root=path.resolve(args.output);await fs.mkdir(root,{recursive:true,mode:0o700});await fs.chmod(root,0o700);
-const identity={schemaVersion:1,protocolVersion:'trust-workflows-v1',configHash:resolved.hash,corpusHash:corpus.promptsSha256,fingerprint,arms,taskIds:selected.map(task=>task.id),split,freezeHash:freeze?hash(JSON.stringify(freeze)):null};
+const identity={schemaVersion:1,protocolVersion:'trust-workflows-v1',configHash:resolved.hash,corpusHash:corpus.promptsSha256,gradingHash:corpus.gradingSha256??null,fingerprint,arms,taskIds:selected.map(task=>task.id),split,freezeHash:freeze?hash(JSON.stringify(freeze)):null};
 try{const previous=await json(path.join(root,'manifest.json'));if(JSON.stringify(previous.identity)!==JSON.stringify(identity))throw Error('Workflow inputs drifted; use a separate study');}
 catch(error){if(error.code!=='ENOENT')throw error;await writeNew(path.join(root,'manifest.json'),{identity,createdAt:new Date().toISOString(),limitations:[...corpus.limitations,'Raw-direct artifact/implementation results measure a capability gap, not an intelligence gain.','Generated media quality requires semantic review in addition to verified local provenance and technical decoding.','Live web results and shared-host timing can vary between sequential arms.']});await writeNew(path.join(root,'config.json'),resolved.config);}
 const lock=await fs.open(path.join(root,'runner.lock'),'wx',0o600);await lock.writeFile(JSON.stringify({pid:process.pid,at:new Date().toISOString()}));await lock.sync();
@@ -63,7 +64,8 @@ try{
     for(const arm of order){
       const key=`${task.id}:${arm}`;if(completed.has(key))continue;
       abort.signal.throwIfAborted();await checkOutstanding();
-      if(hash(JSON.stringify(await workflowFingerprint()))!==hash(JSON.stringify(fingerprint))||(await loadOrchestrationConfig(args.config)).hash!==resolved.hash||(await readWorkflowCorpus(corpusRoot)).manifest.promptsSha256!==corpus.promptsSha256)throw Error('Frozen workflow inputs changed before another request');
+      const currentCorpus=(await readWorkflowCorpus(corpusRoot)).manifest;
+      if(hash(JSON.stringify(await workflowFingerprint()))!==hash(JSON.stringify(fingerprint))||(await loadOrchestrationConfig(args.config)).hash!==resolved.hash||currentCorpus.promptsSha256!==corpus.promptsSha256||currentCorpus.gradingSha256!==corpus.gradingSha256)throw Error('Frozen workflow inputs changed before another request');
       const attemptId=randomUUID(),directory=path.join(root,'attempts',`${task.id}-${arm}-${attemptId}`);await fs.mkdir(directory,{recursive:true,mode:0o700});
       const requestPath=path.join(directory,'request.json');await writeNew(requestPath,{schemaVersion:1,task,arm,attemptId,directory,config:path.join(root,'config.json')});
       append({type:'start',key,caseId:task.id,arm,attemptId,directory,at:new Date().toISOString()});console.log(JSON.stringify({type:'start',caseId:task.id,arm,completed:completed.size}));

@@ -45,14 +45,23 @@ in the denominator. Architecture passes only 5/30 and needs substantive work.
 Validation: 1,964 Codali tests passed with six optional skips; separate real
 Chrome checks passed 5/5. Clean tarball installations passed seven deterministic
 and four document checks. The relay build also passed 147 runtime tests, two
-vendoring tests and clean-package Chrome checks. Fourteen prospective workflow
-harness tests passed with fake model transport; six artifact suites exercised
+vendoring tests and clean-package Chrome checks. Twenty-nine prospective workflow
+harness/grading/report tests passed with fake model transport; six artifact suites exercised
 real document decoding and deterministic media fixtures, not model generation.
 Technical artifact validity is kept separate from semantic media quality.
 Workflow cases can now include bounded follow-ups and restoration from persisted
 controller/transcript state, with per-turn budgets and complete aggregate costs.
 This restoration check does not simulate a process crash. Failed follow-ups
 retain earlier answers and costs and prevent subsequent turns from dispatching.
+Private grading now verifies bounded retained-file copies, actual isolated
+program behavior and document/media artifacts. Reviews bind exact outputs and
+successful native tool receipts to intent, faithfulness and critical-failure
+criteria. Objective failures cannot be overwritten by favorable reviews.
+Observations are recorded once; scoring reuses immutable receipts. The public
+corpus, private grading criteria and grader/runtime source hashes participate
+in the prospective freeze. Artifact capability and text-answer comparisons
+remain separate, and unknown costs or timings prevent efficiency qualification.
+These are harness checks, not results on the new 100 questions.
 The active relay remains the qualified private `.25` service; the global
 installation is not its effective systemd executable.
 

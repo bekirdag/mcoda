@@ -78,7 +78,8 @@ export async function readWorkflowCorpus(directory) {
 }
 
 export async function workflowFingerprint() {
-  const files = ['trust-workflow.mjs','trust-workflow-protocol.mjs','trust-workflow-attempt.mjs','run-workflow-benchmark.mjs'];
+  const files = ['trust-workflow.mjs','trust-workflow-protocol.mjs','trust-workflow-attempt.mjs','trust-workflow-workspace.mjs','run-workflow-benchmark.mjs',
+    'trust-workflow-grading.mjs','trust-workflow-evidence.mjs','trust-workflow-report.mjs','trust-artifacts.mjs','observe-workflow-benchmark.mjs','score-workflow-benchmark.mjs'];
   return { base: await benchmarkFingerprint(), files: Object.fromEntries(await Promise.all(files.map(async file=>[file,hash(await fs.readFile(path.join(repository,'scripts/benchmarks',file)))]))),
     builtinSkills: await fixtureSnapshot(path.join(repository,'packages/codali/config/skills')) };
 }
