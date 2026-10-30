@@ -44,6 +44,7 @@ export function workflowReport(rows, manifest) {
   if(!manifest.runComplete||rows.length!==taskIds.length*arms.length)failures.push('Study is incomplete');
   if(taskIds.length<100||rows.some(row=>row.split==='development')||!manifest.run.freezeHash)failures.push('Requires a prospectively frozen non-development study of at least 100 cases');
   if(rows.some(row=>!row.grade.reviewer))failures.push('Review is incomplete');
+  if(Object.values(aggregate).some(value=>value.unknownUsageAttempts||value.unknownTimingAttempts))failures.push('Complete usage and timing are required for every retained attempt');
   const candidate=aggregate.codali_candidate;
   if(!candidate||candidate.criticalFailures||candidate.pendingCriticalReviews)failures.push('Candidate critical review is incomplete or contains failures');
   const direct=comparisons.find(value=>value.baseline==='raw_direct'&&value.scope==='answer');
@@ -51,9 +52,15 @@ export function workflowReport(rows, manifest) {
   if(direct?.familyInterval95?.lowPp<=0)failures.push('Paired answer gain is not separated from zero at the reported confidence level');
   for(const [name,value]of [['tokens',direct?.tokenRatio],['median time',direct?.medianTimeRatio],['p95 time',direct?.p95TimeRatio]])if(value==null||value>1.5)failures.push(`Answer ${name} is unknown or exceeds 1.5x raw-direct`);
   const toolComparison=comparisons.find(value=>value.baseline==='raw_tools'&&value.scope==='all_workflows');
-  if(!toolComparison?.pairedCases||toolComparison.unpairedCases||toolComparison.accuracyGainPp<0)failures.push('Full-workflow capability regresses against raw-tools or is unmeasured');
+  if(!toolComparison?.pairedCases||toolComparison.unpairedCases||toolComparison.accuracyGainPp<=0
+    ||!(toolComparison.familyInterval95?.lowPp>0))failures.push('Full-workflow gain over matched raw-tools is unmeasured or not separated from zero');
+  const toolAnswers=comparisons.find(value=>value.baseline==='raw_tools'&&value.scope==='answer');
+  if(!toolAnswers?.pairedCases||toolAnswers.unpairedCases||toolAnswers.accuracyGainPp<0)failures.push('Answer correctness regresses against matched raw-tools or is unmeasured');
+  for(const comparison of [toolAnswers,toolComparison])for(const [name,value]of [['tokens',comparison?.tokenRatio],['median time',comparison?.medianTimeRatio],['p95 time',comparison?.p95TimeRatio]]){
+    if(value==null||value>1.5)failures.push(`${comparison?.scope??'Unmeasured'} ${name} is unknown or exceeds 1.5x matched raw-tools`);
+  }
   return {schemaVersion:1,protocol:'trust-workflow-scores-v1',aggregate,byDomain:groupBy('domain'),byComparison:groupBy('comparison'),comparisons,
-    evaluationGate:{passed:!failures.length,failures,thresholdInterpretation:'Provisional +10 percentage points, at most 1.5x total tokens, median and p95 answer time; no automatic promotion'},
+    evaluationGate:{passed:!failures.length,failures,thresholdInterpretation:'Provisional +10 percentage points over raw-direct answers; positive full-workflow gain over matched raw-tools with no answer regression; at most 1.5x tokens, median and p95 time against each applicable baseline; no automatic promotion'},
     limitations:[...(manifest.limitations??[]),'These are task success scores, not a psychometric intelligence measurement.',
       'Unknown usage is retained and blocks efficiency qualification; known-token subtotals are not complete costs.',
       'Same-agent review, live-source variation and shared-host activity must be disclosed with conclusions.',

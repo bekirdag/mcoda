@@ -12,19 +12,19 @@ live TNL access and local image/audio/video generation remain unqualified.
 A frozen adaptive configuration is replaying all original 1,000 questions on
 Codali, raw Qwen and raw Qwen with the same direct tools. These are exposed
 development cases, not a new holdout. An immutable snapshot contains the first
-300 complete three-arm questions (900 outcomes), with complete criterion-based
+400 complete three-arm questions (1,200 outcomes), with complete criterion-based
 review and no pending judgments for that cohort:
 
 | Arm | Strict success | Semantic correctness | Tokens | Median / p95 answer time |
 | --- | ---: | ---: | ---: | ---: |
-| Raw Qwen | 241/300 | 250/300 | 126,355 | 6.40 / 16.13 s |
-| Raw Qwen with tools | 239/300 | 249/300 | 478,202 | 8.59 / 27.22 s |
-| Codali adaptive-v3 | 248/300 | 251/300 | 383,609 | 7.98 / 32.12 s |
+| Raw Qwen | 322/400 | 335/400 | 168,372 | 7.31 / 17.73 s |
+| Raw Qwen with tools | 319/400 | 333/400 | 635,470 | 8.91 / 27.01 s |
+| Codali adaptive-v3 | 333/400 | 338/400 | 509,324 | 8.99 / 32.28 s |
 
-Codali's semantic gain over raw Qwen is 0.33 percentage points (family bootstrap
-95% interval −3.67 to +4.33 points), with 3.04× tokens, 1.25× median time and
-1.99× p95 time. It uses 0.80× the tool-enabled baseline's tokens with a 0.67-point
-semantic gain (interval −4.33 to +5.67 points), 0.93× median time and 1.18× p95 time.
+Codali's semantic gain over raw Qwen is 0.75 percentage points (family bootstrap
+95% interval −2.75 to +4.50 points), with 3.02× tokens, 1.23× median time and
+1.82× p95 time. It uses 0.80× the tool-enabled baseline's tokens with a 1.25-point
+semantic gain (interval −2.50 to +5.25 points), 1.01× median time and 1.20× p95 time.
 **This configuration does not meet the intelligence or
 efficiency goal.** Repository inspection is the largest overhead. Raw-direct
 receives the complete text fixtures; that contrast includes retrieval cost
@@ -37,15 +37,18 @@ withheld, not by independent human reviewers. Response text may reveal the arm.
 Some inherited rubrics omit unsupported-claim checks; the new question set must
 include evidence faithfulness explicitly. Timing is observational on a shared
 host, including concurrent CPU-only build/test/CI activity. Earlier snapshots
-and all original judgments remain retained; the expanded 300-case analysis is
-`full1000-adaptive-v3-partial-analysis-10` in private benchmark state. Codali has
-five execution failures and one critical failure in this cohort; these remain
-in the denominator. Architecture passes only 5/30 and needs substantive work.
+and all original judgments remain retained; the expanded 400-case analysis is
+`full1000-adaptive-v3-partial-analysis-11` in private benchmark state. Codali has
+six execution failures and one critical failure in this cohort; these remain
+in the denominator. Architecture passes only 7/40 and needs substantive work.
+An offline first-300 cost audit attributes 293,404 input and 90,205 output tokens
+to Codali, versus 47,274 input and 79,081 output tokens for raw-direct. Repeated
+retrieval context and routine prompt/schema overhead both need reduction.
 
 Validation: 1,964 Codali tests passed with six optional skips; separate real
 Chrome checks passed 5/5. Clean tarball installations passed seven deterministic
 and four document checks. The relay build also passed 147 runtime tests, two
-vendoring tests and clean-package Chrome checks. Twenty-nine prospective workflow
+vendoring tests and clean-package Chrome checks. Thirty prospective workflow
 harness/grading/report tests passed with fake model transport; six artifact suites exercised
 real document decoding and deterministic media fixtures, not model generation.
 Technical artifact validity is kept separate from semantic media quality.
@@ -61,9 +64,24 @@ Observations are recorded once; scoring reuses immutable receipts. The public
 corpus, private grading criteria and grader/runtime source hashes participate
 in the prospective freeze. Artifact capability and text-answer comparisons
 remain separate, and unknown costs or timings prevent efficiency qualification.
+The prospective gate also requires a positive completed-work gain over matched
+raw-tools, no answer regression against it, and at most 1.5× tokens, median time
+and p95 time for both answer and full-workflow comparisons.
 These are harness checks, not results on the new 100 questions.
 The active relay remains the qualified private `.25` service; the global
 installation is not its effective systemd executable.
+
+Development `28ea878` fixes a conflicting tool-free final-turn instruction and
+uses a single isolated Vitest worker thread, avoiding macOS child-signal denial.
+The final-turn change preserves user/project policy, prior evidence and budgets;
+it does not interpret printed tool markup as executable calls. Focused checks
+passed 88/88 on Node 20 and 22. All six Linux, Intel macOS and Apple-silicon macOS
+jobs on Node 20/22 passed [platform qualification](https://github.com/bekirdag/mcoda/actions/runs/40984091407);
+[runtime CI](https://github.com/bekirdag/mcoda/actions/runs/40984091214) passed too. These fixes are
+outside the immutable adaptive-v3 replay and have no new intelligence score yet.
+All six candidate execution failures in the first 400 cases hit the conflicting
+tool-free final turn, spending 41,700 tokens across those failed attempts. The
+protocol regression tests do not establish how many live answers the repair fixes.
 
 Next: finish the unchanged 1,000-case replay and review, tune from its development
 evidence, then author and freeze 100 new broad workflow questions. Raw Qwen with

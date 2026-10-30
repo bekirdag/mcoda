@@ -37,13 +37,38 @@ test('unknown costs/timings are never silently dropped and incomplete reviews bl
 
 test('prospective evaluation gate requires paired gain, efficiency and no critical regression',()=>{
   const ids=Array.from({length:100},(_,i)=>`case.${i}`);
-  const rows=ids.flatMap((id,i)=>arms.map(arm=>row(arm,id,{grade:{passed:arm!=='raw_direct'||i>=20,reviewer:'fixture',criticalPassed:true}})));
+  const rows=ids.flatMap((id,i)=>arms.map(arm=>row(arm,id,{grade:{passed:arm==='codali_candidate'||i>=(arm==='raw_direct'?20:10),reviewer:'fixture',criticalPassed:true}})));
   const report=workflowReport(rows,manifest(ids));assert.equal(report.evaluationGate.passed,true);
   const expensive=structuredClone(rows);expensive.filter(value=>value.arm==='codali_candidate').forEach(value=>value.usage.tokens=200);
   assert.equal(workflowReport(expensive,manifest(ids)).evaluationGate.passed,false);
   const critical=structuredClone(rows);critical.find(value=>value.arm==='codali_candidate').grade.criticalPassed=false;
   assert.equal(workflowReport(critical,manifest(ids)).evaluationGate.passed,false);
   assert.equal(workflowReport(rows,{...manifest(ids),runComplete:false}).evaluationGate.passed,false);
+  const tiedTools=structuredClone(rows);tiedTools.filter(value=>value.arm==='raw_tools').forEach(value=>value.grade.passed=true);
+  assert.equal(workflowReport(tiedTools,manifest(ids)).evaluationGate.passed,false);
+});
+
+test('artifact overhead and missing receipts cannot hide behind cheap successful text answers',()=>{
+  const ids=Array.from({length:100},(_,i)=>`case.${i}`);
+  const rows=ids.flatMap((id,i)=>arms.map(arm=>row(arm,id,{comparison:i<50?'answer':'artifact',
+    grade:{passed:arm==='codali_candidate'||i%50>=(arm==='raw_direct'?20:10),reviewer:'fixture',criticalPassed:true}})));
+  assert.equal(workflowReport(rows,manifest(ids)).evaluationGate.passed,true);
+  for(const field of ['tokens','time','unknown']){
+    const altered=structuredClone(rows);
+    for(const value of altered.filter(value=>value.arm==='codali_candidate'&&value.comparison==='artifact')){
+      if(field==='tokens')value.usage.tokens=500;
+      if(field==='time')value.answerElapsedMs=10000;
+      if(field==='unknown')value.usage.estimated=true;
+    }
+    const report=workflowReport(altered,manifest(ids));
+    assert.equal(report.comparisons.find(value=>value.baseline==='raw_direct').tokenRatio,1);
+    assert.equal(report.evaluationGate.passed,false,field);
+    assert.ok(report.evaluationGate.failures.some(value=>value.includes(field==='unknown'?'Complete usage':'all_workflows')),field);
+  }
+  const answerRegression=structuredClone(rows);
+  answerRegression.filter(value=>value.arm==='raw_tools'&&value.comparison==='answer').forEach(value=>value.grade.passed=true);
+  answerRegression.find(value=>value.arm==='codali_candidate'&&value.comparison==='answer').grade.passed=false;
+  assert.ok(workflowReport(answerRegression,manifest(ids)).evaluationGate.failures.includes('Answer correctness regresses against matched raw-tools or is unmeasured'));
 });
 
 test('observe/score CLI freezes evidence once, requires matching reviews and detects modified observations',async t=>{
