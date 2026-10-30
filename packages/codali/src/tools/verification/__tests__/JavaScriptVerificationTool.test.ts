@@ -70,7 +70,12 @@ test("guest serialization hooks cannot forge observed results", options, async (
   const result = await run("export function solve(){return {toJSON(){return 3},actual:7}}", [{ args: [], expected: 3 }]);
   assert.equal(result.ok, true); assert.equal(JSON.parse(result.output).passed, false);
   const polluted = await run("Object.prototype.toJSON=()=>3; export function solve(){return 7}");
-  assert.equal(polluted.ok, true); assert.equal(JSON.parse(polluted.output).passed, false);
+  assert.equal(polluted.ok, true, polluted.error?.message || polluted.output); assert.equal(JSON.parse(polluted.output).passed, false);
+  for (const source of ["throw 0; export function solve(){return 3}", "await Promise.reject(7); export function solve(){return 3}"]) {
+    const rejected = await run(source);
+    assert.equal(rejected.ok, true, rejected.error?.message || rejected.output);
+    assert.equal(JSON.parse(rejected.output).passed, false);
+  }
 });
 
 test("verification cancellation terminates execution and never returns passed", options, async () => {

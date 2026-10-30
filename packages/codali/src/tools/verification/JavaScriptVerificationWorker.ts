@@ -61,7 +61,8 @@ for (const args of input.inputs) {
     // Drain after the outer await handlers are registered, still under timeout.
     // Keep afterEvaluate: removing it lets guest microtasks escape that timeout.
     const drained = new Promise<void>((resolve, reject) => {
-      setImmediate(() => {
+      // Drain before Node's end-of-turn unhandled-rejection check as well.
+      queueMicrotask(() => {
         try { vm.runInContext("", context, { timeout: 250 }); resolve(); }
         catch { reject(undefined); }
       });
