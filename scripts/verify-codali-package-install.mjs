@@ -112,6 +112,18 @@ try {
       assert.ok(skills.list().skills.some(skill => skill.name === 'planning'));
       assert.match(String((await skills.read('planning')).content), /work_plan/);
     }
+    for (const runtime of ['./node_modules/@mcoda/codali/dist/', './node_modules/@mcoda/mswarm/dist/vendor/codali/']) {
+      const { ToolRegistry } = await import(runtime + 'tools/ToolRegistry.js');
+      const { createVitestTool } = await import(runtime + 'tools/verification/VitestTool.js');
+      const registry = new ToolRegistry(); registry.register(createVitestTool());
+      const checked = await registry.execute('verify_tests', { files: [
+        { path: 'subject.ts', content: 'export const twice=(value:number)=>value*2;' },
+        { path: 'subject.test.ts', content: "import {test,expect} from 'vitest';import {twice} from './subject';test('installed tool',()=>expect(twice(-3)).toBe(-6));" },
+      ] }, { workspaceRoot });
+      assert.equal(checked.ok, true, checked.error?.message || checked.output);
+      assert.equal(checked.data.passed, true, checked.output);
+      assert.equal(checked.data.passedTests, 1, checked.output);
+    }
     const store = new SessionStore({ workspaceRoot });
     const session = await store.createSession({ repoRoot: workspaceRoot, task: 'package persistence probe' });
     await store.appendTranscript(session.sessionId, { type: 'note', data: { value: 'persisted' } });
@@ -121,7 +133,7 @@ try {
     console.log('installed-api-native-sqlite-and-session-ok');
   `);
   assert.match(run(process.execPath, [probe, workspace]), /installed-api-native-sqlite-and-session-ok/);
-  report.checks.push('installed API, native SQLite, durable session write/read through a fresh store');
+  report.checks.push('installed API, native SQLite, durable session write/read through a fresh store', 'installed Codali and embedded relay execute real isolated TypeScript tests');
   const runtimeProbe = path.join(project, 'runtime-probe.mjs');
   writeFileSync(runtimeProbe, `
     import assert from 'node:assert/strict';

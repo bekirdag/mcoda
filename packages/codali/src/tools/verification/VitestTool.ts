@@ -39,7 +39,9 @@ async function runnerRuntime() {
   };
   await visit(entry);
   const version = JSON.parse(await fs.readFile(path.join(entry, "package.json"), "utf8")).version;
-  if (version !== "4.1.12") throw Error("Vitest runtime does not match the pinned version");
+  // This patched v3 release installs on Node 20/22's npm without the v4.1
+  // optional Vite/devtools peer cycle (npm/cli#9787). No peer checks are disabled.
+  if (version !== "3.2.7") throw Error("Vitest runtime does not match the pinned version");
   return { entry, version, mounts: [...mounts] };
 }
 
@@ -71,20 +73,24 @@ export const createVitestTool = (): ToolDefinition => ({
       await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}');
       await fs.mkdir(path.join(root, "node_modules")); await fs.symlink(runtime.entry, path.join(root, "node_modules", "vitest"));
       await fs.mkdir(path.join(root, "artifacts"));
-      const config = { cacheDir: path.join(root, "artifacts", "cache"), test: { include: ["**/*.test.{js,ts,mjs,cjs}"], environment: "node", globals: false,
+      const config = { cacheDir: path.join(root, "artifacts", "cache"), server: { host: "127.0.0.1", hmr: false }, test: { include: ["**/*.test.{js,ts,mjs,cjs}"], environment: "node", globals: false,
         pool: "forks", maxWorkers: 1, fileParallelism: false, testTimeout: 1000, hookTimeout: 1000, passWithNoTests: false, reporters: ["json"], outputFile: path.join(root, "artifacts", "report.json") } };
       await fs.writeFile(path.join(root, "codali.config.mjs"), `export default ${JSON.stringify(config)};`);
       let exitCode = 0;
+      let executionFailure: ToolExecutionError | undefined;
       try {
         await createIsolatedExecutor({ network: false, readOnlyRuntimeRoots: runtime.mounts })(process.execPath,
           ["--max-old-space-size=256", path.join(runtime.entry, "vitest.mjs"), "run", "--config", path.join(root, "codali.config.mjs"), "--configLoader", "native"],
           { workspaceRoot: root, signal: context.signal, allowedWritePaths: ["artifacts"], shellTimeoutMs: 15000, shellMaxOutputBytes: 128000 });
       } catch (error) {
         if (!(error instanceof ToolExecutionError) || error.code !== "tool_execution_failed" || error.details?.exitCode !== 1) throw error;
-        exitCode = 1;
+        exitCode = 1; executionFailure = error;
       }
       const reportPath = path.join(root, "artifacts", "report.json");
-      if ((await fs.lstat(reportPath)).isSymbolicLink() || (await fs.stat(reportPath)).size > 256000) throw Error("Invalid test report");
+      let reportStat;
+      try { reportStat = await fs.lstat(reportPath); }
+      catch (error) { throw executionFailure ?? error; }
+      if (reportStat.isSymbolicLink() || !reportStat.isFile() || reportStat.size > 256000) throw Error("Invalid test report");
       const report = JSON.parse(await fs.readFile(reportPath, "utf8"));
       if (!Number.isInteger(report.numTotalTests) || report.numTotalTests < 1 || !Array.isArray(report.testResults)) throw Error("No complete test results were produced");
       const result = { library: "vitest", version: runtime.version, passed: exitCode === 0 && report.success === true && report.numFailedTests === 0 && report.numPassedTests === report.numTotalTests,
