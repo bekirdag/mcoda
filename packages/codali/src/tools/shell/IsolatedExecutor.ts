@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, statSync, readdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -46,6 +46,18 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
 const bubblewrapRoot = (): string[] => {
   const args = ["--die-with-parent", "--new-session", "--unshare-all", "--ro-bind", "/usr", "/usr", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
   for (const dir of ["/bin", "/sbin", "/lib", "/lib64"]) if (existsSync(dir)) args.push("--ro-bind", realpathSync(dir), dir);
+  // Debian/Ubuntu BLAS and LAPACK sonames pass through /etc/alternatives.
+  // Expose only library targets already inside system library roots, not /etc
+  // or the other configured alternatives. ffprobe needs these on Ubuntu 22.04.
+  if (existsSync("/etc/ld.so.cache")) args.push("--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache");
+  if (existsSync("/etc/alternatives")) for (const name of readdirSync("/etc/alternatives")) {
+    if (!/^lib[^/]+\.so(?:\..+)?$/.test(name)) continue;
+    try {
+      const alias = path.join("/etc/alternatives", name), target = realpathSync(alias);
+      if (!["/usr/lib/", "/usr/lib64/", "/lib/", "/lib64/"].some(prefix => target.startsWith(prefix)) || !statSync(target).isFile()) continue;
+      args.push("--ro-bind", target, alias);
+    } catch { /* A broken optional system-library alternative is not mounted. */ }
+  }
   return args;
 };
 

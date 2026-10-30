@@ -1,6 +1,6 @@
 # Codali intelligence improvement experiments
 
-## Tool integration and full replay, 2026-10-29
+## Tool integration and full replay, 2026-10-30
 
 Development commit `65f10fd` adds bounded Decimal.js/math.js/Ajv, SymPy/Z3,
 DuckDB/Polars, isolated JavaScript/Vitest checks, ADES entity hints, the versioned
@@ -12,19 +12,19 @@ live TNL access and local image/audio/video generation remain unqualified.
 A frozen adaptive configuration is replaying all original 1,000 questions on
 Codali, raw Qwen and raw Qwen with the same direct tools. These are exposed
 development cases, not a new holdout. An immutable snapshot contains the first
-200 complete three-arm questions (600 outcomes), with complete criterion-based
+300 complete three-arm questions (900 outcomes), with complete criterion-based
 review and no pending judgments for that cohort:
 
 | Arm | Strict success | Semantic correctness | Tokens | Median / p95 answer time |
 | --- | ---: | ---: | ---: | ---: |
-| Raw Qwen | 159/200 | 167/200 | 84,907 | 6.65 / 16.59 s |
-| Raw Qwen with tools | 157/200 | 164/200 | 312,189 | 8.54 / 31.15 s |
-| Codali adaptive-v3 | 165/200 | 167/200 | 250,004 | 8.37 / 32.12 s |
+| Raw Qwen | 241/300 | 250/300 | 126,355 | 6.40 / 16.13 s |
+| Raw Qwen with tools | 239/300 | 249/300 | 478,202 | 8.59 / 27.22 s |
+| Codali adaptive-v3 | 248/300 | 251/300 | 383,609 | 7.98 / 32.12 s |
 
-Codali shows no semantic gain over raw Qwen (family bootstrap 95% interval
-−5 to +5 percentage points), with 2.94× tokens, 1.26× median time and 1.94× p95
-time. It uses 0.80× the tool-enabled baseline's tokens with a 1.5-point semantic
-gain (interval −4 to +7 points), 0.98× median time and 1.03× p95 time.
+Codali's semantic gain over raw Qwen is 0.33 percentage points (family bootstrap
+95% interval −3.67 to +4.33 points), with 3.04× tokens, 1.25× median time and
+1.99× p95 time. It uses 0.80× the tool-enabled baseline's tokens with a 0.67-point
+semantic gain (interval −4.33 to +5.67 points), 0.93× median time and 1.18× p95 time.
 **This configuration does not meet the intelligence or
 efficiency goal.** Repository inspection is the largest overhead. Raw-direct
 receives the complete text fixtures; that contrast includes retrieval cost
@@ -36,9 +36,11 @@ Reviews were performed by the primary agent with arm/configuration labels
 withheld, not by independent human reviewers. Response text may reveal the arm.
 Some inherited rubrics omit unsupported-claim checks; the new question set must
 include evidence faithfulness explicitly. Timing is observational on a shared
-host, including concurrent CPU-only build/test/CI activity. The prior first-100
-snapshot and all original judgments remain retained; the expanded 200-case
-analysis is `full1000-adaptive-v3-partial-analysis-09` in private benchmark state.
+host, including concurrent CPU-only build/test/CI activity. Earlier snapshots
+and all original judgments remain retained; the expanded 300-case analysis is
+`full1000-adaptive-v3-partial-analysis-10` in private benchmark state. Codali has
+five execution failures and one critical failure in this cohort; these remain
+in the denominator. Architecture passes only 5/30 and needs substantive work.
 
 Validation: 1,964 Codali tests passed with six optional skips; separate real
 Chrome checks passed 5/5. Clean tarball installations passed seven deterministic
