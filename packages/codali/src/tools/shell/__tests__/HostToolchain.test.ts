@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { discoverHostToolchain, extraRuntimeMounts } from "../HostToolchain.js";
 import { createIsolatedExecutor, executorStatus } from "../IsolatedExecutor.js";
 
@@ -172,6 +173,37 @@ class RuntimeTest(unittest.TestCase):
   const result = await createIsolatedExecutor({ status })("python3", ["-m", "unittest", "discover", "-s", "."], { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 20000 });
   assert.match(result.output, /Ran 1 test/);
   assert.equal((await fs.readdir(root)).includes("__pycache__"), false);
+});
+
+test("a trusted venv retains its environment through an external interpreter alias", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), "codali-venv-alias-"));
+  const oldPath = process.env.PATH;
+  t.after(async () => {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    await fs.rm(fixture, { recursive: true, force: true });
+  });
+  const root = path.join(fixture, "workspace"); const hostBin = path.join(fixture, "host-bin");
+  const runtime = path.join(fixture, "venv");
+  await fs.mkdir(root); await fs.mkdir(hostBin);
+  const python = discoverHostToolchain(root).find(runtime => runtime.name === "python3");
+  if (!python) { t.skip("Python is not installed"); return; }
+  const alias = path.join(hostBin, "python3"); await fs.symlink(python.executable, alias);
+  const install = spawnSync(alias, ["-I", "-m", "venv", "--without-pip", runtime], { encoding: "utf8", timeout: 15000 });
+  assert.equal(install.status, 0, install.stderr);
+  await fs.writeFile(path.join(hostBin, "private.txt"), "must not be mounted");
+  process.env.PATH = hostBin;
+  const result = await createIsolatedExecutor({ status, readOnlyRuntimeRoots: [runtime] })(path.join(runtime, "bin", "python"),
+    ["-I", "-B", "-c", `import json, pathlib, sys
+try:
+    pathlib.Path(${JSON.stringify(path.join(hostBin, "private.txt"))}).read_text()
+except (FileNotFoundError, PermissionError):
+    private = False
+else:
+    private = True
+print(json.dumps({"prefix": str(pathlib.Path(sys.prefix).resolve()), "private": private}))`],
+    { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 10000 });
+  assert.deepEqual(JSON.parse(result.output), { prefix: await fs.realpath(runtime), private: false });
 });
 
 test("Cargo compiles and tests offline with a private home and the concrete compiler", async t => {

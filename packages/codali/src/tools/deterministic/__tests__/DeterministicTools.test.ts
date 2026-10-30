@@ -13,7 +13,7 @@ const registry = new ToolRegistry();
 for (const tool of createDeterministicTools()) registry.register(tool);
 const run = (name: string, args: unknown, signal?: AbortSignal) => registry.execute(name, args, { workspaceRoot: os.tmpdir(), signal });
 const data = async (name: string, args: unknown) => {
-  const result = await run(name, args); assert.equal(result.ok, true, result.output);
+  const result = await run(name, args); assert.equal(result.ok, true, result.error?.message || result.output);
   const value = JSON.parse(result.output);
   assert.match(value.inputSha256, /^[a-f0-9]{64}$/); assert.match(value.workerSha256, /^[a-f0-9]{64}$/);
   assert.equal(typeof value.version, "string"); return value;

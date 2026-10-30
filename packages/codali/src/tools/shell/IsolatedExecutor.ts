@@ -21,6 +21,9 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     // dyld opens the root directory when locating its shared cache. This literal
     // permits the directory itself, never a recursive read of the filesystem.
     '(allow file-read* (literal "/"))',
+    // macOS exposes these system aliases before resolving /private/... paths.
+    // Metadata on the aliases permits traversal, never reading their siblings.
+    '(allow file-read-metadata (literal "/var") (literal "/tmp") (literal "/etc"))',
     // realpath/lstat needs ancestor metadata, not directory contents or sibling files.
     ...[...ancestors].map(parent => `(allow file-read-metadata (literal ${quoted(parent)}))`),
     '(allow file-read* (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))',

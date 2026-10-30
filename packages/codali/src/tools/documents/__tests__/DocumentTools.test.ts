@@ -28,13 +28,13 @@ test("real Markdown, PDF and DOCX files preserve text/tables and bind exact byte
     const touched: string[] = [];
     const result = await tools.execute("document_create", { path: `report.${format}`, format, title: "Test report", blocks },
       { workspaceRoot: root, allowedWritePaths: [`report.${format}`], recordTouchedFile: file => touched.push(file) });
-    assert.equal(result.ok, true, result.output);
+    assert.equal(result.ok, true, result.error?.message || result.output);
     const data = result.data as { bytes: number; sha256: string; versions: Record<string, string> };
     const file = await fs.readFile(path.join(root, `report.${format}`));
     assert.equal(data.bytes, file.length); assert.equal(data.sha256, createHash("sha256").update(file).digest("hex"));
     assert.deepEqual(touched, [`report.${format}`]);
     const extracted = await tools.execute("document_read", { path: `report.${format}` }, { workspaceRoot: root });
-    assert.equal(extracted.ok, true, extracted.output); assert.match(extracted.output, /Verified value: 42/);
+    assert.equal(extracted.ok, true, extracted.error?.message || extracted.output); assert.match(extracted.output, /Verified value: 42/);
     assert.match(extracted.output, /not markup/); assert.match(extracted.output, /Count/);
     if (format === "pdf") assert.equal(file.subarray(0, 5).toString(), "%PDF-");
   }
@@ -46,9 +46,9 @@ test("real Markdown, PDF and DOCX files preserve text/tables and bind exact byte
 test("XLSX stores typed values and formula-looking input as literal text", options, async t => {
   const root = await fixture(t), tools = registry();
   const result = await tools.execute("document_create", { path: "values.xlsx", format: "xlsx", sheets: [{ name: "Inputs", rows: [["Key", "Value"], ["exact integer", "9007199254740993"], ["number", 42], ["formula-looking", "=SUM(1,1)"], ["boolean", true]] }] }, { workspaceRoot: root });
-  assert.equal(result.ok, true, result.output);
+  assert.equal(result.ok, true, result.error?.message || result.output);
   const read = await tools.execute("document_read", { path: "values.xlsx" }, { workspaceRoot: root });
-  assert.equal(read.ok, true, read.output);
+  assert.equal(read.ok, true, read.error?.message || read.output);
   const data = read.data as { sheets: Array<{ rows: unknown[][]; formulas: unknown[]; formulaValuesVerified: boolean }> };
   assert.deepEqual(data.sheets[0].rows[1], ["exact integer", "9007199254740993"]);
   assert.deepEqual(data.sheets[0].rows[2], ["number", 42]); assert.deepEqual(data.sheets[0].formulas, []);
@@ -60,10 +60,10 @@ test("reading existing formulas, blank PDF pages and bounded content discloses l
   const root = await fixture(t), tools = registry();
   await python(root, "import sys; from pathlib import Path; from openpyxl import Workbook; from reportlab.pdfgen.canvas import Canvas; p=Path(sys.argv[1]); w=Workbook(); s=w.active; s.append(['Value']); s.append(['=1+1']); s.append([99]); w.save(p/'formula.xlsx'); c=Canvas(str(p/'blank.pdf')); c.rect(0,0,10,10); c.showPage(); c.save()");
   const sheet = await tools.execute("document_read", { path: "formula.xlsx", maxRows: 2 }, { workspaceRoot: root });
-  assert.equal(sheet.ok, true, sheet.output); assert.match(sheet.output, /"truncated":true/);
+  assert.equal(sheet.ok, true, sheet.error?.message || sheet.output); assert.match(sheet.output, /"truncated":true/);
   assert.match(sheet.output, /"expression":"=1\+1"/); assert.match(sheet.output, /"formulaValuesVerified":false/);
   const pdf = await tools.execute("document_read", { path: "blank.pdf" }, { workspaceRoot: root });
-  assert.equal(pdf.ok, true, pdf.output); assert.match(pdf.output, /no_extractable_text/); assert.match(pdf.output, /No OCR was performed/);
+  assert.equal(pdf.ok, true, pdf.error?.message || pdf.output); assert.match(pdf.output, /no_extractable_text/); assert.match(pdf.output, /No OCR was performed/);
   await fs.writeFile(path.join(root, "long.md"), "x".repeat(200));
   const md = await tools.execute("document_read", { path: "long.md", maxChars: 100 }, { workspaceRoot: root });
   assert.equal((md.data as { text: string }).text.length, 100); assert.equal((md.data as { truncated: boolean }).truncated, true);

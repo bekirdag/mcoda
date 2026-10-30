@@ -156,10 +156,21 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
         if (within(executable, workspace)) continue;
         accessSync(executable, constants.X_OK);
         if (!statSync(executable).isFile()) continue;
-        if (systemPath(executable)) { result.push({ name, executable, readOnlyRoot: executable, directory: false }); break; }
+        // A venv may point at the host's python3 alias, while discovery resolves
+        // it to python3.12. Preserve that one verified filename in the sandbox;
+        // mounting only the resolved binary leaves the venv's link dangling.
+        const pythonAlias = (runtime: HostRuntime): HostRuntime => {
+          if (name !== "python" && name !== "python3") return runtime;
+          const alias = path.join(realpathSync.native(path.dirname(candidate)), path.basename(candidate));
+          if (alias !== executable && !within(alias, workspace) && realpathSync.native(alias) === executable) {
+            runtime.support = [...runtime.support ?? [], { readOnlyRoot: alias, directory: false }];
+          }
+          return runtime;
+        };
+        if (systemPath(executable)) { result.push(pythonAlias({ name, executable, readOnlyRoot: executable, directory: false })); break; }
         if (rustTools.has(name) || name === "python" || name === "python3") {
           const runtime = languageRuntime(name, executable, workspace, home);
-          if (runtime) { result.push(runtime); break; }
+          if (runtime) { result.push(pythonAlias(runtime)); break; }
           continue;
         }
         if (executableBinary(executable)) { result.push({ name, executable, readOnlyRoot: executable, directory: false }); break; }
