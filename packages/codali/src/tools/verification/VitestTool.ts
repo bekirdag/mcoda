@@ -74,7 +74,9 @@ export const createVitestTool = (): ToolDefinition => ({
       await fs.mkdir(path.join(root, "node_modules")); await fs.symlink(runtime.entry, path.join(root, "node_modules", "vitest"));
       await fs.mkdir(path.join(root, "artifacts"));
       const config = { cacheDir: path.join(root, "artifacts", "cache"), server: { host: "127.0.0.1", hmr: false }, test: { include: ["**/*.test.{js,ts,mjs,cjs}"], environment: "node", globals: false,
-        pool: "forks", maxWorkers: 1, fileParallelism: false, testTimeout: 1000, hookTimeout: 1000, passWithNoTests: false, reporters: ["json"], outputFile: path.join(root, "artifacts", "report.json") } };
+        // macOS denies signaling separate child processes inside this sandbox.
+        // Threads retain the same OS boundary without requiring signal grants.
+        pool: "threads", maxWorkers: 1, fileParallelism: false, testTimeout: 1000, hookTimeout: 1000, passWithNoTests: false, reporters: ["json"], outputFile: path.join(root, "artifacts", "report.json") } };
       await fs.writeFile(path.join(root, "codali.config.mjs"), `export default ${JSON.stringify(config)};`);
       let exitCode = 0;
       let executionFailure: ToolExecutionError | undefined;

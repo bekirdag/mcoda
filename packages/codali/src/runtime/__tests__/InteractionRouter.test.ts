@@ -192,6 +192,35 @@ test("adaptive directly invokes a real tool and preserves the original instructi
   assert.equal(controller.turnUsageSnapshot().modelCalls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
 });
 
+for (const strategy of ["adaptive", "gateway"] as const) for (const toolExposure of ["gateway", "native"] as const)
+test(`${strategy}/${toolExposure} finalizes from real evidence without advertising removed controls`, async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy, toolExposure, calculator: true, maxModelCalls: 2, answerPrompt: "KEEP_ANSWER_POLICY" };
+  const prompt = 'Use the calculator for 2+3. Return only JSON {"sum":number}.';
+  let calls = 0;
+  const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.match(request.messages[0].content, /KEEP_PROJECT_POLICY/);
+    assert.match(request.messages[0].content, /KEEP_ANSWER_POLICY/);
+    assert.ok(request.messages.some(message => message.role === "user" && message.content === prompt));
+    if (++calls === 1) {
+      const gateway = strategy === "adaptive" || toolExposure === "gateway";
+      return { ...reply(""), toolCalls: [{ id: "sum", name: gateway ? "codali" : "calculate",
+        args: gateway ? { name: "calculate", args: { expression: "2+3" } } : { expression: "2+3" } }] };
+    }
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.doesNotMatch(request.messages[0].content, /final_answer|start_work|tools_describe|Call codali/);
+    assert.match(request.messages.at(-1)!.content, /No further tool calls/);
+    const evidence = JSON.parse(request.messages.find(message => message.role === "tool")!.content);
+    assert.equal(evidence.tool, "calculate"); assert.equal(JSON.parse(evidence.content).result, 5);
+    return reply('{"sum":5}');
+  } }, config);
+  await fs.writeFile(path.join(root, "AGENTS.md"), "KEEP_PROJECT_POLICY");
+  assert.equal((await controller.interact(prompt)).content, '{"sum":5}');
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.equal(events.filter(event => event.type === "tool_receipt").length, 1);
+  assert.equal(controller.state, undefined);
+});
+
 test("adaptive rejects malformed calls and mixed control batches without execution", async t => {
   for (const calls of [[{ id: "a", name: "codali", args: { action: "write_file", path: "bad.txt" } }], [{ id: "a", name: "codali", args: { name: "start_work", args: { task: "write bad.txt" } } }, { id: "b", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }]]) {
     const config = structuredClone(base); config.interaction = { strategy: "adaptive" };

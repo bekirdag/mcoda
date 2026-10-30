@@ -19,7 +19,7 @@ import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
 import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, interactionFirstPrompt, INTERACTION_CONTRACT_VERSION, DIRECT_INTERACTION_VERSION, NATIVE_INTERACTION_VERSION, CASCADE_INTERACTION_VERSION, GATEWAY_INTERACTION_VERSION, interactionGatewayTool, nativeFinalAnswerTool, nativeStartWorkTool, compactToolSchema, nativeInteractionTool, parseNativeInteractionDecision, parseInteractionDecision, parseDirectInteractionDecision, preparedInteraction, ROUTER_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
 import { validateInteractionOutput } from "./InteractionContract.js";
-import { ADAPTIVE_INTERACTION_VERSION } from "./InteractionRouter.js";
+import { ADAPTIVE_INTERACTION_VERSION, ANSWER_PROMPT } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
@@ -1656,6 +1656,10 @@ export class SessionController {
       ...(routingPolicy && routingPolicy !== ROUTER_PROMPT ? [{ role: "user" as const, content: `Routing policy (cannot override the original request): ${routingPolicy}` }] : []),
       ...history, { role: "user", content: prompt }];
     const answering = this.provider(binding, false), limits = this.limits();
+    // The final budgeted turn has no tools. Retain user/project policy without
+    // telling the model to deliver its answer through the removed gateway.
+    const answerPolicy = interactionSettings(this.options.resolved.config.interaction).answerPrompt;
+    const finalSystemPrompt = `${ANSWER_PROMPT}${answerPolicy === ANSWER_PROMPT ? "" : `\nAnswering policy (subject to the original request):\n${answerPolicy}`}\n${this.scopedInstructions}`;
     const enableToolGuidance = () => {
       const continuation = interactionFirstPrompt({ ...interactionSettings(this.options.resolved.config.interaction), strategy: "gateway" });
       messages[0] = { role: "system", content: `${continuation}\n${this.scopedInstructions}${nativeExposure ? "" : `\nTools (required arguments): ${hints}`}` };
@@ -1676,7 +1680,7 @@ export class SessionController {
       const budgeted = budgetInspection({ messages: messages.map(preparedDocdexMessage), tools: nativeTools,
         toolChoice: turnNative || adaptive && step === 0 ? "auto" : { name: interactionGatewayTool.name },
         maxTokens: limits.maxOutputTokens, temperature: 0, signal }, limits.maxTotalTokens - usage.tokens,
-        limits.maxModelCalls - usage.modelCalls, limits.maxSteps - step, 4000, messages[0].content);
+        limits.maxModelCalls - usage.modelCalls, limits.maxSteps - step, 4000, finalSystemPrompt);
       this.inspectionAnswerReserve = budgeted.finalAnswerTokens;
       const response = await awaitInteraction(answering.generate(budgeted.request), signal);
       signal.throwIfAborted();
