@@ -9,6 +9,7 @@ on:
       - "scripts/fixtures/codali-tui-pty.mjs"
       - "scripts/verify-codali-package-install.mjs"
       - "scripts/pack-npm-tarballs.js"
+      - "scripts/benchmarks/**"
       - ".github/workflows/codali-platform-qualification.yml"
   workflow_dispatch:
 
@@ -134,7 +135,7 @@ jobs:
           node scripts/run-node-tests.js packages/codali/dist
           node scripts/run-node-tests.js packages/mswarm/dist
       - name: Workflow evaluation protocol with fake model transport
-        run: node --test scripts/benchmarks/trust-workflow.test.mjs scripts/benchmarks/trust-workflow-protocol.test.mjs
+        run: node --test scripts/benchmarks/trust-workflow.test.mjs scripts/benchmarks/trust-workflow-protocol.test.mjs scripts/benchmarks/trust-workflow-evidence.test.mjs
       - name: Document and media artifact verification
         if: runner.os == 'Linux'
         run: node --test scripts/benchmarks/trust-artifacts.test.mjs
