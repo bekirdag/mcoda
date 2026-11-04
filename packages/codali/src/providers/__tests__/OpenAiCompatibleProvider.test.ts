@@ -69,7 +69,7 @@ test("length-truncated tool arguments are rejected before a caller can execute t
     tool_calls: [{ id: "partial", type: "function", function: { name: "write_file", arguments: '{"path":"a","content":"unfinished' } }] } }] }), async () => {
     const provider = new OpenAiCompatibleProvider({ model: "fixture", baseUrl: "http://127.0.0.1:9999/v1/" });
     await assert.rejects(provider.generate({ messages: [{ role: "user", content: "write a file" }] }),
-      (error: unknown) => error instanceof ModelServiceError && error.code === "invalid_response");
+      (error: unknown) => error instanceof ModelServiceError && error.code === "invalid_response" && error.responseReason === "output_limit" && /per-response output limit/.test(error.message));
   });
 });
 

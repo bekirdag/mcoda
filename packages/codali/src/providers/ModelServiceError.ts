@@ -13,8 +13,8 @@ export class ModelServiceError extends Error {
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
   constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
-    readonly nativeContextRefused = false) {
-    super(`Model service HTTP ${status}: ${code}${code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
+    readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream") {
+    super(`Model service HTTP ${status}: ${code}${responseReason === "output_limit" ? "; the model reached its per-response output limit before finishing. No partial tool call was executed; continue with smaller file patches" : responseReason === "incomplete_stream" ? "; the response stream ended before completion. No partial tool call was executed" : code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
     this.name = "ModelServiceError";
   }
 

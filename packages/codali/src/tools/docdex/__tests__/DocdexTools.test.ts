@@ -566,3 +566,9 @@ test("tree paths are normalized into the form docdex accepts", () => {
   assert.equal(toRepoRelativePath("packages//codali", root), "packages/codali");
   assert.equal(toRepoRelativePath("packages/codali", root), "packages/codali");
 });
+
+test("opaque Docdex read errors suggest checking existence without inventing absence", async () => {
+  const client = { openFile: async () => { throw new Error("internal error"); } } as unknown as DocdexClient;
+  const tool = createDocdexTools(client).find(tool => tool.name === "docdex_open")!;
+  await assert.rejects(() => tool.handler({ path: "app.js" }, { workspaceRoot: "/tmp/project" }), /stat_path.*does not prove the file is missing/);
+});

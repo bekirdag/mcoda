@@ -476,8 +476,15 @@ const docdexToolDefinitions = (
         clamp?: boolean;
       };
       if (path) {
-        const result = await client.openFile(path, { startLine, endLine, head, clamp: clamp ?? true });
-        return toOutput(result);
+        try {
+          const result = await client.openFile(path, { startLine, endLine, head, clamp: clamp ?? true });
+          return toOutput(result);
+        } catch (error) {
+          if (error instanceof Error && /^internal error$/i.test(error.message.trim())) {
+            throw new Error(`Docdex could not read ${path}: internal error. Check this path with stat_path before retrying. If absent, do not repeat the read; if present, check Docdex index health or use read_file. This failure does not prove the file is missing.`);
+          }
+          throw error;
+        }
       }
       if (!docId) {
         throw new Error("docdex_open requires either docId or path");

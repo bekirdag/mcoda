@@ -5,7 +5,7 @@ import type { SessionEvent } from "../../runtime/SessionController.js";
 import type { PermissionProfile } from "../../permissions/PermissionGate.js";
 import { TerminalInput } from "../TerminalInput.js";
 import { terminalText, TerminalTextStream } from "../TerminalText.js";
-import { terminalHelp, terminalUsage, toolActivity } from "./TerminalPresentation.js";
+import { terminalHelp, terminalUsage, toolActivity, toolCompletionSummary } from "./TerminalPresentation.js";
 import { TerminalEditor } from "./TerminalEditor.js";
 import { TerminalSelection, clipboardSequence } from "./TerminalSelection.js";
 import { renderTerminalScreen, type TerminalOverlay, type TerminalScreenState, type TranscriptBlock } from "./TerminalScreen.js";
@@ -193,7 +193,7 @@ export class TerminalTui {
       const block = this.state.blocks.find(item => item.id === receipt.id);
       if (block) {
         block.title = terminalText(`${receipt.status === "success" ? "✓" : "!"} ${toolActivity(receipt.tool, receipt.args)} · ${receipt.status === "success" ? "done" : "needs attention"}`);
-        block.summary = receipt.status === "success" ? "Finished. Ctrl+O shows the details." : terminalText(receipt.error ?? receipt.output ?? "This step needs attention. Ctrl+O shows the details.").slice(0, 600);
+        block.summary = receipt.status === "success" ? terminalText(toolCompletionSummary(receipt.tool, receipt.args, receipt.output)).slice(0, 600) : terminalText(receipt.error ?? receipt.output ?? "This step needs attention. Ctrl+O shows the details.").slice(0, 600);
         if (typeof receipt.output === "string") block.text = terminalText([receipt.args ? JSON.stringify(receipt.args, null, 2) : "", receipt.output].filter(Boolean).join("\n\n")).slice(-65536);
         else if (receipt.error) block.text += "\n" + terminalText(receipt.error);
       }

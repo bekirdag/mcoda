@@ -44,11 +44,18 @@ export const compressProviderContext = (request: ProviderRequest, contextWindow:
   const messages = request.messages.map(message => ({ ...message }));
   const compressed = { ...request, messages };
   const target = Math.max(0, Math.floor(available * 0.7));
-  for (const maximum of [3000, 1200, 400]) {
-    for (let i = 0; i < messages.length && estimateContextTokens(compressed) > target; i++) {
-      const original = request.messages[i];
-      if (original.role === "user" || original.role === "system") continue;
-      messages[i] = shorten(original, maximum, archived);
+  // Do not immediately abbreviate the excerpt the model just recovered with
+  // context_read. Exhaust older history first; trim recent context only if the
+  // actual window requires it, not merely to meet the preferred headroom.
+  const recentStart = Math.max(0, messages.length - 4);
+  for (const recent of [false, true]) {
+    if (recent && estimateContextTokens(compressed) <= available) break;
+    for (const maximum of [3000, 1200, 400]) {
+      for (let i = recent ? recentStart : 0; i < (recent ? messages.length : recentStart) && estimateContextTokens(compressed) > target; i++) {
+        const original = request.messages[i];
+        if (original.role === "user" || original.role === "system") continue;
+        messages[i] = shorten(original, maximum, archived);
+      }
     }
   }
   const afterTokens = estimateContextTokens(compressed);

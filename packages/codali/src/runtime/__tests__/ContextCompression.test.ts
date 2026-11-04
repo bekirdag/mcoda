@@ -49,3 +49,21 @@ test("short requests are untouched and compaction spends no extra model calls", 
   const result = compressProviderContext(request, 4096, 256);
   assert.equal(result.request, request); assert.equal(result.archived.length, 0); assert.equal(result.beforeTokens, result.afterTokens);
 });
+
+test("recent recovered excerpts survive compaction of older history", () => {
+  const fresh = "EXACT RECOVERED FUNCTION\n" + "code ".repeat(600);
+  const request: ProviderRequest = { messages: [
+    { role: "system", content: "Preserve user constraints." },
+    { role: "user", content: "Implement the project." },
+    { role: "tool", toolCallId: "old", content: "old context ".repeat(3000) },
+    { role: "assistant", content: "I need the exact function." },
+    { role: "tool", toolCallId: "other", content: "short" },
+    { role: "assistant", content: "", toolCalls: [{ id: "recover", name: "context_read", args: { sha256: "saved" } }] },
+    { role: "tool", toolCallId: "recover", content: fresh },
+  ] };
+  const result = compressProviderContext(request, 3500, 512);
+  assert.ok(result.afterTokens < result.beforeTokens);
+  assert.equal(result.request.messages.at(-1)?.content, fresh);
+  assert.ok(result.afterTokens + 1024 <= 3500);
+  assert.ok(result.archived.every(entry => entry.message.content !== fresh));
+});

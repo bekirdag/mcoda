@@ -79,3 +79,22 @@ test("restoring another session resets stale usage and route and rebuilds conver
     ["user", "New goal"], ["user", "Keep the public API"], ["assistant", "Verified the change"],
   ]);
 });
+
+test("Docdex completed cards explain actual lines and show a safe content excerpt", () => {
+  const ui = make(), args = { path: "src/main.ts" };
+  ui.event(event("tool_intent", { receipt: { id: "open", tool: "docdex_open", args } }));
+  ui.event(event("tool_receipt", { receipt: { id: "open", tool: "docdex_open", args, status: "success", output: JSON.stringify({ path: args.path, start_line: 10, end_line: 14, content: "export function add(a, b) {\nreturn a + b;\n}\u001b]52;c;payload\u0007" }) } }));
+  const card = ui.state.blocks[0];
+  assert.match(card.title, /Reading src\/main.ts/);
+  assert.match(card.summary!, /lines 10–14/);
+  assert.match(card.summary!, /export function add/);
+  assert.doesNotMatch(card.summary!, /Finished\.|payload|\x1b/);
+  assert.match(card.text, /start_line/);
+});
+
+test("empty search success is shown as no results, not a successful finding", () => {
+  const ui = make();
+  ui.event(event("tool_intent", { receipt: { id: "search", tool: "docdex_search", args: { query: "missing" } } }));
+  ui.event(event("tool_receipt", { receipt: { id: "search", tool: "docdex_search", status: "success", output: '{"hits":[]}' } }));
+  assert.match(ui.state.blocks[0].summary!, /No matching results/);
+});

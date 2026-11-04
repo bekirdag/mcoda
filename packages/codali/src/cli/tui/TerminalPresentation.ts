@@ -1,10 +1,12 @@
+import { terminalText } from "../TerminalText.js";
+
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const fragment = (value: unknown): string => typeof value === "string" ? value.slice(0, 120) : "";
 
 export const toolActivity = (name: string, args: unknown): string => {
   const data = record(args), file = fragment(data.path ?? data.file), query = fragment(data.query);
   switch (name) {
-    case "read_file": return `Reading ${file || "a file"}`;
+    case "read_file": case "docdex_open": case "docdex_open_file": return `Reading ${file || "a file"}`;
     case "write_file": return `Updating ${file || "a file"}`;
     case "prepare_edit": return `Checking ${file || "the code"} before editing`;
     case "list_files": case "docdex_tree": return `Exploring ${file || "the workspace"}`;
@@ -30,6 +32,39 @@ export const toolActivity = (name: string, args: unknown): string => {
     case "work_block": return "Recording what needs attention";
     default: return name.replace(/_/g, " ");
   }
+};
+
+/** Render only observed output: no extra inference and no invented success claims. */
+export const toolCompletionSummary = (name: string, args: unknown, output?: string): string => {
+  const snippet = (value: unknown): string => {
+    if (typeof value !== "string") return "";
+    const clean = terminalText(value).trim();
+    const lines = clean.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const preview = lines.slice(0, 3).join("\n");
+    return preview.slice(0, 280) + (preview.length > 280 || lines.length > 3 ? "…" : "");
+  };
+  let parsed: unknown;
+  if (output && output.length <= 262144) { try { parsed = JSON.parse(output); } catch { /* Plain text is already a useful excerpt. */ } }
+  const data = record(parsed), input = record(args);
+  const path = snippet(data.path ?? input.path ?? input.file);
+  if (["docdex_open", "docdex_open_file", "read_file"].includes(name)) {
+    const content = typeof data.content === "string" ? data.content : parsed === undefined ? output : "";
+    const range = Number.isInteger(data.start_line) && Number.isInteger(data.end_line) ? ` · lines ${data.start_line}–${data.end_line}` : "";
+    return `Read ${path || "file content"}${range}.\n${snippet(content) || "No text returned."}`;
+  }
+  if (["docdex_search", "search", "search_files"].includes(name) && Array.isArray(data.hits)) {
+    if (!data.hits.length) return "No matching results returned. Try a narrower query or check the index.";
+    const hits = data.hits.slice(0, 3).map(hit => { const row = record(hit); return snippet(row.path ?? row.rel_path ?? row.doc_id); }).filter(Boolean);
+    return `Found ${data.hits.length} result${data.hits.length === 1 ? "" : "s"}${hits.length ? `: ${hits.join(", ")}` : "."}`;
+  }
+  if (typeof data.tree === "string") return `Workspace structure:\n${snippet(data.tree) || "No entries returned."}`;
+  if (Array.isArray(data.entries)) return `Found ${data.entries.length} entries.\n${snippet(data.entries.filter(entry => typeof entry === "string").slice(0, 3).join("\n"))}`;
+  const message = snippet(data.message ?? data.output ?? data.summary ?? data.content);
+  if (message) return message;
+  if (parsed === undefined && output?.trim()) return snippet(output);
+  if (Array.isArray(data.tasks)) return `Plan contains ${data.tasks.length} tasks. Ctrl+O shows the plan.`;
+  if (name === "work_claim" && typeof data.title === "string") return `Started: ${snippet(data.title)}`;
+  return "Result received. Ctrl+O shows the full details.";
 };
 
 export const terminalHelp = (): string => [

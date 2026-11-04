@@ -388,7 +388,7 @@ export class OpenAiCompatibleProvider implements Provider {
           buffer = lines.pop() ?? "";
           for (const line of lines) consume(line);
         } } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-        if ((!ended && !finishReason) || finishReason === "length") throw new ModelServiceError("invalid_response", 200);
+        if ((!ended && !finishReason) || finishReason === "length") throw new ModelServiceError("invalid_response", 200, undefined, false, finishReason === "length" ? "output_limit" : "incomplete_stream");
         if (!content && !toolCallMap.size) throw new Error("Model stream returned no content or tool calls");
         for (const call of toolCallMap.values()) { if (!call.name || !call.id) throw new Error("Incomplete streamed tool call"); JSON.parse(call.args); }
 
@@ -433,7 +433,7 @@ export class OpenAiCompatibleProvider implements Provider {
           ? message.split(this.config.apiKey).join("[redacted]") : message;
         throw new Error(redacted.slice(0, 600));
       }
-      if (raw?.choices?.[0]?.finish_reason === "length") throw new ModelServiceError("invalid_response", 200);
+      if (raw?.choices?.[0]?.finish_reason === "length") throw new ModelServiceError("invalid_response", 200, undefined, false, "output_limit");
       const choice = raw?.choices?.[0]?.message;
       if (!choice) {
         throw new Error("OpenAI-compatible response missing choices");

@@ -59,6 +59,7 @@ test("continuous invalid-response recovery accounts each attempt once and never 
   assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "completed").length, 1);
   assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 1);
   assert.equal(events.filter(e => e.type === "tool_intent").length, 0);
+  assert.equal(events.find(e => e.type === "model_failure")?.data.code, "invalid_response");
 });
 
 test("continuous invalid-response recovery is bounded and does not retry outages", async t => {
