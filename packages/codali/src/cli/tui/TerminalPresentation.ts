@@ -6,6 +6,8 @@ const fragment = (value: unknown): string => typeof value === "string" ? value.s
 export const toolActivity = (name: string, args: unknown): string => {
   const data = record(args), file = fragment(data.path ?? data.file), query = fragment(data.query);
   switch (name) {
+    case "tools_discover": return "Finding available tools";
+    case "tools_enable": return "Preparing selected tools";
     case "read_file": case "docdex_open": case "docdex_open_file": return `Reading ${file || "a file"}`;
     case "write_file": return `Updating ${file || "a file"}`;
     case "prepare_edit": return `Checking ${file || "the code"} before editing`;
@@ -46,6 +48,18 @@ export const toolCompletionSummary = (name: string, args: unknown, output?: stri
   let parsed: unknown;
   if (output && output.length <= 262144) { try { parsed = JSON.parse(output); } catch { /* Plain text is already a useful excerpt. */ } }
   const data = record(parsed), input = record(args);
+  if (name === "tools_discover") {
+    if (!Array.isArray(parsed)) return "Tool discovery returned a partial listing. Ctrl+O shows the available details.";
+    if (!parsed.length) return "No additional tools were listed.";
+    const descriptions = parsed.slice(0, 3).map(item => {
+      const tool = record(item);
+      return snippet(tool.description) || snippet(typeof tool.name === "string" ? tool.name.replace(/_/g, " ") : "");
+    }).filter(Boolean);
+    return `Listed ${parsed.length} available tool${parsed.length === 1 ? "" : "s"}.${descriptions.length ? `\n${snippet(descriptions.map(value => `• ${value}`).join("\n"))}` : ""}\nCtrl+O shows the full listing.`;
+  }
+  if (name === "tools_enable" && Array.isArray(data.enabled)) {
+    return `Prepared ${data.enabled.length} tool${data.enabled.length === 1 ? "" : "s"} for the model to use. Execution permissions still apply. Ctrl+O shows which tools.`;
+  }
   const path = snippet(data.path ?? input.path ?? input.file);
   if (["docdex_open", "docdex_open_file", "read_file"].includes(name)) {
     const content = typeof data.content === "string" ? data.content : parsed === undefined ? output : "";
@@ -61,7 +75,10 @@ export const toolCompletionSummary = (name: string, args: unknown, output?: stri
   if (Array.isArray(data.entries)) return `Found ${data.entries.length} entries.\n${snippet(data.entries.filter(entry => typeof entry === "string").slice(0, 3).join("\n"))}`;
   const message = snippet(data.message ?? data.output ?? data.summary ?? data.content);
   if (message) return message;
-  if (parsed === undefined && output?.trim()) return snippet(output);
+  if (parsed === undefined && output?.trim()) {
+    if (/^\s*[\[{]/.test(output)) return "Received structured output. Ctrl+O shows the available details.";
+    return snippet(output);
+  }
   if (Array.isArray(data.tasks)) return `Plan contains ${data.tasks.length} tasks. Ctrl+O shows the plan.`;
   if (name === "work_claim" && typeof data.title === "string") return `Started: ${snippet(data.title)}`;
   return "Result received. Ctrl+O shows the full details.";

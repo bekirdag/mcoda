@@ -29,3 +29,10 @@ Build passed. Four real PTY cases passed against source and again against the ex
 ## Command names for local testing
 
 User explicitly paused all new npm publishing. Raijin bare codali now launches the patched preview TUI; codali-cli exposes the same installed CLI for other commands. Previous global codali symlink preserved at ~/.local/state/codali-run-recovery-preview/codali.before-tui-launcher. Package bin metadata adds codali-cli alongside codali for eventual release; README documents both. Four PTY startup/exit cases passed through the exact codali launcher; codali-cli version and configuration validation passed. No npm publish or version change performed. Delegation receipt 29f8c2f1-3dc4-4696-84cf-d7ca648e830c reviewed the minimal bin alias.
+
+## Human-readable discovery snippets
+
+User reported raw tools_discover JSON in collapsed cards. TerminalPresentation now names the activity “Finding available tools”, summarizes complete discovery listings with a count and three bounded descriptions, and labels partial listings without inventing a count. tools_enable explains that schemas were prepared and permissions still apply. Generic malformed JSON is kept out of collapsed snippets; expanded details retain raw results. Delegation receipt b8fba7e6-b688-4b7a-8246-f2f1c612fee2 provided wording guidance. Docdex graph/symbol data was empty; inspected consumers and result producers directly.
+
+Build and all 12 TerminalTui tests passed, including actual card events for complete and truncated discovery output. Installed formatter checks passed for complete, empty, truncated and enable results. Local installed TerminalPresentation.js updated atomically with backup; npm untouched.
+Installed 16-flow real PTY regression also passed after the snippet update. Docdex pre-commit and whitespace checks passed.

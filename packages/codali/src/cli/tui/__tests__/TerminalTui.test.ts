@@ -98,3 +98,26 @@ test("empty search success is shown as no results, not a successful finding", ()
   ui.event(event("tool_receipt", { receipt: { id: "search", tool: "docdex_search", status: "success", output: '{"hits":[]}' } }));
   assert.match(ui.state.blocks[0].summary!, /No matching results/);
 });
+
+test("tool discovery cards explain capabilities without dumping JSON", () => {
+  const ui = make();
+  const output = JSON.stringify([{ name: "read_file", description: "Read a text file from the workspace." }, { name: "list_files", description: "List files under a directory." }]);
+  ui.event(event("tool_intent", { receipt: { id: "discover", tool: "tools_discover", args: {} } }));
+  ui.event(event("tool_receipt", { receipt: { id: "discover", tool: "tools_discover", status: "success", output } }));
+  const card = ui.state.blocks[0];
+  assert.match(card.title, /Finding available tools/);
+  assert.match(card.summary!, /Listed 2 available tools/);
+  assert.match(card.summary!, /Read a text file/);
+  assert.doesNotMatch(card.summary!, /\[{|"name"|"description"/);
+  assert.ok(card.text.includes(output));
+});
+
+test("partial discovery and other structured results do not leak raw JSON into snippets", () => {
+  for (const tool of ["tools_discover", "custom_inspection"]) {
+    const ui = make();
+    ui.event(event("tool_intent", { receipt: { id: "partial", tool, args: {} } }));
+    ui.event(event("tool_receipt", { receipt: { id: "partial", tool, status: "success", output: '[{"name":"read_file","description":"Read a file"},{"name":"truncated' } }));
+    assert.match(ui.state.blocks[0].summary!, /Ctrl\+O/);
+    assert.doesNotMatch(ui.state.blocks[0].summary!, /"name"|Listed \d/);
+  }
+});
