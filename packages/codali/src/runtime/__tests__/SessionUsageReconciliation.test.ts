@@ -121,7 +121,7 @@ for (const outcome of ["completed", "missing", "active", "partial", "truncated",
     const resolved = { config, hash: orchestrationHash(config), source: "fixture" };
     const events: SessionEvent[] = []; let requestId = ""; let lookups = 0; let dispatches = 0;
     t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url).endsWith("/agents")) return Response.json({ agents: [{ slug: "large", health_status: "healthy", supports_tools: true }] });
+      if (new URL(String(url)).pathname.endsWith("/agents")) return Response.json({ agents: [{ slug: "large", health_status: "healthy", supports_tools: true }] });
       if (init?.method === "POST") { dispatches++; requestId = new Headers(init.headers).get("x-request-id")!; throw new Error("Connection lost after dispatch"); }
       assert.equal(new URL(String(url)).pathname, `/v1/swarm/self-hosted/requests/${requestId}/receipts`);
       assert.equal(new Headers(init?.headers).get("x-api-key"), "fixture-accounting-key"); lookups++;

@@ -21,7 +21,7 @@ for (const advertised of [undefined, { supports_reasoning: true }, { ...contract
     const scope = new ConfiguredModelScope(configuration(), { effort: "high", credentials: { service: "fixture-native-credential" } });
     globalThis.fetch = async (url, init) => {
       if (init?.method === "POST") { dispatched++; throw new Error("Inference must not run"); }
-      return String(url).endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] })
+      return new URL(String(url)).pathname.endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] })
         : Response.json({ data: [{ id: "large", native_reasoning: advertised }] });
     };
     try {
@@ -37,7 +37,7 @@ for (const advertised of [undefined, { supports_reasoning: true }, { ...contract
 test("authenticated native transport discovery permits exact parameters, including none and zero", { concurrency: false }, async () => {
   const original = globalThis.fetch; const bodies: Record<string, unknown>[] = []; let preflights = 0;
   globalThis.fetch = async (url, init) => {
-    if (String(url).endsWith("/agents")) return Response.json({ agents: [{ slug: "large" }] });
+    if (new URL(String(url)).pathname.endsWith("/agents")) return Response.json({ agents: [{ slug: "large" }] });
     if (String(url).endsWith("/models")) {
       preflights++;
       assert.equal(new Headers(init?.headers).get("x-api-key"), "fixture-native-credential");
@@ -65,7 +65,7 @@ test("authenticated native transport discovery permits exact parameters, includi
 test("a different model's transport advertisement cannot authorize the selected model", { concurrency: false }, async () => {
   const original = globalThis.fetch;
   const scope = new ConfiguredModelScope(configuration(), { effort: "high", credentials: { service: "fixture-native-credential" } });
-  globalThis.fetch = async url => String(url).endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] })
+  globalThis.fetch = async url => new URL(String(url)).pathname.endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] })
     : Response.json({ data: [{ id: "another-model", native_reasoning: contract }] });
   try { await assert.rejects(scope.provider("lead").generate(request), /Native reasoning transport is unavailable/); assert.equal(scope.snapshot().modelCalls, 0); }
   finally { scope.close(); globalThis.fetch = original; }
@@ -91,7 +91,7 @@ for (const adapter of ["mswarm", "openai-compatible"] as const) {
       const requestId = new Headers(init?.headers).get("x-request-id");
       if (init?.method !== "POST") {
         assert.equal(requestId, null);
-        return String(url).endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] }) : Response.json({ data: [{ id: "large" }] });
+        return new URL(String(url)).pathname.endsWith("/agents") ? Response.json({ agents: [{ slug: "large" }] }) : Response.json({ data: [{ id: "large" }] });
       }
       dispatched.push(requestId);
       return Response.json({ choices: [{ message: { role: "assistant", content: "Correlated" } }], usage: { total_tokens: 15 } });

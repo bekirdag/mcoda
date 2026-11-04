@@ -648,7 +648,7 @@ test("native reasoning preflight refusal refunds the terminal reservation and su
   let dispatched = 0; const events: SessionEvent[] = [];
   globalThis.fetch = async (url, init) => {
     if (init?.method === "POST") { dispatched++; throw new Error("Inference must not be dispatched"); }
-    return String(url).endsWith("/agents") ? Response.json({ agents: [{ slug: "test", supports_tools: true }] })
+    return new URL(String(url)).pathname.endsWith("/agents") ? Response.json({ agents: [{ slug: "test", supports_tools: true }] })
       : Response.json({ data: [{ id: "test", supports_reasoning: true }] });
   };
   const options = { workspaceRoot: root, storageRoot: storage, resolved: selected, docdex: false as const, permissions: "plan" as const, effort: "high" as const };

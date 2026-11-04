@@ -13,7 +13,7 @@ test("temporary catalog and native-discovery failures precede exactly one infere
     if (init?.method === "POST") {
       posts++; return Response.json({ choices: [{ message: { role: "assistant", content: "ready" } }], usage: { total_tokens: 4 } });
     }
-    const lane = String(url).endsWith("/agents") ? "catalog" : "native";
+    const lane = new URL(String(url)).pathname.endsWith("/agents") ? "catalog" : "native";
     if (++gets[lane] < 3) return Response.json({ error: { code: "upstream_error" } }, { status: 503 });
     return Response.json(lane === "catalog" ? catalog : native);
   });
@@ -75,4 +75,13 @@ test("malformed discovery and inference failures are never replayed by discovery
   });
   await assert.rejects(new ModelServiceClient(service, "fixture-key").json(service.baseUrl + "/chat/completions", { method: "POST", body: {} }), /503/);
   assert.equal(requests, 1);
+});
+
+ test("default catalog includes pooled aliases while explicit catalog URLs remain authoritative", async t => {
+  const urls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => { urls.push(String(url)); return Response.json(catalog); });
+  await new ModelServiceClient(service, "fixture-key").catalog();
+  assert.equal(new URL(urls[0]).searchParams.get("include_load_balanced"), "true");
+  await new ModelServiceClient({ ...service, catalogUrl: "https://discovery.test/custom?scope=private" }, "fixture-key").catalog();
+  assert.equal(urls[1], "https://discovery.test/custom?scope=private");
 });

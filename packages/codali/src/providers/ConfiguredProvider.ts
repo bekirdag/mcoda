@@ -111,18 +111,20 @@ export class ModelServiceClient {
     const key = createHash("sha256").update(credential ?? "anonymous").digest("hex");
     if (!refresh && this.cache?.key === key && this.cache.expires > Date.now()) return this.cache.entries;
     const base = new URL(this.provider.baseUrl);
-    const url = this.provider.catalogUrl ?? (this.provider.adapter === "mswarm" ? new URL("/v1/swarm/self-hosted/agents", base).toString() : `${this.provider.baseUrl.replace(/\/$/, "")}/models`);
+    const url = this.provider.catalogUrl ?? (this.provider.adapter === "mswarm" ? new URL("/v1/swarm/self-hosted/agents?include_load_balanced=true", base).toString() : `${this.provider.baseUrl.replace(/\/$/, "")}/models`);
     const payload = record(await this.discoveryJson(url, signal));
     const items = payload.agents ?? payload.data;
     if (!Array.isArray(items)) throw new Error("Invalid model catalog response");
     const entries = items.map(item => {
       const raw = record(item);
-      const aliases = [raw.slug, raw.public_model_id, raw.default_model, raw.id].filter((v): v is string => typeof v === "string" && !!v);
+      const aliases = [raw.slug, raw.public_model_id, raw.default_model, raw.id, ...(raw.pool_scope === "owner" ? [raw.canonical_model_id] : [])].filter((v): v is string => typeof v === "string" && !!v);
       return { id: aliases[0] ?? "", aliases, backend: raw.adapter === "strata-local" ? "strata" : typeof raw.backend === "string" ? raw.backend : typeof raw.adapter === "string" ? raw.adapter : undefined,
         health: String(raw.health_status ?? "unknown"), supportsTools: raw.supports_tools === true,
         contextWindow: typeof raw.context_window === "number" ? raw.context_window : undefined,
         operations: Array.isArray(raw.operations) ? raw.operations.map(v => typeof v === "string" ? v : String(record(v).type ?? "")) : [], raw };
     }).filter(x => x.id);
+    entries.sort((a, b) => Number(b.raw.pool_scope === "owner") - Number(a.raw.pool_scope === "owner")
+      || Number(b.raw.member_count ?? 0) - Number(a.raw.member_count ?? 0) || a.id.localeCompare(b.id));
     this.cache = { key, expires: Date.now() + 30_000, entries };
     return entries;
   }
@@ -220,7 +222,7 @@ export class ConfiguredProvider implements Provider {
     const invocation: ModelInvocation = { id: requestId, binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
     const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
     if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
-    if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(model.catalogId, Object.keys(nativeReasoning), request.signal);
+    if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(actual.id, Object.keys(nativeReasoning), request.signal);
     const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens);
     const inputEstimate = Math.ceil(JSON.stringify([request.messages, request.tools]).length / 3);
     if (inputEstimate + maxTokens > Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow)) throw new Error("Context budget exceeded; checkpoint and compact before continuing");

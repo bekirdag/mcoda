@@ -23,7 +23,7 @@ test("configured public API preserves separate authenticated tenant identities o
   globalThis.fetch = async (url, init) => {
     const headers = new Headers(init?.headers); const tenant = headers.get("x-mswarm-client-identity")!;
     assert.ok(["wodo", "heka"].includes(tenant)); assert.equal(headers.get("x-mswarm-client-product"), "logmira");
-    if (String(url).endsWith("/agents")) { catalogs.push(tenant); return Response.json({ agents: [{ slug: "large", backend: "strata", health_status: "healthy" }] }); }
+    if (new URL(String(url)).pathname.endsWith("/agents")) { catalogs.push(tenant); return Response.json({ agents: [{ slug: "large", backend: "strata", health_status: "healthy" }] }); }
     assert.ok(String(url).endsWith("/chat/completions"));
     const count = (counts.get(tenant) ?? 0) + 1; counts.set(tenant, count);
     const content = count === 1 ? JSON.stringify({ queryType: "general", needsPrivateData: false, needsFreshData: false, needsDocdex: false, needsAppTools: false, needsImageWorker: false, confidence: "high" })
