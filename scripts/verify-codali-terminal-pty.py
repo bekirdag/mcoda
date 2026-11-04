@@ -64,14 +64,16 @@ try:
  fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',18,45,0,0));os.kill(p.pid,signal.SIGWINCH)
  offset=len(captured);os.write(master,'\x1b[200~alpha\n/quit\nβeta\x1b[201~'.encode());read_until(lambda data:'βeta'.encode() in data[offset:])
  assert p.poll() is None,'Pasted /quit executed before submission'
- os.write(master,b'\x15/effort high\r');read_until(lambda data:b'Effort: high' in data)
+ os.write(master,b'\x15\x1b[200~  /effort high\n\x1b[201~');time.sleep(0.1)
+ assert p.poll() is None,'Pasted command executed before submission'
+ os.write(master,b'\r');read_until(lambda data:b'Effort: high' in data)
  offset=len(captured);os.write(master,b'\x1b');read_until(lambda data:b'\x1b[?25h' in data[offset:])
  os.write(master,b'/quit\r');read_until(lambda data:b'\x1b[?2004l' in data)
  p.wait(timeout=5);assert p.returncode==0
  node=sys.argv[1] if len(sys.argv)>1 else 'node'
  check_masked_login(node);check_masked_login(node,cancel=True)
  assert b'\x1b[?1049l' in captured and b'\x1b[?25h' in captured
- print(json.dumps({'passed':True,'checks':['default TUI screen','interactive status view','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','effort command','clean quit restores screen, cursor and bracketed paste','masked login input and backspace','login cancellation restores terminal']}))
+ print(json.dumps({'passed':True,'checks':['default TUI screen','interactive status view','terminal resize','multiline paste stays editable','pasted slash command not executed','clear pasted input','pasted slash command with trailing newline routes locally on submission','clean quit restores screen, cursor and bracketed paste','masked login input and backspace','login cancellation restores terminal']}))
 finally:
  if p and p.poll() is None:p.terminate();p.wait(timeout=5)
  os.close(master)

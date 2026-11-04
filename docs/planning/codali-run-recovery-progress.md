@@ -66,3 +66,10 @@ prepare_edit now returns bounded excerpts (each inner output capped by serialize
 Docdex symbol lookup returned missing_index and reindex failed with index HTTP request failed during audit; graph had no edges. Direct source/consumer review and regression tests supplement unavailable index data. Delegation receipt4d97b88b-b544-4f78-b791-1f6798d5b964 reviewed the bounded-result design. No changes made to the user's GameHub source or npm registry.
 Validation: build and all68 SessionController tests passed, including unchanged permission/race protections, oversized structural preparation, and paged escaped-source exact patch with byte preservation. Installed controller atomically and confirmed byte equality with tested build; previous controller retained. Docdex pre-commit and whitespace checks passed.
 Additional interaction-router, runner and context-compression suite:105passed, zero failures (173focused tests total). npm publishing remains paused.
+
+## Pasted resume command routing
+
+Session353de33a logged interaction_request with `/resume defb88c2-a400-458b-8eba-80f12b5ee687` plus trailing newline. It was sent to the LLM, whose reply incorrectly claimed no active goal. Target metadata kind=work and work.json status=active were intact. Actual CLI inspect through SessionController.resume succeeded and returned that session, ~/apps/test, busy=false, goalStatus=active without model execution.
+
+Both submitted-input handlers now trim surrounding whitespace for single-line slash commands before dispatch; internal multiline content remains chat text, and paste arrival does not execute anything. Delegation receipt e3c3159b-64a1-4abf-8433-c46f78d481f1 reviewed normalization boundaries. Build and source PTY checks passed including trailing-newline slash submission and unchanged multiline paste protection. Installed TerminalCommand.js atomically with backup; npm untouched.
+Installed PTY checks also passed (10 flows). Docdex pre-commit and whitespace checks passed.
