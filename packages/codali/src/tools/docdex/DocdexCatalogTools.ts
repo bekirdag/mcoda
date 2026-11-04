@@ -20,7 +20,9 @@ export const createDocdexCatalogTools = (client: DocdexClient, existing: Readonl
       if (entry.inputSchema.properties?.agent_id) args.agent_id = "codali-terminal";
       if (entry.inputSchema.properties?.allow_sensitive) args.allow_sensitive = false;
       if (entry.name === "docdex_conversation_hook") args.wait_for_processing = true;
-      if (entry.name === "docdex_local_completion") { args.agent = "model:configured-docdex-helper"; args.mode = "draft_only"; args.max_tokens = Math.min(2048, Number(args.max_tokens) || 1024); }
+      // The shared daemon owns delegation routing and fallback policy. Never
+      // override it with the removed private inference bridge or model input.
+      if (entry.name === "docdex_local_completion") { args.mode = "draft_only"; args.max_tokens = Math.min(2048, Number(args.max_tokens) || 1024); }
       // Catalog features may accept artifacts, never an unrestricted host path.
       for (const key of ["artifact_path", "current_plan_path", "current_files", "paths", "file", "path"]) {
         const value = args[key]; if (value === undefined) continue;

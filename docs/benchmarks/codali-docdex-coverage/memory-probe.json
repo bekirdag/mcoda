@@ -1,0 +1,198 @@
+{
+  "kind": "bounded skill selection and behavior probes; manual semantic review required",
+  "at": "2026-11-04T18:48:59.775Z",
+  "promptChars": 3111,
+  "results": [
+    {
+      "id": "memory",
+      "skill": "docdex-research",
+      "request": "Use the Docdex research skill and its memory reference to choose the right memory lanes for: a verified repository architecture fact; an explicit user preference; resuming an older conversation; a handoff of unfinished work; provenance of an earlier decision; and richer user routines before planning. Explain how to discover optional tools, what to do if a feature is disabled, and whether a read-only question permits memory writes. This probe only has skill-reading tools: do not claim Docdex operations ran.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:docdex-research:259633e4"
+          }
+        },
+        {
+          "name": "skill_read",
+          "args": {
+            "id": "builtin:docdex-research:259633e4",
+            "path": "references/memory.md"
+          }
+        },
+        {
+          "name": "skill_read",
+          "args": {
+            "path": "references/memory.md",
+            "id": "builtin:docdex-research:259633e4",
+            "offset": 2400
+          }
+        }
+      ],
+      "answer": {
+        "memory_lane_mapping": {
+          "verified_repository_architecture_fact": {
+            "lane": "Repository facts",
+            "read_tools": [
+              "memory_recall"
+            ],
+            "write_tools": [
+              "memory_save",
+              "memory_store"
+            ],
+            "notes": "Verify against current files before saving; include paths and evidence. Save concise verified discoveries at milestones only when writes are permitted."
+          },
+          "explicit_user_preference": {
+            "lane": "Agent profile",
+            "read_tools": [
+              "get_profile"
+            ],
+            "write_tools": [
+              "save_preference"
+            ],
+            "notes": "save_preference immediately for explicit corrections/preferences when permitted. Not for technical repo facts. Profile memory is independent of repository memory enablement."
+          },
+          "resuming_an_older_conversation": {
+            "lane": "Conversation archive",
+            "read_tools": [
+              "conversation_search",
+              "conversation_list",
+              "conversation_read",
+              "conversation_export",
+              "wakeup"
+            ],
+            "write_tools": [
+              "conversation_import",
+              "conversation_hook"
+            ],
+            "notes": "Use wakeup for a compact continuity bundle, then selectively conversation_search/read. Do not replay entire archives. A missing memory is not proof an event never happened."
+          },
+          "handoff_of_unfinished_work": {
+            "lane": "Diary",
+            "read_tools": [
+              "diary_read"
+            ],
+            "write_tools": [
+              "diary_write"
+            ],
+            "notes": "Record concise observed outcomes and unfinished work; distinguish unverified proposals from confirmed facts."
+          },
+          "provenance_of_an_earlier_decision": {
+            "lane": "Temporal knowledge graph",
+            "read_tools": [
+              "kg_query",
+              "search_nodes",
+              "search_edges",
+              "timeline",
+              "neighborhood",
+              "entity_links",
+              "search_episodes",
+              "episode"
+            ],
+            "write_tools": [
+              "authorized rebuild/maintenance tools only"
+            ],
+            "notes": "Use when timing or provenance matters. Writes are usually derived from conversation processing; do not invent graph-write APIs."
+          },
+          "richer_user_routines_before_planning": {
+            "lane": "Personal preferences",
+            "read_tools": [
+              "personal_preferences_status",
+              "search",
+              "list",
+              "read",
+              "claims",
+              "claim_read",
+              "routines",
+              "clone_context",
+              "clone_directive"
+            ],
+            "write_tools": [
+              "feedback/operator-event tools or explicit claim review workflows when permitted"
+            ],
+            "notes": "Before complex personalized planning, inspect clone_directive and relevant routine evidence. Current user instructions and repo facts outrank inferred routines. Never automatically collect unrelated personal data."
+          }
+        },
+        "discovering_optional_tools": {
+          "steps": [
+            "Call tools_discover to enumerate available Docdex tools at runtime.",
+            "Call tools_enable to load schemas for the specific tools needed.",
+            "Use exact advertised arguments; Codali adapters can differ from raw MCP examples.",
+            "Availability never grants permission—check capability/service results before relying on output."
+          ]
+        },
+        "if_feature_is_disabled": {
+          "action": "Report the feature as unavailable. Never treat a disabled or failed tool call as successful evidence.",
+          "example": "Disabled personal preferences is an unavailable feature, not permission to turn on global capture. Report profile persistence failures explicitly."
+        },
+        "read_only_question_memory_writes": {
+          "permitted": false,
+          "rule": "Read-only investigations cannot perform memory writes.",
+          "detail": "Memory writes (memory_save, save_preference, diary_write, conversation_hook, etc.) require that writes are permitted by the task context. A purely read-only question does not grant that permission, so no lane should be written to."
+        }
+      },
+      "rawAnswer": "{\"memory_lane_mapping\":{\"verified_repository_architecture_fact\":{\"lane\":\"Repository facts\",\"read_tools\":[\"memory_recall\"],\"write_tools\":[\"memory_save\",\"memory_store\"],\"notes\":\"Verify against current files before saving; include paths and evidence. Save concise verified discoveries at milestones only when writes are permitted.\"},\"explicit_user_preference\":{\"lane\":\"Agent profile\",\"read_tools\":[\"get_profile\"],\"write_tools\":[\"save_preference\"],\"notes\":\"save_preference immediately for explicit corrections/preferences when permitted. Not for technical repo facts. Profile memory is independent of repository memory enablement.\"},\"resuming_an_older_conversation\":{\"lane\":\"Conversation archive\",\"read_tools\":[\"conversation_search\",\"conversation_list\",\"conversation_read\",\"conversation_export\",\"wakeup\"],\"write_tools\":[\"conversation_import\",\"conversation_hook\"],\"notes\":\"Use wakeup for a compact continuity bundle, then selectively conversation_search/read. Do not replay entire archives. A missing memory is not proof an event never happened.\"},\"handoff_of_unfinished_work\":{\"lane\":\"Diary\",\"read_tools\":[\"diary_read\"],\"write_tools\":[\"diary_write\"],\"notes\":\"Record concise observed outcomes and unfinished work; distinguish unverified proposals from confirmed facts.\"},\"provenance_of_an_earlier_decision\":{\"lane\":\"Temporal knowledge graph\",\"read_tools\":[\"kg_query\",\"search_nodes\",\"search_edges\",\"timeline\",\"neighborhood\",\"entity_links\",\"search_episodes\",\"episode\"],\"write_tools\":[\"authorized rebuild/maintenance tools only\"],\"notes\":\"Use when timing or provenance matters. Writes are usually derived from conversation processing; do not invent graph-write APIs.\"},\"richer_user_routines_before_planning\":{\"lane\":\"Personal preferences\",\"read_tools\":[\"personal_preferences_status\",\"search\",\"list\",\"read\",\"claims\",\"claim_read\",\"routines\",\"clone_context\",\"clone_directive\"],\"write_tools\":[\"feedback/operator-event tools or explicit claim review workflows when permitted\"],\"notes\":\"Before complex personalized planning, inspect clone_directive and relevant routine evidence. Current user instructions and repo facts outrank inferred routines. Never automatically collect unrelated personal data.\"}},\"discovering_optional_tools\":{\"steps\":[\"Call tools_discover to enumerate available Docdex tools at runtime.\",\"Call tools_enable to load schemas for the specific tools needed.\",\"Use exact advertised arguments; Codali adapters can differ from raw MCP examples.\",\"Availability never grants permission—check capability/service results before relying on output.\"]},\"if_feature_is_disabled\":{\"action\":\"Report the feature as unavailable. Never treat a disabled or failed tool call as successful evidence.\",\"example\":\"Disabled personal preferences is an unavailable feature, not permission to turn on global capture. Report profile persistence failures explicitly.\"},\"read_only_question_memory_writes\":{\"permitted\":false,\"rule\":\"Read-only investigations cannot perform memory writes.\",\"detail\":\"Memory writes (memory_save, save_preference, diary_write, conversation_hook, etc.) require that writes are permitted by the task context. A purely read-only question does not grant that permission, so no lane should be written to.\"}}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "0a10279b-c303-4fa0-a80e-25093a4049bc",
+          "binding": "lead",
+          "configHash": "4e6021d7ccc9f1e3f2ad162ce2cadf6747d5c78da56460c1293456a5b7143246",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "cdf5324e-0c93-4f98-836a-a4fd8f9cafbb",
+          "binding": "lead",
+          "configHash": "4e6021d7ccc9f1e3f2ad162ce2cadf6747d5c78da56460c1293456a5b7143246",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "34e74756-61ef-4e2a-bb5c-1c30771c3b89",
+          "binding": "lead",
+          "configHash": "4e6021d7ccc9f1e3f2ad162ce2cadf6747d5c78da56460c1293456a5b7143246",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "94f967c3-b304-45cd-a564-b84681907036",
+          "binding": "lead",
+          "configHash": "4e6021d7ccc9f1e3f2ad162ce2cadf6747d5c78da56460c1293456a5b7143246",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 4,
+        "inputTokens": 9208,
+        "outputTokens": 1118,
+        "totalTokens": 10326,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 28494
+    }
+  ]
+}

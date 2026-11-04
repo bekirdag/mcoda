@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import os from "node:os";
+import { readFileSync } from "node:fs";
 import { DocdexClient } from "../DocdexClient.js";
 import { docdexCatalog, docdexCatalogKind } from "../DocdexCatalog.js";
 import { createDocdexTools } from "../../tools/docdex/DocdexTools.js";
@@ -38,7 +39,36 @@ test("standard MCP catalog initializes, caches discovery and binds repository/ag
   assert.equal(first.ok, true, first.error?.message); const args = JSON.parse(first.output).scoped;
   assert.equal(args.project_root, os.tmpdir()); assert.equal(args.agent_id, "codali-terminal"); assert.equal(args.conversation_namespace, undefined);
   await client.callCatalog("docdex_memory_layers", { project_root: os.tmpdir() });
+  // Exercise each memory lane through the real registry, not just catalog names.
+  for (const [name, input] of [
+    ["docdex_memory_store", { text: "Verified fixture fact" }],
+    ["docdex_personal_preferences_status", {}],
+    ["docdex_kg_timeline", { entity: "fixture" }],
+    ["docdex_conversation_hook", { action: "periodic_memory_save", summary_text: "Fixture milestone" }],
+    ["docdex_memory_route", { query: "remember an explicit preference" }],
+  ] as const) {
+    const result = await registry.execute(name, input, { workspaceRoot: os.tmpdir() });
+    assert.equal(result.ok, true, `${name}: ${result.error?.message}`);
+  }
+  const delegated = await registry.execute("docdex_local_completion", { task_type: "general_question", instruction: "Return OK", context: "Fixture", agent: "model:unapproved", mode: "draft_then_refine", max_tokens: 9000 }, { workspaceRoot: os.tmpdir() });
+  assert.equal(delegated.ok, true, delegated.error?.message);
+  const delegatedArgs = JSON.parse(delegated.output).scoped;
+  assert.equal(delegatedArgs.agent, undefined, "shared daemon routing must not be overridden");
+  assert.equal(delegatedArgs.mode, "draft_only");
+  assert.equal(delegatedArgs.max_tokens, 2048);
+  assert.equal(delegatedArgs.project_root, os.tmpdir());
   assert.equal(calls.filter(call => call.method === "initialize").length, 1); assert.equal(calls.filter(call => call.method === "tools/list").length, 1);
+});
+
+test("lazy Docdex skill reference covers every bundled native tool", () => {
+  const reference = readFileSync(new URL("../../../config/skills/docdex-research/references/catalog.md", import.meta.url), "utf8");
+  for (const entry of docdexCatalog) assert.ok(reference.includes(`**${entry.name}**`), entry.name);
+  const skill = readFileSync(new URL("../../../config/skills/docdex-research/SKILL.md", import.meta.url), "utf8");
+  assert.ok(skill.length <= 2400, "entrypoint must fit a normal skill load");
+  for (const name of ["memory", "retrieval", "operations", "catalog"]) {
+    assert.ok(skill.includes(`references/${name}.md`));
+    assert.ok(readFileSync(new URL(`../../../config/skills/docdex-research/references/${name}.md`, import.meta.url), "utf8").length < 65536);
+  }
 });
 
 test("catalog scopes and unknown RPC methods cannot bypass immutable operation restrictions", async () => {

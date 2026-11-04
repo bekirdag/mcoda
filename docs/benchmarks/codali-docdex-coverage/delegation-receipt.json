@@ -1,0 +1,14 @@
+{
+  "adapter": "openai-api",
+  "draft": true,
+  "id": "7baf6e7f-7cf4-4e9b-a499-11763a622bd4",
+  "model": "qwen-latest-flash-next",
+  "output": "OK",
+  "task_type": "general_question",
+  "truncated": false,
+  "warnings": [],
+  "meta": {
+    "docdex_request_id": "69957a5c-de7c-4dbf-9d48-2a94fd7fbed6",
+    "docdex_operation": "tools/call"
+  }
+}
