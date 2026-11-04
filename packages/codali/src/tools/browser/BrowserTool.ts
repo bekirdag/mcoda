@@ -19,9 +19,10 @@ export async function resolveBrowserBinary(): Promise<string> {
   const explicit = process.env.CODALI_BROWSER_PATH;
   const candidates = explicit ? [explicit] : [
     ...[process.env.DOCDEX_WEB_BROWSER, process.env.CHROME_PATH].filter((value): value is string => !!value),
-    chromium.executablePath(),
     ...String(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap(directory =>
       ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome.exe"].map(name => path.join(directory, name))),
+    // Packaged browsers have OS sandbox profiles that cache downloads may lack.
+    chromium.executablePath(),
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium",
     ...[process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA].filter((value): value is string => !!value)
       .map(directory => path.join(directory, "Google", "Chrome", "Application", "chrome.exe")),

@@ -388,3 +388,29 @@ The opening screen displays the supplied ANSI Codali artwork when the terminal i
 Use `/permissions` to choose Plan, Ask, Workspace or Full with Up/Down and Enter. Full automatically approves available tools, including web, memory, media and connectors, and enables isolated shell networking. The choice is saved outside the repository for this exact directory; `/permissions ask` restores prompts. `--permissions full` overrides only the current launch. Workspace boundaries, explicit deny rules and shell isolation remain enforced.
 
 At 100 columns by 28 rows or larger, the regular header uses the three-line CODALI mark with a pink-to-purple gradient. Smaller windows keep the single-line name. `NO_COLOR` preserves the artwork without ANSI colors.
+
+### Managed browser desktop and default skills
+
+Codali includes `browser_session` (start/status/stop) and `browser_interact`
+(state/open/click/type). Use these for an interactive website or a noVNC desktop;
+`run_shell` is a short-lived sandbox and cannot keep background servers alive.
+The first start builds the bundled `config/browser-desktop` Docker preset.
+Docker must be installed and available to the current user. Interactive actions
+also require the **official Python Browser Use CLI**, installed with
+`uv tool install browser-use`; this is separate from the community npm package
+used by the read-only `browser_open` tool. No Browser Use cloud key is required.
+
+The desktop has an isolated Chromium profile, a read-only workspace mount and a
+static preview server. Hidden paths, directory listings and symlink escapes are
+blocked. The preview is not a backend application runner. Published ports bind
+only to localhost; the tool returns the noVNC URL, preview URL and an SSH tunnel
+command for remote access. A desktop survives individual tool calls and TUI
+exit, expires after eight hours, and can be stopped explicitly. Start/status
+verify HTTP, Chrome CDP and a real VNC protocol handshake. Existing external
+permission checks apply to browser management and interactive actions.
+
+Bundled, progressively loaded skills cover planning, managed browser sessions,
+Browser Use, web application testing, Docdex research and systematic debugging.
+Each adapted skill links its upstream source. `/skills` lists them; workspace
+and user skills remain supported. Upstream cloud defaults and arbitrary install
+scripts are not automatically executed.

@@ -20,6 +20,8 @@ export const toolActivity = (name: string, args: unknown): string => {
     case "server_time": return `Checking the server clock${data.timezone ? ` in ${fragment(data.timezone)}` : ""}`;
     case "calculate": return `Calculating ${fragment(data.expression)}`;
     case "browser_open": return `Opening ${fragment(data.url)} in the browser`;
+    case "browser_session": return `${data.action === "stop" ? "Stopping" : data.action === "status" ? "Checking" : "Starting"} the managed browser desktop`;
+    case "browser_interact": return `Using the browser · ${fragment(data.action)}`;
     case "browser_read": return "Reading more of the browser page";
     case "skill_list": return "Finding relevant skills";
     case "skill_load": return `Loading ${fragment(data.id) || "a skill"}`;
@@ -60,6 +62,10 @@ export const toolCompletionSummary = (name: string, args: unknown, output?: stri
   if (name === "tools_enable" && Array.isArray(data.enabled)) {
     return `Prepared ${data.enabled.length} tool${data.enabled.length === 1 ? "" : "s"} for the model to use. Execution permissions still apply. Ctrl+O shows which tools.`;
   }
+  if (name === "browser_session" && typeof data.running === "boolean") return data.running
+    ? `Browser desktop is ready.\n${snippet(data.url)}\nCtrl+O shows the SSH tunnel command and preview URL.`
+    : "No browser desktop is running for this workspace.";
+  if (name === "browser_interact" && typeof data.title === "string") return `Browser: ${snippet(data.title)}\n${snippet(data.text)}`;
   const path = snippet(data.path ?? input.path ?? input.file);
   if (["docdex_open", "docdex_open_file", "read_file"].includes(name)) {
     const content = typeof data.content === "string" ? data.content : parsed === undefined ? output : "";
