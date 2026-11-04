@@ -73,3 +73,9 @@ Session353de33a logged interaction_request with `/resume defb88c2-a400-458b-8eba
 
 Both submitted-input handlers now trim surrounding whitespace for single-line slash commands before dispatch; internal multiline content remains chat text, and paste arrival does not execute anything. Delegation receipt e3c3159b-64a1-4abf-8433-c46f78d481f1 reviewed normalization boundaries. Build and source PTY checks passed including trailing-newline slash submission and unchanged multiline paste protection. Installed TerminalCommand.js atomically with backup; npm untouched.
 Installed PTY checks also passed (10 flows). Docdex pre-commit and whitespace checks passed.
+
+## Short session IDs and readable lookup failures
+
+User's ENOENT path ended in ee68 instead of the saved ID's ee687. Resume now prefers an exact match, then resolves a unique >=8-character alphanumeric/hyphen prefix within the current workspace only on ENOENT. Ambiguous, missing and empty IDs receive actionable messages; unsuccessful resolution preserves the current session. TUI transcript restore uses the resolved session ID and confirms the full ID. Destructive session operations do not resolve prefixes.
+
+Build and regression checks for exact/unique/ambiguous/missing/empty/too-short IDs passed. Installed controller and terminal command atomically with backups. A real installed TUI test pasted `/resume defb88c2` with a newline, confirmed restoration of the actual saved session defb88c2-a400-458b-8eba-80f12b5ee687, then exited cleanly without starting work. Delegation receipt71cc6dea-0595-41de-951f-3adcf2c5b4ef reviewed matching boundaries. npm untouched.

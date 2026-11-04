@@ -617,7 +617,17 @@ export class SessionController {
   async resume(id: string): Promise<void> {
     if (this.busy) throw new Error("Cannot resume during execution");
     if (this.currentReceipt) throw new Error("Wait for the current tool outcome before switching sessions");
-    const metadata = await this.store.readSession(id);
+    id = id.trim();
+    if (!id) throw new Error("Use /resume SESSION_ID. /sessions lists saved sessions in this workspace.");
+    const metadata = await this.store.readSession(id).catch(async error => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const matches = /^[a-zA-Z0-9-]{8,}$/.test(id)
+        ? (await this.store.listSessions()).filter(session => session.sessionId.startsWith(id)) : [];
+      if (matches.length > 1) throw new Error(`Session prefix ${id} matches several sessions. Use a longer ID from /sessions.`);
+      if (!matches.length) throw new Error(`No saved session matches ${id} in this workspace. Use /sessions to find its ID.`);
+      return this.store.readSession(matches[0].sessionId);
+    });
+    id = metadata.sessionId;
     if (await fs.realpath(metadata.repoRoot) !== await fs.realpath(this.workspaceRoot)) throw new Error("Session belongs to another repository");
     let state = metadata.kind === "conversation" ? undefined : await this.store.initializeWork(id, metadata.task);
     if (metadata.projectTaskKey && !state?.projectTask) {
