@@ -396,6 +396,7 @@ export class TerminalCommand {
           commands: COMMANDS.map(name => ({ name, description: descriptions[name.slice(1)] ?? name.slice(1).replace(/-/g, " ") })),
           cancel: onSignal, close: onTerminate,
           submit: (line, intent) => {
+            if (/^[\t ]*(exit|quit)[\t ]*$/i.test(line)) line = "/exit";
             if (/^\/(stop|cancel|exit|quit)\s*$/.test(line)) { void command(line).then(showPrompt).catch(error => tui!.error(String(error))); return; }
             const inputEpoch = cancelEpoch;
             chain = chain.then(async () => {
@@ -422,6 +423,7 @@ export class TerminalCommand {
       rl.on("SIGINT", onSignal);
       let chain = Promise.resolve();
       rl.on("line", line => {
+        if (/^[\t ]*(exit|quit)[\t ]*$/i.test(line)) line = "/exit";
         if (/^\/(stop|cancel|exit|quit)\s*$/.test(line)) { void command(line).then(showPrompt).catch(error => process.stderr.write(`${terminalText(String(error))}\n`)); return; }
         const inputEpoch = cancelEpoch;
         chain = chain.then(async () => {

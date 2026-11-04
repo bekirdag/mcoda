@@ -19,3 +19,9 @@ Earlier experiment harnesses used bounded headless/JSON mode or wrote a capture 
 Private installed preview: ~/.local/state/codali-run-recovery-preview/install/node_modules/@mcoda/codali; codali-preview now launches it using the existing preview configuration. It carries version .29 plus f607c4d fixes and is distinct from the published npm .29 artifact. The global released installation and npm tags are unchanged. Previous preview launcher retained at ~/.local/state/codali-run-recovery-preview/codali-preview.before.
 
 The supplied intelligence tables contain no failure trace. The diagnosed local user session is identified above; implementing those endpoint/content/source plans was not inferred from the request to fix Codali.
+
+## Exit feedback follow-up
+
+User reported plain prompt with effort medium and bare exit sent to the lead model. Current ~/.local/bin/codali-preview explicitly selects effort low, so the reported launcher resolution is not established. Added exact case-insensitive bare exit/quit aliases in both interactive input handlers; multiline text and longer instructions remain prompts. Mandatory Docdex delegation receipt bb790995-c573-43fc-aae8-9800f7892770 used qwen-latest-flash-next; tightened draft trimming to horizontal whitespace only. Impact graph had no edges; symbols and direct handlers reviewed.
+
+Build passed. Four real PTY cases passed against source and again against the exact installed launcher: TUI exit, TUI mixed-case quit, plain exit, plain quit; each exited zero with no model invocation, with TUI screen restoration. Installed TerminalCommand.js updated atomically, previous file retained as TerminalCommand.js.before-exit-fix. npm artifact unchanged. Full-path launch bypasses stale aliases/functions/command hashing; no unrelated suspended user process was terminated.
