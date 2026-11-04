@@ -5,11 +5,15 @@ Codali is mcoda's terminal coding agent and embeddable tool runtime.
 ## Terminal quick start
 
 ```sh
-codali login                 # masked mSwarm API-key entry
-codali setup                 # discover authorized model routes and prepare private Docdex
-codali doctor
-codali chat --permissions ask --effort medium
+codali-cli login             # masked mSwarm API-key entry
+codali-cli setup             # discover authorized model routes and prepare private Docdex
+codali-cli doctor
+codali                      # open the terminal UI
 ```
+
+Use `codali` to start the TUI and `codali-cli` for commands such as
+`exec`, `tools`, `config`, and authentication. Both installed names share the
+same CLI implementation; existing `codali` subcommands remain compatible.
 
 Interactive `codali` and `codali chat` open the terminal UI with a scrollable
 conversation, multiline editor, tool cards, approval dialogs and persistent
