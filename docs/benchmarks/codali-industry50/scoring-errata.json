@@ -1,0 +1,192 @@
+{
+  "createdAt": "2026-11-04T20:52:17.073452+00:00",
+  "policy": "Preserve frozen strict scores. Separately report audited semantic scores with these documented equivalences for underspecified fields. Apply symmetrically to both arms, without rerunning model answers. Do not change prompts or original keys.",
+  "discovery": "Capacity units and release labels were noticed while auditing first results; the remaining listed cases were reviewed from prompts/keys before their outputs were inspected.",
+  "alternatives": {
+    "industry-02": {
+      "existing_customer_mrr": [
+        87350
+      ]
+    },
+    "industry-07": {
+      "per_agent_capacity": [
+        420
+      ],
+      "scheduled_capacity": [
+        6300
+      ]
+    },
+    "industry-13": {
+      "release": [
+        "fail",
+        "failed",
+        "reject",
+        "rejected",
+        "no",
+        "blocked"
+      ],
+      "failed_gates": [
+        [
+          "integration",
+          "migration_reversible",
+          "p95_ms"
+        ]
+      ]
+    },
+    "industry-16": {
+      "full": [
+        "F16@16:00"
+      ],
+      "increments": [
+        [
+          "I17:16:00->17:00",
+          "I18:17:00->18:00"
+        ]
+      ]
+    },
+    "industry-21": {
+      "missing_query_filter": [
+        "tenantId",
+        "tenant_id = ?"
+      ],
+      "unsafe_cache_key": [
+        "key"
+      ]
+    },
+    "industry-32": {
+      "missing_b": [
+        "SQL joins",
+        "sql_joins",
+        "joins is false"
+      ],
+      "missing_c": [
+        "atomic multi-row transactions",
+        "multi-row transactions",
+        "atomic transactions",
+        "transactions is false"
+      ]
+    },
+    "industry-40": {
+      "storage": [
+        "Postgres"
+      ]
+    },
+    "industry-47": {
+      "revision": [
+        "R4",
+        "Revision 4",
+        "revision4"
+      ],
+      "encryption": [
+        "required"
+      ]
+    },
+    "industry-19": {
+      "critical_path": [
+        "A\u2192B\u2192D",
+        "A -> B -> D",
+        "A > B > D",
+        "A-B-D"
+      ]
+    },
+    "industry-23": {
+      "duplicates": [
+        [
+          "eQ",
+          "eR"
+        ]
+      ]
+    },
+    "industry-26": {
+      "transitive": [
+        [
+          "src/api.js"
+        ]
+      ],
+      "transitive_count": [
+        1
+      ],
+      "unrelated": [
+        [
+          "src/weather.js"
+        ]
+      ]
+    },
+    "industry-31": {
+      "eligible": [
+        [
+          "Pavo",
+          "Luma"
+        ]
+      ]
+    },
+    "industry-35": {
+      "held_ids": [
+        [
+          "rB",
+          "rC",
+          "rE"
+        ]
+      ]
+    },
+    "industry-38": {
+      "accepted": [
+        [
+          "17",
+          "21"
+        ],
+        [
+          17,
+          21
+        ]
+      ],
+      "rejected": [
+        [
+          "18",
+          "19",
+          "20"
+        ],
+        [
+          18,
+          "19",
+          "20"
+        ],
+        [
+          18,
+          19,
+          20
+        ]
+      ]
+    }
+  },
+  "unorderedFields": {
+    "industry-34": [
+      "dual_read_keys"
+    ],
+    "industry-37": [
+      "critical"
+    ],
+    "industry-39": [
+      "eligible"
+    ]
+  },
+  "reasons": {
+    "industry-02": "existing_customer_mrr does not explicitly specify opening or closing existing-customer revenue. Accept either; NRR/GRR still require the correct closing calculation.",
+    "industry-07": "Capacity fields do not specify units. Ticket capacity30/450 and productive-minute capacity420/6300 are both legitimate; required staffing and overflow remain unambiguous.",
+    "industry-13": "Release decision has no required boolean schema; fail/reject/no expresses false. Evidence names p95_ms while prose names p95; accept either gate label.",
+    "industry-16": "Source backup/increment labels contain timestamps; shortened IDs and complete labels identify the same chain.",
+    "industry-21": "Code names the key variable key and assigns userId; either identifies the unsafe key. No tenant database-column schema is supplied, so tenantId cannot be penalized solely for casing convention.",
+    "industry-32": "Human descriptions and short capability labels have equivalent meaning.",
+    "industry-34/37/39": "These membership arrays have no requested ordering; preserve ordering checks for rankings and explicitly sorted arrays elsewhere.",
+    "industry-40": "Postgres is the conventional abbreviated name of PostgreSQL.",
+    "industry-47": "A prefixed revision label identifies the same approved revision4. Final output review also accepts encryption=\"required\" as semantically true for the question whether encryption is required; no boolean schema was specified.",
+    "industry-19": "After case19 output review, an arrow-delimited A\u2192B\u2192D path was accepted as semantically identical to the array; prompt specifies no array schema for this field.",
+    "industry-23": "After reviewing both outputs, duplicates may mean duplicate IDs rather than their count; the prompt does not specify its type. Both identify exactly the two duplicate IDs.",
+    "industry-26": "Both systems interpreted direct-versus-transitive as direct-versus-indirect-only rather than transitive closure including direct dependencies. Accept both paired interpretations. A singleton array identifies the same unrelated file as a scalar; no type was specified.",
+    "industry-31": "Both outputs sort eligible regions by ascending cost. The prompt says sorted but does not specify lexical versus cost order, so both orders are defensible. Explicit Unicode/lexical sorting constraints elsewhere remain enforced.",
+    "industry-35": "Both outputs interpret held as retained rather than only legal_hold=true. The prompt does not define held_ids; both retained records and legal-hold subset are legitimate interpretations.",
+    "industry-38": "Prompt requests IDs while gold uses outer fixture labels. Raw returned actual payload id values. Accept payload IDs and fixture labels as identification conventions, retaining ordering. Payload validation counts and extra-field decision are unchanged."
+  },
+  "updatedAt": "2026-11-04T21:04:31.228794+00:00",
+  "numericStringPolicy": "For semantic scoring only, accept a finite numeric JSON string representing the same expected number. Preserve strict numeric-type scores separately. Exclude case24 because preserving null/false/zero/string type is the central migration requirement. Added after case36 returned cap as a numeric string."
+}

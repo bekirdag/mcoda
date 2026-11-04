@@ -57,6 +57,9 @@ export interface ProviderUsage {
 }
 
 export interface ProviderRequest {
+  /** Unique UUID for this inference attempt, retained by the caller for accounting. */
+  requestId?: string;
+  signal?: AbortSignal;
   messages: ProviderMessage[];
   tools?: ProviderToolDefinition[];
   toolChoice?: "auto" | "none" | { name: string };
@@ -74,9 +77,12 @@ export interface ProviderResponse {
   toolCalls?: ProviderToolCall[];
   usage?: ProviderUsage;
   raw?: unknown;
+  /** Selected configured route; host labels are configuration metadata, not hardware attestation. */
+  route?: { id: string; binding: string; configHash: string; modelId: string; catalogId: string; backend?: string; host?: string };
 }
 
 export interface ProviderConfig {
+  retryTransient?: boolean;
   model: string;
   /** Agent this provider serves, so failures can name it. */
   agentSlug?: string;

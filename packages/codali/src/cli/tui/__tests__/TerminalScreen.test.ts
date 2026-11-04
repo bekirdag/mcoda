@@ -1,0 +1,110 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { cells } from "../TerminalCells.js";
+import { renderTerminalScreen, type TerminalScreenState } from "../TerminalScreen.js";
+import { plainTerminalLogo, terminalLogoWidth, compactTerminalLogo } from "../TerminalLogo.js";
+
+const state = (): TerminalScreenState => ({ workspace: "/projects/example", version: "preview", profile: "Strata", busy: false, activity: "Ready", route: "", effort: "medium", permissions: "ask", tokens: 0, queued: 0, draft: "", cursor: 0, blocks: [], scroll: 0, expanded: false });
+const text = (value: ReturnType<typeof renderTerminalScreen>): string => value.lines.map(stripVTControlCharacters).join("\n");
+
+test("opening artwork fits above the editor and yields to the compact conversation header", () => {
+  const current = state(); current.draft = "keep my input"; current.cursor = 4;
+  const columns = terminalLogoWidth + 4;
+  for (const color of [true, false]) {
+    const frame = renderTerminalScreen(current, columns, 24, color);
+    assert.deepEqual(frame.lines.slice(0, 10).map(line => stripVTControlCharacters(line).trimEnd()), plainTerminalLogo.map(line => ("  " + line).trimEnd()));
+    assert.match(text(frame), /What would you like to build/);
+    assert.match(text(frame), /keep my input/);
+    assert.equal(frame.lines.length, 24);
+    assert.ok(frame.lines.every(line => cells(line) <= columns));
+    if (!color) assert.ok(frame.lines.every(line => !line.includes("\x1b")));
+    else assert.ok(frame.lines[0].includes("\x1b[0;95m"));
+    current.introDismissed = true;
+    const compact = renderTerminalScreen(current, columns, 24, color);
+    assert.match(text(compact).split("\n")[0], /◈ CODALI/);
+    assert.deepEqual(frame.cursor, compact.cursor);
+    current.introDismissed = false;
+  }
+  assert.match(text(renderTerminalScreen(current, columns - 1, 24, false)).split("\n")[0], /◈ CODALI/);
+  assert.match(text(renderTerminalScreen(current, columns, 18, false)).split("\n")[0], /◈ CODALI/);
+  current.blocks = [{ id: "user", kind: "user", title: "YOU", text: "hello" }];
+  assert.match(text(renderTerminalScreen(current, columns, 30, false)).split("\n")[0], /◈ CODALI/);
+});
+
+test("normal, narrow and tiny screens stay within terminal cells and rows", () => {
+  for (const [columns, rows] of [[100, 30], [80, 24], [45, 18], [24, 10], [12, 5]]) {
+    for (const color of [true, false]) {
+      const current = state(); current.draft = "日本語 👨‍👩‍👧‍👦 e\u0301\n".repeat(5); current.cursor = current.draft.length;
+      const frame = renderTerminalScreen(current, columns, rows, color);
+      assert.ok(frame.lines.length <= rows);
+      assert.ok(frame.lines.every(line => cells(line) <= columns));
+      assert.ok(frame.lines.every(line => !stripVTControlCharacters(line).includes("\x1b")), "No partial escape sequences");
+      if (!color) assert.ok(frame.lines.every(line => !line.includes("\x1b")));
+      if (frame.cursor) { assert.ok(frame.cursor.row >= 0 && frame.cursor.row < rows); assert.ok(frame.cursor.column >= 0 && frame.cursor.column < columns); }
+    }
+  }
+});
+
+test("roomy conversation header uses a pink-purple logo and shrinks without moving input", () => {
+  const current = state(); current.introDismissed = true; current.draft = "editable";
+  for (const color of [true, false]) {
+    const frame = renderTerminalScreen(current, 100, 28, color);
+    assert.deepEqual(frame.lines.slice(0, 3).map(stripVTControlCharacters), compactTerminalLogo.map(line => "  " + line));
+    assert.match(text(frame), /editable/);
+    assert.equal(frame.lines.length, 28);
+    if (color) {
+      assert.match(frame.lines[0], /38;2;255;130;215m/);
+      assert.match(frame.lines[0], /38;2;160;90;240m/);
+    } else assert.ok(frame.lines.every(line => !line.includes("\x1b")));
+    assert.match(text(renderTerminalScreen(current, 99, 28, color)).split("\n")[0], /◈ CODALI/);
+    assert.match(text(renderTerminalScreen(current, 100, 27, color)).split("\n")[0], /◈ CODALI/);
+    assert.deepEqual(frame.cursor, renderTerminalScreen(current, 99, 28, color).cursor);
+  }
+});
+
+test("streaming and scrollback keep the editor and status in their own rows", () => {
+  const current = state(); current.draft = "keep this draft"; current.cursor = 4;
+  const before = renderTerminalScreen(current, 80, 24);
+  current.blocks = [{ id: "stream", kind: "assistant", title: "Codali", text: "Streaming output\n".repeat(80) }];
+  current.busy = true; current.queued = 2;
+  const after = renderTerminalScreen(current, 80, 24);
+  assert.deepEqual(after.cursor, before.cursor);
+  assert.match(text(after), /keep this draft/); assert.match(text(after), /2 queued/);
+  current.scroll = 12;
+  const scrolled = renderTerminalScreen(current, 80, 24);
+  assert.deepEqual(scrolled.cursor, after.cursor); assert.match(text(scrolled), /scrollback/);
+});
+
+test("long approvals keep all choices visible and permit complete action scrolling", () => {
+  for (const [columns, rows] of [[80, 24], [45, 18], [30, 12], [24, 10]]) {
+    const current = state(); current.overlay = { title: "Permission", lines: Array.from({ length: 100 }, (_, i) => `argument-${i}`), offset: 0, choices: ["Allow once", "Allow session", "Deny"], selected: 2 };
+    const first = renderTerminalScreen(current, columns, rows, false);
+    assert.match(text(first), /Allow once/); assert.match(text(first), /Allow session/); assert.match(text(first), /Deny/);
+    assert.equal(first.cursor, undefined);
+    current.overlay.offset = 1000;
+    assert.match(text(renderTerminalScreen(current, columns, rows, false)), /argument-99/);
+  }
+});
+
+test("tool detail expansion retains output and the footer", () => {
+  const current = state(); current.blocks = [{ id: "tool", kind: "tool", title: "shell", text: "one\ntwo\nthree\nfour\nfive" }];
+  assert.match(text(renderTerminalScreen(current, 90, 24, false)), /2 more lines/);
+  current.expanded = true; const expanded = text(renderTerminalScreen(current, 90, 24, false));
+  assert.match(expanded, /four\n/); assert.doesNotMatch(expanded, /more lines/); assert.match(expanded, /Enter send/);
+});
+
+test("streamed tables reflow on resize without covering input and remain scrollable", () => {
+  const current = state(); current.draft = "keep draft"; current.cursor = 3;
+  const block = { id: "table", kind: "assistant" as const, title: "Codali", text: "Name | Count\n---" }; current.blocks = [block];
+  const before = renderTerminalScreen(current, 80, 24, false);
+  block.text += " | ---:\n" + Array.from({ length: 30 }, (_, i) => `entry-${i} | ${i}`).join("\n");
+  const after = renderTerminalScreen(current, 80, 24, false);
+  assert.deepEqual(after.cursor, before.cursor); assert.match(text(after), /entry-29/); assert.match(text(after), /keep draft/);
+  current.scroll = 999; assert.match(text(renderTerminalScreen(current, 80, 24, false)), /┌/);
+  current.scroll = 0;
+  const narrow = renderTerminalScreen(current, 24, 18, false);
+  assert.match(text(narrow), /Count: 29/); assert.ok(narrow.lines.every(line => cells(line) <= 24)); assert.match(text(narrow), /keep draft/);
+  current.overlay = { title: "Results", offset: 0, lines: ["Model | Score", "--- | ---:", "Qwen | 27"] };
+  assert.match(text(renderTerminalScreen(current, 80, 24, false)), /┌/);
+});

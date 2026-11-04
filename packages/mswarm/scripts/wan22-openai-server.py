@@ -10,6 +10,7 @@ import ipaddress
 import json
 import logging
 import math
+import re
 import secrets
 import signal
 import threading
@@ -21,6 +22,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Any
+
+from media_gpu_lock import MediaGpuError, MediaGpuLease, media_gpu_health, media_gpu_slot
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -103,7 +106,7 @@ class ServerState:
 
 
 class VideoHttpServer(ThreadingHTTPServer):
-    daemon_threads = True
+    daemon_threads = False
     request_queue_size = 8
 
     def server_bind(self) -> None:
@@ -411,17 +414,20 @@ def _native_request(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _cancel_job(state: ServerState, job_id: str) -> None:
+def _cancel_job(state: ServerState, job_id: str) -> bool:
     try:
-        _bounded_json_request(
+        status, job = _bounded_json_request(
             f"{state.upstream_base_url}/sdcpp/v1/jobs/{urllib.parse.quote(job_id, safe='')}/cancel",
             method="POST",
             timeout=state.request_timeout_seconds,
             max_bytes=65_536,
             payload={},
         )
+        return status == 200 and job.get("id") == job_id and job.get("status") in (
+            "completed", "failed", "cancelled"
+        )
     except UpstreamError:
-        pass
+        return False
 
 
 def _set_active_job(state: ServerState, job_id: str) -> None:
@@ -435,8 +441,39 @@ def _clear_active_job(state: ServerState, job_id: str) -> None:
             state.active_job_id = None
 
 
-def _generate_video(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
+def _wait_for_native_job_end(state: ServerState, job_id: str) -> None:
+    """Keep the GPU lease until a running, non-cancellable native job ends."""
+    url = f"{state.upstream_base_url}/sdcpp/v1/jobs/{urllib.parse.quote(job_id, safe='')}"
+    max_bytes = math.ceil(state.max_output_bytes / 3) * 4 + 65_536
+    logged_wait = False
+    while True:
+        try:
+            status, job = _bounded_json_request(
+                url, method="GET", timeout=state.request_timeout_seconds,
+                max_bytes=max_bytes,
+            )
+            if (
+                status == 200 and job.get("id") == job_id
+                and job.get("status") in ("completed", "failed", "cancelled")
+            ):
+                return
+        except UpstreamError:
+            # A lost HTTP connection does not prove GPU inference has stopped.
+            pass
+        if not logged_wait:
+            logging.warning("waiting for native video completion before releasing media GPU")
+            logged_wait = True
+        time.sleep(max(0.1, state.poll_interval_seconds))
+
+
+def _generate_video(state: ServerState, request: dict[str, Any], cancelled: threading.Event | None = None) -> dict[str, Any]:
+    with media_gpu_slot("video", cancelled=cancelled, shutdown=state.shutdown_requested) as lease:
+        return _generate_video_locked(state, request, lease)
+
+
+def _generate_video_locked(state: ServerState, request: dict[str, Any], lease: MediaGpuLease) -> dict[str, Any]:
     max_json_bytes = math.ceil(state.max_output_bytes / 3) * 4 + 65_536
+    lease.mark_uncertain("video_submission_pending")
     status, submission = _bounded_json_request(
         f"{state.upstream_base_url}/sdcpp/v1/vid_gen",
         method="POST",
@@ -445,6 +482,7 @@ def _generate_video(state: ServerState, request: dict[str, Any]) -> dict[str, An
         payload=_native_request(request),
     )
     if status == 429:
+        lease.confirm_finished()
         raise ApiError(
             429,
             "the local video generator queue is full",
@@ -452,18 +490,23 @@ def _generate_video(state: ServerState, request: dict[str, Any]) -> dict[str, An
             code="upstream_queue_saturated",
         )
     if status != 202:
+        lease.confirm_finished()
         raise UpstreamError(f"stable-diffusion.cpp rejected video submission ({status})")
     job_id = submission.get("id")
     poll_url = submission.get("poll_url")
-    expected_poll_url = f"/sdcpp/v1/jobs/{job_id}" if isinstance(job_id, str) else None
+    valid_job_id = isinstance(job_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", job_id) is not None
+    expected_poll_url = f"/sdcpp/v1/jobs/{job_id}" if valid_job_id else None
+    if valid_job_id:
+        lease.record_native_job(job_id)
     if (
-        not isinstance(job_id, str)
-        or not job_id
+        not valid_job_id
         or poll_url != expected_poll_url
         or submission.get("kind") != "vid_gen"
     ):
-        if isinstance(job_id, str) and job_id:
-            _cancel_job(state, job_id)
+        if valid_job_id:
+            if not _cancel_job(state, job_id):
+                _wait_for_native_job_end(state, job_id)
+            lease.confirm_finished()
         raise UpstreamError("stable-diffusion.cpp returned an invalid video job")
 
     _set_active_job(state, job_id)
@@ -478,20 +521,25 @@ def _generate_video(state: ServerState, request: dict[str, Any]) -> dict[str, An
             )
             if status != 200:
                 raise UpstreamError(f"stable-diffusion.cpp video poll failed ({status})")
+            if job.get("id") != job_id:
+                raise UpstreamError("stable-diffusion.cpp returned another video job")
             job_status = job.get("status")
             if job_status in ("queued", "generating"):
                 state.shutdown_requested.wait(state.poll_interval_seconds)
                 continue
             if job_status == "failed":
+                lease.confirm_finished()
                 error = job.get("error")
                 code = error.get("code") if isinstance(error, dict) else None
                 raise UpstreamError(
                     f"stable-diffusion.cpp video generation failed ({code or 'generation_failed'})"
                 )
             if job_status == "cancelled":
+                lease.confirm_finished()
                 raise UpstreamError("stable-diffusion.cpp video generation was cancelled")
             if job_status != "completed" or job.get("kind") != "vid_gen":
                 raise UpstreamError("stable-diffusion.cpp returned an invalid video job status")
+            lease.confirm_finished()
             result = job.get("result")
             if not isinstance(result, dict):
                 raise UpstreamError("stable-diffusion.cpp completed without a video result")
@@ -510,7 +558,9 @@ def _generate_video(state: ServerState, request: dict[str, Any]) -> dict[str, An
             code="generation_timeout",
         )
     except Exception:
-        _cancel_job(state, job_id)
+        if not _cancel_job(state, job_id):
+            _wait_for_native_job_end(state, job_id)
+        lease.confirm_finished()
         raise
     finally:
         _clear_active_job(state, job_id)
@@ -600,6 +650,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             if self.path == "/healthz":
+                gpu = media_gpu_health()
+                if gpu not in ("ready", "busy"):
+                    self._send_json(503, {"status": "unhealthy", "model": state.model_id, "media_gpu": gpu})
+                    return
                 try:
                     _check_upstream_ready(state)
                 except UpstreamError:
@@ -614,6 +668,7 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         "status": "ok",
                         "model": state.model_id,
                         "upstream": "stable-diffusion.cpp",
+                        "media_gpu": gpu,
                     },
                 )
                 return
@@ -694,9 +749,31 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                 )
                 return
             started_at = time.monotonic()
-            try:
-                native_result = _generate_video(state, parsed)
-                output = _validate_result(native_result, parsed, state)
+            completed = threading.Event()
+            cancelled = threading.Event()
+            outcome: dict[str, Any] = {}
+
+            def run_generation() -> None:
+                try:
+                    native_result = _generate_video(state, parsed, cancelled)
+                    outcome["output"] = _validate_result(native_result, parsed, state)
+                except BaseException as error:
+                    outcome["error"] = error
+                finally:
+                    # A response deadline does not release native GPU ownership.
+                    state.inference_slots.release()
+                    completed.set()
+
+            threading.Thread(target=run_generation, name="wan-video-generation", daemon=False).start()
+            if not completed.wait(state.inference_timeout_seconds):
+                # Stop a request still waiting for admission. Already-admitted
+                # native jobs keep their slot/lease until their state is terminal.
+                cancelled.set()
+                self._send_error(ApiError(504, "video generation timed out", error_type="server_error", code="generation_timeout"))
+                return
+            error = outcome.get("error")
+            if error is None:
+                output = outcome["output"]
                 self._send_json(
                     200,
                     {
@@ -711,9 +788,13 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                     output["fps"],
                     int((time.monotonic() - started_at) * 1000),
                 )
-            except ApiError as error:
+            elif isinstance(error, ApiError):
                 self._send_error(error)
-            except UpstreamError as error:
+            elif isinstance(error, MediaGpuError):
+                self._send_error(
+                    ApiError(error.status, str(error), error_type="server_error", code=error.code)
+                )
+            else:
                 logging.error("generation failed reason=%s", str(error))
                 self._send_error(
                     ApiError(
@@ -723,8 +804,6 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         code="upstream_generation_failed",
                     )
                 )
-            finally:
-                state.inference_slots.release()
 
     return Handler
 

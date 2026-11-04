@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { nativeReasoningRequest, type NativeReasoningRequest } from "./native-reasoning.js";
+
 export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
 export type LocalRunnerKind =
@@ -89,6 +92,7 @@ export interface CodaliRuntimeProviderInput {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  retryTransient?: boolean;
   localRunner?: LocalOpenAiCompatibleRunnerConfig;
   runnerKind?: LocalRunnerKind;
   authMode?: LocalRunnerAuthMode;
@@ -147,6 +151,10 @@ export interface CodaliRuntimeAgentInput {
   supportsJsonSchema?: boolean;
   supportsGbnf?: boolean;
   capabilities?: string[];
+  rating?: number;
+  reasoningRating?: number;
+  maxComplexity?: number;
+  bestUsage?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
 }
@@ -181,6 +189,7 @@ export interface CodaliRuntimeSubagentsInput {
 
 export interface CodaliRuntimeSessionInput {
   id?: string;
+  parentSessionId?: string;
   storageDir?: string;
   resume?: boolean;
   compactOnFinish?: boolean;
@@ -217,6 +226,9 @@ export type CodaliRuntimeEvent =
   | { type: "error"; message: string; code?: string; retryable?: boolean; at: string };
 
 export interface CodaliRuntimeInput {
+  orchestration?: { resolved: NodeOrchestrationConfig; effort: "high"; scope: NodeModelScope; binding?: string };
+  requiredRetrieval?: GatewayRequiredProtocolNeed[];
+  signal?: AbortSignal;
   task: string;
   messages?: ProviderMessage[];
   workspace: CodaliRuntimeWorkspace;
@@ -236,6 +248,9 @@ export interface CodaliRuntimeInput {
   metadata?: {
     jobId?: string;
     requestId?: string;
+    gatewayRunId?: string;
+    gatewayTaskId?: string;
+    parentSessionId?: string;
     tenantId?: string;
     ownerUserId?: string;
     apiKeyId?: string;
@@ -557,7 +572,23 @@ export interface CodaliGatewayEvent {
   [key: string]: unknown;
 }
 
+interface NodeOrchestrationConfig { config: { providers: Record<string, unknown> }; hash: string; sourceHash?: string; }
+interface NodeModelScope {
+  readonly signal: AbortSignal;
+  snapshot(): { modelCalls: number; inputTokens: number; outputTokens: number; totalTokens: number; estimated: boolean; pendingCalls: number };
+  close(): void;
+}
 interface CodaliModule {
+  ModelServiceError?: {
+    new (...args: any[]): Error & { code: string; status: number; completedModelCalls?: number };
+    fromResponse(response: Response): Promise<Error & { code: string; status: number }>;
+  };
+  loadNodeOrchestrationConfig?(file: string, agent: MswarmCodaliAgent, nativeReasoning?: NativeReasoningRequest): Promise<NodeOrchestrationConfig>;
+  ConfiguredModelScope?: new (resolved: NodeOrchestrationConfig, options: { effort: "high"; signal?: AbortSignal; credentials?: Record<string, string> }) => NodeModelScope;
+  runConfiguredGateway?(request: MswarmCodaliGateway, options: {
+    orchestration: NodeOrchestrationConfig; effort: "high"; scope: NodeModelScope;
+    configure: () => Omit<CodaliGatewayOptions, "provider">;
+  }): Promise<{ result: CodaliGatewayResult; usage: ProviderUsage }>;
   runCodaliTask(input: CodaliRuntimeInput): Promise<CodaliRuntimeResult>;
   runCodaliJob?(input: CodaliJobRuntimeInput): Promise<CodaliJobRuntimeResult>;
   runCodaliGateway?(
@@ -576,6 +607,13 @@ export interface MswarmCodaliChatMessage {
 }
 
 export interface MswarmCodaliAgent {
+  /** Trusted node registry setting, never copied from an invocation payload. */
+  orchestrationConfigPath?: string;
+  rating?: number;
+  reasoningRating?: number;
+  maxComplexity?: number;
+  bestUsage?: string;
+  modelDigest?: string;
   slug: string;
   adapter: string;
   provider?: string;
@@ -648,6 +686,7 @@ export interface MswarmCodaliSession extends CodaliRuntimeSessionInput {}
 export interface MswarmCodaliSubagents extends CodaliRuntimeSubagentsInput {}
 
 export interface MswarmCodaliInvocationInput {
+  signal?: AbortSignal;
   jobId: string;
   requestId: string;
   model: string;
@@ -660,6 +699,7 @@ export interface MswarmCodaliInvocationInput {
   subagents?: MswarmCodaliSubagents;
   attachedMswarmApiKey?: string;
   temperature?: number;
+  nativeReasoning?: NativeReasoningRequest;
   responseFormat?: Record<string, unknown> | null;
   stream?: boolean;
   codaliGateway?: MswarmCodaliGateway;
@@ -797,6 +837,7 @@ export interface MswarmCodaliInvocationResult {
   gatewayResult?: CodaliGatewayResult;
   openAIChunks: Record<string, unknown>[];
   metadata: {
+    orchestration?: { configHash: string; sourceConfigHash?: string; nativeReasoning?: NativeReasoningRequest; effort: string; usage: ReturnType<NodeModelScope["snapshot"]> };
     provider: string;
     adapter: string;
     local_model: string;
@@ -1456,6 +1497,10 @@ function mergeGatewayDocdexContext(
 
 function runtimeAgent(agent: MswarmCodaliAgent): CodaliRuntimeAgentInput {
   return {
+    rating: agent.rating,
+    reasoningRating: agent.reasoningRating,
+    maxComplexity: agent.maxComplexity,
+    bestUsage: agent.bestUsage,
     slug: agent.slug,
     adapter: agent.adapter,
     provider: providerNameForAgent(agent),
@@ -1920,6 +1965,10 @@ function buildGatewayAgentInventory(
     contextWindow: agent.contextWindow,
     maxOutputTokens: agent.maxOutputTokens,
     capabilities: agent.capabilities,
+    rating: agent.rating,
+    reasoningRating: agent.reasoningRating,
+    maxComplexity: agent.maxComplexity,
+    bestUsage: agent.bestUsage,
     healthStatus: "healthy",
     health_status: "healthy",
     source: "self_hosted",
@@ -2116,8 +2165,15 @@ function createGatewayTaskRunner(input: {
       const maxSteps = requiredProtocolProvider
         ? Math.max(2, MAX_WORKER_TASK_STEPS)
         : MAX_WORKER_TASK_STEPS;
+      const attemptId = randomUUID();
+      const parentSessionId = input.runtimeInput.session?.id;
       const result = await input.runCodali({
         ...input.runtimeInput,
+        // Workers may overlap or retry. They share inference/tool budgets, but
+        // must never create or append to the parent's mutable session together.
+        session: input.runtimeInput.session ? { ...input.runtimeInput.session, id: attemptId, parentSessionId, resume: false } : undefined,
+        metadata: { ...input.runtimeInput.metadata, requestId: attemptId, gatewayRunId: optionalText(taskInput.runId),
+          gatewayTaskId: isRecord(taskInput.task) ? optionalText(taskInput.task.id) : undefined, parentSessionId },
         task: prompt,
         messages: [{ role: "user", content: prompt }],
         policy: {
@@ -2134,7 +2190,9 @@ function createGatewayTaskRunner(input: {
             : input.runtimeInput.policy.mode,
           timeoutMs,
         },
-        providerInstance: requiredProtocolProvider ?? input.runtimeInput.providerInstance,
+        ...(input.runtimeInput.orchestration
+          ? { orchestration: { ...input.runtimeInput.orchestration, binding: "worker" }, requiredRetrieval: requiredProtocolNeeds, providerInstance: undefined }
+          : { providerInstance: requiredProtocolProvider ?? input.runtimeInput.providerInstance }),
         streaming: { enabled: false },
         onEvent: undefined,
       });
@@ -2142,7 +2200,7 @@ function createGatewayTaskRunner(input: {
         status: "succeeded",
         output: result.finalMessage,
         toolCalls: runtimeToolCallsToGatewayToolCalls(result.telemetry, result.events),
-        modelCalls: [
+        modelCalls: requiredProtocolNeeds ? [] : [
           {
             role: "worker",
             status: "success",
@@ -2159,6 +2217,8 @@ function createGatewayTaskRunner(input: {
         ],
         metadata: {
           runtimeRunId: result.runId,
+          sessionId: result.session?.id,
+          parentSessionId,
           toolCallsExecuted: result.toolCallsExecuted,
           warnings: result.warnings,
         },
@@ -2191,9 +2251,69 @@ function openAIStopChunk(input: MswarmCodaliInvocationInput): Record<string, unk
   };
 }
 
+/** A confirmed native refusal, promoted only across a complete invocation scope. */
+export class MswarmInvocationRejectedError extends Error {
+  readonly code = "context_length_exceeded";
+  readonly usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  constructor() {
+    super("Model context limit exceeded; checkpoint and reduce context before continuing");
+    this.name = "MswarmInvocationRejectedError";
+  }
+}
+
+/** Tool pass-through is exactly one native request, with no preceding model calls. */
+export async function readLocalModelResponseError(response: Response): Promise<Error> {
+  const codali = await loadCodaliModule();
+  if (!codali.ModelServiceError) return new Error(`Local model HTTP ${response.status}`);
+  const error = await codali.ModelServiceError.fromResponse(response);
+  return error.code === "context_length_exceeded" && error.status === 400 ? new MswarmInvocationRejectedError() : error;
+}
+
 export class MswarmCodaliExecutor {
   async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
+    const nativeReasoning = nativeReasoningRequest({ ...input.nativeReasoning });
+    if (Object.keys(nativeReasoning).length && providerNameForAgent(input.agent) !== "openai-compatible") throw new Error("Native reasoning requires an OpenAI-compatible runner");
+    input = { ...input, nativeReasoning };
     const codali = await loadCodaliModule();
+    const file = input.agent.orchestrationConfigPath;
+    if (!file) {
+      try { return await this.invokeWithinScope(input, codali); }
+      catch (error) {
+        // Job/gateway scopes can already have spent tokens in other runners.
+        // Likewise, custom runtimes and configured orchestration own their receipts.
+        if (!input.codaliGateway && !input.codaliJob && !input.runCodali && codali.ModelServiceError
+          && error instanceof codali.ModelServiceError && error.code === "context_length_exceeded"
+          && error.status === 400 && error.completedModelCalls === 0) throw new MswarmInvocationRejectedError();
+        throw error;
+      }
+    }
+    if (input.runCodaliGateway || input.runCodali || input.runCodaliJob) throw new Error("Configured node execution cannot accept legacy runtime overrides");
+    if (!codali.loadNodeOrchestrationConfig || !codali.ConfiguredModelScope || !codali.runConfiguredGateway) {
+      throw new Error("Installed Codali lacks configured node orchestration support");
+    }
+    const resolved = await codali.loadNodeOrchestrationConfig(file, input.agent, nativeReasoning);
+    const credential = input.agent.apiKey ?? (input.agent.authMode === "dummy-bearer" ? input.agent.dummyBearerToken : undefined);
+    const credentials = credential ? Object.fromEntries(Object.keys(resolved.config.providers).map(id => [id, credential])) : undefined;
+    const scope = new codali.ConfiguredModelScope(resolved, { effort: "high", signal: input.signal, credentials });
+    try {
+      const result = await this.invokeWithinScope(input, codali, { resolved, effort: "high", scope });
+      const usage = scope.snapshot();
+      return { ...result, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
+        metadata: { ...result.metadata, orchestration: { configHash: resolved.hash, sourceConfigHash: resolved.sourceHash ?? resolved.hash, nativeReasoning, effort: "high", usage } } };
+    } catch (error) {
+      const usage = scope.snapshot();
+      // The shared scope can prove the first native call was refused before
+      // generation. An HTTP code alone cannot erase earlier or uncertain work.
+      if (!input.codaliGateway && !input.codaliJob && codali.ModelServiceError
+        && error instanceof codali.ModelServiceError && error.code === "context_length_exceeded"
+        && error.status === 400 && error.completedModelCalls === 0 && usage.modelCalls === 1
+        && !usage.estimated && usage.pendingCalls === 0 && usage.inputTokens === 0
+        && usage.outputTokens === 0 && usage.totalTokens === 0) throw new MswarmInvocationRejectedError();
+      throw error;
+    } finally { scope.close(); }
+  }
+
+  private async invokeWithinScope(input: MswarmCodaliInvocationInput, codali: CodaliModule, orchestration?: CodaliRuntimeInput["orchestration"]): Promise<MswarmCodaliInvocationResult> {
     const workspace: MswarmCodaliWorkspace = input.workspace ?? {
       root: process.cwd(),
       readOnly: true,
@@ -2218,6 +2338,8 @@ export class MswarmCodaliExecutor {
       }
     };
     const runtimeInput: CodaliRuntimeInput = {
+      orchestration,
+      signal: orchestration?.scope.signal ?? input.signal,
       task: messagesToTask(input.messages),
       messages: toProviderMessages(input.messages),
       workspace,
@@ -2227,12 +2349,15 @@ export class MswarmCodaliExecutor {
         baseUrl: input.agent.baseUrl,
         apiKey: input.agent.apiKey,
         timeoutMs: runtimePolicy.timeoutMs,
+        // A disconnected inference may already have generated tokens. The node
+        // must preserve that uncertain outcome instead of replaying the POST.
+        retryTransient: false,
         localRunner: input.agent.localRunner,
         runnerKind: input.agent.runnerKind,
         authMode: input.agent.authMode,
         dummyBearerToken: input.agent.dummyBearerToken,
         headers: input.agent.headers,
-        extraBody: input.agent.extraBody,
+        extraBody: Object.keys(input.nativeReasoning ?? {}).length ? { ...input.agent.extraBody, ...input.nativeReasoning } : input.agent.extraBody,
         responseFormatStrategy: input.agent.responseFormatStrategy,
         healthPath: input.agent.healthPath,
         modelsPath: input.agent.modelsPath,
@@ -2278,10 +2403,12 @@ export class MswarmCodaliExecutor {
         runId: gatewayRequest.id,
         mode: gatewayRequest.mode,
       });
-      gatewayResult = await runCodaliGateway(gatewayRequest, {
-        provider: createGatewayProvider({ providerName, runtimeInput, runCodali }),
+      const hostOptions = {
         taskRunner: createGatewayTaskRunner({ runtimeInput, runCodali }),
-        agentInventory: buildGatewayAgentInventory(input.agent, gatewayRequest),
+        // A configured node can execute only its admitted local model. Caller
+        // stage records describe routing preferences, not authoritative model
+        // capabilities, and must not elevate a small local model to large.
+        agentInventory: buildGatewayAgentInventory(input.agent, orchestration ? undefined : gatewayRequest),
         workerOptions: {
           maxRuntimeMs: gatewayRequest.policy?.maxRuntimeMs,
           maxToolCalls: gatewayRequest.policy?.maxToolCalls,
@@ -2289,6 +2416,13 @@ export class MswarmCodaliExecutor {
         finalSynthesizerOptions: {
           maxTokens: input.policy?.maxOutputTokens ?? input.agent.maxOutputTokens,
         },
+      };
+      if (orchestration) {
+        if (input.runCodaliGateway || input.runCodali || input.runCodaliJob) throw new Error("Configured node execution cannot accept legacy runtime overrides");
+        gatewayResult = (await codali.runConfiguredGateway!(gatewayRequest, { orchestration: orchestration.resolved,
+          scope: orchestration.scope, effort: orchestration.effort, configure: () => hostOptions })).result;
+      } else gatewayResult = await runCodaliGateway(gatewayRequest, {
+        ...hostOptions, provider: createGatewayProvider({ providerName, runtimeInput, runCodali }),
       });
       await input.onGatewayEvent?.({
         type: "gateway_result",
@@ -2304,7 +2438,9 @@ export class MswarmCodaliExecutor {
       if (gatewayResult.status === "failed") {
         const gatewayFailureCode = optionalText(gatewayResult.telemetry.failureCode) ??
           "GATEWAY_FAILED";
-        const gatewayFailureMessage = gatewayResult.trace.errors[0] ??
+        // The last trace error contains the causal final-policy failure; the
+        // first may be only "worker-id:GATEWAY_WORKER_FAILED".
+        const gatewayFailureMessage = gatewayResult.trace.errors.at(-1) ??
           gatewayResult.answer ??
           "Codali gateway failed without an error message.";
         throw Object.assign(
@@ -2337,6 +2473,12 @@ export class MswarmCodaliExecutor {
         runtime: runtimeInput,
         onEvent: input.onJobEvent,
       });
+      if (jobResult.status === "failed") {
+        const failure = jobResult.errors[0];
+        throw Object.assign(new Error(`CODALI_JOB_FAILED:${failure?.code ?? "JOB_FAILED"}:${failure?.message ?? "Job failed without an error message"}`), {
+          code: "CODALI_JOB_FAILED", jobRunId: jobResult.runId, retryable: false,
+        });
+      }
     } else {
       runtimeResult = await runCodali(runtimeInput);
     }

@@ -1,4 +1,6 @@
 import path from "node:path";
+import { loadOrchestrationConfig, type EffortLevel } from "../config/OrchestrationConfig.js";
+import { ConfiguredModelScope } from "../providers/ConfiguredModelScope.js";
 import { filterLocallyDrivable, getAgentInventory } from "../agents/AgentInventory.js";
 import { resolveConfigurableRoles } from "../agents/RoleResolution.js";
 import { attachHttpTools } from "../connectors/http/HttpToolSource.js";
@@ -69,6 +71,8 @@ const DEFAULT_ALLOWED_TOOLS = [
 ];
 
 export interface AskOptions {
+  orchestrationConfig?: string;
+  effort?: EffortLevel;
   query: string;
   workspaceRoot: string;
   mode: CodaliGatewayMode;
@@ -84,6 +88,9 @@ export interface AskOptions {
 }
 
 const HELP = `Usage: codali ask "<question>" [options]
+
+Configured routing: --orchestration-config PATH --effort low|medium|high|max
+Deployment default: CODALI_ORCHESTRATION_CONFIG
 
 Ask Codali a question. The orchestrator routes the request, gathers evidence
 with the tools available to it, and returns a cited answer.
@@ -125,11 +132,19 @@ export const parseAskArgs = (argv: string[]): AskOptions => {
   let responseSchemaPath: string | undefined;
   let responseFormat: "text" | "json" | undefined;
   let noTools = false;
+  let orchestrationConfig: string | undefined;
+  let effort: EffortLevel | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = argv[index + 1];
-    if (arg === "--workspace-root" && next) {
+    if (arg === "--orchestration-config") {
+      if (!next || next.startsWith("--")) throw new Error("--orchestration-config requires a file path");
+      orchestrationConfig = next; index += 1;
+    } else if (arg === "--effort") {
+      if (!["low", "medium", "high", "max"].includes(next ?? "")) throw new Error("--effort requires low|medium|high|max");
+      effort = next as EffortLevel; index += 1;
+    } else if (arg === "--workspace-root" && next) {
       workspaceRoot = path.resolve(next);
       index += 1;
     } else if (arg === "--mode" && next) {
@@ -170,6 +185,8 @@ export const parseAskArgs = (argv: string[]): AskOptions => {
   }
 
   return {
+    orchestrationConfig,
+    effort,
     query,
     workspaceRoot,
     mode,
@@ -200,11 +217,15 @@ const buildDefaultRegistry = (
   options: AskOptions,
   context: RunContext,
   judgeProvider?: Provider,
+  scope?: ConfiguredModelScope,
 ): ToolRegistry => {
   const registry = new ToolRegistry();
   if (options.noTools) return registry;
 
   const client = new DocdexClient({
+    signal: () => scope?.signal,
+    beforeRequest: scope ? () => scope.reserveTool() : undefined,
+    localSearchOnly: Boolean(scope),
     baseUrl: options.docdexBaseUrl ?? context.docdex?.baseUrl ?? "http://127.0.0.1:28491",
     repoRoot: docdexRepoRootFor(context.repo?.root, context.docdex?.repoId, options.workspaceRoot),
     repoId: context.docdex?.repoId,
@@ -240,6 +261,27 @@ export const runAsk = async (
   }
 
   const options = parseAskArgs(argv);
+  const file = options.orchestrationConfig ?? process.env.CODALI_ORCHESTRATION_CONFIG;
+  if (!file) {
+    if (options.effort) throw new Error("Legacy ask requires --orchestration-config to select an effort budget");
+    return runAskWithOptions(options, deps);
+  }
+  if (deps.createProvider) throw new Error("Configured ask cannot accept a legacy provider override");
+  const resolved = await loadOrchestrationConfig(file);
+  const context = deps.resolveRunContext ? await deps.resolveRunContext(options.workspaceRoot)
+    : await new LocalConfigRunContextResolver().resolve({ workspaceRoot: options.workspaceRoot });
+  const abort = new AbortController();
+  const stop = () => abort.abort(new Error("Configured ask cancelled"));
+  const scope = new ConfiguredModelScope(resolved, { effort: options.effort, signal: abort.signal,
+    caller: { clientIdentity: context.tenant?.slug ?? context.tenant?.id, clientProduct: resolveMswarmClientProduct(context.tenant?.product) ?? "codali" } });
+  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  try {
+    for (const binding of options.noTools ? ["planner", "synthesizer"] : ["planner", "synthesizer", "worker"]) scope.models(binding);
+    return await runAskWithOptions(options, { ...deps, resolveRunContext: async () => context }, scope);
+  } finally { scope.close(); process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); }
+};
+
+const runAskWithOptions = async (options: AskOptions, deps: AskDependencies, scope?: ConfiguredModelScope): Promise<AskOutcome> => {
   const write = deps.write ?? ((line: string) => process.stdout.write(`${line}\n`));
   const tracer = new GatewayTracer(options.query, { verbose: options.trace });
 
@@ -252,7 +294,7 @@ export const runAsk = async (
   for (const warning of context.warnings ?? []) tracer.addWarning(warning);
 
   // ---- Resolve models (inventory is loaded once per process) -----------
-  const inventory = await (deps.loadInventory ?? getAgentInventory)();
+  const inventory = scope ? { agents: [], warnings: [] } : await (deps.loadInventory ?? getAgentInventory)();
   for (const warning of inventory.warnings) tracer.addWarning(warning);
 
   // Only consider agents this process can actually call. Selecting one it
@@ -270,10 +312,11 @@ export const runAsk = async (
   });
   for (const warning of roles.warnings) tracer.addWarning(warning);
   tracer.setRoleBindings(roles.bindings);
+  if (scope) tracer.setRoleBindings({ orchestrator: "configured:planner", synthesizer: "configured:synthesizer", worker: "configured:worker" });
 
   const orchestrator = roles.assignments.orchestrator;
   const synthesizer = roles.assignments.synthesizer;
-  if (!orchestrator && !synthesizer) {
+  if (!scope && !orchestrator && !synthesizer) {
     write(
       "No usable mcoda agent was found for the orchestrator or synthesizer role.\n" +
         "Check `mcoda agent list --json` and bind roles in ~/.codali/config.json.",
@@ -290,12 +333,12 @@ export const runAsk = async (
   const baseProvider = deps.createProvider ?? createProviderForAssignment;
   const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
     baseProvider(assignment, { clientIdentity, clientProduct, ...options });
-  const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
-  const synthesizerProvider = synthesizer ? makeProvider(synthesizer) : undefined;
+  const orchestratorProvider = scope ? scope.provider("planner") : orchestrator ? makeProvider(orchestrator) : undefined;
+  const synthesizerProvider = scope ? scope.provider("synthesizer") : synthesizer ? makeProvider(synthesizer) : undefined;
   // Either role can stand in for the other if only one resolved; the trace
   // records which, so a degraded run is visible rather than silent.
   const primary = (synthesizerProvider ?? orchestratorProvider) as Provider;
-  if (!orchestrator || !synthesizer) {
+  if (!scope && (!orchestrator || !synthesizer)) {
     tracer.addWarning("agent_role_substituted");
   }
 
@@ -307,7 +350,7 @@ export const runAsk = async (
     (assignment): assignment is NonNullable<typeof assignment> => Boolean(assignment),
   );
   let workerAssignment = workerCandidates[0];
-  let worker = workerAssignment ? makeProvider(workerAssignment) : primary;
+  let worker = scope && !options.noTools ? scope.provider("worker") : workerAssignment ? makeProvider(workerAssignment) : primary;
   for (const candidate of workerCandidates) {
     const provider = makeProvider(candidate);
     if (providerSupportsToolCalls(provider)) {
@@ -336,7 +379,7 @@ export const runAsk = async (
   // ---- Tools -----------------------------------------------------------
   const registry = deps.buildRegistry
     ? deps.buildRegistry(options, context)
-    : buildDefaultRegistry(options, context, orchestratorProvider ?? worker);
+    : buildDefaultRegistry(options, context, orchestratorProvider ?? worker, scope);
 
   // Connect the run's MCP servers and register what they expose into the same
   // registry the built-in and docdex tools live in. A failing server degrades
@@ -381,9 +424,9 @@ export const runAsk = async (
 
   // ---- Build the request ------------------------------------------------
   const limits = context.limits ?? {};
-  const maxToolCalls = Math.min(options.maxToolCalls, limits.maxToolCalls ?? Infinity);
+  const maxToolCalls = Math.min(options.maxToolCalls, limits.maxToolCalls ?? Infinity, scope?.budget().maxToolCalls ?? Infinity);
   const maxRounds = Math.min(options.maxRounds, limits.maxRounds ?? Infinity);
-  const deadlineMs = Math.min(options.deadlineMs, limits.deadlineMs ?? Infinity);
+  const deadlineMs = Math.min(options.deadlineMs, limits.deadlineMs ?? Infinity, scope?.budget().timeoutMs ?? Infinity);
 
   // Every tool must be declared to the capability compiler, which otherwise
   // discards it as `not_declared`. That includes docdex tools outside the
@@ -401,6 +444,7 @@ export const runAsk = async (
   }
 
   const request: CodaliGatewayRequest = {
+    metadata: scope ? { orchestration: { configHash: scope.configHash, effort: scope.effort, scopeId: scope.id } } : undefined,
     query: options.query,
     mode: options.mode,
     product: { name: "codali-cli" },
@@ -425,7 +469,7 @@ export const runAsk = async (
       maxIterations: maxRounds,
       maxRuntimeMs: deadlineMs,
       maxToolCalls,
-      maxModelCalls: DEFAULT_MAX_MODEL_CALLS,
+      maxModelCalls: Math.min(DEFAULT_MAX_MODEL_CALLS, scope?.budget().maxModelCalls ?? Infinity),
       maxEvidenceItems: 40,
       maxContextPackTokens: 16_000,
       allowWrites: false,
@@ -457,6 +501,8 @@ export const runAsk = async (
       provider: worker,
       registry,
       toolContext: {
+        signal: scope?.signal,
+        beforeTool: scope ? async () => scope.reserveTool() : undefined,
         workspaceRoot: options.workspaceRoot,
         allowShell: false,
         allowDestructiveOperations: false,
@@ -493,6 +539,7 @@ export const runAsk = async (
 
   try {
     const planning = await gateway.plan(request);
+    scope?.signal.throwIfAborted();
     tracer.setRunId(planning.runId);
     tracer.recordPlan({
       capabilities: planning.classifier.capabilities,
@@ -525,6 +572,7 @@ export const runAsk = async (
     }
 
     const workers = await gateway.executePlannedWorkerTasks(request, planning);
+    scope?.signal.throwIfAborted();
     tracer.recordRound(1);
 
     // Surface worker failures. Without this a run whose every task failed still
@@ -541,12 +589,15 @@ export const runAsk = async (
     }
     for (const error of workers.workers.errors) tracer.addWarning(`worker_error:${error}`);
 
-    const result = await gateway.synthesizeFinalAnswer({
+    const synthesized = await gateway.synthesizeFinalAnswer({
       runId: planning.runId,
       request,
       planning,
       workers: workers.workers,
     });
+    scope?.signal.throwIfAborted();
+    const result: CodaliGatewayResult = { ...synthesized, telemetry: { ...synthesized.telemetry,
+      ...(scope ? { orchestration: { configHash: scope.configHash, usage: scope.snapshot(), toolCalls: scope.toolsUsed } } : {}) } };
 
     tracer.finish({
       status: result.status,

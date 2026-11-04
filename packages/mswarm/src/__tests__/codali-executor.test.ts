@@ -745,7 +745,7 @@ test("MswarmCodaliExecutor rejects failed gateway results before streaming outpu
           consideredTools: ["docdex_search"],
           calledTools: [],
           warnings: [],
-          errors: ["GATEWAY_REQUIRED_TOOL_NOT_CALLED:docdex_search"],
+          errors: ["worker-1:GATEWAY_WORKER_FAILED", "GATEWAY_REQUIRED_TOOL_NOT_CALLED:docdex_search"],
           toolCalls: [],
           modelCalls: [],
           events: [],
@@ -763,6 +763,7 @@ test("MswarmCodaliExecutor rejects failed gateway results before streaming outpu
       assert.equal(failure.gatewayFailureCode, "GATEWAY_REQUIRED_TOOL_NOT_CALLED");
       assert.equal(failure.retryable, false);
       assert.match(failure.message, /GATEWAY_REQUIRED_TOOL_NOT_CALLED/);
+      assert.match(failure.message, /docdex_search/);
       return true;
     },
   );

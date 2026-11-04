@@ -15,6 +15,7 @@ export interface SelfHostedInvocationTokenClaims {
 
 const SELF_HOSTED_INVOCATION_OPERATIONS = new Set<GenerativeOperation>([
   "chat.completions",
+  "embeddings",
   "images.generations",
   "audio.generations",
   "videos.generations"

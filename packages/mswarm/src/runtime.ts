@@ -5,9 +5,12 @@ import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
+import { nativeReasoningRequest } from "./native-reasoning.js";
 import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
+  MswarmInvocationRejectedError,
+  readLocalModelResponseError,
   type LocalOpenAiCompatibleRunnerConfig,
   type MswarmCodaliAgent,
   type MswarmCodaliDocdex,
@@ -20,6 +23,10 @@ import {
 import {
   GENERATIVE_OPERATION_DEFAULT_PATHS,
   GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS,
+  validateEmbeddingRequest,
+  validateEmbeddingResponse,
+  validateEmbeddingPreprocessing,
+  type EmbeddingPreprocessing,
   MSWARM_CAPABILITY_SCHEMA_VERSION,
   CryptoHelper,
   assertMswarmSafeRelativePath,
@@ -113,10 +120,15 @@ export interface SelfHostedGenerativeOperationCatalogInput {
     max_video_frames?: number;
     max_steps?: number;
     max_high_noise_steps?: number;
+    max_input_items?: number;
+    max_input_chars?: number;
+    max_total_input_chars?: number;
+    embedding_dimensions?: number;
   };
 }
 
 type McodaLocalRunnerConfig = LocalOpenAiCompatibleRunnerConfig & {
+  embedding?: EmbeddingPreprocessing;
   inputModalities?: SelfHostedGenerativeModality[];
   outputModalities?: SelfHostedGenerativeModality[];
   operations?: SelfHostedGenerativeOperationConfig[];
@@ -125,6 +137,7 @@ type McodaLocalRunnerConfig = LocalOpenAiCompatibleRunnerConfig & {
 };
 
 type MswarmGenerativeAgent = MswarmCodaliAgent & {
+  modelDigest?: string;
   generativeOperations: SelfHostedGenerativeOperationConfig[];
   inputModalities: SelfHostedGenerativeModality[];
   outputModalities: SelfHostedGenerativeModality[];
@@ -156,6 +169,7 @@ export interface SelfHostedModelInput {
   models_path?: string | null;
   display_name?: string | null;
   digest?: string | null;
+  embedding?: EmbeddingPreprocessing;
   exposed?: boolean;
   family?: string | null;
   parameter_size?: string | null;
@@ -167,6 +181,7 @@ export interface SelfHostedModelInput {
   supports_vision?: boolean;
   supports_json_schema?: boolean;
   supports_gbnf?: boolean;
+  native_reasoning_transport_version?: 1;
   openai_compatible?: boolean;
   best_usage?: string | null;
   capabilities?: string[];
@@ -553,6 +568,7 @@ export interface SelfHostedNodeInvocationJob {
      */
     execution_class?: string;
     max_runtime_ms?: number;
+    expected_model_digest?: string;
     max_output_tokens?: number;
     allow_tools?: boolean;
     allow_images?: boolean;
@@ -742,6 +758,8 @@ export interface SelfHostedNodeHeartbeatResult {
 
 export interface SelfHostedNodeDaemonHandle {
   stop: () => void;
+  /** Close admission immediately; wait for already claimed work and result delivery. */
+  drain: (options?: { timeoutMs?: number }) => Promise<boolean>;
 }
 
 export interface SelfHostedNodeDoctorResult {
@@ -1030,6 +1048,9 @@ const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
 ]);
 const SECRET_LOCAL_RUNNER_HEADER_KEYS = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"]);
 const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
+  "input",
+  "dimensions",
+  "encoding_format",
   "model",
   "messages",
   "prompt",
@@ -1054,6 +1075,7 @@ const REQUIRED_GENERATIVE_OPERATION_REQUEST_PARAMETERS: Record<
   SelfHostedGenerativeOperationName,
   readonly string[]
 > = {
+  embeddings: ["model", "input", "encoding_format"],
   "chat.completions": ["model", "messages"],
   "images.generations": ["model", "prompt", "response_format"],
   "audio.generations": ["model", "prompt", "response_format"],
@@ -1170,7 +1192,7 @@ export function normalizeSelfHostedGenerativeOperationName(
   value: unknown
 ): SelfHostedGenerativeOperationName | null {
   const normalized = optionalText(value);
-  return normalized === "chat.completions" ||
+  return normalized === "embeddings" || normalized === "chat.completions" ||
     normalized === "images.generations" ||
     normalized === "audio.generations" ||
     normalized === "videos.generations"
@@ -1216,7 +1238,7 @@ function normalizeGenerativeOperationDescriptor(value: unknown): SelfHostedGener
   const responseFormats =
     normalized.responseFormats?.length
       ? normalized.responseFormats
-      : operation === "chat.completions"
+      : operation === "embeddings" ? ["float"] : operation === "chat.completions"
         ? undefined
         : operation === "images.generations"
           ? ["b64_json"]
@@ -1274,6 +1296,7 @@ function inferGenerativeModalities(
 ): SelfHostedGenerativeModality[] {
   const modalities = new Set<SelfHostedGenerativeModality>();
   for (const descriptor of operations) {
+    if (direction === "output" && descriptor.operation === "embeddings") modalities.add("embedding");
     if (direction === "input" || descriptor.operation === "chat.completions") {
       modalities.add("text");
     }
@@ -1295,6 +1318,10 @@ function generativeOperationCatalogInput(
 ): SelfHostedGenerativeOperationCatalogInput {
   const limits = descriptor.limits
     ? {
+        ...(descriptor.limits.maxInputItems !== undefined ? { max_input_items: descriptor.limits.maxInputItems } : {}),
+        ...(descriptor.limits.maxInputChars !== undefined ? { max_input_chars: descriptor.limits.maxInputChars } : {}),
+        ...(descriptor.limits.maxTotalInputChars !== undefined ? { max_total_input_chars: descriptor.limits.maxTotalInputChars } : {}),
+        ...(descriptor.limits.embeddingDimensions !== undefined ? { embedding_dimensions: descriptor.limits.embeddingDimensions } : {}),
         ...(descriptor.limits.maxRequestBytes !== undefined
           ? { max_request_bytes: descriptor.limits.maxRequestBytes }
           : {}),
@@ -1487,6 +1514,7 @@ function normalizeMcodaLocalRunnerConfig(
     inputModalities: normalizeGenerativeModalities(merged.inputModalities ?? merged.input_modalities),
     outputModalities: normalizeGenerativeModalities(merged.outputModalities ?? merged.output_modalities),
     operations: normalizeGenerativeOperations(merged.operations),
+    embedding: merged.embedding === undefined || merged.embedding === null ? undefined : validateEmbeddingPreprocessing(merged.embedding),
     publicModelId: readConfigString(merged, ["publicModelId", "public_model_id"])
   };
 }
@@ -2213,13 +2241,14 @@ function isAgentExposed(
   agentSlug: string,
   defaultModel: string | null,
   bestUsage: string | null,
-  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
+  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">,
+  supportsEmbeddings = false,
 ): boolean {
   const identities = [agentSlug, defaultModel].filter((value): value is string => Boolean(value));
   if (identities.some((identity) => config.modelBlocklist.includes(identity))) {
     return false;
   }
-  if (isEmbeddingUsage(bestUsage) || identities.some((identity) => isEmbeddingModel(identity))) {
+  if (!supportsEmbeddings && (isEmbeddingUsage(bestUsage) || identities.some((identity) => isEmbeddingModel(identity)))) {
     return false;
   }
   if (config.modelAllowlist.length > 0) {
@@ -2547,6 +2576,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=${quoteSystemdValue(input.wrapperPath)}
 Restart=always
+TimeoutStopSec=infinity
+KillMode=mixed
 RestartSec=5
 StandardOutput=append:${input.logPath}
 StandardError=append:${input.errorLogPath}
@@ -3360,6 +3391,8 @@ export function mapMcodaAgentToSelfHostedModel(
     model_id: publicModelId || model,
     public_model_id: publicModelId,
     upstream_model: model,
+    digest: optionalText(legacyConfig.modelDigest),
+    embedding: localRunner?.embedding,
     base_url: localRunner?.baseUrl ?? legacyNativeBase ?? undefined,
     runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind ?? (legacyNativeBase ? "llama-cpp" : undefined),
     auth_mode: localRunner?.authMode ?? (legacyNativeBase ? normalizeLocalRunnerAuthMode(legacyConfig.authMode) : undefined),
@@ -3374,11 +3407,14 @@ export function mapMcodaAgentToSelfHostedModel(
     supports_vision: supportsVision,
     supports_json_schema: localRunner?.supportsJsonSchema,
     supports_gbnf: localRunner?.supportsGbnf,
+    // Transport metadata must not change semantic model capability sets: those
+    // sets participate in stable load-balanced pool identifiers on the gateway.
+    native_reasoning_transport_version: localRunner?.runnerKind === "strata" ? 1 : undefined,
     openai_compatible: openaiCompatible,
     exposed:
       healthStatus !== "blocked" &&
       agentRunsOnThisNode(agent) &&
-      isAgentExposed(slug, defaultModel, bestUsage, config),
+      isAgentExposed(slug, defaultModel, bestUsage, config, operations.some(entry => entry.operation === "embeddings")),
     best_usage: bestUsage,
     capabilities,
     cost_per_million: optionalNumber(agent.costPerMillion, agent.cost_per_million),
@@ -3803,6 +3839,8 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
     localRunner?.operations ??
     [defaultGenerativeOperationDescriptor("chat.completions", localRunner ? "/chat/completions" : undefined)];
   return {
+    modelDigest: configText(config, "modelDigest"),
+    orchestrationConfigPath: configText(config, "codaliOrchestrationPath"),
     slug: optionalText(agent.slug) || fallbackSlug,
     adapter,
     provider: resolveCodaliProviderForAgent(agent),
@@ -3829,6 +3867,10 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
     supportsJsonSchema: localRunner?.supportsJsonSchema,
     supportsGbnf: localRunner?.supportsGbnf,
     capabilities: normalizeCapabilities(agent.capabilities),
+    rating: optionalNumber(agent.rating) ?? undefined,
+    reasoningRating: optionalNumber(agent.reasoningRating, agent.reasoning_rating) ?? undefined,
+    maxComplexity: optionalNumber(agent.maxComplexity, agent.max_complexity) ?? undefined,
+    bestUsage: optionalText(agent.bestUsage) ?? optionalText(agent.best_usage) ?? undefined,
     contextWindow: optionalNumber(agent.contextWindow, agent.context_window) ?? undefined,
     maxOutputTokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens) ?? undefined,
     generativeOperations,
@@ -3996,7 +4038,8 @@ function selfHostedErrorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown }).code;
   if (
     typeof code === "string" &&
-    (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code))
+    (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code)
+      || code === "context_length_exceeded" || code === "invalid_response" || code === "rate_limited")
   ) {
     return code;
   }
@@ -6313,6 +6356,17 @@ export class SelfHostedNodeRuntime {
   private readonly latencySamplesMs: number[] = [];
   private readonly recentFailures: Array<{ execution_class: SelfHostedRuntimeExecutionClass; code: string; at: string }> = [];
   private lifecyclePollingDisabled = false;
+  private admissionClosed = false;
+  private admittedJobs = 0;
+  private manualRelayOperations = 0;
+
+  get isDraining(): boolean {
+    return this.admissionClosed || this.config.drainMode === true;
+  }
+
+  beginDrain(): void {
+    this.admissionClosed = true;
+  }
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -6529,7 +6583,7 @@ export class SelfHostedNodeRuntime {
     discoveryFailureCount?: number;
     capabilityPayload?: MswarmSignedCapabilityPayload | null;
   }): SelfHostedRuntimeLoadTelemetry {
-    const drainMode = this.config.drainMode === true;
+    const drainMode = this.isDraining;
     const llmMaxConcurrency = Math.max(1, Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1));
     const genericMaxConcurrency = Math.max(1, Math.floor(this.config.genericJobMaxConcurrency || 1));
     const maxConcurrency = Math.max(
@@ -6962,7 +7016,7 @@ export class SelfHostedNodeRuntime {
       generic_jobs_enabled: this.config.genericJobsEnabled,
       generic_job_timeout_ms: this.config.genericJobTimeoutMs,
       generic_job_max_concurrency: this.config.genericJobMaxConcurrency,
-      drain_mode: this.config.drainMode === true,
+      drain_mode: this.isDraining,
       load_reporting_enabled: this.config.loadReportingEnabled !== false,
       hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
       expose_all_models: this.config.exposeAllModels,
@@ -7031,9 +7085,12 @@ export class SelfHostedNodeRuntime {
     if (job.openai_request.top_p !== undefined) body.top_p = job.openai_request.top_p;
     if (job.openai_request.max_tokens !== undefined) body.max_tokens = job.openai_request.max_tokens;
     if (job.openai_request.stop !== undefined) body.stop = job.openai_request.stop;
+    if (job.openai_request.response_format !== undefined) body.response_format = job.openai_request.response_format;
+    Object.assign(body, nativeReasoningRequest(job.openai_request));
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const response = await this.fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
+    if (!response.ok) throw await readLocalModelResponseError(response);
     const text = await response.text();
     let payload: unknown = null;
     try {
@@ -7426,6 +7483,55 @@ export class SelfHostedNodeRuntime {
     };
   }
 
+  private prepareEmbeddingPassthrough(job: SelfHostedNodeInvocationJob, agent: MswarmGenerativeAgent) {
+    if (job.policy?.expected_model_digest && agent.modelDigest !== job.policy.expected_model_digest) {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "Embedding model revision changed after admission");
+    }
+    const descriptor = this.generativeOperationForAgent(agent, "embeddings");
+    const baseUrl = optionalText(agent.baseUrl);
+    let endpoint: URL;
+    try { endpoint = new URL(baseUrl || ""); } catch {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "embedding runner URL is missing or invalid");
+    }
+    if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "embedding runner URL is invalid");
+    }
+    let body: ReturnType<typeof validateEmbeddingRequest>;
+    try {
+      body = validateEmbeddingRequest(job.openai_request, optionalText(agent.model) || job.openai_request.model, descriptor.limits);
+    } catch (error) {
+      throw new SelfHostedPreStartJobError("validation_failed", error instanceof Error ? error.message : "invalid embedding request");
+    }
+    if (Buffer.byteLength(JSON.stringify(body)) > Math.min(descriptor.limits?.maxRequestBytes || 1_048_576, 1_048_576)) {
+      throw new SelfHostedPreStartJobError("validation_failed", "embedding request exceeds byte limit");
+    }
+    const headers: Record<string, string> = {};
+    const bearer = agent.authMode === "bearer" ? optionalText(agent.apiKey)
+      : agent.authMode === "dummy-bearer" ? optionalText(agent.dummyBearerToken) || "local" : undefined;
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
+    for (const [key, value] of Object.entries(agent.headers ?? {})) if (typeof value === "string") headers[key.toLowerCase()] = value;
+    headers["content-type"] = "application/json";
+    return { descriptor, body, headers, url: `${baseUrl!.replace(/\/+$/, "")}${descriptor.path}` };
+  }
+
+  private async executeEmbeddingPassthrough(prepared: ReturnType<SelfHostedNodeRuntime["prepareEmbeddingPassthrough"]>) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(this.config.jobTimeoutMs, 120_000));
+    try {
+      const response = await this.fetchImpl(prepared.url, {
+        method: "POST", headers: prepared.headers, body: JSON.stringify(prepared.body), signal: controller.signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`local embeddings runner request failed with status ${response.status}`);
+      }
+      const raw = await readBoundedResponseText(response,
+        Math.min(prepared.descriptor.limits?.maxOutputBytes || 16_777_216, 16_777_216), "embedding response exceeds byte limit");
+      return validateEmbeddingResponse(JSON.parse(raw), prepared.body.input.length,
+        prepared.descriptor.limits?.embeddingDimensions ?? prepared.body.dimensions, prepared.body.model);
+    } finally { clearTimeout(timeout); }
+  }
+
   private async executeOpenAiGenerativePassthrough(
     prepared: {
       descriptor: SelfHostedGenerativeOperationConfig;
@@ -7608,6 +7714,27 @@ export class SelfHostedNodeRuntime {
   async executeGenericJob(
     envelope: SelfHostedGenericNodeJob,
     options: MswarmGenericJobExecutionOptions = {}
+  ): Promise<MswarmGenericJobExecutionResult> {
+    if (this.isDraining) throw new SelfHostedPreStartJobError("node_draining", "Node is draining; no new work was admitted.");
+    return this.executePreviouslyAdmittedGenericJob(envelope, options);
+  }
+
+  /** Host scheduler only: finish work accepted before admission was closed. */
+  async executePreviouslyAdmittedGenericJob(
+    envelope: SelfHostedGenericNodeJob,
+    options: MswarmGenericJobExecutionOptions = {}
+  ): Promise<MswarmGenericJobExecutionResult> {
+    this.admittedJobs += 1;
+    try {
+      return await this.executeAdmittedGenericJob(envelope, options);
+    } finally {
+      this.admittedJobs -= 1;
+    }
+  }
+
+  private async executeAdmittedGenericJob(
+    envelope: SelfHostedGenericNodeJob,
+    options: MswarmGenericJobExecutionOptions
   ): Promise<MswarmGenericJobExecutionResult> {
     const startedAt = Date.now();
     this.beginExecutionTelemetry("generic_job");
@@ -7794,6 +7921,20 @@ export class SelfHostedNodeRuntime {
     job: SelfHostedNodeInvocationJob,
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
+    if (this.isDraining) {
+      return {
+        job_id: job.job_id, request_id: job.request_id, status: "failed",
+        error: { code: "node_draining", message: "Node is draining; no new work was admitted." }
+      };
+    }
+    return this.executeAdmittedJob(job, options);
+  }
+
+  private async executeAdmittedJob(
+    job: SelfHostedNodeInvocationJob,
+    options: SelfHostedJobExecutionOptions
+  ): Promise<SelfHostedNodeInvocationResult> {
+    this.admittedJobs += 1;
     this.activeRequestIds.add(job.request_id);
     try {
       return await this.executeTrackedJob(job, options);
@@ -7802,6 +7943,7 @@ export class SelfHostedNodeRuntime {
       // A product often starts its next stage immediately after this result.
       // Publish the newly free native slot before the gateway delivers it.
       await this.reportLoad().catch(() => undefined);
+      this.admittedJobs -= 1;
     }
   }
 
@@ -7872,6 +8014,9 @@ export class SelfHostedNodeRuntime {
         );
       }
       if (job.provider === "ollama") {
+        if (Object.keys(nativeReasoningRequest(job.openai_request)).length) {
+          throw new SelfHostedPreStartJobError("unsupported_operation", "Native reasoning options require an OpenAI-compatible runner");
+        }
         if (operation !== "chat.completions") {
           throw new SelfHostedPreStartJobError(
             "unsupported_operation",
@@ -7947,6 +8092,17 @@ export class SelfHostedNodeRuntime {
       const agent = await this.resolveMcodaAgentForJob(job);
       selectedAgent = agent;
       this.generativeOperationForAgent(agent, operation);
+      if (operation === "embeddings") {
+        const prepared = this.prepareEmbeddingPassthrough(job, agent);
+        await acknowledgeStarted(agent);
+        await recordProgress({ type: "agent_selected", operation, job_id: job.job_id,
+          request_id: job.request_id, agent_slug: agent.slug, adapter: agent.adapter, local_model: prepared.body.model });
+        const result = await this.executeEmbeddingPassthrough(prepared);
+        this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
+        return { job_id: job.job_id, request_id: job.request_id, operation, status: "success",
+          openai_response: { ...result, ...(agent.modelDigest ? { embedding_revision: agent.modelDigest } : {}) }, ...(result.usage ? { usage: { ...result.usage, completion_tokens: 0 } } : {}),
+          ...(progressEvents.length ? { progress_events: progressEvents } : {}), timing: { local_latency_ms: Date.now() - startedAt } };
+      }
       if (
         operation === "images.generations" ||
         operation === "audio.generations" ||
@@ -8000,8 +8156,11 @@ export class SelfHostedNodeRuntime {
       // OpenAI-standard tool pass-through. When the caller supplies `tools` it is
       // driving its own tool loop, so the node must return the model's raw
       // tool_calls instead of running the Codali agentic loop, which owns tools
-      // itself and would never surface them to the caller.
-      if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0) {
+      // itself and would never surface them to the caller. Finalization often
+      // removes declarations; preserve that same native path while tool history
+      // remains, including call IDs and result pairing.
+      if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0 ||
+          chatMessages.some(message => isRecord(message) && (message.role === "tool" || Array.isArray(message.tool_calls) && message.tool_calls.length > 0))) {
         const passthrough = await this.executeOpenAiToolPassthrough(job, agent);
         this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
         const passthroughResult: SelfHostedNodeInvocationResult = {
@@ -8029,6 +8188,7 @@ export class SelfHostedNodeRuntime {
         attachedMswarmApiKey,
         policy: buildCodaliPolicy(job),
         temperature: job.openai_request.temperature,
+        nativeReasoning: nativeReasoningRequest(job.openai_request),
         responseFormat: isRecord(job.openai_request.response_format)
           ? job.openai_request.response_format
           : null,
@@ -8108,6 +8268,7 @@ export class SelfHostedNodeRuntime {
             agent_slug: response.metadata.agent_slug,
             runtime: response.metadata.runtime,
             codali_run_id: response.metadata.run_id,
+            orchestration: response.metadata.orchestration,
             tool_calls_executed: response.metadata.tool_calls_executed,
             called_tools: response.metadata.called_tools,
             dynamic_tools_considered: response.metadata.dynamic_tools_considered,
@@ -8172,6 +8333,7 @@ export class SelfHostedNodeRuntime {
         operation,
         status: "failed",
         ...(!jobStarted ? { pre_start_failure: true } : {}),
+        ...(error instanceof MswarmInvocationRejectedError ? { usage: error.usage } : {}),
         error: {
           code,
           message
@@ -8360,7 +8522,7 @@ export class SelfHostedNodeRuntime {
         relay_mode: this.config.relayMode || "outbound",
         load_reporting_enabled: loadReportingEnabled,
         hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
-        drain_mode: this.config.drainMode === true,
+        drain_mode: this.isDraining,
         ...(lifecycleProtocolDegraded
           ? {
               lifecycle: {
@@ -8545,7 +8707,9 @@ export class SelfHostedNodeRuntime {
         streamEventForwardingFailed = true;
       }
     };
-    let result = await this.executeJob(job, {
+    // A claim returned by an outstanding poll already belongs to this node,
+    // including a poll that finishes after drain began. Never discard it.
+    let result = await this.executeAdmittedJob(job, {
       attachedMswarmApiKey: claim.attachedMswarmApiKey,
       onStarted: async (event) => {
         try {
@@ -8637,11 +8801,17 @@ export class SelfHostedNodeRuntime {
   }
 
   async pollAndExecuteJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<SelfHostedRelayExecutionResult> {
-    const polled = await this.pollRelayJob(waitMs);
-    if (!polled.claim) {
-      return { executed: false, ...(polled.status ? { status: polled.status } : {}) };
+    if (this.isDraining) return { executed: false };
+    this.manualRelayOperations += 1;
+    try {
+      const polled = await this.pollRelayJob(waitMs);
+      if (!polled.claim) {
+        return { executed: false, ...(polled.status ? { status: polled.status } : {}) };
+      }
+      return await this.executeRelayJobClaim(polled.claim);
+    } finally {
+      this.manualRelayOperations -= 1;
     }
-    return this.executeRelayJobClaim(polled.claim);
   }
 
   async doctor(): Promise<SelfHostedNodeDoctorResult> {
@@ -8774,6 +8944,7 @@ export class SelfHostedNodeRuntime {
     const schedulePoll = (delayMs: number) => {
       if (
         stopped ||
+        this.isDraining ||
         polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
@@ -8798,6 +8969,7 @@ export class SelfHostedNodeRuntime {
     const poll = () => {
       if (
         stopped ||
+        this.isDraining ||
         polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
@@ -8907,6 +9079,25 @@ export class SelfHostedNodeRuntime {
         schedulePoll(0);
       });
 
-    return { stop: halt };
+    return {
+      stop: halt,
+      drain: async ({ timeoutMs } = {}) => {
+        if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0)) {
+          throw new Error("drain timeoutMs must be a finite non-negative number");
+        }
+        this.beginDrain();
+        clearPollTimer();
+        // Keep regular heartbeats alive during a drain and publish zero free
+        // slots promptly. Failure to report cannot reopen local admission.
+        void this.reportLoad().catch(() => undefined);
+        const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+        while (polling || activeRelayExecutions > 0 || this.admittedJobs > 0 || this.queuedGenericJobs > 0 || this.manualRelayOperations > 0) {
+          if (Date.now() >= deadline) return false;
+          await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+        }
+        await this.reportLoad().catch(() => undefined);
+        return true;
+      }
+    };
   }
 }

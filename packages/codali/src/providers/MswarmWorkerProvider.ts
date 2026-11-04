@@ -70,7 +70,10 @@ export class MswarmWorkerProvider implements Provider {
   }
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    request.signal?.throwIfAborted();
     const controller = new AbortController();
+    const onAbort = () => controller.abort(request.signal?.reason);
+    request.signal?.addEventListener("abort", onAbort, { once: true });
     const timeout =
       this.config.timeoutMs && this.config.timeoutMs > 0
         ? setTimeout(() => controller.abort(), this.config.timeoutMs)
@@ -127,6 +130,7 @@ export class MswarmWorkerProvider implements Provider {
         raw: payload,
       };
     } finally {
+      request.signal?.removeEventListener("abort", onAbort);
       if (timeout) {
         clearTimeout(timeout);
       }

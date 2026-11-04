@@ -253,14 +253,12 @@ export const resolveConfigurableRoles = (
     warnings.push(`agent_resolution_error:${error.code}${error.role ? `:${error.role}` : ""}`);
   }
 
-  const toolCapable = findToolCapableAssignment(
-    resolution,
-    // An explicitly bound worker wins; otherwise fall back to the orchestrator.
-    assignments.worker ?? assignments.orchestrator,
-  );
+  // An explicitly bound worker wins; otherwise prefer the orchestrator.
+  const preferredToolWorker = assignments.worker ?? assignments.orchestrator;
+  const toolCapable = findToolCapableAssignment(resolution, preferredToolWorker);
   if (!toolCapable) {
     warnings.push("no_tool_capable_agent");
-  } else if (toolCapable !== assignments.orchestrator) {
+  } else if (toolCapable !== preferredToolWorker) {
     warnings.push(`tool_worker_substituted:${toolCapable.candidate.slug}`);
   }
 

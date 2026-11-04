@@ -1,0 +1,21 @@
+# Progress
+
+Confirmed six current default skills. SkillCatalog.prompt exposes only first4 records, so additional domains need discoverable bounded metadata. Skill bodies are paged at2400characters and serialized below3800characters. Native browser_session manages only its isolated browser/static preview. run_shell is sandboxed; no general host systemd/launchd management tool is registered. No host permissions will be widened by this skill expansion.
+
+Docdex symbols located SkillCatalog.prompt/read/tools; impact graph returned no edges, so inspected actual controller/tool references. Docdex web research succeeded but primary upstream skill/OS documentation is being used for concrete guidance. Plan created before edits.
+
+Seven entrypoints and three platform references written; all pass skill-creator validation. Entry bodies fit one normal skill_load. Catalog metadata expansion uses max24 entries and3200serialized characters, preserving lazy bodies and exact IDs. Required local delegation receipt c5ec9545-4bb3-4041-a3e3-0109efc1c349 supplied the reviewed prompt refactor; preserved platform/authority guidance omitted in its draft.
+
+91 focused controller/catalog/TUI tests passed. Follow-up97 routing/catalog tests passed, including the new check that skill readers remain available after capability focusing. Correction to initial diagnosis: routed inspections already injected the skill catalog; the gap was pruning skill tools after a different capability was used. Native/adaptive tool prompts now also carry bounded skill metadata; answer-only final prompts do not.
+
+Initial model probes selected appropriate skills but exposed evaluation-format problems (1600token cap, fenced/malformed JSON). Kept initial evidence; increased output allowance to3200 and separated formatting warnings from semantic review. No malformed tool calls execute. First real controller review found the tenant leak but did not load a skill; clarified catalog guidance and retained skill readers. Re-running actual controller after those changes.
+
+Semantic review tightened architecture guidance against unsupported runtime/database claims, code-review guidance against optional/hypothetical findings presented as defects, and testing guidance to assert observable contract effects rather than invented internal states/call counts. These are general workflow corrections, not fixture-specific routing rules.
+
+User steering added ui-ux-design, bringing the bundled catalog to14skills. The new skill covers visual direction/brand consistency, user journeys, hierarchy, typography/spacing, responsive behavior, accessibility and error/loading/empty states. Its validation reference distinguishes rendered/browser checks from unavailable screenshot/vision checks. Qwen loaded both entrypoint and reference in the UI probe and addressed the supplied booking-screen defects without claiming visual verification.
+
+Final validation: TypeScript build passed;97 targeted catalog/routing tests passed, including lazy metadata, all8new skill loads, pagination, reference reads and retained read-only skill tools. Earlier91controller/catalog/TUI checks passed. Generated range repair passed5independent executed checks. Final model probes and retained failed/development attempts are recorded under docs/benchmarks/codali-core-skills. Explicit code-review invocation in the real SessionController loaded the skill, used Docdex, reported the tenant-isolation defect, and left the file unchanged (4model/3toolcalls,14,242tokens). Generic review prompts did not consistently choose skill_load; this is recorded as a limitation, not hidden as a pass.
+
+The14skill local preview installation is being verified; no npm publication. General host service access still requires an advertised authorized connector, and no live host services were changed by this task.
+
+Installed preview verified:14builtins, every entrypoint fits a single load, UI validation reference loads, catalog prompt3099characters. Rollback backup: ~/.local/state/codali-core-skills-backups/20261104T182553Z. Final npm pack dry-run contains14skill entrypoints. Docdex index refresh hit its HTTP deadline, but the shared daemon remained healthy and subsequent stats showed a fresh index update; no private daemon was started.

@@ -15,7 +15,8 @@ import {
   buildSelfHostedNodeApp,
   formatNodeUninstallSummary,
   isSelfHostedNodeDirectRun,
-  normalizeMswarmCommand
+  normalizeMswarmCommand,
+  waitForNodeShutdown
 } from "../server.js";
 import {
   MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
@@ -920,6 +921,21 @@ describe("self-hosted node runtime", () => {
     expect(mapped?.supports_gbnf).toBe(false);
     expect(mapped?.openai_compatible).toBe(true);
     expect(JSON.stringify(mapped)).not.toContain("secret-local-key");
+  });
+
+  it("advertises native transport for Strata without mutating registry capabilities", () => {
+    for (const [adapter, runnerKind] of [["strata-local", "strata"], ["llama-cpp-local", "llama-cpp"], ["claude-cli", undefined]] as const) {
+      const capabilities = ["code_write"];
+      const mapped = mapMcodaAgentToSelfHostedModel({
+        slug: "native-contract", adapter, defaultModel: "fixture", capabilities,
+        health: { status: "healthy" },
+        config: runnerKind ? { baseUrl: "http://127.0.0.1:11452/v1", runnerKind, authMode: "none" } : {}
+      }, { exposeAllModels: true, modelAllowlist: [], modelBlocklist: [] });
+      assert.ok(mapped);
+      assert.equal(mapped.native_reasoning_transport_version, runnerKind === "strata" ? 1 : undefined);
+      assert.deepEqual(mapped.capabilities, ["code_write"]);
+      assert.deepEqual(capabilities, ["code_write"]);
+    }
   });
 
   it("publishes configured non-text operations with safe relative paths", () => {
@@ -2299,7 +2315,7 @@ describe("self-hosted node runtime", () => {
     const statePath = tempStatePath();
     const captured: { value?: MswarmCodaliInvocationInput } = {};
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
-      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ rating: 7.5, reasoningRating: 7.82, maxComplexity: 8, bestUsage: "reasoning_and_code" })]),
       codaliExecutor: new StubCodaliExecutor(async (input) => {
         captured.value = input;
         return successfulCodaliInvocation(input);
@@ -2338,6 +2354,10 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.agent.adapter).toBe("ollama-remote");
     expect(capturedInput.agent.model).toBe("qwen3.5:35b");
     expect(capturedInput.agent.baseUrl).toBe("http://ollama.test");
+    expect(capturedInput.agent.rating).toBe(7.5);
+    expect(capturedInput.agent.reasoningRating).toBe(7.82);
+    expect(capturedInput.agent.maxComplexity).toBe(8);
+    expect(capturedInput.agent.bestUsage).toBe("reasoning_and_code");
     expect(capturedInput.policy?.allowTools).toBe(true);
     expect(capturedInput.responseFormat?.type).toBe("json_schema");
     expect(capturedInput.messages[0]?.content).toBe("Review this log.");
@@ -4718,6 +4738,62 @@ describe("self-hosted node runtime", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("routes operation-bound embeddings to the configured local runner and rejects dimension drift", async () => {
+    const config = permissiveServiceConfigFor(tempStatePath());
+    let localRequest: Record<string, unknown> | undefined;
+    let badDimensions = false;
+    let calls = 0;
+    const embedding = { queryPrefix: "query: ", documentPrefix: "document: ", normalization: "l2", pooling: "mean" };
+    const agent = healthyMcodaAgent({ slug: "nomic-embed", adapter: "openai-compatible-local",
+      defaultModel: "nomic-embed-text", bestUsage: "embedding", supportsTools: false, capabilities: ["embedding"],
+      config: { baseUrl: "http://embedding.test/v1", runnerKind: "llama-cpp", authMode: "none", modelDigest: "sha256:qualified",
+        embedding,
+        operations: [{ operation: "embeddings", path: "/embeddings", limits: { embeddingDimensions: 2, maxInputItems: 2 } }] } });
+    const mapped = mapMcodaAgentToSelfHostedModel(agent, config);
+    assert.equal(mapped?.exposed, true);
+    assert.equal(mapped?.digest, "sha256:qualified");
+    assert.deepEqual(mapped?.embedding, embedding);
+    assert.deepEqual(mapped?.output_modalities, ["embedding"]);
+    assert.equal(mapped?.operations?.[0].limits?.embedding_dimensions, 2);
+    const runtime = new SelfHostedNodeRuntime(config, {
+      mcoda: mcodaAgentListClient([agent]),
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        assert.equal(String(url), "http://embedding.test/v1/embeddings");
+        calls++; localRequest = JSON.parse(String(init?.body));
+        return jsonResponse({ model: "nomic-embed-text", data: [{ index: 0, embedding: badDimensions ? [1] : [1, 2] }], usage: { prompt_tokens: 4, total_tokens: 4 } });
+      }) as typeof fetch,
+    });
+    const job: SelfHostedNodeInvocationJob = { job_id: "embedding-job", request_id: "embedding-request", node_id: config.nodeId,
+      agent_slug: "nomic-embed", source_agent_slug: "nomic-embed", provider: "mcoda", model: "public-nomic", operation: "embeddings",
+      policy: { expected_model_digest: "sha256:qualified" },
+      openai_request: { model: "public-nomic", input: ["search_query: hello"] } };
+    const token = signInvocationToken({ secret: config.invocationSigningSecret || "", nodeId: job.node_id,
+      jobId: job.job_id, requestId: job.request_id, model: job.model!, operation: "embeddings" });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/jobs", headers: { authorization: `Bearer ${token}` }, payload: job });
+      assert.equal(response.statusCode, 200, response.body);
+      const result = response.json();
+      assert.equal(result.status, "success", response.body);
+      assert.equal(result.operation, "embeddings");
+      assert.equal(result.usage.total_tokens, 4);
+      assert.equal(result.openai_response.embedding_revision, "sha256:qualified");
+      assert.equal(localRequest?.model, "nomic-embed-text");
+      assert.deepEqual(localRequest?.input, ["search_query: hello"]);
+      badDimensions = true;
+      const failed = await runtime.executeJob({ ...job, job_id: "embedding-bad-dimensions" });
+      assert.equal(failed.status, "failed");
+      assert.match(failed.error?.message || "", /dimension/);
+      const before = calls;
+      const invalid = await runtime.executeJob({ ...job, job_id: "embedding-invalid-input", openai_request: { model: "public-nomic", input: [] } });
+      assert.equal(invalid.status, "failed");
+      assert.equal(calls, before, "invalid inputs must fail before dispatch");
+      const stale = await runtime.executeJob({ ...job, job_id: "embedding-stale-revision", policy: { expected_model_digest: "sha256:stale" } });
+      assert.equal(stale.status, "failed");
+      assert.equal(calls, before, "stale revision must fail before dispatch");
+    } finally { await app.close(); }
   });
 
   it("accepts a public-model direct image token and remaps the local runner model", async () => {
@@ -7439,6 +7515,13 @@ describe("self-hosted node runtime", () => {
 
   it("passes OpenAI tool declarations straight through to the local runner", async () => {
     const statePath = tempStatePath();
+    const responseFormat = {
+      type: "json_schema",
+      json_schema: {
+        name: "issue_count", strict: true,
+        schema: { type: "object", properties: { count: { type: "integer" } }, required: ["count"], additionalProperties: false }
+      }
+    };
     const captured: { url?: string; body?: Record<string, unknown> } = {};
     const codaliCalls: MswarmCodaliInvocationInput[] = [];
     const originalFetch = globalThis.fetch;
@@ -7494,7 +7577,10 @@ describe("self-hosted node runtime", () => {
               function: { name: "okacam_jira_search", description: "Search Jira", parameters: { type: "object" } }
             }
           ],
-          tool_choice: "auto"
+          tool_choice: "auto",
+          reasoning_effort: "high",
+          reasoning_budget_tokens: 1024,
+          response_format: responseFormat
         }
       });
 
@@ -7505,12 +7591,86 @@ describe("self-hosted node runtime", () => {
       expect(captured.url).toBe("http://runner.test/v1/chat/completions");
       expect((captured.body?.tools as unknown[])).toHaveLength(1);
       expect(captured.body?.tool_choice).toBe("auto");
+      expect(captured.body?.reasoning_effort).toBe("high");
+      expect(captured.body?.reasoning_budget_tokens).toBe(1024);
+      assert.deepEqual(captured.body?.response_format, responseFormat);
       const choices = result.openai_response?.choices as Array<{
         message?: { tool_calls?: Array<{ function?: { name?: string } }> };
       }>;
       expect(choices[0]?.message?.tool_calls?.[0]?.function?.name).toBe("okacam_jira_search");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves caller-owned tool history on final turns without tool declarations", async () => {
+    const messages = [
+      { role: "user", content: "Read the counter and report JSON." },
+      { role: "assistant", content: "", tool_calls: [{ id: "lookup-1", type: "function", function: { name: "counter", arguments: "{}" } }] },
+      { role: "tool", content: '{"value":17}', tool_call_id: "lookup-1", name: "counter" }
+    ];
+    const responseFormat = { type: "json_object" };
+    for (const tools of [undefined, []]) {
+      let body: Record<string, unknown> | undefined;
+      let codaliCalls = 0;
+      const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "openai-api", config: { baseUrl: "http://runner.test/v1", runnerKind: "llama-cpp", authMode: "none" } })]),
+        fetchImpl: (async (_input, init) => {
+          body = JSON.parse(String(init?.body));
+          return Response.json({ choices: [{ message: { role: "assistant", content: '{"value":17}' }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 6, total_tokens: 106 } });
+        }) as typeof fetch,
+        codaliExecutor: new StubCodaliExecutor(async input => { codaliCalls++; return successfulCodaliInvocation(input); })
+      });
+      const result = await runtime.executeJob({ job_id: "tool-final", request_id: "tool-final", node_id: "shn_service", agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+        openai_request: { model: "mcoda-qwen-reviewer", messages, tools, tool_choice: "none", response_format: responseFormat, max_tokens: 256, temperature: 0, stop: ["END"], reasoning_effort: "none" } });
+      assert.equal(result.status, "success", JSON.stringify(result.error));
+      assert.equal(codaliCalls, 0, "final tool history must not enter another orchestrator");
+      assert.deepEqual(body?.messages, messages); assert.deepEqual(body?.response_format, responseFormat);
+      assert.equal(body?.tool_choice, "none"); assert.equal(body?.max_tokens, 256);
+      assert.equal(body?.temperature, 0); assert.deepEqual(body?.stop, ["END"]);
+      assert.equal(body?.reasoning_effort, "none"); assert.deepEqual(body?.tools, tools);
+      assert.deepEqual(result.openai_response?.usage, { prompt_tokens: 100, completion_tokens: 6, total_tokens: 106 });
+    }
+  });
+
+  it("settles only confirmed first-generation context refusals, including tool pass-through", async () => {
+    const originalFetch = globalThis.fetch;
+    const oldVendor = process.env.MSWARM_CODALI_VENDOR_ONLY;
+    process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
+    try {
+      for (const tools of [false, true]) for (const failure of ["context", "structured", "rate", "transport"]) {
+        const contextRefused = failure === "context";
+        let posts = 0;
+        globalThis.fetch = async (_url, init) => {
+          if (init?.method === "POST") posts++;
+          if (failure === "transport") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+          if (failure === "rate") return Response.json({ error: { type: "rate_limit_error", code: "admission_full", message: "Private generated data" } }, { status: 429 });
+          return Response.json({ error: contextRefused ? {
+            type: "invalid_request_error",
+            message: "request exceeds the context window: prompt (33012 tokens) leaves no room to answer in the context (32768); requests are never truncated",
+          } : { code: "structured_output_failed", message: "Private generated data" } }, { status: contextRefused ? 400 : 502 });
+        };
+        const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+          mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "strata-local", config: { baseUrl: "http://runner.test/v1", authMode: "none" } })]),
+        });
+        const result = await runtime.executeJob({
+          job_id: `context-${tools}-${failure}`, request_id: `context-${tools}-${failure}`, node_id: "shn_service",
+          agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+          policy: { allow_tools: false },
+          openai_request: { model: "mcoda-qwen-reviewer", messages: [{ role: "user", content: "Work" }],
+            ...(tools ? { tools: [{ type: "function", function: { name: "inspect", parameters: { type: "object" } } }] } : {}),
+          },
+        });
+        assert.equal(result.status, "failed");
+        assert.equal(result.error?.code, contextRefused ? "context_length_exceeded" : failure === "structured" ? "invalid_response" : failure === "rate" ? "rate_limited" : "upstream_error");
+        assert.deepEqual(result.usage, contextRefused ? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } : undefined);
+        assert.notEqual(result.pre_start_failure, true, "A native refusal must not trigger reservation replay");
+        assert.doesNotMatch(JSON.stringify(result), /Private generated data/);
+        assert.equal(posts, 1);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (oldVendor === undefined) delete process.env.MSWARM_CODALI_VENDOR_ONLY; else process.env.MSWARM_CODALI_VENDOR_ONLY = oldVendor;
     }
   });
 
@@ -8238,5 +8398,136 @@ describe("shared LLM pool capacity", () => {
     // `pool` marker is what stops the two free_slots being added together.
     expect(byClass.chat).toMatchObject({ pool: "llm", active_jobs: 0, free_slots: 1 });
     expect(byClass.generic_job).toMatchObject({ pool: "generic", active_jobs: 0 });
+  });
+});
+
+describe("graceful node draining", () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const job: SelfHostedNodeInvocationJob = {
+    job_id: "job-drain", request_id: "request-drain", node_id: "shn_service",
+    agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda",
+    model: "mcoda-qwen-reviewer", openai_request: { model: "mcoda-qwen-reviewer", messages: [{ role: "user", content: "finish accepted work" }] }
+  };
+  const fakeHeartbeat = async () => ({ enrolled: false, status: "online" as const, model_count: 1,
+    discovery_source: "mcoda" as const, heartbeat_response: { accepted: true } });
+
+  it("finishes a late claim and its result upload while rejecting new admissions", async () => {
+    const pollStarted = deferred<void>(); const pollResponse = deferred<Response>();
+    const resultStarted = deferred<void>(); const resultResponse = deferred<Response>();
+    let polls = 0; let executions = 0;
+    const config = permissiveServiceConfigFor(tempStatePath());
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl: (async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/poll")) { polls++; pollStarted.resolve(); return pollResponse.promise; }
+        if (target.endsWith("/start")) return jsonResponse({ accepted: true });
+        if (target.endsWith("/result")) { resultStarted.resolve(); return resultResponse.promise; }
+        throw new Error(`unexpected ${target}`);
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async input => { executions++; return successfulCodaliInvocation(input); })
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon();
+    try {
+      await Promise.race([pollStarted.promise, delay(1000).then(() => { throw new Error("poll did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 20 }), false);
+      assert.equal(runtime.isDraining, true);
+      assert.equal((await runtime.executeJob({ ...job, job_id: "rejected" })).error?.code, "node_draining");
+      await assert.rejects(runtime.executeGenericJob(genericEchoJob()), /draining/);
+      let drained = false;
+      const waiting = daemon.drain({ timeoutMs: 2000 }).then(value => { drained = value; return value; });
+      pollResponse.resolve(jsonResponse({ job }));
+      await Promise.race([resultStarted.promise, delay(1000).then(() => { throw new Error("result upload did not start"); })]);
+      assert.equal(executions, 1); assert.equal(drained, false); assert.equal(polls, 1);
+      resultResponse.resolve(jsonResponse({ accepted: true }));
+      assert.equal(await waiting, true);
+      await delay(40); assert.equal(polls, 1);
+    } finally { pollResponse.resolve(jsonResponse({ job: null })); resultResponse.resolve(jsonResponse({ accepted: true })); daemon.stop(); }
+  });
+
+  it("waits for direct jobs and keeps timeout admission closed", async () => {
+    const started = deferred<void>(); const finished = deferred<void>();
+    const config = { ...permissiveServiceConfigFor(tempStatePath()), relayMode: "direct" as const };
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl: (async () => { throw new Error("unexpected HTTP"); }) as typeof fetch,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async input => { started.resolve(); await finished.promise; return successfulCodaliInvocation(input); })
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon();
+    const work = runtime.executeJob(job);
+    try {
+      await Promise.race([started.promise, delay(1000).then(() => { throw new Error("direct job did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 10 }), false);
+      assert.equal((await runtime.executeJob(job)).error?.code, "node_draining");
+      finished.resolve(); assert.equal((await work).status, "success");
+      assert.equal(await daemon.drain({ timeoutMs: 1000 }), true);
+      await assert.rejects(daemon.drain({ timeoutMs: -1 }), /non-negative/);
+    } finally { finished.resolve(); await work; daemon.stop(); }
+  });
+
+  it("reports drain health and rejects HTTP admission while preserving status and cancellation routes", async () => {
+    const config = { ...genericServiceConfigFor(tempStatePath()), drainMode: true };
+    const runtime = new SelfHostedNodeRuntime(config);
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon(); const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      assert.equal(await daemon.drain({ timeoutMs: 100 }), true);
+      for (const url of ["/v1/swarm/self-hosted/node/jobs", "/v1/swarm/self-hosted/node/generic-jobs",
+        "/v1/swarm/self-hosted/node/generic-job-control/jobs", "/v1/swarm/self-hosted/node/generic-job-control/jobs/job-1/retry"]) {
+        const result = await app.inject({ method: "POST", url, payload: {} });
+        assert.equal(result.statusCode, 503); assert.equal(result.json().code, "node_draining");
+      }
+      const health = await app.inject({ method: "GET", url: "/healthz" });
+      assert.equal(health.statusCode, 200); assert.equal(health.json().drain_mode, true);
+      const cancel = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/generic-jobs/job-1/cancel", payload: {} });
+      assert.notEqual(cancel.statusCode, 503); // Normal authentication still applies.
+    } finally { daemon.stop(); await app.close(); }
+  });
+
+  it("finishes accepted owner-local queued jobs during drain", async () => {
+    const config = genericServiceConfigFor(tempStatePath(), { genericJobMaxConcurrency: 1, genericJobTimeoutMs: 2000 });
+    const started = deferred<void>(); const release = deferred<void>(); const completed: string[] = [];
+    const runtime = new SelfHostedNodeRuntime(config, {
+      capabilityRunner: capabilityProbeRunner({}),
+      genericRunners: [{ id: "test.echo", async run(context) {
+        if (context.job.idempotency_key === "first") { started.resolve(); await release.promise; }
+        completed.push(context.job.idempotency_key!);
+        return { job_id: context.job.idempotency_key!, status: "succeeded", finished_at: new Date().toISOString() };
+      } }]
+    });
+    runtime.runOnce = fakeHeartbeat;
+    const daemon = runtime.startDaemon(); const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      for (const id of ["first", "second"]) {
+        const base = genericEchoJob(); const queued = { ...base, job_id: `drain-${id}`, request_id: `request-${id}`, job: { ...base.job, idempotency_key: id } };
+        const token = signGenericJobToken({ secret: config.invocationSigningSecret!, nodeId: queued.node_id, jobId: queued.job_id, requestId: queued.request_id, jobType: queued.job.job_type });
+        const response = await app.inject({ method: "POST", url: "/v1/swarm/self-hosted/node/generic-job-control/jobs", headers: { authorization: `Bearer ${token}` }, payload: queued });
+        assert.equal(response.statusCode, 202);
+      }
+      await Promise.race([started.promise, delay(1000).then(() => { throw new Error("generic job did not start"); })]);
+      assert.equal(await daemon.drain({ timeoutMs: 20 }), false);
+      release.resolve();
+      assert.equal(await daemon.drain({ timeoutMs: 2000 }), true);
+      assert.deepEqual(completed, ["first", "second"]);
+    } finally { release.resolve(); daemon.stop(); await app.close(); }
+  });
+
+  it("signal shutdown waits for drain and server close, is idempotent and removes listeners", async () => {
+    const config = permissiveServiceConfigFor(tempStatePath()); const runtime = new SelfHostedNodeRuntime(config);
+    const drained = deferred<boolean>(); const closed = deferred<void>();
+    let stops = 0; let drainCalls = 0; let closeCalls = 0;
+    const before = process.listenerCount("SIGTERM");
+    const done = waitForNodeShutdown(runtime, { stop: () => { stops++; }, drain: () => { drainCalls++; return drained.promise; } }, () => { closeCalls++; return closed.promise; });
+    process.emit("SIGTERM"); process.emit("SIGTERM");
+    assert.equal(runtime.isDraining, true); assert.equal(drainCalls, 1); assert.equal(closeCalls, 1);
+    drained.resolve(true); await delay(10); assert.equal(stops, 0);
+    closed.resolve(); await done;
+    assert.equal(stops, 1); assert.equal(process.listenerCount("SIGTERM"), before);
   });
 });

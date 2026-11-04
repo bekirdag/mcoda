@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "profile": "alternate-local-example",
+  "providers": {
+    "local": {
+      "adapter": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:8080/v1"
+    }
+  },
+  "models": {
+    "local-coder": {
+      "provider": "local",
+      "catalogId": "replace-with-your-model-id",
+      "revision": "replace-with-artifact-revision",
+      "operations": [
+        "chat.completions"
+      ],
+      "contextWindow": 32768,
+      "maxOutputTokens": 4096,
+      "supportsTools": true,
+      "supportsStreaming": false
+    }
+  },
+  "bindings": {
+    "lead": {
+      "candidates": [
+        "local-coder"
+      ]
+    },
+    "reviewer": {
+      "useBinding": "lead"
+    },
+    "helper": {
+      "enabled": false
+    },
+    "embedding": {
+      "enabled": false
+    },
+    "image": {
+      "enabled": false
+    },
+    "audio": {
+      "enabled": false
+    },
+    "video": {
+      "enabled": false
+    }
+  }
+}

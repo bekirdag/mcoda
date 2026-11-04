@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createShellTool } from "../shell/ShellTool.js";
 import { ToolExecutionError } from "../ToolTypes.js";
 
@@ -83,4 +86,35 @@ test("ShellTool fails when command exits non-zero", { concurrency: false }, asyn
       { workspaceRoot: process.cwd(), shellAllowlist: [process.execPath], allowShell: true },
     );
   }, /fail|exit code/);
+});
+
+test("ShellTool runs module-local checks from cwd without changing the workspace scope", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-cwd-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const module = path.join(root, "modules", "feature");
+  await fs.mkdir(module, { recursive: true });
+  await fs.writeFile(path.join(module, "check.cjs"), "console.log(require('fs').readFileSync('fixture.txt','utf8'))");
+  await fs.writeFile(path.join(module, "fixture.txt"), "module fixture");
+  const tool = createShellTool();
+  const context = { workspaceRoot: root, shellAllowlist: [process.execPath], allowShell: true, allowedWritePaths: ["modules/feature/fixture.txt"] };
+  const result = await tool.handler({ command: process.execPath, args: ["check.cjs"], cwd: "modules/feature" }, context);
+  assert.equal(result.output.trim(), "module fixture");
+  assert.equal(context.workspaceRoot, root);
+  assert.deepEqual(context.allowedWritePaths, ["modules/feature/fixture.txt"]);
+  const defaultResult = await tool.handler({ command: process.execPath, args: ["-e", "console.log(process.cwd())"] }, context);
+  assert.equal(defaultResult.output.trim(), await fs.realpath(root));
+});
+
+test("ShellTool rejects cwd traversal, symlink escapes and non-directories before launching", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-cwd-"));
+  const outside = await fs.mkdtemp(`${root}-neighbor-`);
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(outside, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "file.txt"), "original");
+  await fs.symlink(outside, path.join(root, "escape"), "junction");
+  let launches = 0;
+  const context = { workspaceRoot: root, shellAllowlist: [process.execPath], allowShell: true, shellExecutor: async () => { launches++; return { output: "unexpected" }; } };
+  for (const cwd of ["..", outside, "escape", "file.txt", "missing", "", 42]) {
+    await assert.rejects(createShellTool().handler({ command: process.execPath, cwd }, context), error => error instanceof ToolExecutionError);
+  }
+  assert.equal(launches, 0);
 });

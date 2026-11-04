@@ -115,8 +115,8 @@ export const mcpToolToDefinition = (
     outputSchema: tool.outputSchema,
     readOnly: options.readOnly,
     capability: options.capability ?? options.server,
-    handler: async (args) => {
-      const result = await options.client.callTool(tool.name, args);
+    handler: async (args, context) => {
+      const result = await options.client.callTool(tool.name, args, context.signal);
       if (!result.ok) {
         // Surface as a tool failure so the runner records it and the model is
         // told, rather than passing an error string off as a result.

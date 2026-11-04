@@ -1,4 +1,5 @@
 import test from "node:test";
+import { configureMediaBridgeEnvironment } from "../helpers/media-bridge-environment.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -15,9 +16,11 @@ const serverScript = path.join(
   "stable-audio-3-openai-server.py",
 );
 
+configureMediaBridgeEnvironment(test, path.dirname(serverScript));
+
 function resolvePython() {
   for (const candidate of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
-    const probe = spawnSync(candidate, ["-c", "import sys; print(sys.executable)"], {
+    const probe = spawnSync(candidate, ["-c", "import sys, fcntl; print(sys.executable)"], {
       encoding: "utf8",
     });
     if (probe.status === 0 && probe.stdout.trim()) return probe.stdout.trim();
@@ -97,7 +100,7 @@ async function stopChild(child) {
 test("Stable Audio wrapper exposes a bounded OpenAI-shaped contract", { timeout: 20_000 }, async (t) => {
   const python = resolvePython();
   if (!python) {
-    t.skip("Python is unavailable");
+    t.skip("Python with POSIX file locking is unavailable");
     return;
   }
 
@@ -178,13 +181,13 @@ test("Stable Audio wrapper exposes a bounded OpenAI-shaped contract", { timeout:
 });
 
 test("Stable Audio wrapper runs the canonical CLI in a fresh subprocess", { timeout: 20_000 }, async (t) => {
-  if (process.platform === "win32") {
-    t.skip("POSIX executable test");
+  if (process.platform !== "linux") {
+    t.skip("Native CUDA subprocess ownership requires Linux /proc process identity");
     return;
   }
   const python = resolvePython();
   if (!python) {
-    t.skip("Python is unavailable");
+    t.skip("Python with POSIX file locking is unavailable");
     return;
   }
 

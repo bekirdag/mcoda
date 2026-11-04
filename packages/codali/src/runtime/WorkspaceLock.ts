@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withStateLock } from "../session/AtomicState.js";
 
 export interface WorkspaceLockInfo {
   runId: string;
@@ -83,18 +84,27 @@ export class WorkspaceLock {
   }
 
   private async shouldClearExisting(info: WorkspaceLockInfo): Promise<boolean> {
-    if (this.isStale(info)) return true;
     const processAlive = this.isProcessAlive(info);
     if (processAlive === false) return true;
     if (processAlive === true) return false;
+    if (this.isStale(info) && this.isSameHost(info)) return this.hasTerminalRunLog(info.runId);
     return this.hasTerminalRunLog(info.runId);
   }
 
   async acquire(): Promise<void> {
     await fs.mkdir(path.dirname(this.lockPath), { recursive: true });
+    await withStateLock(`${this.lockPath}.transaction`, async () => {
     const existing = await this.readLock();
     if (existing && !(await this.shouldClearExisting(existing))) {
-      throw new Error(`Workspace is locked by run ${existing.runId}`);
+      let suspended = false;
+      if (this.isSameHost(existing) && Number.isInteger(existing.pid) && (existing.pid ?? 0) > 0 && process.platform === "linux") {
+        const status = await fs.readFile(`/proc/${existing.pid}/status`, "utf8").catch(() => "");
+        suspended = /^State:\s+[Tt]\b/m.test(status);
+      }
+      const owner = existing.pid ? ` (process ${existing.pid}${existing.hostname ? ` on ${existing.hostname}` : ""})` : "";
+      throw new Error(`Workspace is locked by ${suspended ? "a suspended" : "another"} Codali session${owner}. ` +
+        (suspended ? "Return to the terminal where it was paused, run fg, then stop it with Ctrl+C or /quit. " : "Stop the other session with /quit, or wait for its current task to finish. ") +
+        `Then retry here. Codali will not start another writer while this session owns the workspace. Session: ${existing.runId}`);
     }
     if (existing) {
       await fs.unlink(this.lockPath).catch(() => undefined);
@@ -105,8 +115,9 @@ export class WorkspaceLock {
       pid: process.pid,
       hostname: this.hostname,
     };
-    await fs.writeFile(this.lockPath, JSON.stringify(payload, null, 2), "utf8");
+    await fs.writeFile(this.lockPath, JSON.stringify(payload, null, 2), { encoding: "utf8", flag: "wx", mode: 0o600 });
     this.acquired = true;
+    });
   }
 
   async release(): Promise<void> {

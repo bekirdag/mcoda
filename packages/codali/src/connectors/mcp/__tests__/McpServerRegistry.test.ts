@@ -107,16 +107,26 @@ test("a retryable transport failure is retried exactly once", async () => {
     }),
   });
   const registry = new McpServerRegistry({
-    servers: [definition("flaky")],
+    servers: [{ ...definition("flaky"), readOnly: true }],
     createClient: () => client,
   });
 
   const tools = await registry.discoverTools();
   await assert.rejects(() => tools[0]!.handler({}, { workspaceRoot: "/tmp" }));
 
-  // Two attempts total: the original plus one retry. Safe because Phase 2
-  // connectors are read-only.
+  // Only the operator's explicit read-only declaration permits a retry.
   assert.equal((client as unknown as { state: { callCount: number } }).state.callCount, 2);
+});
+
+test("a lost mutating MCP response is uncertain and is never replayed", async () => {
+  const client = stubClient("writer", { callError: new McpClientError("mcp_call_tool_failed", "writer", "response lost", { retryable: true }) });
+  const registry = new McpServerRegistry({ servers: [definition("writer")], createClient: () => client });
+  const tools = await registry.discoverTools();
+  await assert.rejects(tools[0]!.handler({}, { workspaceRoot: "/tmp" }), (error: unknown) => {
+    assert.equal((error as { details?: { uncertainOutcome?: boolean } }).details?.uncertainOutcome, true);
+    return true;
+  });
+  assert.equal((client as unknown as { state: { callCount: number } }).state.callCount, 1);
 });
 
 test("a non-retryable failure is not retried", async () => {
@@ -165,6 +175,35 @@ test("concurrent calls are capped so one server cannot monopolise a run", async 
   );
 
   assert.ok(peak <= 2, `expected at most 2 concurrent calls, saw ${peak}`);
+});
+
+test("queued MCP cancellation releases its queue entry without starting the remote tool", async () => {
+  let releaseFirst!: () => void; let started = 0;
+  const firstPending = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const client = {
+    async listTools() { return [{ name: "slow" }]; },
+    async callTool() { started++; if (started === 1) await firstPending; return { ok: true, text: "done", raw: {} }; },
+    async close() {},
+  } as unknown as McpClient;
+  const registry = new McpServerRegistry({ servers: [definition("slow")], createClient: () => client, maxConcurrentCalls: 1 });
+  const [tool] = await registry.discoverTools();
+  const first = tool.handler({}, { workspaceRoot: "/tmp" });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const abort = new AbortController();
+  const cancelled = tool.handler({}, { workspaceRoot: "/tmp", signal: abort.signal });
+  abort.abort(new Error("queued cancellation"));
+  await assert.rejects(cancelled, /queued cancellation/);
+  assert.equal(started, 1);
+  const next = tool.handler({}, { workspaceRoot: "/tmp" });
+  releaseFirst(); await Promise.all([first, next]);
+  assert.equal(started, 2);
+  await registry.close();
+});
+
+test("MCP concurrency configuration rejects zero, fractional and unbounded limits", () => {
+  for (const limit of [0, -1, 1.5, Infinity, NaN]) {
+    assert.throws(() => new McpServerRegistry({ servers: [], maxConcurrentCalls: limit }), /positive integer/);
+  }
 });
 
 test("closing shuts down every connected server", async () => {

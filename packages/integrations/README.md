@@ -8,6 +8,7 @@ External integrations for mcoda (docdex, telemetry, VCS, QA runners, update chec
 
 ## What it provides
 - DocdexClient for docdex daemon queries and CLI-backed ingestion.
+- Docdex is an optional, explicitly installed CLI. Ingestion accepts `MCODA_DOCDEX_BINARY` or `DOCDEX_BINARY`, the optional npm peer, or `docdexd`/`docdex` on PATH. Installing mcoda does not provision or restart Docdex services. Codali terminal setup installs its private pinned runtime separately.
 - TelemetryClient for token usage reporting.
 - VcsClient for Git operations.
 - SystemClient for update checks.

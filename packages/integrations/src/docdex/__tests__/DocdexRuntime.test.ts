@@ -5,6 +5,7 @@ import {
   readDocdexCheck,
   resolveDocdexBaseUrl,
   resolveDocdexBinary,
+  runDocdex,
   resolveDocdexBrowserInfo,
   parseDocdexBrowserCheck,
   parseDocdexCheckOutput,
@@ -13,10 +14,18 @@ import {
 
 const shouldSkipDocdexCheck = process.platform === "win32" || process.env.MCODA_SKIP_DOCDEX_CHECKS === "1";
 
-test("resolveDocdexBinary returns an existing binary path when docdex is installed", () => {
+test("an optional installed Docdex runtime resolves to an existing executable", () => {
   const binary = resolveDocdexBinary();
-  assert.ok(binary, "expected docdex binary to resolve");
-  assert.ok(existsSync(binary), "expected docdex binary to exist on disk");
+  if (binary) assert.ok(existsSync(binary), "expected docdex binary to exist on disk");
+});
+
+test("an explicit native Docdex command preserves arguments without a shell or npm package", async () => {
+  const env = { DOCDEX_BINARY: process.execPath, MCODA_DOCDEX_BINARY: undefined, PATH: "" };
+  assert.equal(resolveDocdexBinary(env), process.execPath);
+  const result = await runDocdex(["-e", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", "--", "value with spaces", "literal;$(echo must-not-run)"], { env });
+  assert.deepEqual(JSON.parse(result.stdout), ["value with spaces", "literal;$(echo must-not-run)"]);
+  assert.throws(() => resolveDocdexBinary({ DOCDEX_BINARY: "./untrusted-repo-program" }), /absolute executable/);
+  assert.throws(() => resolveDocdexBinary({ DOCDEX_BINARY: process.execPath, MCODA_DOCDEX_BINARY: "/missing/mcoda-docdex-test" }), /absolute executable/);
 });
 
 test("resolveDocdexBaseUrl respects explicit env overrides", async () => {
