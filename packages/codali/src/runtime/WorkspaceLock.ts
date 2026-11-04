@@ -96,7 +96,15 @@ export class WorkspaceLock {
     await withStateLock(`${this.lockPath}.transaction`, async () => {
     const existing = await this.readLock();
     if (existing && !(await this.shouldClearExisting(existing))) {
-      throw new Error(`Workspace is locked by run ${existing.runId}`);
+      let suspended = false;
+      if (this.isSameHost(existing) && Number.isInteger(existing.pid) && (existing.pid ?? 0) > 0 && process.platform === "linux") {
+        const status = await fs.readFile(`/proc/${existing.pid}/status`, "utf8").catch(() => "");
+        suspended = /^State:\s+[Tt]\b/m.test(status);
+      }
+      const owner = existing.pid ? ` (process ${existing.pid}${existing.hostname ? ` on ${existing.hostname}` : ""})` : "";
+      throw new Error(`Workspace is locked by ${suspended ? "a suspended" : "another"} Codali session${owner}. ` +
+        (suspended ? "Return to the terminal where it was paused, run fg, then stop it with Ctrl+C or /quit. " : "Stop the other session with /quit, or wait for its current task to finish. ") +
+        `Then retry here. Codali will not start another writer while this session owns the workspace. Session: ${existing.runId}`);
     }
     if (existing) {
       await fs.unlink(this.lockPath).catch(() => undefined);

@@ -373,7 +373,7 @@ export class TerminalCommand {
     };
     const onSignal = (): void => { const now = Date.now(); if ((!activeRun && !controller.busy) || now - lastCtrlC < 1000) { closed = true; queued.length = 0; rl?.close(); tui?.stop(); } lastCtrlC = now; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; };
     const onTerminate = (): void => { closed = true; queued.length = 0; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined; rl?.close(); tui?.stop(); };
-    process.on("SIGINT", onSignal); process.on("SIGTERM", onTerminate);
+    process.on("SIGINT", onSignal); process.on("SIGTSTP", onSignal); process.on("SIGTERM", onTerminate);
     try {
     if (["sessions", "status", "resume", "inspect", "checkpoint", "amend"].includes(args.command)) {
       if (args.command === "sessions") { output(await controller.store.listSessions()); return; }
@@ -438,6 +438,6 @@ export class TerminalCommand {
       await new Promise<void>(resolve => rl!.once("close", () => { closed = true; cancelTurn(); pendingApproval?.("deny"); pendingApproval = undefined;
         if (pasteInput) { process.stdin.unpipe(pasteInput); pasteInput.destroy(); process.stdout.write("\u001b[?2004l"); } resolve(); }));
       await chain; await activeRun; await atomicWriteJson(historyFile, history);
-    } finally { process.off("SIGINT", onSignal); process.off("SIGTERM", onTerminate); rl?.close(); tui?.stop(); }
+    } finally { process.off("SIGINT", onSignal); process.off("SIGTSTP", onSignal); process.off("SIGTERM", onTerminate); rl?.close(); tui?.stop(); }
   }
 }

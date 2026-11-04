@@ -36,3 +36,12 @@ User reported raw tools_discover JSON in collapsed cards. TerminalPresentation n
 
 Build and all 12 TerminalTui tests passed, including actual card events for complete and truncated discovery output. Installed formatter checks passed for complete, empty, truncated and enable results. Local installed TerminalPresentation.js updated atomically with backup; npm untouched.
 Installed 16-flow real PTY regression also passed after the snippet update. Docdex pre-commit and whitespace checks passed.
+
+## Suspended workspace owner
+
+Lock c853645e-ef09-40f7-868f-e21fe0e9ee54 belonged to PID 1866463, an old planning-client-20261027af process stopped in ~/apps/test. Verified process identity, directory, stopped state and lock PID before terminating only that process; its transcript recorded no tool execution. Existing dead-owner acquisition/release recovered the lock without deleting session state or weakening writer exclusion.
+
+TerminalCommand now registers and removes SIGTSTP with the same handler as SIGINT, so plain-terminal/external Ctrl+Z does not suspend an owner indefinitely. WorkspaceLock identifies Linux stopped owners and provides process/session details plus fg/stop/retry instructions; genuine live owners remain protected. Delegation receipt 12b96548-1d73-48a0-aae9-aa5afc310b10 reviewed the signal change; Docdex impact data was empty, direct caller inspection used.
+
+Build and nine workspace-lock/artifact tests passed, including a real stopped child that cannot be evicted and recovery after its confirmed exit. Source PTY checks sent actual SIGTSTP to both TUI/plain clients and verified zero exit and screen restoration. Installed updated TerminalCommand.js and WorkspaceLock.js atomically with backups. npm publishing remains paused.
+Installed SIGTSTP checks and the full 16-flow real PTY suite passed. Confirmed blocking PID no longer exists and ~/apps/test lock is absent. Docdex pre-commit and whitespace checks passed.
