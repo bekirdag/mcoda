@@ -88,7 +88,7 @@ jobs:
 
   qualify-terminal:
     needs: package
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (matrix.os == 'ubuntu-22.04' && fromJSON('["self-hosted","Linux","X64","wodo-ci"]')) || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
