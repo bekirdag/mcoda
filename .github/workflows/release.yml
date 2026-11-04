@@ -54,6 +54,18 @@ jobs:
       - name: Build
         run: pnpm -r run build
 
+      - name: Setup Python for isolated tool tests
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned document and deterministic runtimes
+        if: runner.os != 'Windows'
+        run: |
+          node packages/codali/config/deterministic/install-python.mjs
+          node packages/codali/config/documents/install-python.mjs
+
       - name: Run tests
         run: node tests/all.js
 
