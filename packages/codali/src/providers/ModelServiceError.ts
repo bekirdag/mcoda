@@ -47,7 +47,7 @@ export class ModelServiceError extends Error {
       : response.status === 429 ? "rate_limited"
       : response.status === 404 ? "model_unavailable"
       : contextRefused ? "context_length_exceeded"
-      : serverCode === "structured_output_failed" ? "invalid_response"
+      : ["structured_output_failed", "invalid_response"].includes(serverCode) ? "invalid_response"
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
     return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : undefined, nativeRefused);

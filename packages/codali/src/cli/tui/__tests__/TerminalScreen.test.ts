@@ -3,9 +3,34 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { cells } from "../TerminalCells.js";
 import { renderTerminalScreen, type TerminalScreenState } from "../TerminalScreen.js";
+import { plainTerminalLogo, terminalLogoWidth } from "../TerminalLogo.js";
 
 const state = (): TerminalScreenState => ({ workspace: "/projects/example", version: "preview", profile: "Strata", busy: false, activity: "Ready", route: "", effort: "medium", permissions: "ask", tokens: 0, queued: 0, draft: "", cursor: 0, blocks: [], scroll: 0, expanded: false });
 const text = (value: ReturnType<typeof renderTerminalScreen>): string => value.lines.map(stripVTControlCharacters).join("\n");
+
+test("opening artwork fits above the editor and yields to the compact conversation header", () => {
+  const current = state(); current.draft = "keep my input"; current.cursor = 4;
+  const columns = terminalLogoWidth + 4;
+  for (const color of [true, false]) {
+    const frame = renderTerminalScreen(current, columns, 24, color);
+    assert.deepEqual(frame.lines.slice(0, 10).map(line => stripVTControlCharacters(line).trimEnd()), plainTerminalLogo.map(line => ("  " + line).trimEnd()));
+    assert.match(text(frame), /What would you like to build/);
+    assert.match(text(frame), /keep my input/);
+    assert.equal(frame.lines.length, 24);
+    assert.ok(frame.lines.every(line => cells(line) <= columns));
+    if (!color) assert.ok(frame.lines.every(line => !line.includes("\x1b")));
+    else assert.ok(frame.lines[0].includes("\x1b[0;95m"));
+    current.introDismissed = true;
+    const compact = renderTerminalScreen(current, columns, 24, color);
+    assert.match(text(compact).split("\n")[0], /◈ CODALI/);
+    assert.deepEqual(frame.cursor, compact.cursor);
+    current.introDismissed = false;
+  }
+  assert.match(text(renderTerminalScreen(current, columns - 1, 24, false)).split("\n")[0], /◈ CODALI/);
+  assert.match(text(renderTerminalScreen(current, columns, 18, false)).split("\n")[0], /◈ CODALI/);
+  current.blocks = [{ id: "user", kind: "user", title: "YOU", text: "hello" }];
+  assert.match(text(renderTerminalScreen(current, columns, 30, false)).split("\n")[0], /◈ CODALI/);
+});
 
 test("normal, narrow and tiny screens stay within terminal cells and rows", () => {
   for (const [columns, rows] of [[100, 30], [80, 24], [45, 18], [24, 10], [12, 5]]) {

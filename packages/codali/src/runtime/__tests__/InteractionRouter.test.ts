@@ -12,6 +12,7 @@ import { registerSecretValue } from "../SecretRedaction.js";
 import { DocdexClient } from "../../docdex/DocdexClient.js";
 import { ManagedDocdex } from "../../docdex/ManagedDocdex.js";
 import { executorStatus } from "../../tools/shell/IsolatedExecutor.js";
+import { ModelServiceError } from "../../providers/ModelServiceError.js";
 
 const base: OrchestrationConfig = { schemaVersion: 1, profile: "test", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } }, models: { model: { provider: "local", catalogId: "test", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } }, bindings: { lead: { candidates: ["model"] }, router: { useBinding: "lead" }, reviewer: { useBinding: "lead" } } };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } });
@@ -24,6 +25,50 @@ const fixture = async (t: test.TestContext, provider: Provider, config = base, r
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e), ...options });
   return { controller, events, root, storage };
 };
+
+test("continuous interactive answers exceed aggregate budgets and retain real tool accounting", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxTotalTokens: 1, maxModelCalls: 1, maxInspectionSteps: 1, timeoutMs: 1 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    request.signal?.throwIfAborted();
+    const name = ++calls <= 3 ? "calculate" : "final_answer";
+    return { ...reply(""), usage: { inputTokens: 100000, outputTokens: 20, totalTokens: 100020 },
+      toolCalls: [{ id: `continuous-${calls}`, name: "codali", args: { name, args: name === "calculate" ? { expression: "2+2" } : { text: "4" } } }] };
+  } }, config, undefined, false, { continuous: true });
+  assert.equal((await controller.interact("Calculate 2+2 three times then answer.")).content, "4");
+  assert.equal(calls, 4);
+  assert.equal(controller.turnUsageSnapshot().tokens, 400080);
+  assert.equal(events.filter(e => e.type === "tool_receipt").length, 3);
+});
+
+test("continuous invalid-response recovery accounts each attempt once and never repeats a tool", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxOutputTokens: 512 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) throw new ModelServiceError("invalid_response", 502);
+    assert.equal(request.maxTokens, 1024);
+    assert.match(JSON.stringify(request.messages), /none of its tool calls executed/);
+    return { ...reply(""), toolCalls: [{ id: "answer", name: "codali", args: { name: "final_answer", args: { text: "Recovered." } } }] };
+  } }, config, undefined, false, { continuous: true });
+  assert.equal((await controller.interact("hello")).content, "Recovered.");
+  assert.equal(calls, 2);
+  assert.equal(controller.usageSnapshot().modelCalls, 2);
+  assert.equal(controller.usageSnapshot().outputTokens, 20);
+  assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "completed").length, 1);
+  assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 1);
+  assert.equal(events.filter(e => e.type === "tool_intent").length, 0);
+});
+
+test("continuous invalid-response recovery is bounded and does not retry outages", async t => {
+  for (const code of ["invalid_response", "service_unavailable"] as const) {
+    let calls = 0;
+    const { controller } = await fixture(t, { name: "fixture", generate: async () => { calls++; throw new ModelServiceError(code, 502); } }, base, undefined, false, { continuous: true });
+    await assert.rejects(controller.interact("hello"), ModelServiceError);
+    assert.equal(calls, code === "invalid_response" ? 3 : 1);
+  }
+});
 
 test("conversation instructions are sourced, bounded and reloaded between turns", async t => {
   let expected = "Use a brief friendly response.";

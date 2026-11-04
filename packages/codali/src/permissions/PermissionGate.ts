@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ToolExecutionError, type ToolDescriptor } from "../tools/ToolTypes.js";
 import { docdexCatalogKind } from "../docdex/DocdexCatalog.js";
 
-export type PermissionProfile = "plan" | "ask" | "workspace";
+export type PermissionProfile = "plan" | "ask" | "workspace" | "full";
 export type PermissionKind = "read" | "write" | "shell" | "web" | "memory" | "media" | "external";
 export interface PermissionRequest { id: string; tool: string; kind: PermissionKind; args: unknown; reason: string; }
 export interface PermissionAnswer { allow: boolean; scope?: "once" | "session"; }
@@ -55,11 +55,11 @@ export class PermissionGate {
   constructor(public profile: PermissionProfile = "ask", private readonly prompt?: PermissionPrompt, private readonly options: { shellIsolated?: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; deniedTools?: string[] } = {}) {}
 
   inspect(): Record<string, unknown> {
-    return { profile: this.profile, revision: this.revision, sessionGrants: this.grants.size, sessionDenials: this.denials.size, shellIsolated: this.options.shellIsolated === true, allowWeb: this.options.allowWeb === true, allowMemory: this.options.allowMemory === true, allowMedia: this.options.allowMedia === true, deniedTools: this.options.deniedTools ?? [] };
+    return { profile: this.profile, revision: this.revision, sessionGrants: this.grants.size, sessionDenials: this.denials.size, shellIsolated: this.options.shellIsolated === true, allowWeb: this.profile === "full" || this.options.allowWeb === true, allowMemory: this.profile === "full" || this.options.allowMemory === true, allowMedia: this.profile === "full" || this.options.allowMedia === true, deniedTools: this.options.deniedTools ?? [] };
   }
 
   setProfile(profile: PermissionProfile): void {
-    if (!["plan", "ask", "workspace"].includes(profile)) throw new Error("Unknown permission profile");
+    if (!["plan", "ask", "workspace", "full"].includes(profile)) throw new Error("Unknown permission profile");
     this.profile = profile; this.revision += 1;
   }
 
@@ -85,6 +85,7 @@ export class PermissionGate {
     if (kind === "memory" && this.options.allowMemory) return;
     if (kind === "media" && this.options.allowMedia) return;
     if (kind === "shell" && !this.options.shellIsolated) deny("An isolated shell executor is required; run codali doctor");
+    if (this.profile === "full") return;
     if (this.profile === "workspace" && (kind === "write" || kind === "shell")) return;
     if (this.grants.has(key)) return;
     if (!this.prompt) deny("Permission is required; interactive approval or an applicable grant is unavailable");

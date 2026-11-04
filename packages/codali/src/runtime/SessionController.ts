@@ -14,6 +14,7 @@ import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type EffortBudget, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGrants, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
+import { ModelServiceError } from "../providers/ModelServiceError.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport } from "./CompletionReport.js";
 import { workStatusPage } from "./WorkStatusPage.js";
@@ -73,6 +74,8 @@ export interface SessionEvent {
   schemaVersion: 1; id: string; sessionId: string; sequence: number; at: string; type: string; data: Record<string, unknown>;
 }
 export interface SessionControllerOptions {
+  /** Interactive work continues until completion, cancellation or an actual failure. */
+  continuous?: boolean;
   workspaceRoot: string;
   resolved: ResolvedOrchestrationConfig;
   effort?: EffortLevel;
@@ -136,7 +139,26 @@ export class SessionController {
   private contextArchive = new Map<string, ProviderMessage>();
   private activeLimits?: EffortBudget;
   private budgetStart = { tokens: 0, modelCalls: 0, toolCalls: 0 };
-  private limits(): EffortBudget { return this.activeLimits ?? effortBudget(this.options.resolved.config, this.effort); }
+  private ownsWorkspaceLock = false;
+  private async renewContinuousTask(): Promise<void> {
+    if (!this.options.continuous || !this.ownsWorkspaceLock || !this.state) return;
+    const task = this.state.tasks.find(item => ["running", "review_pending"].includes(item.status));
+    if (!task?.attemptId || Date.parse(task.leaseExpiresAt ?? "") > Date.now() + 300000) return;
+    const attemptId = task.attemptId;
+    await this.update(state => {
+      const current = state.tasks.find(item => item.id === task.id);
+      if (current?.attemptId === attemptId) current.leaseExpiresAt = new Date(Date.now() + 900000).toISOString();
+    });
+  }
+  private limits(): EffortBudget {
+    const limits = this.activeLimits ?? effortBudget(this.options.resolved.config, this.effort);
+    if (!this.options.continuous) return limits;
+    // Give interactive file/patch calls the configured model's output room,
+    // independently of reasoning effort. Answer/router caps stay unchanged.
+    const maxOutputTokens = this.activeLimits ? limits.maxOutputTokens
+      : Math.max(limits.maxOutputTokens, Math.min(...resolveBinding(this.options.resolved.config, "lead", "chat.completions").map(candidate => candidate.model.maxOutputTokens)));
+    return { ...limits, maxOutputTokens, maxSteps: Infinity, maxToolCalls: Infinity, maxModelCalls: Infinity, maxTotalTokens: Infinity, timeoutMs: 0 };
+  }
   private turnUsage() { return { tokens: this.usage.tokens - this.budgetStart.tokens, modelCalls: this.usage.modelCalls - this.budgetStart.modelCalls, toolCalls: this.usage.toolCalls - this.budgetStart.toolCalls }; }
   turnUsageSnapshot() { return this.turnUsage(); }
   private beginBudget(): void {
@@ -821,7 +843,7 @@ export class SessionController {
           : "For work_verify, normally omit invocationIds to select current-attempt checks automatically. Evidence must cover the task criteria; independent review and the full freshness check still apply." });
   }
 
-  private provider(binding = "lead", addGoal = true): Provider {
+  private provider(binding = "lead", addGoal = true, recoveryAttempt = 0): Provider {
     const lead = binding === "lead" && addGoal;
     const turn = this.active;
     const dispatchReady = new Set<string>();
@@ -839,6 +861,7 @@ export class SessionController {
     } });
     return { name: configured.name, supportsToolCalls: configured.supportsToolCalls, generate: async request => {
       await this.checkProjectTask();
+      if (lead) await this.renewContinuousTask();
       request = { ...request, messages: request.messages.map(preparedDocdexMessage) };
       if (lead && this.state?.status === "completed") {
         const { hashes, uncertain } = await this.completionInputs();
@@ -932,6 +955,7 @@ export class SessionController {
         sessionUsage: this.usageSnapshot(), toolNames: request.tools?.map(tool => tool.name) ?? [] });
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
       if (this.options.provider) await this.auditModelRequest(id, binding, request);
+      let recovered = false;
       const response = await configured.generate({ ...request, requestId: id }).catch(async error => {
         if (!ownsTurn()) throw error;
         await persistSettlement(async () => {
@@ -952,8 +976,20 @@ export class SessionController {
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "outcome_unknown", reservedTokens: reserve, sessionUsage: this.usageSnapshot(), estimated: true });
           }
         });
+        if (this.options.continuous && error instanceof ModelServiceError && error.code === "invalid_response" && recoveryAttempt < 2) {
+          request.signal?.throwIfAborted();
+          const ceiling = Math.min(...resolveBinding(this.options.resolved.config, contextBinding, "chat.completions").map(candidate => candidate.model.maxOutputTokens));
+          const maxTokens = Math.min(ceiling, (request.maxTokens ?? limits.maxOutputTokens) * 2);
+          await this.emit("model_recovery", { attempt: recoveryAttempt + 1, message: "The model returned an incomplete response. Retrying with room for a complete answer and smaller tool calls; no partial call was executed." });
+          recovered = true;
+          return this.provider(binding, addGoal, recoveryAttempt + 1).generate({ ...request, requestId: undefined, maxTokens,
+            messages: [...request.messages, { role: "user", content: "The previous model response was incomplete or invalid and none of its tool calls executed. Continue the same task. Return one short, complete tool call at a time; split large file changes into small patches rather than rewriting an entire large file. Keep JSON arguments complete and reasoning brief." }] });
+        }
         throw error;
       }).finally(() => { dispatchReady.delete(id); return ownsTurn() ? this.flushOutputStreams("token") : undefined; });
+      // The recovery invocation settled its own request ID and usage already.
+      // Retain the failed request's separate reservation until reconciliation.
+      if (recovered) return response;
       // An abort-ignoring provider can resolve after run() returned or another
       // session opened. Its outcome remains unknown; it cannot write new state.
       if (!ownsTurn()) { request.signal?.throwIfAborted(); throw new Error("Model turn has closed"); }
@@ -977,6 +1013,8 @@ export class SessionController {
 
   private async beforeTool(tool: ToolDescriptor, args: unknown): Promise<void> {
     await this.checkProjectTask();
+    this.active?.signal.throwIfAborted();
+    await this.renewContinuousTask();
     const signal = this.active?.signal;
     const limits = this.limits();
     if (this.turnUsage().toolCalls >= limits.maxToolCalls) throw new Error("Shared tool budget exhausted");
@@ -1369,7 +1407,7 @@ export class SessionController {
       this.activeLimits = { ...effortBudget(this.options.resolved.config, "low"), maxTotalTokens: settings.maxTotalTokens,
         maxModelCalls: settings.maxModelCalls, maxOutputTokens: settings.maxOutputTokens,
         maxSteps: settings.maxInspectionSteps, maxToolCalls: settings.maxInspectionSteps * 2, timeoutMs: settings.timeoutMs };
-      timer = setTimeout(() => abort.abort(new Error(phase === "routing"
+      if (!this.options.continuous) timer = setTimeout(() => abort.abort(new Error(phase === "routing"
         ? "Understanding this request took too long. Please try again."
         : "This answer reached its time limit. Your request and partial results were saved; inspect /usage before retrying.")), settings.timeoutMs);
       await this.compressConversationHistory(settings.historyChars);
@@ -1853,13 +1891,14 @@ export class SessionController {
     this.active = new AbortController(); const signal = this.active.signal;
     const lock = new WorkspaceLock(path.dirname(this.store.storageDir), this.sessionId!);
     const limits = this.limits();
-    const timeout = setTimeout(() => this.active?.abort(new Error("Task deadline exceeded")), limits.timeoutMs);
+    const timeout = limits.timeoutMs > 0 ? setTimeout(() => this.active?.abort(new Error("Task deadline exceeded")), limits.timeoutMs) : undefined;
     let projectLease: ProjectTaskSnapshot | undefined;
     let projectHeartbeat: NodeJS.Timeout | undefined;
     let renewal: Promise<void> | undefined;
     this.projectHandoff = false;
     try {
       await lock.acquire();
+      this.ownsWorkspaceLock = true;
       try {
         const fence = JSON.parse(await fs.readFile(this.fencePath, "utf8")) as { sessionId: string; invocationId: string };
         throw new Error(`Workspace has an unresolved operation ${fence.invocationId}; resume session ${fence.sessionId} and reconcile its observed outcome`);
@@ -1921,7 +1960,7 @@ export class SessionController {
             this.assertEditEvidence(file, await hashWorkspacePath(this.workspaceRoot, file));
           },
           shellAllowlist: ["git", "rg", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk"],
-          shellExecutor: (command, args, context) => createIsolatedExecutor({ status: this.isolation, network: this.options.allowNetwork })(command, args, { ...context, allowedWritePaths: this.currentReceipt?.writePaths ?? [] }),
+          shellExecutor: (command, args, context) => createIsolatedExecutor({ status: this.isolation, network: this.options.allowNetwork ?? this.gate.profile === "full" })(command, args, { ...context, allowedWritePaths: this.currentReceipt?.writePaths ?? [] }),
           recordTouchedFile: file => { this.touched.add(file); },
           onOutput: (stream, content) => { void this.emit("process_output", { stream, content }, false).catch(() => undefined); },
         },
@@ -1947,7 +1986,7 @@ export class SessionController {
       if (projectLease) await this.options.projectTaskAuthority?.release(projectLease).catch(() => undefined);
       await this.flushOutputStreams().catch(() => undefined);
       clearTimeout(timeout); await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
-      await this.closeConnectors().catch(() => undefined); await lock.release(); this.active = undefined;
+      await this.closeConnectors().catch(() => undefined); this.ownsWorkspaceLock = false; await lock.release(); this.active = undefined;
     }
   }
 }

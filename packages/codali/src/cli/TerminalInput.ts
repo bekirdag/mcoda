@@ -20,18 +20,19 @@ export class TerminalInput extends Transform {
   private escapeTimer?: NodeJS.Timeout;
   private escapeNotified = false;
   private mousePending = "";
-  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number; onEscape?: () => void; onWheel?: (direction: -1 | 1) => void }) { super(); }
+  constructor(private readonly options: { onPaste: (text: string) => void; onRejected: (reason: string) => void; maxPasteBytes?: number; onEscape?: () => void; onWheel?: (direction: -1 | 1) => void; onMouse?: (event: { button: number; x: number; y: number; release: boolean }) => void }) { super(); }
   private append(text: string): void {
     this.bytes += Buffer.byteLength(text);
     if (this.bytes > (this.options.maxPasteBytes ?? 262144)) { this.overflow = true; this.pasted = ""; }
     else if (!this.overflow) this.pasted += text;
   }
   private forward(text: string): void {
-    if (this.options.onWheel) {
+    if (this.options.onWheel || this.options.onMouse) {
       text = this.mousePending + text; this.mousePending = "";
       text = text.replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_match, code: string, _x: string, _y: string, end: string) => {
         const button = Number(code);
         if (end === "M" && (button & 64) && (button & 3) < 2) this.options.onWheel?.((button & 1) ? 1 : -1);
+        else if (!(button & 64)) this.options.onMouse?.({ button, x: Number(_x) - 1, y: Number(_y) - 1, release: end === "m" });
         return "";
       });
       const partial = /\x1b\[<[0-9;]{0,40}$/.exec(text);

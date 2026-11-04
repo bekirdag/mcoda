@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { parseTerminalArguments } from "../TerminalCommand.js";
 
 test("documented output and permission options preserve their existing aliases", () => {
-  for (const profile of ["plan", "ask", "workspace"]) {
+  for (const profile of ["plan", "ask", "workspace", "full"]) {
     const current = parseTerminalArguments(["exec", "do work", "--permission-profile", profile, "--output-format", "jsonl"]);
     const original = parseTerminalArguments(["exec", "do work", "--permissions", profile, "--json"]);
     assert.deepEqual(current, original);

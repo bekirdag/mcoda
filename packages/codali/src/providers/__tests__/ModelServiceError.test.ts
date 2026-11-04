@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ModelServiceError } from "../ModelServiceError.js";
 
+test("proxy invalid_response 502 is not mislabeled as a service outage", async () => {
+  for (const payload of [{ error: "mswarm_error", code: "invalid_response" }, { error: { code: "invalid_response" } }]) {
+    const error = await ModelServiceError.fromResponse(new Response(JSON.stringify(payload), { status: 502 }));
+    assert.equal(error.code, "invalid_response");
+    assert.equal(error.status, 502);
+  }
+  assert.equal((await ModelServiceError.fromResponse(new Response("bad gateway", { status: 502 }))).code, "service_unavailable");
+});
+
 test("a relay preserves throttling without exposing input or proving zero usage", () => {
   const error = ModelServiceError.fromRelayError({ code: "rate_limited", message: "private prompt and token secret" });
   assert.ok(error instanceof ModelServiceError);

@@ -7,6 +7,7 @@ import { INTERACTION_CONTRACT_VERSION } from "../runtime/InteractionRouter.js";
 import { loadOrchestrationConfig, orchestrationHash, validateOrchestrationConfig, type EffortLevel, type OrchestrationConfig, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { ConfiguredProvider, ModelServiceClient, providerCredential } from "../providers/ConfiguredProvider.js";
 import { PermissionGate, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
+import { WorkspacePermissions } from "../permissions/WorkspacePermissions.js";
 import { executorStatus } from "../tools/shell/IsolatedExecutor.js";
 import { atomicWriteJson } from "../session/AtomicState.js";
 import { readTerminalCredential, setTerminalCredential } from "./TerminalCredentials.js";
@@ -30,7 +31,7 @@ import { proposeTerminalModel, saveTerminalModel, terminalModelOperation } from 
 const DEFAULT_PROVIDER = { adapter: "mswarm" as const, baseUrl: "https://api.mswarm.org/v1/swarm/self-hosted/openai", credentialRef: "env:MCODA_MSWARM_API_KEY" };
 const CONFIG_PATH = path.join(os.homedir(), ".codali", "orchestration.json");
 const COMMANDS = ["/help", "/usage", "/status", "/permissions", "/effort", "/model", "/models", "/config", "/goal", "/plan", "/tasks", "/decisions", "/context", "/diff", "/skills", "/tools", "/mcp", "/docdex", "/review", "/compact", "/checkpoint", "/sessions", "/resume", "/fork", "/retention", "/delete-session", "/new", "/clear", "/steer", "/continue", "/stop", "/cancel", "/reconcile", "/reconcile-media", "/export", "/artifacts", "/exit", "/quit"];
-const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace] [--effort low|medium|high|max]\n  codali setup [--config PATH] [--docdex-binary PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nInteractive terminals open the TUI; --plain selects line-oriented output.\nEnter sends/queues; Alt-Enter or Ctrl-J inserts a newline; Ctrl-S steers.\nCtrl-P commands; Ctrl-R history; Tab completes commands and @files.\nPage Up/Down scroll; Ctrl-O expands tools; Escape closes views or cancels.\nCtrl-C cancels the active turn. A second Ctrl-C exits after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
+const HELP = `Codali terminal\n  codali [chat] [prompt] [--workspace-root PATH] [--config PATH]\n  codali exec PROMPT [--json] [--permissions plan|ask|workspace|full] [--effort low|medium|high|max]\n  codali setup [--config PATH] [--docdex-binary PATH]\n  codali login [--stdin] | logout | auth status\n  codali sessions | resume SESSION_ID | status SESSION_ID\n\n${COMMANDS.join("  ")}\n\nInteractive terminals open the TUI; --plain selects line-oriented output.\nEnter or Tab sends/queues; Alt-Enter or Ctrl-J inserts a newline; Ctrl-S steers.\nCtrl-P commands; Ctrl-R history; Shift-Tab completes commands and @files.\nPage Up/Down scroll; Ctrl-O expands tools; Escape closes views or cancels.\nCtrl-C or Ctrl-Z cancels the active turn; press again to exit after cleanup.\nIn noninteractive mode approvals are denied; choose an explicit permission profile.\nProject tasks: mcoda codali chat --project-task TASK_KEY (existing workspace task database).\nExit codes: 0 verified completion, 1 error, 2 open/blocked goal, 130 cancelled.`;
 
 interface Arguments { command: string; prompt: string; workspaceRoot: string; config?: string; docdexBinary?: string; projectTask?: string; effort: EffortLevel; permissions: PermissionProfile; json: boolean; plain: boolean; stdin: boolean; allowWeb?: boolean; allowMemory?: boolean; allowMedia?: boolean; allowNetwork?: boolean; }
 export interface TerminalHost { projectTaskAuthority?: ProjectTaskAuthority; }
@@ -51,7 +52,7 @@ export const parseTerminalArguments = (argv: string[]): Arguments => {
       if (flag === "--docdex-binary") { if (command !== "setup") throw new Error("--docdex-binary is a setup option"); result.docdexBinary = value.includes(path.sep) ? path.resolve(value) : value; }
       if (flag === "--project-task") result.projectTask = value;
       if (flag === "--effort") { if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Invalid effort level"); result.effort = value as EffortLevel; }
-      if (flag === "--permissions" || flag === "--permission-profile") { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
+      if (flag === "--permissions" || flag === "--permission-profile") { if (!["plan", "ask", "workspace", "full"].includes(value)) throw new Error("Invalid permission profile"); result.permissions = value as PermissionProfile; }
     } else if (flag.startsWith("--")) throw new Error(`Unknown terminal option: ${flag}`); else positional.push(flag);
   }
   result.prompt = positional.join(" "); return result;
@@ -190,6 +191,8 @@ export class TerminalCommand {
     if (args.command === "config" && args.prompt !== "validate") throw new Error("Usage: codali config validate --file PATH");
     let resolved = await loadOrchestrationConfig(args.config).catch(error => { throw new Error(`Cannot load orchestration configuration; run codali setup. ${error instanceof Error ? error.message : String(error)}`); });
     if (args.command === "config") { output({ valid: true, source: resolved.source, hash: resolved.hash }); return; }
+    const workspacePermissions = new WorkspacePermissions(args.workspaceRoot);
+    if (!argv.includes("--permissions") && !argv.includes("--permission-profile")) args.permissions = await workspacePermissions.read() ?? args.permissions;
     const interactive = ["chat", "resume"].includes(args.command) && !!process.stdin.isTTY && !args.json;
     let rl: Interface | undefined; let pendingApproval: ((decision: "once" | "session" | "deny") => void) | undefined;
     let closed = false; let lastCtrlC = 0; let cancelEpoch = 0; let activeRun: Promise<void> | undefined; let commandAbort: AbortController | undefined; const queued: Array<{ text: string; steer?: boolean }> = [];
@@ -205,7 +208,7 @@ export class TerminalCommand {
       });
     };
     const textStream = new TerminalTextStream();
-    const controller = new SessionController({ workspaceRoot: await fs.realpath(args.workspaceRoot), resolved, effort: args.effort, permissions: args.permissions, approve, allowWeb: args.allowWeb, allowMemory: args.allowMemory, allowMedia: args.allowMedia, allowNetwork: args.allowNetwork,
+    const controller = new SessionController({ workspaceRoot: await fs.realpath(args.workspaceRoot), resolved, effort: args.effort, permissions: args.permissions, approve, continuous: interactive, allowWeb: args.allowWeb, allowMemory: args.allowMemory, allowMedia: args.allowMedia, allowNetwork: args.allowNetwork,
       projectTaskKey: args.projectTask, projectTaskAuthority: host.projectTaskAuthority,
       onEvent: (event: SessionEvent) => {
         if (tui) { tui.event(event); return; }
@@ -253,7 +256,19 @@ export class TerminalCommand {
         const reconciliation = await controller.reconcileUsage();
         output({ session: controller.usageSnapshot(), turn: controller.turnUsageSnapshot(), reconciliation, server: await usageFor(resolved) });
       }
-      else if (name === "/permissions") { if (value === "clear") await controller.clearPermissionGrants(); else if (value) { if (!["plan", "ask", "workspace"].includes(value)) throw new Error("Expected plan, ask, workspace or clear"); controller.gate.setProfile(value as PermissionProfile); } output(controller.gate.inspect()); }
+      else if (name === "/permissions") {
+        const chosen = value || (tui ? await tui.choosePermissions(controller.gate.profile) : undefined);
+        if (closed || commandEpoch !== cancelEpoch || (!chosen && tui)) return;
+        if (chosen === "clear") await controller.clearPermissionGrants();
+        else if (chosen) {
+          if (!["plan", "ask", "workspace", "full"].includes(chosen)) throw new Error("Expected plan, ask, workspace, full or clear");
+          await workspacePermissions.save(chosen as PermissionProfile);
+          controller.gate.setProfile(chosen as PermissionProfile);
+          await controller.clearPermissionGrants();
+        }
+        output({ ...controller.gate.inspect(), directory: controller.workspaceRoot, savedProfile: await workspacePermissions.read(),
+          help: "/permissions full saves automatic approvals for this directory. /permissions ask restores prompts. CLI --permissions overrides one launch." });
+      }
       else if (name === "/effort") { if (value) { if (controller.busy) throw new Error("Change effort between turns"); if (!["low", "medium", "high", "max"].includes(value)) throw new Error("Expected low, medium, high or max"); controller.effort = value as EffortLevel; } output({ effort: controller.effort }); }
       else if (name === "/config") {
         if (value === "reload") { const next = await loadOrchestrationConfig(resolved.source); await controller.reloadConfiguration(next); resolved = next; }

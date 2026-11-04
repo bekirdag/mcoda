@@ -3,6 +3,17 @@ import assert from "node:assert/strict";
 import { PermissionGate } from "../PermissionGate.js";
 import type { ToolDescriptor } from "../../tools/ToolTypes.js";
 const tool = (name: string, readOnly = false): ToolDescriptor => ({ name, readOnly, capability: "workspace", description: name });
+test("full automatically approves all tool kinds but retains explicit denials and isolation", async () => {
+  let prompts = 0;
+  const gate = new PermissionGate("full", async () => { prompts++; return { allow: false }; }, { shellIsolated: true });
+  for (const name of ["read_file", "write_file", "run_shell", "docdex_web_research", "docdex_memory_save", "image_generate", "external_tool"]) await gate.authorize(tool(name, name === "read_file"), {});
+  assert.equal(prompts, 0);
+  await assert.rejects(new PermissionGate("full").authorize(tool("run_shell"), {}), /isolated shell/);
+  await assert.rejects(new PermissionGate("full", undefined, { deniedTools: ["write_file"] }).authorize(tool("write_file"), {}), /explicitly denied/);
+  gate.setProfile("ask");
+  await assert.rejects(gate.authorize(tool("write_file"), {}), /denied by user/);
+  assert.equal(prompts, 1);
+});
 test("document extraction is read-only and file creation requires workspace writes", async () => {
   const gate = new PermissionGate("plan");
   await gate.authorize(tool("document_read", true), { path: "input.pdf" });

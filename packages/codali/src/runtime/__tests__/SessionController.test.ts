@@ -14,6 +14,31 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("continuous work exceeds old limits, renews its owned task and remains cancellable", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-continuous-work-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-continuous-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const selected = structuredClone(config);
+  selected.effort = { medium: { maxSteps: 1, maxToolCalls: 1, maxModelCalls: 1, maxTotalTokens: 1, timeoutMs: 1 } };
+  let controller!: SessionController, calls = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    if (++calls === 1) return call("work_claim", { taskId: "T1", allowedPaths: ["notes.txt"] });
+    if (calls === 2) return call("read_file", { path: "notes.txt" });
+    assert.ok(Date.parse(controller.state!.tasks[0].leaseExpiresAt!) > Date.now());
+    assert.ok(request.messages.some(message => message.role === "tool" && message.content.includes("Preserved user text")));
+    controller.cancel(); request.signal?.throwIfAborted();
+    throw new Error("Cancellation must propagate");
+  } };
+  await fs.writeFile(path.join(root, "notes.txt"), "Preserved user text");
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: selected, hash: orchestrationHash(selected), source: "test" }, continuous: true, provider, docdex: false, permissions: "workspace" });
+  await assert.rejects(controller.run("Read notes.txt without editing."), /cancel/i);
+  assert.equal(calls, 3);
+  assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "Preserved user text");
+  assert.notEqual(controller.state?.status, "completed");
+  assert.ok(controller.usageSnapshot().tokens > 1);
+});
+
 test("a fresh prompt preserves the old session and creates a distinct resumable objective", async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-reset-")));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-reset-state-"));

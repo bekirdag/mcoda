@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise actual raw terminal input and output; no model, credentials or third-party Python modules."""
-import fcntl, hashlib, json, os, pathlib, pty, select, shutil, signal, struct, subprocess, sys, tempfile, termios, time
+import base64, fcntl, hashlib, json, os, pathlib, pty, re, select, shutil, signal, struct, subprocess, sys, tempfile, termios, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NODE = sys.argv[1] if len(sys.argv) > 1 else 'node'
@@ -43,47 +43,97 @@ class Terminal:
     def events(self): return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
     def event(self, expected): self.wait(lambda: expected in self.events())
 
-    def finish(self, terminate=False, command='/quit'):
+    def finish(self, terminate=False, command='/quit', key=None):
         if terminate: self.process.send_signal(signal.SIGTERM)
-        else: self.send(command + '\r')
+        else: self.send(key if key is not None else command + '\r')
         self.wait(lambda: self.process.poll() is not None)
         self.pump()
         assert self.process.returncode == 0
         assert b'\x1b[?1049l' in self.output and b'\x1b[?2004l' in self.output and b'\x1b[?25h' in self.output
+        assert b'\x1b[?1002l' in self.output, 'Drag reporting was not restored'
         assert termios.tcgetattr(self.slave) == self.original, 'Terminal flags were not restored'
         assert json.loads(pathlib.Path(str(self.log)+'.closed').read_text())['raw'] is False
 
-    def cleanup(self):
+    def cleanup(self, preserve_state=False):
         if self.process.poll() is None:
             self.process.kill(); self.process.wait(timeout=3)
         os.close(self.master); os.close(self.slave)
         state = pathlib.Path.home()/'.local/state/codali/workspaces'/hashlib.sha256(str(self.workspace.resolve()).encode()).hexdigest()
-        shutil.rmtree(state, ignore_errors=True)
+        if not preserve_state: shutil.rmtree(state, ignore_errors=True)
 
 checks = []
 with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
     base = pathlib.Path(directory)
+    ui = Terminal('permissions', base)
+    try:
+        ui.contains('Ask Codali anything'); ui.send('/per\t')
+        ui.contains('/permissions ')
+        assert b'Permissions for this directory' not in ui.output, 'Tab executed a command'
+        ui.send('\r'); ui.contains('Permissions for this directory')
+        ui.send(b'\x1b[B\x1b[B\r'); ui.contains('Saved Profile: full')
+        ui.send(b'\x1b'); ui.pump(.15); ui.finish(key=b'\x1a')
+    finally: ui.cleanup(preserve_state=True)
+    ui = Terminal('permissions', base)
+    try:
+        ui.contains('Ask Codali anything'); ui.send('probe\r')
+        ui.event({'profile': 'full'}); ui.event({'automaticallyApproved': True})
+        assert 'Permission · fixture_external'.encode() not in ui.output
+        ui.send('/permissions\r'); ui.contains('Permissions for this directory')
+        ui.send(b'\x1b[A\x1b[A\r'); ui.contains('Saved Profile: ask')
+        ui.send(b'\x1b'); ui.pump(.15); ui.finish(key=b'\x03')
+    finally: ui.cleanup(preserve_state=True)
+    ui = Terminal('permissions', base)
+    try:
+        ui.contains('Ask Codali anything'); ui.send('probe\r')
+        ui.event({'profile': 'ask'}); ui.contains('Permission · fixture_external')
+        ui.send(b'\x1b'); ui.pump(.15); ui.finish(key=b'\x1a')
+        checks.append('slash Tab completion, TUI permission selection, persisted full approval, revocation and Ctrl+Z exit')
+    finally: ui.cleanup()
     ui = Terminal('screen', base)
     try:
         ui.contains('Ask Codali anything')
+        # The opening artwork collapses to the compact header on scrolling.
+        fcntl.ioctl(ui.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 0, 0))
+        ui.process.send_signal(signal.SIGWINCH); ui.contains('▄▄▄▄▄▄')
+        ui.output = b''
+        ui.send(b'\x1b[5~'); ui.contains('◈ CODALI')
+        fcntl.ioctl(ui.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 90, 0, 0))
+        ui.process.send_signal(signal.SIGWINCH); ui.pump(.15)
+        checks.append('opening artwork collapses to compact header on scrolling')
+        ui.send(b'\x1b[<0;5;1M\x1b[<32;10;1M\x1b[<0;10;1m')
+        ui.wait(lambda: b'\x1b]52;c;' in ui.output)
+        copied = re.findall(rb'\x1b\]52;c;([A-Za-z0-9+/=]+)\x07', ui.output)
+        assert base64.b64decode(copied[-1]).decode() == 'CODALI'
+        checks.append('header drag selection auto-copies UTF8 through OSC52')
         ui.send('/stream\r'); ui.contains('stream-')
-        ui.send('draft stays editable'); ui.send(b'\x1b[5~'); ui.send(b'\x1b[<64;12;5M'); ui.send(b'\r')
+        ui.send('draft stays editable')
+        before_copy = len(re.findall(rb'\x1b\]52;c;', ui.output))
+        ui.send(b'\x1b[<0;6;21M\x1b[<32;25;21M\x1b[<0;25;21m')
+        ui.wait(lambda: len(re.findall(rb'\x1b\]52;c;', ui.output)) > before_copy)
+        copied = re.findall(rb'\x1b\]52;c;([A-Za-z0-9+/=]+)\x07', ui.output)
+        assert base64.b64decode(copied[-1]).decode() == 'draft stays editable'
+        ui.send(b'\x1b[5~'); ui.send(b'\x1b[<64;12;5M'); ui.send(b'\r')
         ui.event({'text': 'draft stays editable', 'intent': 'queue'})
         checks.append('streaming, wheel and keyboard scrolling preserve editable input')
         ui.send('/approval\r'); ui.contains('Permission: fixture')
+        ui.send(b'\x1b[<0;1;1M\x1b[<32;90;24M\x1b[<0;90;24m')
+        copied = re.findall(rb'\x1b\]52;c;([A-Za-z0-9+/=]+)\x07', ui.output)
+        assert 'Permission: fixture' in base64.b64decode(copied[-1]).decode()
         ui.send(b'\x1b[200~\x1b[C\r\x1b[201~')
         assert not any('approval' in event for event in ui.events()), 'Paste approved an operation'
-        ui.send(b'\r'); ui.event({'approval': 'deny'})
+        ui.send(b'\x1b[C\x1b[D\r'); ui.event({'approval': 'deny'})
         ui.send('/approval\r')
         ui.send(b'\x1b[<65;12;5M'*30); ui.contains('LAST_ARGUMENT')
-        ui.send(b'\x1b[C\r'); ui.event({'approval': 'once'})
+        ui.send(b'\x1b[6~'); ui.contains('LAST_ARGUMENT')
+        ui.send(b'\x1b[B\r'); ui.event({'approval': 'once'})
+        ui.send('/approval\r'); ui.send(b'\x1b[A\r'); ui.event({'approval': 'session'})
         ui.send('/approval\r'); ui.send(b'\x03')
         ui.wait(lambda: sum(event == {'approval': 'deny'} for event in ui.events()) == 2)
         checks.append('default deny, inert paste, complete argument scrolling, explicit approval and cancellation')
         ui.send(b'\x12'); ui.send('previous'); ui.send(b'\r')
         assert {'text': 'previous instruction', 'intent': 'queue'} not in ui.events()
         ui.send(b'\r'); ui.event({'text': 'previous instruction', 'intent': 'queue'})
-        ui.send('@src/\t'); ui.contains('Workspace files'); ui.send(b'\r'); ui.send(b'\r')
+        ui.send('@src/\x1b[Z'); ui.contains('Workspace files'); ui.send(b'\r'); ui.send(b'\r')
         ui.event({'text': '@src/main.ts', 'intent': 'queue'})
         ui.send('line one\x1b\rline two\x13'); ui.event({'text': 'line one\nline two', 'intent': 'steer'})
         checks.append('history selection, workspace file completion, multiline steering')
@@ -112,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
     ui = Terminal('startup', base, color=True)
     try:
         ui.contains('Ask Codali anything'); ui.send('test cancellation\r'); ui.event({'initializing': True})
-        ui.send(b'\x03'); ui.contains('Cancelled by user before execution')
+        ui.send(b'\x1a'); ui.contains('Cancelled by user before execution')
         assert ui.process.poll() is None, 'First Ctrl-C during initialization exited the TUI'
         assert not any('executionStarted' in event for event in ui.events())
         ui.finish(terminate=True); checks.append('startup cancellation prevents execution; SIGTERM restores terminal')
@@ -128,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
     ui = Terminal('queue', base)
     try:
         ui.contains('Ask Codali anything'); ui.send('First objective\r'); ui.event({'turn': 1, 'objective': 'First objective'})
-        ui.send('Queued objective\r'); ui.contains('Message queued')
+        ui.send('Queued objective\t'); ui.contains('Message queued')
         ui.event({'turn': 2, 'objective': 'Queued objective'}); ui.contains('Fixture turn 2 complete')
         ui.send('Third objective\r'); ui.event({'turn': 3, 'objective': 'Third objective'})
         ui.send('Correction\x13')
@@ -191,7 +241,7 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         ui.send(b'\x03'); ui.contains('Cancelled by user')
         assert not (ui.workspace / 'cancelled.png').exists()
         ui.send('/artifacts export pixel user export.png\r'); ui.pump(.2)
-        ui.send(b'\x1b[C\r'); ui.wait(lambda: (ui.workspace / 'user export.png').exists())
+        ui.send(b'\x1b[B\r'); ui.wait(lambda: (ui.workspace / 'user export.png').exists())
         assert (ui.workspace / 'user export.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
         # The file precedes the durable receipt and result view. Escape must
         # close that view before the next command is typed.

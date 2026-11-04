@@ -2,10 +2,12 @@ import { emitKeypressEvents, type Key } from "node:readline";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { SessionEvent } from "../../runtime/SessionController.js";
+import type { PermissionProfile } from "../../permissions/PermissionGate.js";
 import { TerminalInput } from "../TerminalInput.js";
 import { terminalText, TerminalTextStream } from "../TerminalText.js";
 import { terminalHelp, terminalUsage, toolActivity } from "./TerminalPresentation.js";
 import { TerminalEditor } from "./TerminalEditor.js";
+import { TerminalSelection, clipboardSequence } from "./TerminalSelection.js";
 import { renderTerminalScreen, type TerminalOverlay, type TerminalScreenState, type TranscriptBlock } from "./TerminalScreen.js";
 
 export interface TuiCommand { name: string; description: string; }
@@ -38,6 +40,8 @@ export class TerminalTui {
   private transcriptRows = 0;
   private outputBlocked = false;
   private pendingInspection?: TerminalOverlay;
+  private selection?: TerminalSelection;
+  private permissionPicker?: { overlay: TerminalOverlay; resolve: (profile?: PermissionProfile) => void };
 
   constructor(private readonly options: TerminalTuiOptions) {
     this.editor = new TerminalEditor(options.history.filter(value => Buffer.byteLength(value) <= 262144).map(value => terminalText(value).replace(/\t/g, "  ")));
@@ -47,12 +51,25 @@ export class TerminalTui {
       if (this.approval || this.picker || this.state.overlay) return;
       if (!this.editor.insert(terminalText(text).replace(/\t/g, "  "))) this.notice("Input exceeds 256 KiB");
       this.schedule();
-    }, onRejected: text => this.notice(text), onWheel: direction => this.scroll(direction * -3), onEscape: () => this.onKey("", { name: "escape" }) });
+    }, onRejected: text => this.notice(text), onWheel: direction => { this.selection = undefined; this.scroll(direction * -3); }, onMouse: event => {
+      if ((event.button & 3) !== 0 || !this.previousFrame.length) return;
+      const point = { x: Math.max(0, Math.min((process.stdout.columns || 80) - 1, event.x)), y: Math.max(0, Math.min(this.previousFrame.length - 1, event.y)) };
+      if (!event.release && !(event.button & 32)) this.selection = new TerminalSelection(this.previousFrame, point);
+      else if (this.selection) {
+        this.selection.end = point;
+        if (event.release) {
+          const text = this.selection.text();
+          if (text) process.stdout.write(clipboardSequence(text));
+          this.selection = undefined; this.previousFrame = [];
+        }
+      }
+      this.schedule();
+    }, onEscape: () => this.onKey("", { name: "escape" }) });
   }
   start(): void {
     if (this.live) return;
     this.live = true; this.previousRaw = !!process.stdin.isRaw;
-    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J");
+    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J");
     process.stdin.setRawMode(true);
     emitKeypressEvents(this.input);
     this.input.on("keypress", this.onKey);
@@ -68,14 +85,15 @@ export class TerminalTui {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     this.approval?.resolve("deny"); this.approval = undefined;
+    this.permissionPicker?.resolve();
     process.stdout.off("resize", this.resize);
     process.stdout.off("drain", this.drain);
     process.stdin.unpipe(this.input); this.input.off("keypress", this.onKey); this.input.destroy();
     process.stdin.setRawMode(this.previousRaw); process.stdin.pause();
-    process.stdout.write("\x1b[0m\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
+    process.stdout.write("\x1b[0m\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
     this.resolveClosed();
   }
-  private resize = (): void => { this.previousFrame = []; this.schedule(); };
+  private resize = (): void => { this.selection = undefined; this.previousFrame = []; this.schedule(); };
   private drain = (): void => { this.outputBlocked = false; this.schedule(); };
   private schedule(): void {
     if (!this.live || this.timer) return;
@@ -95,6 +113,7 @@ export class TerminalTui {
       frame = renderTerminalScreen(this.state, process.stdout.columns || 80, process.stdout.rows || 24, process.env.NO_COLOR === undefined);
     }
     this.frameRows = frame.viewportRows; this.transcriptRows = frame.transcriptRows;
+    if (this.selection) { frame.lines = this.selection.frame(); frame.cursor = undefined; }
     let output = "\x1b[?25l";
     frame.lines.forEach((line, i) => { if (this.previousFrame[i] !== line) output += `\x1b[${i + 1};1H\x1b[2K${line}`; });
     if (frame.cursor) output += `\x1b[${frame.cursor.row + 1};${frame.cursor.column + 1}H\x1b[?25h`;
@@ -108,6 +127,7 @@ export class TerminalTui {
   }
   private scroll(lines: number): void {
     if (this.picker) return;
+    if (!this.state.overlay) this.state.introDismissed = true;
     if (this.state.overlay) this.state.overlay.offset = Math.max(0, this.state.overlay.offset - lines);
     else this.state.scroll = Math.max(0, Math.min(Math.max(0, this.transcriptRows - this.frameRows), this.state.scroll + lines));
     this.schedule();
@@ -127,7 +147,7 @@ export class TerminalTui {
     const text = title.toLowerCase() === "help" ? terminalHelp() : title.toLowerCase() === "usage" ? terminalUsage(value) : typeof value === "string" ? value : formatInspection(value);
     const overlay = { title: terminalText(title.slice(0, 1).toUpperCase() + title.slice(1)), lines: terminalText(text).split("\n"), offset: 0 };
     if (this.approval) this.pendingInspection = overlay;
-    else { this.picker = undefined; this.state.overlay = overlay; }
+    else { this.permissionPicker?.resolve(); this.picker = undefined; this.state.overlay = overlay; }
     this.schedule();
   }
   update(status: { busy?: boolean; activity?: string; effort?: string; permissions?: string; tokens?: number; queued?: number; session?: string }): void { Object.assign(this.state, status); this.schedule(); }
@@ -156,6 +176,10 @@ export class TerminalTui {
       this.assistant.text = (this.assistant.text + this.stream.write(data.content)).slice(-262144);
     } else if (event.type === "model_route") { this.state.route = terminalText(`${data.modelId ?? "Model"}${data.host ? ` on ${data.host}` : ""}`); this.state.activity = "Thinking"; }
     else if (event.type === "interaction_progress" && typeof data.message === "string") this.state.activity = terminalText(data.message);
+    else if (event.type === "model_recovery" && typeof data.message === "string") {
+      if (this.assistant) { this.assistant.kind = "notice"; this.assistant.title = "Incomplete response · retrying"; }
+      this.assistant = undefined; this.stream.reset(); this.notice(data.message); this.state.activity = "Recovering incomplete model response";
+    }
     else if (event.type === "usage") { const usage = data.usage as { tokens?: number }; if (Number.isFinite(usage?.tokens)) this.state.tokens = usage.tokens!; }
     else if (event.type === "tool_intent") {
       const receipt = data.receipt as { tool: string; id: string; args?: unknown };
@@ -181,6 +205,7 @@ export class TerminalTui {
     this.schedule();
   }
   approve(title: string, details: string, signal?: AbortSignal): Promise<"once" | "session" | "deny"> {
+    this.permissionPicker?.resolve();
     this.approval?.resolve("deny");
     this.picker = undefined;
     return new Promise(resolve => {
@@ -188,10 +213,25 @@ export class TerminalTui {
       const finish = (choice: "once" | "session" | "deny"): void => {
         signal?.removeEventListener("abort", abort); this.approval = undefined; this.state.overlay = this.pendingInspection; this.pendingInspection = undefined; this.schedule(); resolve(choice);
       };
-      const overlay = { title: terminalText(title.slice(0, 1).toUpperCase() + title.slice(1)), lines: terminalText(details).split("\n"), offset: 0, choices: ["Allow once", "Allow for this session", "Deny"], selected: 2, hint: "←→ choose · Enter confirm · PgUp/PgDn inspect · Esc deny" };
+      const overlay = { title: terminalText(title.slice(0, 1).toUpperCase() + title.slice(1)), lines: terminalText(details).split("\n"), offset: 0, choices: ["Allow once", "Allow for this session", "Deny"], selected: 2, hint: "↑↓ choose · Enter confirm · PgUp/PgDn inspect · Esc deny" };
       this.approval = { resolve: finish, selected: 2, overlay }; this.state.overlay = overlay;
       signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
       this.schedule();
+    });
+  }
+  choosePermissions(current: PermissionProfile): Promise<PermissionProfile | undefined> {
+    if (this.approval) return Promise.resolve(undefined);
+    this.permissionPicker?.resolve(); this.picker = undefined;
+    const profiles: PermissionProfile[] = ["plan", "ask", "workspace", "full"];
+    return new Promise(resolve => {
+      const overlay: TerminalOverlay = { title: "Permissions for this directory", lines: [this.state.workspace, "Saved for future launches here. Full automatically approves available tools; workspace boundaries still apply."], offset: 0,
+        choices: ["Plan — read only", "Ask — approve operations individually", "Workspace — allow local writes and shell", "Full — allow all tools without prompts"], selected: profiles.indexOf(current), hint: "↑↓ choose · Enter save · Esc cancel" };
+      this.permissionPicker = { overlay, resolve: profile => {
+        this.permissionPicker = undefined;
+        if (this.state.overlay === overlay) this.state.overlay = undefined;
+        this.schedule(); resolve(profile);
+      } };
+      this.state.overlay = overlay; this.schedule();
     });
   }
   private pickerItems(): Picker["items"] {
@@ -224,17 +264,27 @@ export class TerminalTui {
     this.showPicker();
   }
   private onKey = (text: string, key: Key): void => {
+    this.selection = undefined;
     try { this.key(text, key); } catch (error) { this.error(error instanceof Error ? error.message : String(error)); }
     this.schedule();
   };
   private key(text: string, key: Key): void {
-    if (key.ctrl && key.name === "c") { this.options.cancel(); return; }
+    if (key.ctrl && (key.name === "c" || key.name === "z")) { this.options.cancel(); return; }
+    if (this.permissionPicker) {
+      const picker = this.permissionPicker;
+      if (key.name === "escape") picker.resolve();
+      else if ((process.stdout.columns || 80) < 24 || (process.stdout.rows || 24) < 10) return;
+      else if (key.name === "up" || key.name === "down") picker.overlay.selected = ((picker.overlay.selected ?? 0) + (key.name === "up" ? 3 : 1)) % 4;
+      else if (key.name === "return") picker.resolve((["plan", "ask", "workspace", "full"] as const)[picker.overlay.selected ?? 1]);
+      else if (key.name === "pageup" || key.name === "pagedown") picker.overlay.offset = Math.max(0, picker.overlay.offset + (key.name === "pageup" ? -6 : 6));
+      return;
+    }
     if (this.approval) {
       if (key.name === "escape") this.approval.resolve("deny");
       else if ((process.stdout.columns || 80) < 24 || (process.stdout.rows || 24) < 10) return;
-      else if (key.name === "left" || key.name === "right") { this.approval.selected = (this.approval.selected + (key.name === "left" ? 2 : 1)) % 3; this.approval.overlay.selected = this.approval.selected; }
+      else if (key.name === "up" || key.name === "down") { this.approval.selected = (this.approval.selected + (key.name === "down" ? 1 : 2)) % 3; this.approval.overlay.selected = this.approval.selected; }
       else if (key.name === "return") this.approval.resolve((["once", "session", "deny"] as const)[this.approval.selected]);
-      else if (["pageup", "pagedown", "up", "down"].includes(key.name ?? "")) this.approval.overlay.offset = Math.max(0, this.approval.overlay.offset + (["pageup", "up"].includes(key.name!) ? -1 : 1) * (key.name!.startsWith("page") ? 6 : 1));
+      else if (key.name === "pageup" || key.name === "pagedown") this.approval.overlay.offset = Math.max(0, this.approval.overlay.offset + (key.name === "pageup" ? -6 : 6));
       return;
     }
     if (this.picker) {
@@ -262,7 +312,7 @@ export class TerminalTui {
     if (key.ctrl && key.name === "o") { this.state.expanded = !this.state.expanded; return; }
     if (key.ctrl && key.name === "l") { this.previousFrame = []; return; }
     if (key.name === "escape") { if (this.state.busy) this.options.cancel(); else this.editor.clear(); return; }
-    if (key.name === "pageup" || key.name === "pagedown") { this.state.scroll = Math.max(0, Math.min(Math.max(0, this.transcriptRows - this.frameRows), this.state.scroll + (key.name === "pageup" ? 1 : -1) * Math.max(1, this.frameRows - 2))); return; }
+    if (key.name === "pageup" || key.name === "pagedown") { this.scroll((key.name === "pageup" ? 1 : -1) * Math.max(1, this.frameRows - 2)); return; }
     if (key.ctrl && key.name === "s") { const value = this.editor.submit(); if (value.trim()) this.options.submit(value, "steer"); return; }
     if (key.name === "return") {
       if (key.meta || key.shift) this.editor.insert("\n");
@@ -278,7 +328,13 @@ export class TerminalTui {
     else if (key.ctrl && key.name === "w") this.editor.killWord();
     else if (key.ctrl && key.name === "d" && !this.editor.text) this.options.close();
     else if (key.name === "up" || key.name === "down") { const direction = key.name === "up" ? -1 : 1; if (!this.editor.vertical(direction)) this.editor.previous(direction); }
-    else if (key.name === "tab") {
+    else if (key.name === "tab" && !key.shift) {
+      if (this.editor.text.startsWith("/") && !/\s/.test(this.editor.text)) {
+        const match = this.options.commands.find(command => command.name.startsWith(this.editor.text));
+        if (match) this.editor.set(match.name + " ");
+      } else { const value = this.editor.submit(); if (value.trim()) this.options.submit(value, "queue"); }
+    }
+    else if (key.name === "tab" && key.shift) {
       const matches = this.options.commands.filter(command => command.name.startsWith(this.editor.text));
       if (this.editor.text.startsWith("/") && matches.length) this.editor.set(matches[0].name + " ");
       else void this.completeFile().catch(error => this.error(error instanceof Error ? error.message : String(error)));

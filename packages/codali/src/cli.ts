@@ -14,7 +14,7 @@ import { ImprovementCommand } from "./cli/ImprovementCommand.js";
 import { TerminalCommand, terminalDoctor } from "./cli/TerminalCommand.js";
 
 const HELP_TEXT =
-  "Usage: codali [chat] [prompt] [--effort low|medium|high|max] [--permissions plan|ask|workspace]\n" +
+  "Usage: codali [chat] [prompt] [--effort low|medium|high|max] [--permissions plan|ask|workspace|full]\n" +
   "   or: codali exec <prompt> [--json] [--config <path>]\n" +
   "   or: codali exec <prompt> --output-format jsonl --permission-profile workspace\n" +
   "   or: codali config validate --file <path>\n" +

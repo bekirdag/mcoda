@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { OpenAiCompatibleProvider } from "../OpenAiCompatibleProvider.js";
+import { ModelServiceError } from "../ModelServiceError.js";
 import type { ProviderRequest } from "../ProviderTypes.js";
 
 type FetchHandler = (url: string, body: string, headers: HeadersInit | undefined) => unknown;
@@ -61,6 +62,15 @@ test("OpenAiCompatibleProvider returns message content", { concurrency: false },
       assert.equal(result.usage?.totalTokens, 5);
     },
   );
+});
+
+test("length-truncated tool arguments are rejected before a caller can execute them", { concurrency: false }, async () => {
+  await withStubbedFetch(() => ({ choices: [{ finish_reason: "length", message: { role: "assistant", content: "",
+    tool_calls: [{ id: "partial", type: "function", function: { name: "write_file", arguments: '{"path":"a","content":"unfinished' } }] } }] }), async () => {
+    const provider = new OpenAiCompatibleProvider({ model: "fixture", baseUrl: "http://127.0.0.1:9999/v1/" });
+    await assert.rejects(provider.generate({ messages: [{ role: "user", content: "write a file" }] }),
+      (error: unknown) => error instanceof ModelServiceError && error.code === "invalid_response");
+  });
 });
 
 test("model context survives a strict Unicode server without changing source or tool values", async () => {

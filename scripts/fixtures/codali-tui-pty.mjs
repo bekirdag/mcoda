@@ -11,7 +11,15 @@ const [{ TerminalTui }, { TerminalCommand }, { SessionController }, { loadOrches
 ]);
 const [mode, workspace, log, configuration] = process.argv.slice(2);
 const record = value => appendFileSync(log, JSON.stringify(value) + "\n");
-if (mode === "models") {
+if (mode === "permissions") {
+  SessionController.prototype.interact = async function () {
+    record({ profile: this.gate.profile });
+    await this.gate.authorize({ name: "fixture_external", capability: "external", readOnly: false, description: "Fixture" }, {});
+    record({ automaticallyApproved: true });
+    return { content: "Permission fixture complete", completed: true };
+  };
+  await TerminalCommand.run(["chat", "--workspace-root", workspace, "--config", configuration]);
+} else if (mode === "models") {
   const { createServer } = await import("node:http");
   const { promises: fs } = await import("node:fs");
   let catalogs = 0;

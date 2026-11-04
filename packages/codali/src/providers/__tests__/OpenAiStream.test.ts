@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenAiCompatibleProvider } from '../OpenAiCompatibleProvider.js';
+import { ModelServiceError } from '../ModelServiceError.js';
 
 test('HTTP200 SSE error event must reject and redact configured apiKey', { concurrency: false }, async () => {
   const apiKey = 'sk-secret-key-12345';
@@ -53,7 +54,7 @@ test('abruptly ended content stream without finish_reason or DONE must reject', 
 
     await assert.rejects(
       provider.generate({ messages: [{ role: 'user', content: 'go' }], stream: true }),
-      /before a complete response/i,
+      (err) => err instanceof ModelServiceError && err.code === 'invalid_response',
       'Should reject on incomplete stream without finish_reason or DONE'
     );
   } finally {

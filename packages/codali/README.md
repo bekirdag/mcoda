@@ -19,22 +19,34 @@ noninteractive resume retain their automation behavior.
 
 | Key | Action |
 | --- | --- |
-| Enter | Send, or queue a message while work is running |
+| Enter or Tab | Send, or queue a message while work is running |
 | Alt+Enter or Ctrl+J | Insert a newline |
 | Ctrl+S | Submit a correction; cancel current work and apply it at the next safe checkpoint |
 | Ctrl+P / Ctrl+R | Search commands / input history |
-| Tab | Complete a slash command or an `@workspace/path` reference |
+| Shift+Tab | Complete a slash command or an `@workspace/path` reference |
+| Mouse drag | Select visible text anywhere, including dialogs and the editor; release to copy |
 | Page Up / Page Down | Scroll conversation or inspect a dialog |
 | Ctrl+O | Expand or collapse tool output |
 | Escape | Close a view, deny an approval, or cancel active work |
-| Ctrl+C | Cancel work; press again within one second to exit |
+| Ctrl+C / Ctrl+Z | Cancel work; press again within one second to exit |
 | Ctrl+D | Exit with an empty editor |
 
-Approvals start on **Deny**. Use Left/Right to choose, then Enter to confirm;
+Approvals start on **Deny**. Use Up/Down to choose, then Enter to confirm;
 Page Up/Down exposes the complete arguments. Pasted text remains editable and
 cannot select an approval. Use `NO_COLOR=1` for a monochrome TUI or `--plain`
 for a line-oriented interface. Redirected output and `TERM=dumb` use plain mode.
 The UI restores terminal modes and the original screen when it closes.
+
+Automatic copy uses the terminal's OSC52 clipboard support, including over SSH.
+Your terminal must permit clipboard writes; Codali cannot override that setting.
+Shift-drag remains available for the terminal's own selection and copy behavior.
+
+Interactive work has no cumulative token, model-call, tool-call, step or total
+turn deadline. Usage remains recorded, context is compressed to fit the model,
+and active task leases renew while the controller owns the workspace. Per-request
+model context/output capacities, individual tool/service timeouts, permissions,
+explicit cancellation and failure checks still apply. Noninteractive commands
+and benchmarks retain their configured budgets.
 
 For automation, inject `MCODA_MSWARM_API_KEY` through your secret manager, or pipe
 the key to `codali login --stdin`. Keys are never command-line arguments. Existing
@@ -77,7 +89,7 @@ runtime versions remain available for existing profiles.
 | Command | Purpose |
 | --- | --- |
 | `/status`, `/usage` | Current execution state, reconciled accounting and server limits |
-| `/permissions [plan\|ask\|workspace\|clear]` | Inspect/change policy or revoke exact session grants |
+| `/permissions [plan\|ask\|workspace\|full\|clear]` | Open the permission menu, save a directory policy, or clear session grants |
 | `/effort [low\|medium\|high\|max]` | Change the shared model, tool, token and time budget between turns |
 | `/goal`, `/plan`, `/tasks`, `/decisions` | Read the durable objective, criteria, dependencies and architecture decisions |
 | `/goal amend TEXT` | Record an explicit goal amendment between turns, preserving the original objective; execution waits for `/continue` |
@@ -370,3 +382,7 @@ codali calls docdex over HTTP for search/snippets/graphs and uses MCP for symbol
 Local document tools support PDF, Word (`.docx`), Excel (`.xlsx`) and UTF-8 Markdown. Install their separate pinned runtime with `codali tools install --documents`, then run `codali tools check --documents --json`. These host commands do not require a model or a tenant connection. The tool names are `document_read` and `document_create`; creation uses typed text blocks or literal spreadsheet rows, requires workspace write permission, and never overwrites an existing file.
 
 The offline worker receives only copied input and returns checksums, library versions, bounded text/tables and explicit truncation. Formula expressions are not calculated values; formula-looking strings supplied to creation remain literal text. PDF extraction does not perform OCR, and document reading does not claim complete interpretation of images, headers, tracked changes or complex layouts. PDF creation uses a bundled font and fails on unsupported characters; DOCX/Markdown preserve broader Unicode. Image, audio and video generation use the separately configured local specialist models.
+
+The opening screen displays the supplied ANSI Codali artwork when the terminal is at least 91 columns by 24 rows. Scrolling or starting a conversation restores the compact header. Tab completes a slash-command prefix; ordinary drafts are queued with Tab.
+
+Use `/permissions` to choose Plan, Ask, Workspace or Full with Up/Down and Enter. Full automatically approves available tools, including web, memory, media and connectors, and enables isolated shell networking. The choice is saved outside the repository for this exact directory; `/permissions ask` restores prompts. `--permissions full` overrides only the current launch. Workspace boundaries, explicit deny rules and shell isolation remain enforced.

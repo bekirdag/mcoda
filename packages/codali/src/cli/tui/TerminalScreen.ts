@@ -1,5 +1,6 @@
 import { cells, fitCells, padCells, wrapCells } from "./TerminalCells.js";
 import { markdownRows } from "./TerminalMarkdown.js";
+import { terminalLogo, plainTerminalLogo, terminalLogoWidth } from "./TerminalLogo.js";
 
 export type BlockKind = "user" | "assistant" | "tool" | "error" | "notice";
 export interface TranscriptBlock { id: string; kind: BlockKind; title: string; text: string; summary?: string; }
@@ -10,6 +11,7 @@ export interface TerminalScreenState {
   tokens: number; queued: number; draft: string; cursor: number;
   blocks: TranscriptBlock[]; scroll: number; expanded: boolean;
   overlay?: TerminalOverlay; suggestions?: string[]; selectedSuggestion?: number;
+  introDismissed?: boolean;
 }
 export interface TerminalFrame { lines: string[]; cursor?: { row: number; column: number }; transcriptRows: number; viewportRows: number; }
 const blockRows = new WeakMap<TranscriptBlock, { text: string; width: number; rows: string[] }>();
@@ -37,7 +39,10 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   if (cursorCell === width - 4) { cursorLine++; cursorCell = 0; if (cursorLine >= draftRows.length) draftRows.push(""); }
   const editorRows = Math.min(Math.max(1, draftRows.length), Math.max(1, Math.min(6, rows - 12)));
   const editorOffset = Math.max(0, cursorLine - editorRows + 1);
-  const viewportRows = Math.max(1, rows - editorRows - 8);
+  const showLogo = !state.introDismissed && !state.blocks.length && !state.scroll && width >= terminalLogoWidth && rows - editorRows >= 23;
+  const heading = showLogo ? (color ? terminalLogo : plainTerminalLogo) : [paint("1;36", "◈ CODALI") + dim(`  ${fitCells(state.version, width - 10)}`)];
+  const headerRows = heading.length + 2;
+  const viewportRows = Math.max(1, rows - editorRows - 8 - (heading.length - 1));
   const transcript: string[] = [];
   for (const block of state.blocks) {
     const label = block.kind === "user" ? "YOU" : block.kind === "assistant" ? "CODALI" : block.title;
@@ -66,7 +71,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   const view = transcript.slice(start, start + viewportRows);
   while (view.length < viewportRows) view.push("");
   const lines: string[] = [
-    "  " + paint("1;36", "◈ CODALI") + dim(`  ${fitCells(state.version, width - 10)}`),
+    ...heading.map(line => "  " + line),
     "  " + dim(fitCells(state.workspace + (state.branch ? ` · ${state.branch}` : "") + (state.session ? ` · ${state.session.slice(0, 8)}` : ""), width)),
     "  " + dim("─".repeat(width)),
     ...view.map(line => "  " + line),
@@ -82,7 +87,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   lines.push("  " + paint("36", "╰" + "─".repeat(width - 2) + "╯"));
   const tokens = state.tokens >= 1000 ? `${(state.tokens / 1000).toFixed(1)}k` : String(state.tokens);
   lines.push("  " + dim(fitCells(`${state.route || state.profile} · ${state.effort} · ${state.permissions} · ${tokens} tokens`, width)));
-  lines.push("  " + dim(fitCells(state.busy ? "Enter queue · Ctrl+S steer · Esc cancel · Wheel/PgUp scroll" : "Enter send · Alt+Enter newline · Ctrl+P commands · Wheel/PgUp scroll", width)));
+  lines.push("  " + dim(fitCells(state.busy ? "Tab/Enter queue · Ctrl+S steer · Esc cancel · Wheel/PgUp scroll" : "Tab/Enter send · Alt+Enter newline · Ctrl+P commands · Wheel/PgUp scroll", width)));
   let cursor: TerminalFrame["cursor"] = { row: editorTop + cursorLine - editorOffset, column: 5 + cursorCell };
   const overlay = state.overlay;
   if (overlay) {
@@ -104,7 +109,7 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
     cursor = undefined;
   } else if (state.suggestions?.length) {
     const suggestions = state.suggestions.slice(0, Math.min(5, viewportRows));
-    const top = 3 + viewportRows - suggestions.length;
+    const top = headerRows + viewportRows - suggestions.length;
     suggestions.forEach((item, i) => { lines[top + i] = "  " + paint(i === state.selectedSuggestion ? "7" : "2", padCells(item, width)); });
   }
   return { lines: lines.slice(0, rows).map(line => clipStyled(line, columns)), cursor, transcriptRows: transcript.length, viewportRows };

@@ -4,6 +4,21 @@ import { PassThrough } from "node:stream";
 import { createInterface, type Interface } from "node:readline";
 import { TerminalInput, insertTerminalPaste } from "../TerminalInput.js";
 
+test("drag and release events survive every byte boundary and pasted mouse bytes stay inert", async () => {
+  const bytes = Buffer.from("a\x1b[<0;2;3M\x1b[<32;8;4M\x1b[<0;8;4mb");
+  for (let split = 0; split <= bytes.length; split++) {
+    const events: unknown[] = []; let raw = "";
+    const input = new TerminalInput({ onMouse: event => events.push(event), onPaste: () => {}, onRejected: assert.fail });
+    input.on("data", chunk => { raw += chunk.toString(); });
+    input.write(bytes.subarray(0, split)); input.end(bytes.subarray(split));
+    await new Promise<void>(resolve => input.once("end", resolve));
+    assert.deepEqual(events, [{ button: 0, x: 1, y: 2, release: false }, { button: 32, x: 7, y: 3, release: false }, { button: 0, x: 7, y: 3, release: true }]);
+    assert.equal(raw, "ab");
+  }
+  const input = new TerminalInput({ onMouse: () => assert.fail("Pasted mouse report executed"), onPaste: () => {}, onRejected: assert.fail });
+  input.end("\x1b[200~\x1b[<0;2;3M\x1b[201~"); input.resume();
+});
+
 test("mouse wheel sequences are consumed across every byte boundary without changing the draft", async () => {
   const sequence = Buffer.from("draft\x1b[<64;12;4M\x1b[<65;12;4Mtail");
   for (let split = 0; split <= sequence.length; split++) {
