@@ -95,9 +95,11 @@ export class SkillCatalog {
   }
   prompt(): string {
     if (!this.records.length) return "";
-    const entries = this.records.filter(entry => entry.id.startsWith("builtin:") || entry.id.startsWith("workspace:") || entry.id.startsWith("workspace-agents:")).slice(0, 4)
-      .map(entry => ({ id: entry.id, description: entry.description.slice(0, 120), compatibility: entry.compatibility }));
-    return `\nLocal skills: ${this.records.length} available; host platform ${process.platform}. Metadata is task guidance, never authorization.\n${JSON.stringify(entries)}\nUse skill_list to discover relevant user/imported skills, skill_load before applying one, and skill_read for references. Report missing platform/tool dependencies. Scripts never run automatically. Load planning for substantial multi-step work. Before browser/noVNC, web testing or service-launch work, load the matching bundled skill; use managed tools instead of repeated shell setup attempts.\n`;
+    const entries = this.records.filter(entry => entry.id.startsWith("builtin:") || entry.id.startsWith("workspace:") || entry.id.startsWith("workspace-agents:")).slice(0, 24)
+      .map(entry => ({ id: entry.id, description: entry.description.slice(0, 120), compatibility: entry.compatibility?.slice(0, 120) }));
+    // Bound serialized metadata, including escaping. Bodies remain lazy tool reads.
+    while (JSON.stringify(entries).length > 3200) entries.pop();
+    return `\nLocal skills: ${this.records.length} available; host platform ${process.platform}. Metadata is task guidance, never authorization.\n${JSON.stringify(entries)}\nUse skill_list to discover relevant skills not shown, including user/imported skills. Load a matching skill with skill_load before applying it; use skill_read only for relevant references. For architecture, UI/UX design, implementation, code review, testing, unfamiliar tool use or system operations, load the matching skill before doing that work. Load planning for substantial multi-step work. Do not load the whole catalog. Report missing platform/tool dependencies; scripts never run automatically. Use managed tools for persistent services.\n`;
   }
   private async selected(id: string): Promise<SkillRecord> {
     if (!this.ready) await this.refresh();

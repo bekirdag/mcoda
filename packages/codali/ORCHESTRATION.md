@@ -29,10 +29,14 @@ permission (`--allow-web` or an interactive approval); the planning permission
 profile continues to allow read operations only. Browser contexts have no login
 profile, block POST/form submissions, downloads, service workers and WebSockets,
 and close after each navigation. Page content is untrusted evidence. This browser
-surface supports reading and following URLs, not arbitrary browser automation.
+surface supports reading and following URLs. Separate browser_session and
+browser_interact tools provide a persistent isolated noVNC desktop and official
+Browser Use actions; their external-operation permissions still apply.
 
 Use `/skills` to inspect available `SKILL.md` packages. Codali discovers its bundled
-planning skill, workspace `.codali/skills` and `.agents/skills`, and user
+skills for planning, architecture, implementation, code review, UI/UX design, testing, tool
+selection, system services, system diagnostics, debugging, Docdex research and
+browser workflows; workspace `.codali/skills` and `.agents/skills`; and user
 `~/.codali/skills`, `~/.agents/skills`, `~/.codex/skills` and `~/.claude/skills`.
 Additional roots are configurable:
 
@@ -46,14 +50,21 @@ Additional roots are configurable:
 Discovery is bounded to 128 skills, 256 directories and three directory levels.
 Each text resource is limited to 64 KiB. Standard YAML `name` and `description`
 metadata are required; optional `compatibility` is shown with the actual host
-platform. A small workspace/builtin catalog enters tool-capable prompts;
-`skill_list` discovers imported packages, `skill_load` reads instructions, and
+platform. Up to24 workspace/builtin entries, bounded to3200characters of serialized
+metadata, enter tool-capable prompts; bodies remain lazy.
+`skill_list` discovers omitted and imported packages, `skill_load` reads instructions, and
 `skill_read` retrieves referenced text in pages. Exact IDs disambiguate duplicate
 names. Resources cannot escape their skill directory through traversal or
 symlinks. Scripts and hooks never run automatically, and `allowed-tools` metadata
 does not grant permission. A Mac-specific skill still needs its declared platform
 and tools; loading its text does not provide those dependencies. Configuration
 reload refreshes the skill roots.
+
+The service and diagnostic skills distinguish host access from sandbox observations.
+Default run_shell does not expose host service management, even under full
+permission. General systemd/launchd/Docker administration requires an advertised,
+authorized host connector; browser_session only manages its owned desktop and
+static preview. Platform references are read on demand and do not execute.
 
 The bundled planning skill uses durable goals, task dependencies, allowed paths,
 decisions and verification receipts. Planning mode records future work and leaves

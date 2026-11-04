@@ -1,0 +1,561 @@
+{
+  "kind": "bounded skill selection and behavior probes; manual semantic review required",
+  "at": "2026-11-04T18:23:15.173Z",
+  "promptChars": 2909,
+  "results": [
+    {
+      "id": "architecture",
+      "skill": "architecture-design",
+      "request": "Design a small invoice ingestion service for one server and two developers, about 2000 invoices/day. Clients retry submissions after timeouts. Keep existing SQLite storage. No implementation requested. Give components, data ownership, failure handling and one alternative with tradeoffs.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:architecture-design:e8c59e0f"
+          }
+        }
+      ],
+      "answer": {
+        "summary": "Single-process HTTP ingest service in front of the existing SQLite file, with client-supplied idempotency keys so timeout retries are safe. Sized for ~2,000 invoices/day (avg <1/sec; even a 50/sec burst is trivial), so the design optimizes for two-developer operability, not scale.",
+        "assumptions": [
+          "Inbound is HTTP/JSON from clients that can send a stable Idempotency-Key (or a natural business key such as invoice number + vendor).",
+          "SQLite file stays on the same host as the service; no second writer process.",
+          "Downstream consumers (accounting export, dashboards) read the same DB or a nightly export.",
+          "Unvalidated: SQLite WAL/busy_timeout behaviour and per-write fsync cost on the target disk — verify with a local write-rate test before shipping."
+        ],
+        "components": [
+          {
+            "name": "Ingest API",
+            "responsibility": "Terminate HTTP, authenticate, enforce schema, require Idempotency-Key, return 200 (new) / 200-cached (duplicate) / 422 (invalid). Thin: no business rules.",
+            "interface": "POST /v1/invoices, GET /v1/invoices/{key}/status"
+          },
+          {
+            "name": "Idempotency guard",
+            "responsibility": "Unique index on (source_system, idempotency_key) storing request hash, status and response snapshot. Same key + same hash = replay stored response; same key + different hash = 409 conflict.",
+            "interface": "SQLite table idempotency_keys"
+          },
+          {
+            "name": "Normalizer/validator",
+            "responsibility": "Parse dates/currency/tax, canonicalize vendor, apply business rules; produce either an accepted invoice or a structured rejection.",
+            "interface": "Pure in-process module, unit-testable"
+          },
+          {
+            "name": "Invoice repository",
+            "responsibility": "The only writer of invoices and invoice_events; commits insert + idempotency row in one transaction.",
+            "interface": "SQLite, WAL mode, busy_timeout, single writer thread"
+          },
+          {
+            "name": "Dispatch marker",
+            "responsibility": "Persisted processed_at/exported_at flags (a local outbox table) so exports are resumable; no external broker.",
+            "interface": "SQLite table outbox"
+          },
+          {
+            "name": "Ops jobs",
+            "responsibility": "systemd timer or in-process scheduler: online SQLite backup, retention/vacuum, disk-space and queue-depth checks, structured access log with idempotency key.",
+            "interface": "cron/systemd + log files"
+          }
+        ],
+        "data_ownership": "One process owns all writes. Ingest API owns the request envelope and idempotency records; the domain module owns invoice and event rows; the export job owns only outbox flags. Readers (reports) are read-only connections. No other service may open the DB for writing — this is the invariant that keeps SQLite safe.",
+        "failure_handling": {
+          "client_timeout_retry": "The insert may already have committed when the client timed out. The idempotency key makes the retry a no-op returning the cached response, so at-least-once delivery becomes effectively-once effect.",
+          "crash_between_request_and_commit": "Transaction is atomic; nothing is recorded, so the retry inserts cleanly.",
+          "invalid_payload": "Rejected 422 with field-level errors; also written to a rejects table so a retry with the same key returns the same verdict instead of re-validating.",
+          "sqlite_busy_or_locked": "Single writer plus busy_timeout; on lock timeout return 503 with Retry-After so clients back off rather than pile up.",
+          "disk_full_or_corruption": "Fail closed (503), alert on write errors, restore from last online backup; keep backups off the same volume.",
+          "process_death": "systemd restart; no in-memory state is authoritative, so recovery is just re-accepting traffic.",
+          "observability": "Log per request: key, outcome (new/duplicate/rejected), latency; alert on duplicate-rate spikes (a retry storm signal) and on rejects-rate."
+        },
+        "alternative": {
+          "option": "Append-only NDJSON intake log on disk, with a separate sequential importer that drains it into SQLite.",
+          "benefits": "Writes become cheap sequential appends; the API path cannot block on SQLite locks; replay is trivial (re-drain the log); decouples arrival from processing, which helps if validation later becomes expensive.",
+          "costs": "Two moving parts and a new consistency question (log written, import not yet run) that the single-transaction design does not have; needs offset/checkpoint management, log rotation and duplicate handling anyway; more code for two developers to own at a volume SQLite already handles comfortably.",
+          "recommendation": "Prefer the single-process design; adopt the log only if measured SQLite write contention or fsync latency actually appears."
+        },
+        "validation_tasks": [
+          "Load-test 50 concurrent POSTs with mixed duplicate keys against WAL SQLite on the real disk.",
+          "Kill -9 mid-commit and confirm no partial invoice and correct retry behaviour.",
+          "Confirm two concurrent writers cannot both insert the same key."
+        ]
+      },
+      "rawAnswer": "{\n  \"summary\": \"Single-process HTTP ingest service in front of the existing SQLite file, with client-supplied idempotency keys so timeout retries are safe. Sized for ~2,000 invoices/day (avg <1/sec; even a 50/sec burst is trivial), so the design optimizes for two-developer operability, not scale.\",\n  \"assumptions\": [\"Inbound is HTTP/JSON from clients that can send a stable Idempotency-Key (or a natural business key such as invoice number + vendor).\", \"SQLite file stays on the same host as the service; no second writer process.\", \"Downstream consumers (accounting export, dashboards) read the same DB or a nightly export.\", \"Unvalidated: SQLite WAL/busy_timeout behaviour and per-write fsync cost on the target disk — verify with a local write-rate test before shipping.\"],\n  \"components\": [\n    {\"name\": \"Ingest API\", \"responsibility\": \"Terminate HTTP, authenticate, enforce schema, require Idempotency-Key, return 200 (new) / 200-cached (duplicate) / 422 (invalid). Thin: no business rules.\", \"interface\": \"POST /v1/invoices, GET /v1/invoices/{key}/status\"},\n    {\"name\": \"Idempotency guard\", \"responsibility\": \"Unique index on (source_system, idempotency_key) storing request hash, status and response snapshot. Same key + same hash = replay stored response; same key + different hash = 409 conflict.\", \"interface\": \"SQLite table idempotency_keys\"},\n    {\"name\": \"Normalizer/validator\", \"responsibility\": \"Parse dates/currency/tax, canonicalize vendor, apply business rules; produce either an accepted invoice or a structured rejection.\", \"interface\": \"Pure in-process module, unit-testable\"},\n    {\"name\": \"Invoice repository\", \"responsibility\": \"The only writer of invoices and invoice_events; commits insert + idempotency row in one transaction.\", \"interface\": \"SQLite, WAL mode, busy_timeout, single writer thread\"},\n    {\"name\": \"Dispatch marker\", \"responsibility\": \"Persisted processed_at/exported_at flags (a local outbox table) so exports are resumable; no external broker.\", \"interface\": \"SQLite table outbox\"},\n    {\"name\": \"Ops jobs\", \"responsibility\": \"systemd timer or in-process scheduler: online SQLite backup, retention/vacuum, disk-space and queue-depth checks, structured access log with idempotency key.\", \"interface\": \"cron/systemd + log files\"}\n  ],\n  \"data_ownership\": \"One process owns all writes. Ingest API owns the request envelope and idempotency records; the domain module owns invoice and event rows; the export job owns only outbox flags. Readers (reports) are read-only connections. No other service may open the DB for writing — this is the invariant that keeps SQLite safe.\",\n  \"failure_handling\": {\n    \"client_timeout_retry\": \"The insert may already have committed when the client timed out. The idempotency key makes the retry a no-op returning the cached response, so at-least-once delivery becomes effectively-once effect.\",\n    \"crash_between_request_and_commit\": \"Transaction is atomic; nothing is recorded, so the retry inserts cleanly.\",\n    \"invalid_payload\": \"Rejected 422 with field-level errors; also written to a rejects table so a retry with the same key returns the same verdict instead of re-validating.\",\n    \"sqlite_busy_or_locked\": \"Single writer plus busy_timeout; on lock timeout return 503 with Retry-After so clients back off rather than pile up.\",\n    \"disk_full_or_corruption\": \"Fail closed (503), alert on write errors, restore from last online backup; keep backups off the same volume.\",\n    \"process_death\": \"systemd restart; no in-memory state is authoritative, so recovery is just re-accepting traffic.\",\n    \"observability\": \"Log per request: key, outcome (new/duplicate/rejected), latency; alert on duplicate-rate spikes (a retry storm signal) and on rejects-rate.\"\n  },\n  \"alternative\": {\n    \"option\": \"Append-only NDJSON intake log on disk, with a separate sequential importer that drains it into SQLite.\",\n    \"benefits\": \"Writes become cheap sequential appends; the API path cannot block on SQLite locks; replay is trivial (re-drain the log); decouples arrival from processing, which helps if validation later becomes expensive.\",\n    \"costs\": \"Two moving parts and a new consistency question (log written, import not yet run) that the single-transaction design does not have; needs offset/checkpoint management, log rotation and duplicate handling anyway; more code for two developers to own at a volume SQLite already handles comfortably.\",\n    \"recommendation\": \"Prefer the single-process design; adopt the log only if measured SQLite write contention or fsync latency actually appears.\"\n  },\n  \"validation_tasks\": [\"Load-test 50 concurrent POSTs with mixed duplicate keys against WAL SQLite on the real disk.\", \"Kill -9 mid-commit and confirm no partial invoice and correct retry behaviour.\", \"Confirm two concurrent writers cannot both insert the same key.\"]\n}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "7e4e1e3e-28b2-4895-a139-a8a98c8a7049",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "5b2c4cea-87f5-4f48-9541-0ed907b4a2fd",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3089,
+        "outputTokens": 1742,
+        "totalTokens": 4831,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 51313
+    },
+    {
+      "id": "review",
+      "skill": "code-review",
+      "request": "Review only this profile endpoint. Every database query applies the authenticated tenant filter. const cache=new Map(); async function profile(req){const key=req.params.id;if(cache.has(key))return cache.get(key);const row=await db.profile.findFirst({where:{id:key,tenantId:req.auth.tenantId}});cache.set(key,row);return row;} File api/profile.js line1. Give actionable findings, if any, with triggering conditions and consequences. No code edits.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:code-review:a9e2fca2"
+          }
+        }
+      ],
+      "answer": {
+        "scope": "api/profile.js line 1 — `profile(req)` handler and its module-level `cache` Map. Reviewed the supplied snippet only; surrounding callers, DB schema, and update paths were not provided and are treated as unknown.",
+        "checksRun": "None executed (no repository/Docdex access in this probe; review is static against the supplied snippet).",
+        "findings": [
+          {
+            "severity": "Critical",
+            "location": "api/profile.js:1 — `const key=req.params.id;` and `cache.has(key)`/`cache.set(key,row)`",
+            "title": "Cache key is not tenant-scoped → cross-tenant data exposure (IDOR) and cross-tenant denial",
+            "trigger": "Two authenticated tenants request the same `req.params.id`. Profile IDs collide across tenants (sequential/auto-increment IDs make this near-certain; even UUID-keyed tables can collide on shared/global IDs).",
+            "consequence": "The DB tenant filter is bypassed on cache hits. Tenant B calling `profile(123)` after Tenant A receives Tenant A's row verbatim — a direct authorization/data-leak defect, not a performance issue. Symmetrically, a cached `null` (miss for Tenant A) is returned to Tenant B, hiding a row that legitimately exists for B (incorrect result / denial).",
+            "remedy": "Key the cache by the full authorization predicate, e.g. `${req.auth.tenantId}:${req.params.id}`, or namespace per-tenant. Never cache authorization-sensitive reads under a key that omits the auth dimension."
+          },
+          {
+            "severity": "High",
+            "location": "api/profile.js:1 — `cache.set(key,row)` where `row` may be `null`",
+            "title": "Negative results are cached and treated as hits",
+            "trigger": "Any request for a non-existent id; `cache.has(key)` is true for a stored `null`.",
+            "consequence": "Persistent `null` responses even after the row is created; combined with the unscoped key above, this becomes the cross-tenant denial path. Also amplifies the memory issue below (attacker-controlled unique misses).",
+            "remedy": "Do not cache misses, or cache them with a short TTL and a tenant-scoped key."
+          },
+          {
+            "severity": "High",
+            "location": "api/profile.js:1 — `const cache=new Map()` (module scope, no TTL/eviction/invalidation)",
+            "title": "Unbounded cache growth and permanent staleness",
+            "trigger": "Sustained requests for unique ids (attacker-enumerable), and any profile update/delete after first read.",
+            "consequence": "Memory grows without bound → OOM / process restart (DoS). No invalidation means updated or deleted profiles are served stale forever. In multi-instance deployments each process holds a divergent copy, so behavior is inconsistent across replicas.",
+            "remedy": "Use a bounded cache with TTL/LRU (or a shared store like Redis) and explicit invalidation on profile write/delete."
+          },
+          {
+            "severity": "Low",
+            "location": "api/profile.js:1 — read-modify-write on `cache` around `await`",
+            "title": "Thundering-herd on cold keys (not a correctness bug)",
+            "trigger": "N concurrent requests for the same uncached id.",
+            "consequence": "N identical DB queries; no corrupted state, but wasted DB load. Optional/performance only.",
+            "remedy": "Optional: single-flight / request coalescing per key."
+          }
+        ],
+        "assumptions_not_verified": [
+          "Whether `id` is globally unique or per-tenant scoped in the schema — if globally unique and immutable, the cross-tenant leak severity drops but the tenant filter's presence implies per-tenant scoping, so treat the leak as live.",
+          "Whether profile rows are ever updated/deleted (determines staleness impact).",
+          "Whether `req.params.id` is validated/sanitized upstream (affects enumeration risk)."
+        ],
+        "validationGaps": "No tests supplied or run. A test that would catch the critical defect: authenticate as Tenant A, GET profile(id=X); then authenticate as Tenant B, GET profile(id=X) — assert B does not receive A's row. Current code fails this.",
+        "summary": "The endpoint has a critical authorization defect: the cache key omits `tenantId`, so the stated tenant filter is enforced only on cache misses. Fix the key scoping first; then address unbounded/stale caching and negative-result caching."
+      },
+      "rawAnswer": "{\n  \"scope\": \"api/profile.js line 1 — `profile(req)` handler and its module-level `cache` Map. Reviewed the supplied snippet only; surrounding callers, DB schema, and update paths were not provided and are treated as unknown.\",\n  \"checksRun\": \"None executed (no repository/Docdex access in this probe; review is static against the supplied snippet).\",\n  \"findings\": [\n    {\n      \"severity\": \"Critical\",\n      \"location\": \"api/profile.js:1 — `const key=req.params.id;` and `cache.has(key)`/`cache.set(key,row)`\",\n      \"title\": \"Cache key is not tenant-scoped → cross-tenant data exposure (IDOR) and cross-tenant denial\",\n      \"trigger\": \"Two authenticated tenants request the same `req.params.id`. Profile IDs collide across tenants (sequential/auto-increment IDs make this near-certain; even UUID-keyed tables can collide on shared/global IDs).\",\n      \"consequence\": \"The DB tenant filter is bypassed on cache hits. Tenant B calling `profile(123)` after Tenant A receives Tenant A's row verbatim — a direct authorization/data-leak defect, not a performance issue. Symmetrically, a cached `null` (miss for Tenant A) is returned to Tenant B, hiding a row that legitimately exists for B (incorrect result / denial).\",\n      \"remedy\": \"Key the cache by the full authorization predicate, e.g. `${req.auth.tenantId}:${req.params.id}`, or namespace per-tenant. Never cache authorization-sensitive reads under a key that omits the auth dimension.\"\n    },\n    {\n      \"severity\": \"High\",\n      \"location\": \"api/profile.js:1 — `cache.set(key,row)` where `row` may be `null`\",\n      \"title\": \"Negative results are cached and treated as hits\",\n      \"trigger\": \"Any request for a non-existent id; `cache.has(key)` is true for a stored `null`.\",\n      \"consequence\": \"Persistent `null` responses even after the row is created; combined with the unscoped key above, this becomes the cross-tenant denial path. Also amplifies the memory issue below (attacker-controlled unique misses).\",\n      \"remedy\": \"Do not cache misses, or cache them with a short TTL and a tenant-scoped key.\"\n    },\n    {\n      \"severity\": \"High\",\n      \"location\": \"api/profile.js:1 — `const cache=new Map()` (module scope, no TTL/eviction/invalidation)\",\n      \"title\": \"Unbounded cache growth and permanent staleness\",\n      \"trigger\": \"Sustained requests for unique ids (attacker-enumerable), and any profile update/delete after first read.\",\n      \"consequence\": \"Memory grows without bound → OOM / process restart (DoS). No invalidation means updated or deleted profiles are served stale forever. In multi-instance deployments each process holds a divergent copy, so behavior is inconsistent across replicas.\",\n      \"remedy\": \"Use a bounded cache with TTL/LRU (or a shared store like Redis) and explicit invalidation on profile write/delete.\"\n    },\n    {\n      \"severity\": \"Low\",\n      \"location\": \"api/profile.js:1 — read-modify-write on `cache` around `await`\",\n      \"title\": \"Thundering-herd on cold keys (not a correctness bug)\",\n      \"trigger\": \"N concurrent requests for the same uncached id.\",\n      \"consequence\": \"N identical DB queries; no corrupted state, but wasted DB load. Optional/performance only.\",\n      \"remedy\": \"Optional: single-flight / request coalescing per key.\"\n    }\n  ],\n  \"assumptions_not_verified\": [\n    \"Whether `id` is globally unique or per-tenant scoped in the schema — if globally unique and immutable, the cross-tenant leak severity drops but the tenant filter's presence implies per-tenant scoping, so treat the leak as live.\",\n    \"Whether profile rows are ever updated/deleted (determines staleness impact).\",\n    \"Whether `req.params.id` is validated/sanitized upstream (affects enumeration risk).\"\n  ],\n  \"validationGaps\": \"No tests supplied or run. A test that would catch the critical defect: authenticate as Tenant A, GET profile(id=X); then authenticate as Tenant B, GET profile(id=X) — assert B does not receive A's row. Current code fails this.\",\n  \"summary\": \"The endpoint has a critical authorization defect: the cache key omits `tenantId`, so the stated tenant filter is enforced only on cache misses. Fix the key scoping first; then address unbounded/stale caching and negative-result caching.\"\n}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "d22f5183-32f9-48ac-a18c-cc05e5f1a893",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "d6632b6e-5b41-4b12-b356-4cc9c9dfcef1",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3183,
+        "outputTokens": 1633,
+        "totalTokens": 4816,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 36723
+    },
+    {
+      "id": "testing",
+      "skill": "testing-and-verification",
+      "request": "Choose tests for a worker that retries a timed-out payment provider request. The provider may have accepted the first attempt, and two workers can process the same order concurrently. Existing tests only mock a single successful call. Give meaningful unit/integration checks and distinguish planned checks from executed evidence; no tests have run here.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:testing-and-verification:bca4e225"
+          }
+        }
+      ],
+      "answer": {
+        "summary": "The existing single-success mock cannot detect the real risk: a timed-out request that the provider already accepted, plus two workers racing on one order. Tests must assert the observable invariant 'at most one charge per order' rather than call counts on a mock.",
+        "planned_checks": {
+          "unit_deterministic": [
+            {
+              "id": "U1",
+              "name": "Timeout is classified as outcome-unknown, not failure",
+              "assert": "transport timeout maps to UNKNOWN/INDETERMINATE; retry decision consults reconciliation path before re-charging",
+              "why": "core defect: treating timeout as failure causes double capture"
+            },
+            {
+              "id": "U2",
+              "name": "Idempotency key is stable per order",
+              "assert": "key derived from order id + charge purpose is identical across attempts and across worker instances (no per-attempt UUID)"
+            },
+            {
+              "id": "U3",
+              "name": "No second charge without reconciliation",
+              "assert": "with provider status = ACCEPTED, worker records paid and issues zero further charge calls"
+            },
+            {
+              "id": "U4",
+              "name": "Retry policy boundaries",
+              "assert": "max attempts respected; only retryable classes (timeout, 5xx, connection reset) retried; 4xx/validation errors not retried; fake clock asserts backoff + jitter bounds, no wall-clock sleep"
+            },
+            {
+              "id": "U5",
+              "name": "Deadline/cancellation",
+              "assert": "no new attempt started when overall order deadline or context cancellation has passed"
+            },
+            {
+              "id": "U6",
+              "name": "State machine guards",
+              "assert": "illegal transitions rejected (paid -> retrying, refunded -> retrying); retry-exhausted lands in PAYMENT_INDETERMINATE / needs-reconciliation, never FAILED and never PAID"
+            },
+            {
+              "id": "U7",
+              "name": "Ledger single-entry rule",
+              "assert": "domain emits at most one ledger entry per order regardless of attempt count"
+            }
+          ],
+          "integration": [
+            {
+              "id": "I1",
+              "name": "Timeout-then-accepted (the headline case)",
+              "setup": "fake provider commits the charge then sleeps past the client timeout; worker retries with the same idempotency key",
+              "assert": "provider returns duplicate/already-charged; exactly 1 charge row, 1 ledger row, order = PAID, no second capture"
+            },
+            {
+              "id": "I2",
+              "name": "Two concurrent workers on the same order",
+              "setup": "real DB (or testcontainers), two workers dispatched simultaneously; DB unique index on idempotency key / (order_id, purpose)",
+              "assert": "exactly one charge; one worker wins the lease (SELECT FOR UPDATE / advisory lock / optimistic version) and the other exits without charging; no deadlock, no orphaned 'processing' state after the loser exits"
+            },
+            {
+              "id": "I3",
+              "name": "Crash after provider commit, before persisting",
+              "setup": "worker killed after provider accepts, before DB write; restart runs reconciliation",
+              "assert": "reconcile resolves to PAID with zero new charge calls"
+            },
+            {
+              "id": "I4",
+              "name": "Idempotency-key collision across orders",
+              "assert": "distinct orders get distinct keys; no cross-order false de-dup"
+            },
+            {
+              "id": "I5",
+              "name": "Retry exhaustion path",
+              "assert": "N timeouts -> order flagged for manual/auto reconciliation, alert emitted, no charge marked successful"
+            },
+            {
+              "id": "I6",
+              "name": "Late success after exhaustion",
+              "assert": "provider webhook/poll for the original key reconciles the order to PAID exactly once"
+            }
+          ],
+          "contract_and_e2e": [
+            {
+              "id": "C1",
+              "name": "Provider sandbox contract",
+              "assert": "same idempotency key returns the original result (not a new charge); duplicate response shape and status-lookup semantics are parsed, incl. UNKNOWN status -> no auto-retry"
+            },
+            {
+              "id": "E1",
+              "name": "Order journey",
+              "assert": "customer sees one charge and one receipt after injected timeout + concurrent worker"
+            }
+          ],
+          "regression_guard": [
+            {
+              "id": "G1",
+              "name": "Mutation guard on the old test",
+              "assert": "deliberately removing the idempotency key or the row lock must turn I1/I2 red; if the existing single-success mock still passes, it is not load-bearing and should be demoted to a smoke test"
+            }
+          ],
+          "test_design_notes": [
+            "Use a controllable fake provider (scriptable latency, commit-then-timeout, duplicate response) instead of a bare success mock.",
+            "Assert committed effects (charge rows, ledger rows, provider-side charge count) rather than mock call counts, per contract invariants.",
+            "Deterministic: fake clocks, seeded jitter, no sleeps; DB/network isolated in fixtures; no production credentials."
+          ]
+        },
+        "executed_evidence": {
+          "status": "none",
+          "commands_run": [],
+          "passed": [],
+          "failed": [],
+          "skipped": [],
+          "note": "No repository, test runner, or provider sandbox was available in this probe and no test command was executed. Every item above is PLANNED, not verified. Do not treat any acceptance criterion as met."
+        },
+        "blockers": [
+          "Need repo access to discover the actual test runner, DB fixture pattern, and provider client/fake harness.",
+          "Need the provider's documented idempotency and status-lookup semantics to write C1; if the provider offers no idempotency key, the design needs an out-of-band reconciliation job and I1/I2 must assert that instead."
+        ],
+        "priority_order": [
+          "I1",
+          "I2",
+          "U2",
+          "U3",
+          "I3",
+          "U6",
+          "C1",
+          "I5",
+          "G1"
+        ]
+      },
+      "rawAnswer": "{\"summary\":\"The existing single-success mock cannot detect the real risk: a timed-out request that the provider already accepted, plus two workers racing on one order. Tests must assert the observable invariant 'at most one charge per order' rather than call counts on a mock.\",\"planned_checks\":{\"unit_deterministic\":[{\"id\":\"U1\",\"name\":\"Timeout is classified as outcome-unknown, not failure\",\"assert\":\"transport timeout maps to UNKNOWN/INDETERMINATE; retry decision consults reconciliation path before re-charging\",\"why\":\"core defect: treating timeout as failure causes double capture\"},{\"id\":\"U2\",\"name\":\"Idempotency key is stable per order\",\"assert\":\"key derived from order id + charge purpose is identical across attempts and across worker instances (no per-attempt UUID)\"},{\"id\":\"U3\",\"name\":\"No second charge without reconciliation\",\"assert\":\"with provider status = ACCEPTED, worker records paid and issues zero further charge calls\"},{\"id\":\"U4\",\"name\":\"Retry policy boundaries\",\"assert\":\"max attempts respected; only retryable classes (timeout, 5xx, connection reset) retried; 4xx/validation errors not retried; fake clock asserts backoff + jitter bounds, no wall-clock sleep\"},{\"id\":\"U5\",\"name\":\"Deadline/cancellation\",\"assert\":\"no new attempt started when overall order deadline or context cancellation has passed\"},{\"id\":\"U6\",\"name\":\"State machine guards\",\"assert\":\"illegal transitions rejected (paid -> retrying, refunded -> retrying); retry-exhausted lands in PAYMENT_INDETERMINATE / needs-reconciliation, never FAILED and never PAID\"},{\"id\":\"U7\",\"name\":\"Ledger single-entry rule\",\"assert\":\"domain emits at most one ledger entry per order regardless of attempt count\"}],\"integration\":[{\"id\":\"I1\",\"name\":\"Timeout-then-accepted (the headline case)\",\"setup\":\"fake provider commits the charge then sleeps past the client timeout; worker retries with the same idempotency key\",\"assert\":\"provider returns duplicate/already-charged; exactly 1 charge row, 1 ledger row, order = PAID, no second capture\"},{\"id\":\"I2\",\"name\":\"Two concurrent workers on the same order\",\"setup\":\"real DB (or testcontainers), two workers dispatched simultaneously; DB unique index on idempotency key / (order_id, purpose)\",\"assert\":\"exactly one charge; one worker wins the lease (SELECT FOR UPDATE / advisory lock / optimistic version) and the other exits without charging; no deadlock, no orphaned 'processing' state after the loser exits\"},{\"id\":\"I3\",\"name\":\"Crash after provider commit, before persisting\",\"setup\":\"worker killed after provider accepts, before DB write; restart runs reconciliation\",\"assert\":\"reconcile resolves to PAID with zero new charge calls\"},{\"id\":\"I4\",\"name\":\"Idempotency-key collision across orders\",\"assert\":\"distinct orders get distinct keys; no cross-order false de-dup\"},{\"id\":\"I5\",\"name\":\"Retry exhaustion path\",\"assert\":\"N timeouts -> order flagged for manual/auto reconciliation, alert emitted, no charge marked successful\"},{\"id\":\"I6\",\"name\":\"Late success after exhaustion\",\"assert\":\"provider webhook/poll for the original key reconciles the order to PAID exactly once\"}],\"contract_and_e2e\":[{\"id\":\"C1\",\"name\":\"Provider sandbox contract\",\"assert\":\"same idempotency key returns the original result (not a new charge); duplicate response shape and status-lookup semantics are parsed, incl. UNKNOWN status -> no auto-retry\"},{\"id\":\"E1\",\"name\":\"Order journey\",\"assert\":\"customer sees one charge and one receipt after injected timeout + concurrent worker\"}],\"regression_guard\":[{\"id\":\"G1\",\"name\":\"Mutation guard on the old test\",\"assert\":\"deliberately removing the idempotency key or the row lock must turn I1/I2 red; if the existing single-success mock still passes, it is not load-bearing and should be demoted to a smoke test\"}],\"test_design_notes\":[\"Use a controllable fake provider (scriptable latency, commit-then-timeout, duplicate response) instead of a bare success mock.\",\"Assert committed effects (charge rows, ledger rows, provider-side charge count) rather than mock call counts, per contract invariants.\",\"Deterministic: fake clocks, seeded jitter, no sleeps; DB/network isolated in fixtures; no production credentials.\"]},\"executed_evidence\":{\"status\":\"none\",\"commands_run\":[],\"passed\":[],\"failed\":[],\"skipped\":[],\"note\":\"No repository, test runner, or provider sandbox was available in this probe and no test command was executed. Every item above is PLANNED, not verified. Do not treat any acceptance criterion as met.\"},\"blockers\":[\"Need repo access to discover the actual test runner, DB fixture pattern, and provider client/fake harness.\",\"Need the provider's documented idempotency and status-lookup semantics to write C1; if the provider offers no idempotency key, the design needs an out-of-band reconciliation job and I1/I2 must assert that instead.\"],\"priority_order\":[\"I1\",\"I2\",\"U2\",\"U3\",\"I3\",\"U6\",\"C1\",\"I5\",\"G1\"]}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "32c2b921-c9d8-4262-8a0f-861c9d97c7f0",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "6d6b1042-7fb0-4839-bbd0-9cc47fdb47ae",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3193,
+        "outputTokens": 1758,
+        "totalTokens": 4951,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 46465
+    },
+    {
+      "id": "tools",
+      "skill": "tool-selection",
+      "request": "Plan tool usage for these requests: exact total of three items at19.99 plus5.50 delivery; current server UTC time; and callers affected by editing src/payments.ts. Execution tools advertised in the target system are calculate,server_time,docdex_symbols,docdex_impact_graph,docdex_search. Name suitable operations. Do not pretend these tools ran in this read-only skill probe.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:tool-selection:8ff00e85"
+          }
+        }
+      ],
+      "answer": {
+        "note": "Read-only skill probe: no execution tools are connected here, so the operations below are planned, not run. Results shown are intended/expected, not observed tool output.",
+        "plan": [
+          {
+            "request": "Exact total of three items at 19.99 plus 5.50 delivery",
+            "tool": "calculate",
+            "operation": "Deterministic arithmetic expression evaluation",
+            "intendedInput": "3 * 19.99 + 5.50",
+            "rationale": "Use the advertised deterministic math tool for exact decimal arithmetic instead of mental math, avoiding floating-point/rounding drift.",
+            "expectedResult": "65.47 (subtotal 59.97 + delivery 5.50)",
+            "verification": "Confirm the tool returns a currency-compatible decimal; if it returns a float like 65.46999..., re-run with explicit rounding to 2 decimals or integer-cents form (3*1999 + 550 = 6547 cents)."
+          },
+          {
+            "request": "Current server UTC time",
+            "tool": "server_time",
+            "operation": "Fetch current server clock in UTC",
+            "intendedInput": "{} (no arguments; request UTC timezone if the schema exposes one)",
+            "rationale": "server_time is the authoritative source for the live clock; the model must not fabricate or estimate a timestamp.",
+            "expectedResult": "An ISO-8601 UTC timestamp with timezone/offset preserved.",
+            "verification": "Preserve the returned units and timezone exactly; do not convert to local time unless asked."
+          },
+          {
+            "request": "Callers affected by editing src/payments.ts",
+            "tool": "docdex_impact_graph",
+            "operation": "Reverse-dependency / caller impact analysis for the file's exported symbols",
+            "intendedInput": "target: src/payments.ts (or its exported symbol IDs), direction: callers/inbound, depth: 1-2 hops",
+            "rationale": "The impact graph is the purpose-built tool for blast-radius and caller enumeration; it is preferred over text search for structural relationships.",
+            "supportingSteps": [
+              {
+                "tool": "docdex_symbols",
+                "operation": "Enumerate exported symbols in src/payments.ts first",
+                "purpose": "Resolve the file to concrete symbol IDs so the impact graph query targets precise nodes rather than a whole-file approximation."
+              },
+              {
+                "tool": "docdex_search",
+                "operation": "Text/regex search for import specifiers of src/payments",
+                "purpose": "Fallback or cross-check for dynamic imports, re-exports, barrel files, or string-based references the static graph may miss."
+              }
+            ],
+            "expectedResult": "A list of importing modules/call sites with symbol names and edge types, plus any ambiguous/dynamic references flagged.",
+            "verification": "Cross-check the impact-graph caller list against docdex_search import matches; report gaps (dynamic requires, generated code) as uncertainty rather than asserting completeness."
+          }
+        ],
+        "sequencing": "All three requests are independent, so they can be batched in parallel. Within request 3, docdex_symbols should precede docdex_impact_graph (dependency), with docdex_search run alongside or after as a cross-check.",
+        "dependencyCaveat": "Only tool names were advertised, not their input schemas. Before each call, read the actual runtime schema and omit argument objects rather than inventing parameter names."
+      },
+      "rawAnswer": "{\n  \"note\": \"Read-only skill probe: no execution tools are connected here, so the operations below are planned, not run. Results shown are intended/expected, not observed tool output.\",\n  \"plan\": [\n    {\n      \"request\": \"Exact total of three items at 19.99 plus 5.50 delivery\",\n      \"tool\": \"calculate\",\n      \"operation\": \"Deterministic arithmetic expression evaluation\",\n      \"intendedInput\": \"3 * 19.99 + 5.50\",\n      \"rationale\": \"Use the advertised deterministic math tool for exact decimal arithmetic instead of mental math, avoiding floating-point/rounding drift.\",\n      \"expectedResult\": \"65.47 (subtotal 59.97 + delivery 5.50)\",\n      \"verification\": \"Confirm the tool returns a currency-compatible decimal; if it returns a float like 65.46999..., re-run with explicit rounding to 2 decimals or integer-cents form (3*1999 + 550 = 6547 cents).\"\n    },\n    {\n      \"request\": \"Current server UTC time\",\n      \"tool\": \"server_time\",\n      \"operation\": \"Fetch current server clock in UTC\",\n      \"intendedInput\": \"{} (no arguments; request UTC timezone if the schema exposes one)\",\n      \"rationale\": \"server_time is the authoritative source for the live clock; the model must not fabricate or estimate a timestamp.\",\n      \"expectedResult\": \"An ISO-8601 UTC timestamp with timezone/offset preserved.\",\n      \"verification\": \"Preserve the returned units and timezone exactly; do not convert to local time unless asked.\"\n    },\n    {\n      \"request\": \"Callers affected by editing src/payments.ts\",\n      \"tool\": \"docdex_impact_graph\",\n      \"operation\": \"Reverse-dependency / caller impact analysis for the file's exported symbols\",\n      \"intendedInput\": \"target: src/payments.ts (or its exported symbol IDs), direction: callers/inbound, depth: 1-2 hops\",\n      \"rationale\": \"The impact graph is the purpose-built tool for blast-radius and caller enumeration; it is preferred over text search for structural relationships.\",\n      \"supportingSteps\": [\n        {\n          \"tool\": \"docdex_symbols\",\n          \"operation\": \"Enumerate exported symbols in src/payments.ts first\",\n          \"purpose\": \"Resolve the file to concrete symbol IDs so the impact graph query targets precise nodes rather than a whole-file approximation.\"\n        },\n        {\n          \"tool\": \"docdex_search\",\n          \"operation\": \"Text/regex search for import specifiers of src/payments\",\n          \"purpose\": \"Fallback or cross-check for dynamic imports, re-exports, barrel files, or string-based references the static graph may miss.\"\n        }\n      ],\n      \"expectedResult\": \"A list of importing modules/call sites with symbol names and edge types, plus any ambiguous/dynamic references flagged.\",\n      \"verification\": \"Cross-check the impact-graph caller list against docdex_search import matches; report gaps (dynamic requires, generated code) as uncertainty rather than asserting completeness.\"\n    }\n  ],\n  \"sequencing\": \"All three requests are independent, so they can be batched in parallel. Within request 3, docdex_symbols should precede docdex_impact_graph (dependency), with docdex_search run alongside or after as a cross-check.\",\n  \"dependencyCaveat\": \"Only tool names were advertised, not their input schemas. Before each call, read the actual runtime schema and omit argument objects rather than inventing parameter names.\"\n}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "86204c5f-1463-44c1-b74c-9cc78741ed97",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "c24021ed-f5f0-47eb-96f5-92203f5a42fe",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3234,
+        "outputTokens": 1159,
+        "totalTokens": 4393,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 57893
+    },
+    {
+      "id": "diagnostics",
+      "skill": "system-diagnostics",
+      "request": "User reports host CPU saturation. The only observation is ps inside Codali sandbox showing two processes. There is no host diagnostic connector. Explain what this evidence establishes, whether it disproves host saturation, and the next useful evidence to request. Do not invent host metrics.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:system-diagnostics:e9d0c1ba"
+          }
+        }
+      ],
+      "answer": {
+        "summary": "The single `ps` snapshot does not support or refute the user's report of host CPU saturation. It is an out-of-scope observation: it was taken inside the Codali sandbox, and there is no host diagnostic connector available to measure the host at all.",
+        "what_the_evidence_establishes": [
+          "Scope: the `ps` output describes the Codali sandbox's own process view (its PID namespace / constrained process table), not the host machine. Two visible processes is a property of the sandbox's isolation, not of the host.",
+          "Tooling fact: the sandbox process view is narrow, so it cannot enumerate host processes, listeners or services. Absence of a host process from this listing is expected and carries no diagnostic weight.",
+          "Nothing about CPU: no CPU percentage, no load average, no core count, no run-queue or I/O-wait figures, no time window, and no repeat sample were captured. The observation is a single instantaneous snapshot."
+        ],
+        "does_it_disprove_host_saturation": "No. It fails to disprove it on three independent grounds. (1) Namespace mismatch: a container/sandbox PID namespace typically does not show host processes, so host consumers of CPU are simply invisible here — absence of evidence in an isolated view is not evidence of absence. (2) Process count is not CPU usage: a single process can saturate every core, and conversely a large process list can coexist with an idle CPU, so 'two processes' says nothing about utilization in either direction. (3) One snapshot cannot characterize a sustained or intermittent symptom; saturation is a rate over a time window, and no rate was measured. Equally, it does not confirm saturation — it is simply non-probative.",
+        "missing_capability": "No host diagnostic connector is available in this probe, so I cannot run or claim any host-side measurement. I am not inventing host metrics; every figure below is a request, not an observation.",
+        "next_useful_evidence": {
+          "step_0_scope_first": "Confirm which machine the symptom refers to — physical host, VM, container, or the Codali sandbox — and the exact time window of the reported saturation, plus the user-visible symptom (slow shell, high latency, timeouts).",
+          "host_level_requests": [
+            "`nproc` (core count) and `uptime` load averages, read together: load must be compared against cores, not treated as an absolute.",
+            "A short sampled utilization series rather than one snapshot: `vmstat 1 5` or `mpstat -P ALL 1 5` to see %usr, %sys, %iowait, %irq, %steal, %idle per core. High %iowait or %steal points away from genuine CPU compute saturation (toward storage or a hypervisor/neighbour).",
+            "Top consumers on the host itself: `ps -eo pid,ppid,user,pcpu,pmem,etime,comm --sort=-pcpu | head -20`, or `pidstat -u 1 5`, so attribution is to host PIDs, not sandbox PIDs.",
+            "Kernel/health signals: `dmesg` or `journalctl -k` for thermal throttling, OOM kills, or scheduler complaints."
+          ],
+          "container_specific_requests": [
+            "CPU pressure stall information (`/proc/pressure/cpu` some=full avg10/avg60/avg300) to distinguish real contention from a momentary spike.",
+            "cgroup CPU quota and throttling counters (`cpu.max` and `cpu.stat`: nr_throttled, throttled_usec). A container pinned by its quota can feel 'saturated' while the host CPU is largely idle — this is the single most discriminating check when the symptom is reported from inside a container.",
+            "Whether the affected workload and the Codali sandbox share the same cgroup/host."
+          ]
+        },
+        "interpretation_plan": "Compare host utilization against core count over the reported window, then attribute the top consumers. If host %idle is high but the container's cgroup shows heavy throttling, the cause is a quota/limit, not host saturation. If host %usr/%sys is genuinely near 100% across cores, proceed to per-process attribution. If %iowait or %steal dominates, redirect to storage or hypervisor contention.",
+        "unresolved_uncertainty": "Until a host-scoped, time-windowed measurement is supplied, the report remains unconfirmed and unfalsified; the sandbox `ps` output should be recorded only as evidence about the sandbox's visibility."
+      },
+      "rawAnswer": "{\"summary\": \"The single `ps` snapshot does not support or refute the user's report of host CPU saturation. It is an out-of-scope observation: it was taken inside the Codali sandbox, and there is no host diagnostic connector available to measure the host at all.\", \"what_the_evidence_establishes\": [\"Scope: the `ps` output describes the Codali sandbox's own process view (its PID namespace / constrained process table), not the host machine. Two visible processes is a property of the sandbox's isolation, not of the host.\", \"Tooling fact: the sandbox process view is narrow, so it cannot enumerate host processes, listeners or services. Absence of a host process from this listing is expected and carries no diagnostic weight.\", \"Nothing about CPU: no CPU percentage, no load average, no core count, no run-queue or I/O-wait figures, no time window, and no repeat sample were captured. The observation is a single instantaneous snapshot.\"], \"does_it_disprove_host_saturation\": \"No. It fails to disprove it on three independent grounds. (1) Namespace mismatch: a container/sandbox PID namespace typically does not show host processes, so host consumers of CPU are simply invisible here — absence of evidence in an isolated view is not evidence of absence. (2) Process count is not CPU usage: a single process can saturate every core, and conversely a large process list can coexist with an idle CPU, so 'two processes' says nothing about utilization in either direction. (3) One snapshot cannot characterize a sustained or intermittent symptom; saturation is a rate over a time window, and no rate was measured. Equally, it does not confirm saturation — it is simply non-probative.\", \"missing_capability\": \"No host diagnostic connector is available in this probe, so I cannot run or claim any host-side measurement. I am not inventing host metrics; every figure below is a request, not an observation.\", \"next_useful_evidence\": {\"step_0_scope_first\": \"Confirm which machine the symptom refers to — physical host, VM, container, or the Codali sandbox — and the exact time window of the reported saturation, plus the user-visible symptom (slow shell, high latency, timeouts).\", \"host_level_requests\": [\"`nproc` (core count) and `uptime` load averages, read together: load must be compared against cores, not treated as an absolute.\", \"A short sampled utilization series rather than one snapshot: `vmstat 1 5` or `mpstat -P ALL 1 5` to see %usr, %sys, %iowait, %irq, %steal, %idle per core. High %iowait or %steal points away from genuine CPU compute saturation (toward storage or a hypervisor/neighbour).\", \"Top consumers on the host itself: `ps -eo pid,ppid,user,pcpu,pmem,etime,comm --sort=-pcpu | head -20`, or `pidstat -u 1 5`, so attribution is to host PIDs, not sandbox PIDs.\", \"Kernel/health signals: `dmesg` or `journalctl -k` for thermal throttling, OOM kills, or scheduler complaints.\"], \"container_specific_requests\": [\"CPU pressure stall information (`/proc/pressure/cpu` some=full avg10/avg60/avg300) to distinguish real contention from a momentary spike.\", \"cgroup CPU quota and throttling counters (`cpu.max` and `cpu.stat`: nr_throttled, throttled_usec). A container pinned by its quota can feel 'saturated' while the host CPU is largely idle — this is the single most discriminating check when the symptom is reported from inside a container.\", \"Whether the affected workload and the Codali sandbox share the same cgroup/host.\"]}, \"interpretation_plan\": \"Compare host utilization against core count over the reported window, then attribute the top consumers. If host %idle is high but the container's cgroup shows heavy throttling, the cause is a quota/limit, not host saturation. If host %usr/%sys is genuinely near 100% across cores, proceed to per-process attribution. If %iowait or %steal dominates, redirect to storage or hypervisor contention.\", \"unresolved_uncertainty\": \"Until a host-scoped, time-windowed measurement is supplied, the report remains unconfirmed and unfalsified; the sandbox `ps` output should be recorded only as evidence about the sandbox's visibility.\"}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "a563c62e-50e6-4262-9dc1-fcdc97e07d92",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "b7ebe837-386d-4598-bd03-8988415901d2",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3165,
+        "outputTokens": 1623,
+        "totalTokens": 4788,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 28998
+    }
+  ]
+}

@@ -409,8 +409,17 @@ exit, expires after eight hours, and can be stopped explicitly. Start/status
 verify HTTP, Chrome CDP and a real VNC protocol handshake. Existing external
 permission checks apply to browser management and interactive actions.
 
-Bundled, progressively loaded skills cover planning, managed browser sessions,
-Browser Use, web application testing, Docdex research and systematic debugging.
+Fourteen bundled, progressively loaded skills cover planning, architecture design,
+code implementation/review, UI/UX design, software testing, tool selection, system services,
+system diagnostics, managed browser sessions, Browser Use, web application
+testing, Docdex research and systematic debugging.
 Each adapted skill links its upstream source. `/skills` lists them; workspace
 and user skills remain supported. Upstream cloud defaults and arbitrary install
 scripts are not automatically executed.
+
+
+The system-service skill uses platform-specific references for systemd, launchd
+and Docker/Compose. It requires an actual authorized host connector for general
+service administration; a skill or full permission setting does not turn the
+isolated shell into host access. The diagnostic skill labels sandbox observations
+accordingly. Neither skill starts, stops or changes services merely by loading.

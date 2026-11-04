@@ -122,3 +122,57 @@ test("configured roots support nested Mac skill folders without executing script
   await assert.rejects(fs.access(path.join(root, "NEVER_EXECUTED")));
   await assert.rejects(new PermissionGate("plan").authorize({ name: "run_shell", description: "Run a command", capability: "shell", readOnly: false }, {}), /read operations only/);
 });
+
+
+test("all bundled core workflows are discoverable without eagerly loading their bodies", async t => {
+  const { root } = await fixture(t);
+  const catalog = new SkillCatalog({ workspaceRoot: root, includeUser: false });
+  await catalog.refresh();
+  const expected = ["architecture-design", "code-implementation", "code-review", "testing-and-verification", "tool-selection", "system-services", "system-diagnostics", "ui-ux-design"];
+  const prompt = catalog.prompt();
+  assert.ok(prompt.length < 4000);
+  assert.doesNotMatch(prompt, /BODY_SENTINEL/);
+  const list = catalog.tools().find(tool => tool.name === "skill_list")!;
+  let offset = 0; const found = new Map<string, string>();
+  while (true) {
+    const page = JSON.parse((await list.handler({ offset }, { workspaceRoot: root })).output);
+    for (const entry of page.skills) found.set(entry.name, entry.id);
+    if (page.nextOffset === null) break;
+    assert.ok(page.nextOffset > offset); offset = page.nextOffset;
+  }
+  for (const name of expected) {
+    const id = found.get(name); assert.ok(id, name);
+    assert.ok(prompt.includes(id), `metadata hidden: ${name}`);
+    const loaded = await catalog.read(id);
+    assert.equal(loaded.nextOffset, null, `${name} should fit one load`);
+    assert.equal(loaded.content, await fs.readFile(catalog.list().skills.find(s => s.id === id)!.source, "utf8"));
+    assert.ok(JSON.stringify(loaded).length <= 3800);
+  }
+  for (const platform of ["linux", "macos", "docker"]) {
+    const reference = await catalog.read(found.get("system-services")!, `references/${platform}.md`);
+    assert.equal(reference.nextOffset, null);
+    assert.ok(String(reference.content).length > 100);
+  }
+});
+
+test("catalog prompt bounds escaped metadata while omitted skills remain retrievable", async t => {
+  const { catalog, root } = await fixture(t);
+  for (let i = 0; i < 30; i++) {
+    const dir = path.join(root, ".codali", "skills", `workflow-${i}`); await fs.mkdir(dir);
+    await fs.writeFile(path.join(dir, "SKILL.md"), `---\nname: workflow-${i}\ndescription: ${JSON.stringify('"\\'.repeat(200))}\ncompatibility: ${JSON.stringify('"\\'.repeat(200))}\n---\nLAZY_BODY_SENTINEL\n`);
+  }
+  await catalog.refresh(); const prompt = catalog.prompt();
+  assert.ok(prompt.length < 4000); assert.doesNotMatch(prompt, /LAZY_BODY_SENTINEL/);
+  const omitted = catalog.list().skills.find(entry => !prompt.includes(entry.id)); assert.ok(omitted);
+  const list = catalog.tools().find(tool => tool.name === "skill_list")!;
+  const result = JSON.parse((await list.handler({ query: omitted.name }, { workspaceRoot: root })).output);
+  assert.ok(result.skills.some((entry: { id: string }) => entry.id === omitted.id));
+  let restored = "", offset = 0;
+  while (true) {
+    const page = await catalog.read(omitted.id, "SKILL.md", offset);
+    restored += String(page.content);
+    if (page.nextOffset === null) break;
+    assert.ok(Number(page.nextOffset) > offset); offset = Number(page.nextOffset);
+  }
+  assert.match(restored, /LAZY_BODY_SENTINEL/);
+});

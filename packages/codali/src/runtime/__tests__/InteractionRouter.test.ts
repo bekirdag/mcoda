@@ -698,6 +698,23 @@ test("native inspection can load a local skill and uses its actual body without 
   assert.equal(controller.usageSnapshot().toolCalls, 1);
 });
 
+test("skill readers remain available after inspection focuses a different capability", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return decision("inspect", "Read the clock, then load service guidance without host changes.");
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "clock", name: "server_time", args: {} }] };
+    const names = request.tools?.map(tool => tool.name) ?? [];
+    for (const name of ["skill_list", "skill_load", "skill_read"]) assert.ok(names.includes(name), name);
+    assert.ok(!names.includes("run_shell"));
+    if (calls === 3) return { ...reply(""), toolCalls: [{ id: "guidance", name: "skill_load", args: { id: "system-services" } }] };
+    assert.ok(request.messages.some(message => message.role === "tool" && message.toolCallId === "guidance"));
+    return reply("Guidance loaded; no host service operation was performed.");
+  } });
+  assert.match((await controller.interact("Read the clock and load system-services guidance; do not change any services.")).content, /no host service/);
+  assert.ok(events.some(event => event.type === "inspection_tools_focused"));
+  assert.equal(controller.usageSnapshot().toolCalls, 2);
+});
+
 test("inspection focuses tool schemas after native selection and can enable another capability", async t => {
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
