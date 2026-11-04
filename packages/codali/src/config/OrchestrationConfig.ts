@@ -87,7 +87,7 @@ export interface OrchestrationConfig {
   taskControl?: TaskControlConfig;
   interaction?: InteractionConfig;
   skills?: { enabled?: boolean; directories?: string[] };
-  docdex?: { binary?: string; binarySha256?: string; startupTimeoutMs?: number };
+  docdex?: { baseUrl?: string; binary?: string; binarySha256?: string; startupTimeoutMs?: number };
 }
 export interface ResolvedOrchestrationConfig {
   config: OrchestrationConfig;
@@ -251,7 +251,8 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
     if (skills.directories !== undefined && (!Array.isArray(skills.directories) || skills.directories.length > 16 || skills.directories.some(value => typeof value !== "string" || !value.trim() || value.length > 4096 || value.includes("\0")))) throw new Error("skills.directories: expected at most 16 directory paths");
   }
   if (root.docdex !== undefined) {
-    const d = object(root.docdex, "docdex"); fields(d, ["binary", "binarySha256", "startupTimeoutMs"], "docdex");
+    const d = object(root.docdex, "docdex"); fields(d, ["baseUrl", "binary", "binarySha256", "startupTimeoutMs"], "docdex");
+    if (d.baseUrl !== undefined) { const url = new URL(nonempty(d.baseUrl, "docdex.baseUrl")); if (!["http:", "https:"].includes(url.protocol)) throw new Error("docdex.baseUrl must use HTTP(S)"); }
     if (d.binary !== undefined) nonempty(d.binary, "docdex.binary");
     if (d.binarySha256 !== undefined && (typeof d.binarySha256 !== "string" || !/^[a-f0-9]{64}$/.test(d.binarySha256) || d.binary === undefined)) throw new Error("docdex.binarySha256 requires an explicit binary and a SHA-256 digest");
     if (d.startupTimeoutMs !== undefined) positive(d.startupTimeoutMs, "docdex.startupTimeoutMs");

@@ -17,7 +17,7 @@ import { validateEmbeddingPreprocessing, type ProjectTaskAuthority } from "@mcod
 import { TerminalInput, insertTerminalPaste } from "./TerminalInput.js";
 import { ModelServiceError } from "../providers/ModelServiceError.js";
 import { discoverHostToolchain } from "../tools/shell/HostToolchain.js";
-import { ensureManagedDocdexRuntime, inspectManagedDocdexRuntime, type ManagedRuntimeIdentity } from "../docdex/ManagedRuntime.js";
+import type { ManagedRuntimeIdentity } from "../docdex/ManagedRuntime.js";
 import { TerminalTui } from "./tui/TerminalTui.js";
 import { inspectPlanDiff } from "./TerminalPlan.js";
 import { openTerminalArtifact } from "./TerminalArtifacts.js";
@@ -58,7 +58,7 @@ export const parseTerminalArguments = (argv: string[]): Arguments => {
   result.prompt = positional.join(" "); return result;
 };
 
-export const setupTerminalConfig = async (destination: string, options: { prepareRuntime?: () => Promise<ManagedRuntimeIdentity> } = {}): Promise<ResolvedOrchestrationConfig> => {
+export const setupTerminalConfig = async (destination: string, options: { baseUrl?: string; prepareRuntime?: () => Promise<ManagedRuntimeIdentity> } = {}): Promise<ResolvedOrchestrationConfig> => {
   try { await fs.access(destination); throw new Error(`Configuration already exists: ${destination}`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const client = new ModelServiceClient(DEFAULT_PROVIDER);
   const catalog = await client.catalog(undefined, true);
@@ -109,10 +109,7 @@ export const setupTerminalConfig = async (destination: string, options: { prepar
     }
     config.bindings[binding] = entries.length ? { candidates: entries.map(entry => entry.id) } : { enabled: false };
   }
-  if (options.prepareRuntime && config.bindings.embedding.enabled !== false) {
-    const runtime = await options.prepareRuntime();
-    config.docdex = { binary: runtime.binary, binarySha256: runtime.binarySha256 };
-  }
+  config.docdex = { baseUrl: options.baseUrl ?? process.env.DOCDEX_HTTP_BASE_URL ?? "http://127.0.0.1:28491" };
   validateOrchestrationConfig(config); await atomicWriteJson(destination, config);
   return { config, source: destination, hash: orchestrationHash(config) };
 };
@@ -123,6 +120,7 @@ const usageFor = async (resolved: ResolvedOrchestrationConfig): Promise<Record<s
 };
 
 export const terminalDoctor = async (configPath?: string): Promise<Record<string, unknown>> => {
+  let docdexUrl = process.env.DOCDEX_HTTP_BASE_URL ?? "http://127.0.0.1:28491";
   const [major, minor] = process.versions.node.split(".").map(Number);
   const report: Record<string, unknown> = { node: process.version, runtimeSupported: major >= 24 || major === 22 && minor >= 12 || major === 20 && minor >= 19, isolation: executorStatus() };
   report.deterministicTools = await inspectDeterministicRuntime();
@@ -141,15 +139,11 @@ export const terminalDoctor = async (configPath?: string): Promise<Record<string
     }
     report.routes = routes;
     report.mediaRecovery = Object.fromEntries(Object.entries(resolved.config.providers).map(([id, provider]) => [id, { protocol: provider.mediaJobsUrl ? "mswarm-media-jobs-v1" : "synchronous", reconnect: provider.mediaJobsUrl ? "Recover by durable job id" : "Only complete local receipts can be recovered; ambiguous remote jobs require reconciliation" }]));
-    if (resolved.config.bindings.embedding?.enabled !== false && resolved.config.bindings.embedding) {
-      try { if (!resolved.config.docdex?.binary) throw new Error("Managed Docdex binary is not configured; run setup with a qualified release"); report.docdex = { mode: "managed", available: true, ...await inspectManagedDocdexRuntime(resolved.config.docdex.binary, resolved.config.docdex.binarySha256) }; }
-      catch (error) { report.docdex = { mode: "managed", available: false, error: error instanceof Error ? error.message : String(error), action: "Install a qualified runtime and update docdex.binary and binarySha256" }; }
-    }
+    docdexUrl = resolved.config.docdex?.baseUrl ?? docdexUrl;
   } catch (error) { report.configuration = { error: error instanceof Error ? error.message : String(error) }; }
-  if (!report.docdex) {
-    try { const response = await fetch("http://127.0.0.1:28491/healthz", { signal: AbortSignal.timeout(3000) }); report.docdex = { mode: "external", available: response.ok, status: response.status, configuredEmbeddings: false }; }
-    catch { report.docdex = { mode: "external", available: false, action: "Configure a qualified embedding binding and managed Docdex runtime" }; }
-  }
+  try { const response = await fetch(new URL("/healthz", docdexUrl), { headers: process.env.DOCDEX_AUTH_TOKEN ? { authorization: `Bearer ${process.env.DOCDEX_AUTH_TOKEN}` } : undefined, signal: AbortSignal.timeout(3000) }); report.docdex = { mode: "system", baseUrl: docdexUrl, available: response.ok, status: response.status, inferenceAccounting: "Owned by the Docdex service; excluded from Codali model totals" }; }
+  catch { report.docdex = { mode: "system", baseUrl: docdexUrl, available: false, action: "Start or repair the system Docdex service; Codali continues with local tools when unavailable" }; }
+
   return report;
 };
 
@@ -182,9 +176,9 @@ export class TerminalCommand {
     if (args.command === "logout") { await setTerminalCredential(); output("Stored Codali mSwarm credential removed. Environment credentials, if set, take precedence."); return; }
     if (args.command === "auth-status") { try { await providerCredential(DEFAULT_PROVIDER); const catalog = await new ModelServiceClient(DEFAULT_PROVIDER).catalog(); output({ authenticated: true, entitledModels: catalog.length }); } catch (error) { output({ authenticated: false, error: error instanceof Error ? error.message : String(error) }); process.exitCode = 1; } return; }
     if (args.command === "setup") {
-      const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH, { prepareRuntime: () => ensureManagedDocdexRuntime({ binary: args.docdexBinary }) });
-      const docdex = resolved.config.docdex ? { mode: "managed", ...resolved.config.docdex, initialization: "Private repository indexing starts when execution needs it" }
-        : { mode: "unavailable", reason: "No entitled embedding route advertises a pinned model and complete preprocessing contract" };
+      if (args.docdexBinary) throw new Error("Codali uses system Docdex; configure its service instead of --docdex-binary");
+      const resolved = await setupTerminalConfig(args.config ?? process.env.CODALI_ORCHESTRATION_CONFIG ?? CONFIG_PATH);
+      const docdex = { mode: "system", baseUrl: resolved.config.docdex?.baseUrl, initialization: "Bind the workspace to the existing service when needed; no private daemon is started" };
       output({ configuration: resolved.source, hash: resolved.hash, bindings: resolved.config.bindings, docdex }); return;
     }
     if (args.command === "doctor") { output(await terminalDoctor(args.config)); return; }

@@ -92,16 +92,17 @@ test("index ingestion binds relative paths to the client repository, not the dae
   });
 });
 
-test("authenticated MCP initializes once and sends the issued session without replaying rejected tools", { concurrency: false }, async () => {
+for (const authenticated of [true, false]) test(`MCP initializes once with scoped session (authenticated: ${authenticated})`, { concurrency: false }, async () => {
   let initializations = 0; let invocations = 0;
   await withStubbedFetch((url, init) => {
     if (url.endsWith("/healthz")) return makeTextResponse("ok");
     const body = JSON.parse(String(init?.body));
     const headers = init?.headers as Record<string, string>;
-    assert.equal(headers.authorization, "Bearer private-token");
+    assert.equal(headers.authorization, authenticated ? "Bearer private-token" : undefined);
     if (body.method === "initialize") {
       initializations++;
-      assert.equal(body.params.auth_token, "private-token");
+      assert.match(body.params.rootUri, /fixture$/);
+      assert.equal(body.params.auth_token, authenticated ? "private-token" : undefined);
       assert.equal(headers["mcp-session-id"], undefined);
       return makeJsonResponse({ result: {} }, { "mcp-session-id": "private-session" });
     }
@@ -109,7 +110,7 @@ test("authenticated MCP initializes once and sends the issued session without re
     assert.equal(headers["mcp-session-id"], "private-session");
     return invocations <= 2 ? makeJsonResponse({ result: { ok: true } }) : makeErrorResponse(404, "unknown or expired MCP session");
   }, async () => {
-    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", authToken: "private-token" });
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", authToken: authenticated ? "private-token" : undefined, requireMcpSession: true, repoRoot: "/tmp/fixture" });
     await Promise.all([client.stats(), client.files()]);
     assert.equal(initializations, 1);
     await assert.rejects(client.memorySave("fact"), /expired/);

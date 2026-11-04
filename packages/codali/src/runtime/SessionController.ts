@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs, realpathSync } from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { SessionStore } from "../session/SessionStore.js";
 import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
@@ -47,7 +48,6 @@ import { createShellTool } from "../tools/shell/ShellTool.js";
 import { createIsolatedExecutor, executorStatus } from "../tools/shell/IsolatedExecutor.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { DocdexClient } from "../docdex/DocdexClient.js";
-import { ManagedDocdex } from "../docdex/ManagedDocdex.js";
 import { ConfiguredEmbeddings } from "../providers/ConfiguredEmbeddings.js";
 import { runCodaliTask } from "./CodaliRuntime.js";
 import { WorkspaceLock } from "./WorkspaceLock.js";
@@ -189,7 +189,6 @@ export class SessionController {
   private inspectionAnswerReserve = 0;
   private finalAttempts = 0;
   private docdex?: DocdexClient;
-  private managedDocdex?: ManagedDocdex;
   private docdexNames: string[] = [];
   private docdexReady = false;
   private memoryContext = "";
@@ -282,24 +281,21 @@ export class SessionController {
     for (const name of ["server_time", "calculate", "docdex_web_research", "browser_open", "browser_read", "skill_list", "skill_load", "skill_read", "context_read"]) this.enabledTools.add(name);
     for (const tool of createConfiguredMediaTools(options.resolved, () => this.mediaStore())) this.registry.register(tool);
     if (options.resolved.config.bindings.helper && options.resolved.config.bindings.helper.enabled !== false) this.registry.register(this.helperTool());
-    if (options.docdex !== false && !this.usesManagedDocdex()) {
-      const client = new DocdexClient({ baseUrl: options.docdexUrl ?? "http://127.0.0.1:28491", repoRoot: this.workspaceRoot, signal: () => this.active?.signal, timeoutMs: 15_000, localSearchOnly: true });
-      this.attachDocdexTools(client, false);
+    if (options.docdex !== false) {
+      this.attachDocdexTools(this.sharedDocdexClient());
     }
   }
 
-  private usesManagedDocdex(): boolean {
-    const binding = this.options.resolved.config.bindings.embedding;
-    return !!binding && binding.enabled !== false;
+  private sharedDocdexClient(): DocdexClient {
+    return new DocdexClient({ baseUrl: this.options.docdexUrl ?? this.options.resolved.config.docdex?.baseUrl ?? process.env.DOCDEX_HTTP_BASE_URL ?? "http://127.0.0.1:28491",
+      repoRoot: this.workspaceRoot, authToken: process.env.DOCDEX_AUTH_TOKEN, requireMcpSession: true, signal: () => this.active?.signal, timeoutMs: 15000, localSearchOnly: true });
   }
 
-  private attachDocdexTools(client: DocdexClient, managed: boolean): void {
+  private attachDocdexTools(client: DocdexClient): void {
     for (const name of this.docdexNames) this.registry.unregister(name);
     this.docdexNames = []; this.docdex = client;
     for (const tool of createDocdexTools(client, { allowSearchWebFallback: false, includeCatalog: true })) {
       if (/delegate|chat_completion/.test(tool.name)) continue;
-      // An external daemon's undisclosed inference defaults are not model bindings.
-      if (!managed && /memory|wakeup|diary|conversation|kg_|web_research|save_preference|personal_preferences|clone_|ai_terminal|local_completion/.test(tool.name)) continue;
       this.registry.register(tool); this.docdexNames.push(tool.name);
     }
   }
@@ -323,50 +319,24 @@ export class SessionController {
     });
   }
 
-  private async startManagedDocdex(): Promise<void> {
-    try { await this.startManagedDocdexAttempt(); }
-    catch (error) { this.active?.signal.throwIfAborted(); await this.continueWithoutDocdex(error); }
+  private async connectSharedDocdex(): Promise<void> {
+    if (this.options.docdex === false) return;
+    try {
+      await this.emit("status", { message: "Connecting to the system Docdex service" }, false);
+      const client = this.sharedDocdexClient();
+      const binding = await client.initialize(pathToFileURL(this.workspaceRoot).href);
+      if (!binding.repoId) throw new Error("System Docdex did not return a repository binding");
+      if (binding.repoRoot && await fs.realpath(binding.repoRoot) !== await fs.realpath(this.workspaceRoot)) throw new Error("System Docdex bound a different repository");
+      this.attachDocdexTools(client);
+      await this.emit("docdex_connected", { mode: "system", repoId: binding.repoId, inferenceAccounting: "Docdex service owns its model configuration and usage; these costs are not included in Codali model totals." });
+    } catch (error) { this.active?.signal.throwIfAborted(); await this.continueWithoutDocdex(error); }
   }
 
   private async continueWithoutDocdex(error: unknown): Promise<void> {
-    await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
     for (const name of this.docdexNames) this.registry.unregister(name);
     this.docdexNames = []; this.docdex = undefined; this.docdexReady = false;
     this.memoryContext = "Docdex is unavailable for this turn. Continue using read_file, list_files, search/search_files, prepare_edit and permitted shell checks/tests. Structural analysis and Docdex memory are unavailable; do not claim they were performed. Read current files and inspect related code before edits. Normal permissions, task ownership and verification requirements still apply.";
     await this.emit("docdex_degraded", { message: "Docdex could not be prepared. Continuing with local file and search tools; indexed analysis and memory are unavailable.", reason: error instanceof Error ? error.message : String(error) });
-  }
-
-  private async startManagedDocdexAttempt(): Promise<void> {
-    if (this.options.docdex === false || !this.usesManagedDocdex()) return;
-    const embeddings = this.meteredEmbeddings();
-    await embeddings.pin(path.join(this.store.storageDir, this.sessionId!, "embedding"));
-    const helper = this.options.resolved.config.bindings.helper;
-    const webProvider = resolveBinding(this.options.resolved.config, "lead", "chat.completions")
-      .map(candidate => this.options.resolved.config.providers[candidate.model.provider]).find(provider => provider.adapter === "mswarm");
-    this.managedDocdex = new ManagedDocdex({ workspaceRoot: this.workspaceRoot,
-      stateRoot: this.options.storageRoot ? path.join(this.options.storageRoot, "docdex") : path.join(os.homedir(), ".local", "state", "codali", "docdex"),
-      embeddings, provider: this.provider(helper && helper.enabled !== false ? "helper" : "lead", false),
-      binary: this.options.resolved.config.docdex?.binary, binarySha256: this.options.resolved.config.docdex?.binarySha256, startupTimeoutMs: this.options.resolved.config.docdex?.startupTimeoutMs,
-      // Only the separately authorized web tool can reach web research. Search
-      // clients are repo-only; enabling the daemon does not grant a tool call.
-      signal: this.active?.signal, allowWeb: true,
-      webSearch: webProvider ? async (query, signal) => {
-        if (this.currentReceipt?.tool !== "docdex_web_research" || this.currentReceipt.status !== "pending") {
-          throw new ToolExecutionError("tool_permission_denied", "Web discovery requires an active, authorized Docdex web research invocation");
-        }
-        const id = randomUUID();
-        await this.emit("web_search_request", { id, provider: "mswarm", query, tool: "docdex_web_research" });
-        try {
-          const result = await new ModelServiceClient(webProvider).json(new URL("/v1/swarm/web/search", webProvider.baseUrl).href,
-            { method: "POST", body: { query, tool_id: "docdex" }, signal, timeoutMs: 30000 });
-          await this.emit("web_search_response", { id, result }); return result;
-        } catch (error) {
-          await this.emit("web_search_failed", { id, message: error instanceof Error ? error.message : String(error) }); throw error;
-        }
-      } : undefined,
-      onStatus: message => { void this.emit("status", { message }, false).catch(() => undefined); } });
-    this.attachDocdexTools(await this.managedDocdex.start(), true);
-    await this.emit("embedding_space", { space: embeddings.space });
   }
 
   get busy(): boolean { return !!this.active; }
@@ -780,8 +750,8 @@ export class SessionController {
     if (resolved.config.bindings.helper?.enabled !== false && resolved.config.bindings.helper) this.registry.register(this.helperTool());
     for (const name of this.docdexNames) this.registry.unregister(name);
     this.docdexNames = []; this.docdex = undefined; this.docdexReady = false;
-    if (this.options.docdex !== false && !this.usesManagedDocdex()) {
-      this.attachDocdexTools(new DocdexClient({ baseUrl: this.options.docdexUrl ?? "http://127.0.0.1:28491", repoRoot: this.workspaceRoot, signal: () => this.active?.signal, timeoutMs: 15000, localSearchOnly: true }), false);
+    if (this.options.docdex !== false) {
+      this.attachDocdexTools(this.sharedDocdexClient());
     }
     await this.emit("configuration_changed", { source: resolved.source, configHash: resolved.hash, pinnedMediaJobsUnchanged: true });
   }
@@ -1609,7 +1579,6 @@ export class SessionController {
       await Promise.allSettled([...this.modelSettlements]);
       this.inspectionDocdexStart = undefined;
       this.inspectionAnswerReserve = 0;
-      await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
       clearTimeout(timer); this.active = undefined; this.interactionAbort = undefined; this.interactionId = undefined; this.activeLimits = undefined;
     }
   }
@@ -1655,7 +1624,7 @@ export class SessionController {
       this.docdexReady = false;
       this.inspectionDocdexStart = () => startup ??= (async () => {
         try {
-          await this.startManagedDocdex();
+          await this.connectSharedDocdex();
           if (!this.docdex) throw new Error("Docdex is unavailable");
           const index = await this.docdex.waitForIndex(15000);
           signal.throwIfAborted(); this.docdexReady = true;
@@ -1665,10 +1634,9 @@ export class SessionController {
           throw new ToolExecutionError("docdex_unavailable", "Docdex could not be prepared. Use permitted file reads and explain the missing evidence.", { retryable: false });
         }
       })();
-      const client = this.docdex ?? new DocdexClient({ baseUrl: this.options.docdexUrl ?? "http://127.0.0.1:28491", repoRoot: this.workspaceRoot, localSearchOnly: true });
+      const client = this.docdex ?? this.sharedDocdexClient();
       for (const tool of createDocdexTools(client, { allowSearchWebFallback: false, includeCatalog: true })) {
         if (!tool.readOnly || !["read", "web"].includes(permissionKind(toolDescriptorFor(tool)))) continue;
-        if (!this.usesManagedDocdex() && /memory|wakeup|diary|conversation|kg_|web_research|save_preference|personal_preferences|clone_|ai_terminal/.test(tool.name)) continue;
         registry.register({ ...tool, handler: async (args, context) => {
           const actual = this.registry.list().find(candidate => candidate.name === tool.name);
           if (!this.docdexReady || !actual) throw new ToolExecutionError("docdex_unavailable", "Docdex tool is unavailable", { retryable: false });
@@ -1951,7 +1919,7 @@ export class SessionController {
       }
       this.previousSnapshot = await captureWorkspace(this.workspaceRoot);
       await this.attachConnectors();
-      await this.startManagedDocdex();
+      await this.connectSharedDocdex();
       const currentHashes = await this.hashes();
       await this.update(state => { for (const task of state.tasks) if (["running", "review_pending", "blocked"].includes(task.status)) { task.status = "ready"; task.attemptId = undefined; task.leaseExpiresAt = undefined; } refreshStaleEvidence(state, currentHashes); state.status = "active"; });
       await this.loadInstructions();
@@ -1963,7 +1931,7 @@ export class SessionController {
         } catch (error) { signal.throwIfAborted(); await this.continueWithoutDocdex(error); }
       }
       if (this.docdex && this.docdexReady) {
-        const memory = await Promise.allSettled([this.docdex.getProfile("codali-terminal"), this.usesManagedDocdex() ? this.docdex.memoryRecall(this.state.objective, 4) : Promise.resolve({ disabled: "Configure the embedding binding for managed memory" }), this.docdex.repoInspect(), this.usesManagedDocdex() ? this.docdex.wakeup(this.state.objective) : Promise.resolve({ disabled: "Managed memory is not configured" })]);
+        const memory = await Promise.allSettled([this.docdex.getProfile("codali-terminal"), this.docdex.memoryRecall(this.state.objective, 4), this.docdex.repoInspect(), this.docdex.wakeup(this.state.objective)]);
         this.memoryContext = preparedMemory(memory);
         await this.emit("context_loaded", { memory: this.memoryContext, lanes: memory.map(result => result.status === "fulfilled" ? { status: "fulfilled", value: result.value } : { status: "rejected", error: String(result.reason) }) });
       }
@@ -2020,7 +1988,7 @@ export class SessionController {
       clearInterval(projectHeartbeat); await renewal;
       if (projectLease) await this.options.projectTaskAuthority?.release(projectLease).catch(() => undefined);
       await this.flushOutputStreams().catch(() => undefined);
-      clearTimeout(timeout); await this.managedDocdex?.close().catch(() => undefined); this.managedDocdex = undefined;
+      clearTimeout(timeout);
       await this.closeConnectors().catch(() => undefined); this.ownsWorkspaceLock = false; await lock.release(); this.active = undefined;
     }
   }

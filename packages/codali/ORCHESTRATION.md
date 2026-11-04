@@ -6,13 +6,12 @@ The terminal controller exposes native function calls to capable configured mode
 Read-only inspection uses Docdex for repository search, source reads and structural
 analysis, and `docdex_web_research` for external research. Local searches use the
 index-only batch endpoint; they cannot silently trigger web or model fallback.
-Web calls pass the permission gate before starting the private Docdex runtime.
-With an mswarm lead, discovery uses a capability-authenticated bridge owned by the
-controller; the service credential is never written into the private daemon config.
-An empty result does not automatically replay a metered web request.
-Discovery links remain separate from fetched evidence, and generated summaries
-are labeled. Nested Docdex inference respects its requested output limit and
-cannot spend the token/call reserve needed for a final answer.
+Web calls pass the permission gate before connecting to the system Docdex service.
+The system service owns web-provider credentials and inference routing. Codali
+binds an MCP session to the repository even when local authentication is disabled.
+An empty result does not automatically replay a metered web request. Discovery
+links remain separate from fetched evidence, and generated summaries are labeled.
+Service inference costs are reported by Docdex, not counted in Codali model totals.
 After the first native tool choice, inspection keeps related capability schemas
 in context; other read tools remain available through discovery and explicit
 enabling. This reduces repeated context without classifying prompts by keywords.
@@ -185,13 +184,12 @@ healthy catalog entries only when digest, dimensions and preprocessing are all
 present, and groups identical contracts as replicas. The mSwarm catalog and
 response must attest the pinned digest.
 
-With this binding enabled, the terminal controller owns a private Docdex process.
-Repository embeddings pass through the configured provider and shared session
-budget. Docdex text inference uses the configured helper, or the lead when no
-helper is enabled. Private indexes live outside the repository, are separated by
-embedding-space identity, and are reused on restart. The session also pins its
-space; an incompatible upgrade requires a separate index and session. Query and
-document receipts retain purpose, model, configuration hash and reported usage.
+Codali always uses the system-wide Docdex service for repository indexing,
+memory and web tools. Embedding bindings in Codali do not start a private daemon
+or override the service's model configuration. The service owns its index and
+embedding-space lifecycle; Codali explicitly initializes the current repository
+and scopes subsequent requests to the returned repository ID. Docdex inference
+is accounted by that service, separately from Codali's model totals.
 
 The terminal loads its packaged `config/AGENTS.md` guide, optional
 `~/.codali/AGENTS.md` user instructions, `.codali/instructions.md`, workspace
@@ -211,26 +209,18 @@ Oversized bundles fail explicitly before inference; move supporting material
 into linked documents instead of relying on silent truncation. Repository
 instruction symlinks cannot disclose files outside the workspace.
 
-Read-only investigations can use permitted Docdex search, source, structural and
-continuity tools. The managed daemon starts only when the model requests a
-Docdex tool; greetings and direct file reads do not start it. Indexing and
-embedding usage share the turn budget. Host-denied calls cannot start the daemon.
-An unavailable index leaves permitted ordinary file reads usable and is reported
-as missing evidence. Inspection never exposes indexing commands, memory writes,
-shell execution, delegation or work mutations. External research requires an
-advertised tool and the existing web permission.
+Read-only investigations use permitted Docdex search, source, structural and
+continuity tools. Connection happens when a permitted tool needs it; greetings
+do not initialize a repository. Host-denied calls cannot initialize a connection.
+Inspection never exposes indexing mutations, memory writes, shell execution or
+work mutations. External research requires the existing web permission.
 
-The managed daemon must advertise workspace-metadata control, query/document
-embedding input types, strict repository embeddings and deterministic profile
-embeddings. An older daemon fails startup with an explicit compatibility error.
-`docdex.binary` selects an installed qualified binary; `binarySha256` pins its
-bytes and is checked before every managed launch. `startupTimeoutMs` bounds
-startup. Setup uses the packaged release artifact manifest for a private install,
-or validates the explicit `--docdex-binary` path through `runtime-info`. It does
-not rewrite Git ignore files or create repository-local metadata.
-Global profile preferences use separate persistent deterministic hash storage,
-which makes no LLM call and survives repository embedding upgrades. Failed remote
-repository embeddings never substitute vectors from this hash space.
+Set `docdex.baseUrl` (or `DOCDEX_HTTP_BASE_URL`) to the system service; the default
+is `http://127.0.0.1:28491`. Setup does not install a private runtime, and doctor
+probes the shared service. Legacy private-binary settings are ignored by session
+execution. Session shutdown never stops the shared service. On connection or
+index failure, Codali reports degraded capabilities and continues using local
+file/search tools with permissions, task claims and fresh-read checks intact.
 
 Large plans remain complete in durable storage. The model context reserves the
 original goal, constraints, active task criteria and applicable architecture

@@ -1277,7 +1277,7 @@ test("switching sessions restores only the selected session's usage", async () =
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
-test("configuration reload pins contents and replaces managed versus external Docdex tools", async () => {
+test("configuration reload pins contents and preserves system Docdex tools regardless of embedding bindings", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-config-reload-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-config-reload-state-"));
   const mutable = structuredClone(resolved);
@@ -1292,10 +1292,10 @@ test("configuration reload pins contents and replaces managed versus external Do
       embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", pooling: "mean", normalization: "l2" } };
     managed.bindings.embedding = { candidates: ["embedding"], embeddingSpace: "fixture-space" };
     await controller.reloadConfiguration({ config: managed, hash: orchestrationHash(managed), source: "managed" });
-    assert.equal(controller.registry.list().some(t => t.name === "docdex_search"), false, "managed tools wait for their private daemon to start");
+    assert.equal(controller.registry.list().some(t => t.name === "docdex_search"), true, "embedding bindings do not change system-service tool registration");
     await controller.reloadConfiguration(resolved);
     assert.equal(controller.registry.list().filter(t => t.name === "docdex_search").length, 1);
-    assert.equal(controller.registry.list().some(t => t.name === "docdex_web_research"), false, "external daemon inference defaults remain excluded");
+    assert.equal(controller.registry.list().some(t => t.name === "docdex_web_research"), true, "system-service web tools retain their permission gate");
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
@@ -1503,7 +1503,7 @@ test("the controller enforces structural evidence and invalidates it after sourc
       const body = JSON.parse(String(init?.body));
       payload = { result: body.method === "docdex_symbols" ? { file: "math.js", outcome: { status: ++symbols === 1 ? "skipped" : "ok" }, symbols: [] } : {} };
     }
-    return Response.json(payload);
+    return Response.json(payload, { headers: { "mcp-session-id": "fixture-session" } });
   };
   let step = 0;
   const events: SessionEvent[] = [];
@@ -1561,7 +1561,7 @@ for (const scenario of ["success", "skipped-parser", "content-race", "oversized"
           payload = { result: { file: "math.js", outcome: { status: scenario === "skipped-parser" ? "skipped" : "ok" }, symbols: [] } };
         } else payload = { result: {} };
       }
-      return Response.json(payload);
+      return Response.json(payload, { headers: { "mcp-session-id": "fixture-session" } });
     };
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
@@ -1625,17 +1625,18 @@ test("terminal shell is read-only by default and explicit writes cannot bypass s
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
 
-for (const failure of ["startup", "index"] as const) {
+for (const failure of ["startup", "index", "wrong-repository"] as const) {
   test(`Docdex ${failure} failure continues with guarded local preparation and edits`, { concurrency: false }, async t => {
     const { ManagedDocdex } = await import("../../docdex/ManagedDocdex.js");
     const { DocdexClient } = await import("../../docdex/DocdexClient.js");
-    const start = ManagedDocdex.prototype.start, wait = DocdexClient.prototype.waitForIndex;
+    const start = ManagedDocdex.prototype.start, initialize = DocdexClient.prototype.initialize, wait = DocdexClient.prototype.waitForIndex;
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-docdex-fallback-"));
     const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-docdex-fallback-state-"));
-    t.after(async () => { ManagedDocdex.prototype.start = start; DocdexClient.prototype.waitForIndex = wait; await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
-    ManagedDocdex.prototype.start = async () => {
-      if (failure === "startup") throw new Error("Managed Docdex failed to start: LockBusy");
-      return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: root });
+    t.after(async () => { ManagedDocdex.prototype.start = start; DocdexClient.prototype.initialize = initialize; DocdexClient.prototype.waitForIndex = wait; await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    ManagedDocdex.prototype.start = async () => { assert.fail("A private daemon must not start"); };
+    DocdexClient.prototype.initialize = async () => {
+      if (failure === "startup") throw new Error("System Docdex is unavailable");
+      return { repoId: "fixture", repoRoot: failure === "wrong-repository" ? storage : root };
     };
     DocdexClient.prototype.waitForIndex = async () => { throw new Error("Index unavailable"); };
     const selected = structuredClone(config);

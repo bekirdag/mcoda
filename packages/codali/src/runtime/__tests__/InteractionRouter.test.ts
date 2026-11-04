@@ -938,15 +938,16 @@ test("calculator remains usable after two unknown requests without erasing their
   assert.ok(events.some(e => e.type === "usage_recovery"));
 });
 
-for (const allow of [false, true]) test(`native Docdex web calls require permission before daemon startup (${allow})`, async t => {
+for (const allow of [false, true]) test(`native Docdex web calls require permission before system-service binding (${allow})`, async t => {
   const config = structuredClone(base);
   config.models.embed = { provider: "local", catalogId: "embed", revision: "sha256:fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1,
     embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } };
   config.bindings.embedding = { candidates: ["embed"], embeddingSpace: "web-test" };
   let approved = false, calls = 0;
-  const start = t.mock.method(ManagedDocdex.prototype, "start", async () => {
+  const privateStart = t.mock.method(ManagedDocdex.prototype, "start", async () => { throw new Error("Private daemon forbidden"); });
+  const start = t.mock.method(DocdexClient.prototype, "initialize", async () => {
     assert.equal(approved, true);
-    return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: "/fixture", localSearchOnly: true });
+    return { repoId: "fixture" };
   });
   t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   const web = t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://example.org/source", content: "Verified external fact" }] }));
@@ -960,40 +961,34 @@ for (const allow of [false, true]) test(`native Docdex web calls require permiss
     return reply(allow ? "Verified external fact: https://example.org/source" : "Web access was denied.");
   } }, config, undefined, true, { approve: async request => { assert.equal(request.kind, "web"); approved = allow; return { allow }; } });
   await controller.interact("Use Docdex to research an external fact and cite it.");
+  assert.equal(privateStart.mock.callCount(), 0);
   assert.equal(start.mock.callCount(), allow ? 1 : 0); assert.equal(web.mock.callCount(), allow ? 1 : 0);
   assert.ok(events.some(e => e.type === "tool_receipt" && (e.data.receipt as { status: string }).status === (allow ? "success" : "failed")));
   assert.equal(controller.state, undefined);
 });
 
-test("nested Docdex inference cannot spend the call or token reserve needed for the final answer", async t => {
+test("system Docdex owns inference without a private provider or hidden Codali calls", async t => {
   const config = structuredClone(base); config.interaction = { maxModelCalls: 4, maxTotalTokens: 16000 };
   config.models.embed = { provider: "local", catalogId: "embed", revision: "sha256:fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1,
     embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } };
   config.bindings.embedding = { candidates: ["embed"], embeddingSpace: "web-test" };
-  let nested: Provider, calls = 0, nestedCalls = 0;
-  t.mock.method(ManagedDocdex.prototype, "start", async function (this: ManagedDocdex) {
-    nested = (this as unknown as { options: { provider: Provider } }).options.provider;
-    return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: "/fixture", localSearchOnly: true });
-  });
+  config.docdex = { binary: "/must-not-execute/private-docdex", baseUrl: "http://127.0.0.1:28491" };
+  const privateStart = t.mock.method(ManagedDocdex.prototype, "start", async () => { throw new Error("Private daemon forbidden"); });
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
-  t.mock.method(DocdexClient.prototype, "webResearch", async () => {
-    await assert.rejects(nested.generate({ messages: [{ role: "user", content: "nested " + "x".repeat(40000) }], maxTokens: 2048 }), /final-answer reserve/);
-    await nested.generate({ messages: [{ role: "user", content: "nested bounded classification" }], maxTokens: 64 });
-    await assert.rejects(nested.generate({ messages: [{ role: "user", content: "nested optional summary" }], maxTokens: 64 }), /final-answer reserve/);
-    return { web_context: [{ url: "https://example.org/primary", content: "The observed value is 27." }] };
-  });
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://example.org/primary", content: "The observed value is 27." }] }));
+  let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     calls++;
-    if (request.messages[0].content.startsWith("nested")) { nestedCalls++; return reply('{"category":"general"}'); }
     if (calls === 1) return decision("inspect", "Look up the value with Docdex.");
     if (calls === 2) return { ...reply(""), toolCalls: [{ id: "web", name: "docdex_web_research", args: { query: "observed value" } }] };
-    assert.equal(request.tools, undefined); assert.equal(calls, 4); assert.match(JSON.stringify(request.messages), /observed value is 27/);
+    assert.match(JSON.stringify(request.messages), /observed value is 27/);
     return reply("27, from https://example.org/primary");
   } }, config, undefined, true, { allowWeb: true });
   assert.match((await controller.interact("Use Docdex web research to find the observed value.")).content, /27/);
-  assert.equal(calls, 4); assert.equal(nestedCalls, 1); assert.equal(controller.usageSnapshot().modelCalls, 4);
-  assert.equal(events.filter(event => event.type === "docdex_inference_skipped").length, 2);
-  assert.ok(controller.usageSnapshot().tokens <= 16000);
+  assert.equal(calls, 3); assert.equal(controller.usageSnapshot().modelCalls, 3);
+  assert.equal(privateStart.mock.callCount(), 0);
+  assert.ok(events.some(event => event.type === "docdex_connected" && event.data.mode === "system" && String(event.data.inferenceAccounting).includes("not included")));
 });
 
 test("answer review receives actual calculator evidence without additional tool access", async t => {

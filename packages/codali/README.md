@@ -6,7 +6,7 @@ Codali is mcoda's terminal coding agent and embeddable tool runtime.
 
 ```sh
 codali-cli login             # masked mSwarm API-key entry
-codali-cli setup             # discover authorized model routes and prepare private Docdex
+codali-cli setup             # discover authorized model routes; use system Docdex
 codali-cli doctor
 codali                      # open the terminal UI
 ```
@@ -78,17 +78,13 @@ for large-model work; it does not choose a paid fallback.
 
 Setup enables embeddings only when the catalog declares a pinned model digest,
 dimensions, query/document prefixes, normalization and pooling. Replicas must
-match that entire contract. When embeddings are available, setup installs the
-release-pinned Docdex binary in `~/.local/state/codali/runtimes/docdex/`, verifies
-archive and binary checksums, and checks managed-client capabilities. It records
-the binary path and checksum in the profile; sessions verify the checksum before
-launching a private daemon. `doctor` checks this configured runtime.
-
-For a locally built qualified binary, use `codali setup --docdex-binary /absolute/path/docdexd`.
-Development builds without pinned release artifacts require this option. Setup
-does not initialize the global daemon or overwrite its configuration. A failed
-runtime qualification leaves the new profile unwritten; previous installed
-runtime versions remain available for existing profiles.
+match that entire contract. Codali uses the existing system-wide Docdex service. Setup records
+`docdex.baseUrl` (default `http://127.0.0.1:28491`, or `DOCDEX_HTTP_BASE_URL`)
+and never downloads or starts a private daemon. `doctor` checks that endpoint.
+Docdex owns repository indexing, memory and its inference configuration; its
+inference usage is separate from Codali model totals. Legacy `binary`,
+`binarySha256` and `startupTimeoutMs` settings are accepted but do not launch a
+process. If the shared service is unavailable, Codali continues with local tools.
 
 | Command | Purpose |
 | --- | --- |
@@ -139,7 +135,7 @@ content, preserves user constraints, and retains recoverable private originals.
 The terminal loads the packaged [Codali operating guide](config/AGENTS.md),
 including the actual Docdex tool argument names, repository scope, evidence
 requirements and permission boundaries. A greeting does not start repository
-indexing. Repository inspection starts the private Docdex runtime lazily and
+indexing. Repository inspection binds to the system Docdex service lazily and
 exposes additional read tools when needed.
 
 Add your own instructions in these files, listed from general defaults to the

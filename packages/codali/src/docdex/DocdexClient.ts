@@ -21,6 +21,7 @@ export interface DocdexClientOptions {
   repoRoot?: string;
   repoId?: string;
   authToken?: string;
+  requireMcpSession?: boolean;
   apiKey?: string;
   clientIdentity?: string;
   clientProduct?: string;
@@ -1104,7 +1105,7 @@ export class DocdexClient {
   }
 
   private async ensureMcpSession(force = false): Promise<void> {
-    if ((!force && (!this.options.authToken || this.options.apiKey)) || this.mcpSessionId) return;
+    if ((!force && !this.options.requireMcpSession && (!this.options.authToken || this.options.apiKey)) || this.mcpSessionId) return;
     if (!this.mcpInitialize) {
       this.mcpInitialize = (async () => {
         const response = await this.fetch(`${this.resolveBaseUrl()}/v1/mcp`, {

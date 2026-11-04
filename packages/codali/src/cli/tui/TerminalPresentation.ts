@@ -103,7 +103,7 @@ export const terminalUsage = (value: unknown): string => {
     `  Input       ${number(usage.inputTokens)}`, `  Output      ${number(usage.outputTokens)}`,
     `  Model calls ${number(usage.modelCalls)}`, `  Tool calls  ${number(usage.toolCalls)}`, "",
     "LATEST TURN", `  ${number(turn.tokens)} tokens · ${number(turn.modelCalls)} model calls · ${number(turn.toolCalls)} tool calls`, "",
-    "Session totals accumulate. Turn limits restart for each message; uncertain requests keep their reservations.", "", "ACCOUNT LIMITS"];
+    "Session totals accumulate. Turn limits restart for each message; uncertain requests keep their reservations.", "Shared Docdex inference, when used, is tracked by that service and excluded from these model totals.", "", "ACCOUNT LIMITS"];
   for (const [provider, raw] of Object.entries(record(data.server))) {
     lines.push("", `  ${provider}`);
     const item = record(raw);

@@ -35,11 +35,8 @@ test("setup pins only compatible qualified embedding replicas and never treats a
   assert.deepEqual(selected.config.bindings.intent, { useBinding: "lead" }, "healthy small-model availability is not current dispatch qualification");
   assert.equal(selected.config.interaction?.promptVersion, "interaction-v11");
   assert.equal(selected.config.models["c-different-weights"], undefined);
-  const failedPath = path.join(root, "failed-runtime.json");
-  await assert.rejects(setupTerminalConfig(failedPath, { prepareRuntime: async () => { throw new Error("unqualified runtime"); } }), /unqualified runtime/);
-  await assert.rejects(fs.stat(failedPath), /ENOENT/);
-  const prepared = await setupTerminalConfig(path.join(root, "qualified-runtime.json"), { prepareRuntime: async () => ({ binary: "/private/docdexd", binarySha256: "c".repeat(64), version: "0.0.0-test" }) });
-  assert.deepEqual(prepared.config.docdex, { binary: "/private/docdexd", binarySha256: "c".repeat(64) });
+  const prepared = await setupTerminalConfig(path.join(root, "system-service.json"), { prepareRuntime: async () => { throw new Error("Private runtimes must never be prepared"); }, baseUrl: "http://127.0.0.1:28491" });
+  assert.deepEqual(prepared.config.docdex, { baseUrl: "http://127.0.0.1:28491" });
   entries = entries.filter(entry => entry.slug.startsWith("0-"));
   const unavailable = await setupTerminalConfig(path.join(root, "unavailable.json"));
   assert.deepEqual(unavailable.config.bindings.embedding, { enabled: false });
