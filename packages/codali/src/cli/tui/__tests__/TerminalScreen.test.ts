@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { cells } from "../TerminalCells.js";
 import { renderTerminalScreen, type TerminalScreenState } from "../TerminalScreen.js";
-import { plainTerminalLogo, terminalLogoWidth } from "../TerminalLogo.js";
+import { plainTerminalLogo, terminalLogoWidth, compactTerminalLogo } from "../TerminalLogo.js";
 
 const state = (): TerminalScreenState => ({ workspace: "/projects/example", version: "preview", profile: "Strata", busy: false, activity: "Ready", route: "", effort: "medium", permissions: "ask", tokens: 0, queued: 0, draft: "", cursor: 0, blocks: [], scroll: 0, expanded: false });
 const text = (value: ReturnType<typeof renderTerminalScreen>): string => value.lines.map(stripVTControlCharacters).join("\n");
@@ -43,6 +43,23 @@ test("normal, narrow and tiny screens stay within terminal cells and rows", () =
       if (!color) assert.ok(frame.lines.every(line => !line.includes("\x1b")));
       if (frame.cursor) { assert.ok(frame.cursor.row >= 0 && frame.cursor.row < rows); assert.ok(frame.cursor.column >= 0 && frame.cursor.column < columns); }
     }
+  }
+});
+
+test("roomy conversation header uses a pink-purple logo and shrinks without moving input", () => {
+  const current = state(); current.introDismissed = true; current.draft = "editable";
+  for (const color of [true, false]) {
+    const frame = renderTerminalScreen(current, 100, 28, color);
+    assert.deepEqual(frame.lines.slice(0, 3).map(stripVTControlCharacters), compactTerminalLogo.map(line => "  " + line));
+    assert.match(text(frame), /editable/);
+    assert.equal(frame.lines.length, 28);
+    if (color) {
+      assert.match(frame.lines[0], /38;2;255;130;215m/);
+      assert.match(frame.lines[0], /38;2;160;90;240m/);
+    } else assert.ok(frame.lines.every(line => !line.includes("\x1b")));
+    assert.match(text(renderTerminalScreen(current, 99, 28, color)).split("\n")[0], /◈ CODALI/);
+    assert.match(text(renderTerminalScreen(current, 100, 27, color)).split("\n")[0], /◈ CODALI/);
+    assert.deepEqual(frame.cursor, renderTerminalScreen(current, 99, 28, color).cursor);
   }
 });
 

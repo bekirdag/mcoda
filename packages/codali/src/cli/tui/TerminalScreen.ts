@@ -1,6 +1,6 @@
 import { cells, fitCells, padCells, wrapCells } from "./TerminalCells.js";
 import { markdownRows } from "./TerminalMarkdown.js";
-import { terminalLogo, plainTerminalLogo, terminalLogoWidth } from "./TerminalLogo.js";
+import { terminalLogo, plainTerminalLogo, terminalLogoWidth, renderCompactLogo } from "./TerminalLogo.js";
 
 export type BlockKind = "user" | "assistant" | "tool" | "error" | "notice";
 export interface TranscriptBlock { id: string; kind: BlockKind; title: string; text: string; summary?: string; }
@@ -40,7 +40,9 @@ export const renderTerminalScreen = (state: TerminalScreenState, columns: number
   const editorRows = Math.min(Math.max(1, draftRows.length), Math.max(1, Math.min(6, rows - 12)));
   const editorOffset = Math.max(0, cursorLine - editorRows + 1);
   const showLogo = !state.introDismissed && !state.blocks.length && !state.scroll && width >= terminalLogoWidth && rows - editorRows >= 23;
-  const heading = showLogo ? (color ? terminalLogo : plainTerminalLogo) : [paint("1;36", "◈ CODALI") + dim(`  ${fitCells(state.version, width - 10)}`)];
+  const heading = showLogo ? (color ? terminalLogo : plainTerminalLogo)
+    : columns >= 100 && rows >= 28 ? renderCompactLogo(color)
+      : [paint("1;36", "◈ CODALI") + dim(`  ${fitCells(state.version, width - 10)}`)];
   const headerRows = heading.length + 2;
   const viewportRows = Math.max(1, rows - editorRows - 8 - (heading.length - 1));
   const transcript: string[] = [];

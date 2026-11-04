@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='codali-tui-pty-') as directory:
         fcntl.ioctl(ui.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 0, 0))
         ui.process.send_signal(signal.SIGWINCH); ui.contains('▄▄▄▄▄▄')
         ui.output = b''
-        ui.send(b'\x1b[5~'); ui.contains('◈ CODALI')
+        ui.send(b'\x1b[5~'); ui.contains('┏┓ ┏┓ ┳┓ ┏┓ ┓  ∙')
         fcntl.ioctl(ui.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 90, 0, 0))
         ui.process.send_signal(signal.SIGWINCH); ui.pump(.15)
         checks.append('opening artwork collapses to compact header on scrolling')

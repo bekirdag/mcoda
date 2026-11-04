@@ -386,3 +386,5 @@ The offline worker receives only copied input and returns checksums, library ver
 The opening screen displays the supplied ANSI Codali artwork when the terminal is at least 91 columns by 24 rows. Scrolling or starting a conversation restores the compact header. Tab completes a slash-command prefix; ordinary drafts are queued with Tab.
 
 Use `/permissions` to choose Plan, Ask, Workspace or Full with Up/Down and Enter. Full automatically approves available tools, including web, memory, media and connectors, and enables isolated shell networking. The choice is saved outside the repository for this exact directory; `/permissions ask` restores prompts. `--permissions full` overrides only the current launch. Workspace boundaries, explicit deny rules and shell isolation remain enforced.
+
+At 100 columns by 28 rows or larger, the regular header uses the three-line CODALI mark with a pink-to-purple gradient. Smaller windows keep the single-line name. `NO_COLOR` preserves the artwork without ANSI colors.

@@ -16,3 +16,13 @@ const artwork = `[0;37m     [0;35m▄[0;95m▄▄▄▄▄▄[0;35m▄[0;37m    
 export const terminalLogo = artwork.replace(/\[[0-9;]+m/g, "\x1b$&").split("\n");
 export const plainTerminalLogo = terminalLogo.map(line => stripVTControlCharacters(line).trimEnd());
 export const terminalLogoWidth = Math.max(...plainTerminalLogo.map(cells));
+
+export const compactTerminalLogo = ["┏┓ ┏┓ ┳┓ ┏┓ ┓  ∙", "┃  ┃┃ ┃┃ ┣┫ ┃  ┃", "┗┛ ┗┛ ┻┛ ┛┗ ┗┛ ┻"];
+export const renderCompactLogo = (color: boolean): string[] => {
+  if (!color) return [...compactTerminalLogo];
+  return compactTerminalLogo.map(line => [...line].map((character, index) => {
+    const fraction = index / (line.length - 1);
+    const red = Math.round(255 - 95 * fraction), green = Math.round(130 - 40 * fraction), blue = Math.round(215 + 25 * fraction);
+    return `\x1b[38;2;${red};${green};${blue}m${character}`;
+  }).join("") + "\x1b[0m");
+};

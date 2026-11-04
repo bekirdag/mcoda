@@ -18,3 +18,5 @@ Completion requires functioning installed behavior and delegation route evidence
 
 4. Add persistent host-owned full permission profile scoped to canonical directory identity; explicit CLI flags override one launch, slash profile persists/revokes. Preserve workspace/shell isolation and test reboot/relaunch-equivalent reads, sibling isolation, default deny, and revocation.
 5. Ctrl+Z uses the same cancel/exit handler as Ctrl+C; verify raw terminal cleanup and active-work cancellation.
+
+6. Render supplied three-line box-drawing CODALI logo with pink-to-purple gradient in regular header at >=100columns and >=28rows; retain opening artwork and single-line fallback. Verify resize, input layout and NO_COLOR; install preview.
