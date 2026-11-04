@@ -193,6 +193,7 @@ export class SessionController {
   private docdexNames: string[] = [];
   private docdexReady = false;
   private memoryContext = "";
+  private preparingEdit = false;
   private lastRequestEstimate = 4000;
   private repeatedFailures = new Map<string, number>();
   private progressTracker = new ProgressTracker();
@@ -1126,7 +1127,7 @@ export class SessionController {
       this.finalAttempts = 0;
     }
     const activeTask = this.state?.tasks.find(task => task.status === "running");
-    const repeats = this.progressTracker.observe({ tool: tool.name, args, ok: result.ok, hashes: receipt.inputHashes,
+    const repeats = this.preparingEdit ? 0 : this.progressTracker.observe({ tool: tool.name, args, ok: result.ok, hashes: receipt.inputHashes,
       task: { goalRevision: this.state?.goalRevision, planRevision: this.state?.planRevision, id: activeTask?.id, attemptId: activeTask?.attemptId },
       output: result.output, errorCode: result.error?.code });
     if (repeats > 0) {
@@ -1160,9 +1161,10 @@ export class SessionController {
   private prepareEditTool(): ToolDefinition {
     return {
       name: "prepare_edit", readOnly: true, capability: "workspace",
-      description: "Read one small existing file and gather fresh Docdex symbols/impact before editing. Each inner operation retains its permission checks, budget charge and receipt. No files are changed. For results above 14000 characters, use individual tools.",
-      inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+      description: "Read an existing file and gather fresh Docdex symbols/impact before editing. Large results return bounded excerpts with nextOffset; pass offset to read the next file excerpt. Inspect the target section before an exact-match patch. Each inner operation retains permissions and receipts. No files are changed.",
+      inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" }, offset: { type: "integer", minimum: 0 } } },
       handler: async (args, context) => {
+        const offset = Number(argsObject(args).offset ?? 0);
         const file = workspaceRelativePath(this.workspaceRoot, String(argsObject(args).path));
         const parent = this.currentReceipt;
         if (!parent || !context.beforeTool || !context.afterTool) throw new Error("Preparation requires an active controlled tool invocation");
@@ -1171,9 +1173,11 @@ export class SessionController {
           if (!this.docdexReady) throw new ToolExecutionError("docdex_unavailable", "Source preparation requires a ready Docdex index");
           calls.push(["docdex_symbols", { path: file }], ["docdex_impact_graph", { file }]);
         }
-        const results: Array<{ tool: string; output: string }> = [];
+        const results: Array<{ tool: string; output: string; offset: number; nextOffset: number | null; totalChars: number; truncated: boolean }> = [];
         let delivered = false;
+        const previousPreparation = this.preparingEdit;
         try {
+          this.preparingEdit = true;
           for (const [name, parameters] of calls) {
             if (!this.registry.list().find(tool => tool.name === name)?.readOnly) throw new Error(`Preparation requires a registered read-only ${name} tool`);
             // Inner calls are sequential and use the normal host policy and
@@ -1181,15 +1185,21 @@ export class SessionController {
             this.currentReceipt = undefined;
             const result = await this.registry.execute(name, parameters, context);
             if (!result.ok) throw new ToolExecutionError(result.error!.code, `${name}: ${result.error!.message}`);
-            results.push({ tool: name, output: result.output });
-            if (JSON.stringify(results).length > 14_000) throw new Error("Preparation exceeds 14000 characters; use read_file and individual Docdex analysis tools before editing");
+            const start = name === "read_file" ? Math.min(offset, result.output.length) : 0;
+            let end = Math.min(result.output.length, start + 4000);
+            // Bound serialized size too: source may contain quotes/control characters.
+            while (JSON.stringify(result.output.slice(start, end)).length > 4000) end = start + Math.floor((end - start) * 0.8);
+            results.push({ tool: name, output: result.output.slice(start, end), offset: start,
+              nextOffset: end < result.output.length ? end : null, totalChars: result.output.length,
+              truncated: start > 0 || end < result.output.length });
           }
           this.assertEditEvidence(file, await hashWorkspacePath(this.workspaceRoot, file));
           delivered = true;
-          return { output: JSON.stringify({ path: file, prepared: true, structuralAnalysis: this.docdex ? "included" : "unavailable; inspect related files and verify changes with local tools", results }) };
+          return { output: JSON.stringify({ path: file, prepared: true, guidance: results.some(result => result.truncated) ? "Excerpts only; unseen content is not included. Read the target section before editing. Use prepare_edit offset=read_file.nextOffset for more file content; use individual analysis tools for full structural results. Prefer exact-match patches over replacing the whole file." : undefined, structuralAnalysis: this.docdex ? "included" : "unavailable; inspect related files and verify changes with local tools", results }) };
         } finally {
+          this.preparingEdit = previousPreparation;
           this.currentReceipt = parent;
-          // A failed/oversized bundle did not deliver a full read to the model.
+          // A failed bundle did not deliver usable context to the model.
           if (!delivered) this.observed.delete(file);
         }
       },

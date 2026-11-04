@@ -56,3 +56,13 @@ Dependency/symbol inspection used Docdex; impact edges were empty. Delegation re
 
 Installed updated ManagedDocdex.js, SessionController.js and TerminalTui.js atomically with backups. Full regression and installed PTY validation running. npm publication remains explicitly paused.
 Final validation: full suite 2,003 tests, 1,997 passed, six platform skips, zero failures; installed 16-flow PTY passed. Real Docdex collision integration separately passed with the configured private binary (not skipped). Confirmed orphan PID gone. Docdex pre-commit and whitespace checks passed.
+
+## Latest log audit and large-file preparation
+
+The repeated pasted LockBusy error is session86acd0e5 at15:00UTC, before a475768 at15:07. Latest sessiondefb88c2 began15:38, successfully used Docdex and edited files, then failed16:19 with repeated prepare_edit failures. Large games.js exceeded the helper's14000-character bundle cap; the helper threw and cleared read evidence, prompting loops. This is a distinct newer failure, not recurrence of the startup error.
+
+prepare_edit now returns bounded excerpts (each inner output capped by serialized size), exposes offset/nextOffset/totalChars for file paging, and labels truncated content. It preserves inner permissions, current-content hashes, structural receipt checks and race detection. Child operations no longer independently trip the repeat detector while paging; the outer prepare_edit request, including offset, remains tracked. The new paging test initially caught internal read progress annotations corrupting page content, and this tracking change addresses that regression. Large source must be inspected at the target section before exact patches; unshown content is explicitly disclosed.
+
+Docdex symbol lookup returned missing_index and reindex failed with index HTTP request failed during audit; graph had no edges. Direct source/consumer review and regression tests supplement unavailable index data. Delegation receipt4d97b88b-b544-4f78-b791-1f6798d5b964 reviewed the bounded-result design. No changes made to the user's GameHub source or npm registry.
+Validation: build and all68 SessionController tests passed, including unchanged permission/race protections, oversized structural preparation, and paged escaped-source exact patch with byte preservation. Installed controller atomically and confirmed byte equality with tested build; previous controller retained. Docdex pre-commit and whitespace checks passed.
+Additional interaction-router, runner and context-compression suite:105passed, zero failures (173focused tests total). npm publishing remains paused.

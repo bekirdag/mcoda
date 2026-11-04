@@ -1574,11 +1574,11 @@ for (const scenario of ["success", "skipped-parser", "content-race", "oversized"
         case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["math.js"] });
         case 1: return call("prepare_edit", { path: "math.js" });
         case 2:
-          if (scenario === "success") { assert.match(previous, /"prepared":true/); assert.match(previous, /docdex_impact_graph/); }
+          if ((scenario === "success" || scenario === "oversized")) { assert.match(previous, /"prepared":true/); assert.match(previous, /docdex_impact_graph/); if (scenario === "oversized") { assert.match(previous, /Excerpts only/); assert.match(previous, /"nextOffset":/); assert.ok(previous.length < 14000); } }
           else assert.match(previous, /ERROR\[/);
           return call("write_file", { path: "math.js", content: "export const x = 1;\n" });
         case 3:
-          assert.match(previous, scenario === "success" ? /Wrote math.js/ : /has not been read/);
+          assert.match(previous, (scenario === "success" || scenario === "oversized") ? /Wrote math.js/ : /has not been read/);
           return call("work_block", { taskId: "T1", reason: "Preparation regression scenario finished" });
         default: return reply("Checkpoint retained.");
       }
@@ -1587,14 +1587,14 @@ for (const scenario of ["success", "skipped-parser", "content-race", "oversized"
     const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: scenario === "budget" ? { config: limited, hash: orchestrationHash(limited), source: "test" } : resolved, provider,
       permissions: scenario === "budget" ? "plan" : "workspace", runContext: scenario === "host-denied" ? { deniedTools: ["docdex_symbols"] } : {}, onEvent: e => events.push(e) });
     assert.equal((await controller.run("Prepare and safely edit math.js")).completed, false);
-    const expected = scenario === "success" ? "export const x = 1;\n" : scenario === "content-race" ? "export const x = 9;\n" : original;
+    const expected = (scenario === "success" || scenario === "oversized") ? "export const x = 1;\n" : scenario === "content-race" ? "export const x = 9;\n" : original;
     assert.equal(await fs.readFile(path.join(root, "math.js"), "utf8"), expected);
     const receipts = events.filter(e => e.type === "tool_receipt").map(e => e.data.receipt as { id: string; tool: string; status: string });
     assert.equal(new Set(receipts.map(r => r.id)).size, receipts.length);
-    assert.equal(receipts.find(r => r.tool === "prepare_edit")?.status, scenario === "success" ? "success" : "failed");
+    assert.equal(receipts.find(r => r.tool === "prepare_edit")?.status, (scenario === "success" || scenario === "oversized") ? "success" : "failed");
     assert.equal(receipts.some(r => r.status === "pending"), false);
-    if (scenario === "success") assert.deepEqual(receipts.slice(1, 5).map(r => r.tool), ["read_file", "docdex_symbols", "docdex_impact_graph", "prepare_edit"]);
-    if (scenario === "host-denied" || scenario === "oversized") assert.equal(symbolCalls, 0);
+    if ((scenario === "success" || scenario === "oversized")) assert.deepEqual(receipts.slice(1, 5).map(r => r.tool), ["read_file", "docdex_symbols", "docdex_impact_graph", "prepare_edit"]);
+    if (scenario === "host-denied") assert.equal(symbolCalls, 0);
     if (scenario === "budget") assert.equal((controller.status().usage as { toolCalls: number }).toolCalls, 3);
   });
 }
@@ -1662,3 +1662,33 @@ for (const failure of ["startup", "index"] as const) {
     assert.equal(events.filter(e => e.type === "docdex_degraded").length, 1);
   });
 }
+
+test("large prepare_edit pages escaped source and preserves it during an exact patch", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-paged-prepare-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-paged-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const original = '// "\\'.repeat(2000) + '\nexport const value = 1;\n';
+  await fs.writeFile(path.join(root, "large.js"), original);
+  let step = 0, pages = 0, collected = "";
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    if (step++ === 0) return call("work_claim", { taskId: "T1", allowedPaths: ["large.js"] });
+    if (step === 2) return call("prepare_edit", { path: "large.js" });
+    const previous = request.messages.at(-1)!.content;
+    if (previous.startsWith('{"path":"large.js","prepared":true')) {
+      const data = JSON.parse(previous.split('\n\n[Tool metadata:')[0]);
+      const read = data.results.find((item: { tool: string }) => item.tool === "read_file");
+      assert.ok(previous.length < 14000); assert.equal(read.offset, collected.length);
+      collected += read.output; pages++;
+      if (read.nextOffset !== null) return call("prepare_edit", { path: "large.js", offset: read.nextOffset });
+      assert.equal(collected, original);
+      return call("write_file", { path: "large.js", search: "value = 1", content: "value = 2" });
+    }
+    if (previous.includes("Patched large.js")) return call("work_block", { taskId: "T1", reason: "Paged preparation regression finished" });
+    return reply("Checkpoint retained.");
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  await controller.run("Patch the value in large.js");
+  assert.ok(pages > 1);
+  assert.equal(await fs.readFile(path.join(root, "large.js"), "utf8"), original.replace("value = 1", "value = 2"));
+});
