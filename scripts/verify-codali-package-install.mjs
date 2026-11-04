@@ -19,7 +19,9 @@ const output = outputIndex < 0 ? undefined : path.resolve(process.argv[outputInd
 const artifactsIndex = process.argv.indexOf('--artifacts-dir');
 const artifactsDir = artifactsIndex < 0 ? undefined : path.resolve(process.argv[artifactsIndex + 1]);
 const report = { schemaVersion: 1, platform: `${process.platform}-${process.arch}`, node: process.version, checks: [], artifacts: [] };
-const env = { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) };
+// Toolcache Python on self-hosted Linux needs its shared-library search path.
+// Keep the environment allowlisted; never inherit credentials or user configuration.
+const env = { PATH: process.env.PATH, ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}), ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) };
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
 const run = (command, args, expectedStatus = 0, timeout = 60_000) => {
   const result = spawnSync(command, args, { cwd: project, env, encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024 });
