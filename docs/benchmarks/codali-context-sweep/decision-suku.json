@@ -1,0 +1,7 @@
+{
+  "requested": 65536,
+  "selected": 65536,
+  "reason": "explicit candidate passed correctness, queue, memory and <=1.5x generation-time qualification; higher capacity alone is not preferred",
+  "qualified": true,
+  "matched_generation_time_ratio": 1.0119923249120564
+}
