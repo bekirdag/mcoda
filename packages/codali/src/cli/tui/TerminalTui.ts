@@ -175,6 +175,7 @@ export class TerminalTui {
       if (!this.assistant) this.assistant = this.append("assistant", "CODALI", "");
       this.assistant.text = (this.assistant.text + this.stream.write(data.content)).slice(-262144);
     } else if (event.type === "model_route") { this.state.route = terminalText(`${data.modelId ?? "Model"}${data.host ? ` on ${data.host}` : ""}`); this.state.activity = "Thinking"; }
+    else if (event.type === "docdex_degraded" && typeof data.message === "string") this.notice(data.message);
     else if (event.type === "interaction_progress" && typeof data.message === "string") this.state.activity = terminalText(data.message);
     else if (event.type === "model_recovery" && typeof data.message === "string") {
       if (this.assistant) { this.assistant.kind = "notice"; this.assistant.title = "Incomplete response · retrying"; }

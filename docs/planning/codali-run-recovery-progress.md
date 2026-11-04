@@ -45,3 +45,14 @@ TerminalCommand now registers and removes SIGTSTP with the same handler as SIGIN
 
 Build and nine workspace-lock/artifact tests passed, including a real stopped child that cannot be evicted and recovery after its confirmed exit. Source PTY checks sent actual SIGTSTP to both TUI/plain clients and verified zero exit and screen restoration. Installed updated TerminalCommand.js and WorkspaceLock.js atomically with backups. npm publishing remains paused.
 Installed SIGTSTP checks and the full 16-flow real PTY suite passed. Confirmed blocking PID no longer exists and ~/apps/test lock is absent. Docdex pre-commit and whitespace checks passed.
+
+## Docdex recovery and continued execution
+
+User explicitly authorized Codali to attempt Docdex recovery and continue without it if recovery fails. The startup LockBusy came from orphaned managed child PID1871447 (PPID1, private Codali runtime, exact ~/apps/test repo). Verified those properties before stopping only that orphan with SIGTERM; no index lock files or indexes were deleted.
+
+ManagedDocdex now retries LockBusy once using a new instance and temporary repository index under its launch directory, keeping the original index/writer untouched. The recovery instance is owned and closed by its parent. Repeated failure does not recurse; cancellation propagates. SessionController catches managed startup and index-readiness failures, closes its owned process, unregisters unavailable Docdex tools, and gives the model and TUI an honest degraded-mode notice. prepare_edit can read source without claiming structural analysis; permissions, task claims, read-before-write and verification checks remain enforced. No paid/external daemon fallback is substituted.
+
+Dependency/symbol inspection used Docdex; impact edges were empty. Delegation receipt 8f699a49-125d-4dec-aaad-b8e36df4f057 reviewed lifecycle/fallback boundaries. Build and 168 focused tests passed. A real Docdex integration test held one live index writer, started a competing managed instance, verified recovered symbols and continued original-writer access, then verified memory/embedding behavior; passed, not skipped. Fixture tests cover successful and failed bounded retry and startup/index fallback with actual controlled file preparation/patches, including rejected writes without prior reads.
+
+Installed updated ManagedDocdex.js, SessionController.js and TerminalTui.js atomically with backups. Full regression and installed PTY validation running. npm publication remains explicitly paused.
+Final validation: full suite 2,003 tests, 1,997 passed, six platform skips, zero failures; installed 16-flow PTY passed. Real Docdex collision integration separately passed with the configured private binary (not skipped). Confirmed orphan PID gone. Docdex pre-commit and whitespace checks passed.

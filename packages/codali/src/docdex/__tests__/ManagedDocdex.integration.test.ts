@@ -59,6 +59,15 @@ test("managed Docdex preserves the workspace, persists scoped memory and refuses
     assert.equal(symbols.outcome.status, "ok");
     assert.ok(symbols.symbols.some(symbol => symbol.name === "probe"));
     assert.equal((await client.impactGraph("source.js") as { source: string }).source, "source.js");
+    // A second owner must recover without deleting the first writer's index lock.
+    const contender = create();
+    try {
+      const recovered = await contender.start();
+      await recovered.waitForIndex(30_000);
+      await recovered.indexIngest("source.js");
+      assert.equal((await recovered.symbols("source.js") as { outcome: { status: string } }).outcome.status, "ok");
+      assert.equal((await client.symbols("source.js") as { outcome: { status: string } }).outcome.status, "ok");
+    } finally { await contender.close(); }
     await client.memorySave("Metrics listen on port 5123.");
     assert.match(JSON.stringify(await client.memoryRecall("metrics port")), /5123/);
     await client.savePreference("managed-test", "constraint", "Keep metrics on port 5123.");

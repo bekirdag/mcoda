@@ -49,3 +49,37 @@ const fs = require('node:fs'), http = require('node:http'), path = require('node
     assert.deepEqual(limits, [96, 2048]);
   } finally { await instance.close(); }
 });
+
+for (const failRecovery of [false, true]) {
+  test(`index lock recovery is isolated and bounded (retry fails: ${failRecovery})`, { skip: process.platform === "win32" }, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-index-recovery-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const binary = path.join(root, "docdex-fixture"), attempts = path.join(root, "attempts.jsonl");
+    await fs.writeFile(binary, `#!${process.execPath}
+const fs=require('node:fs'),http=require('node:http');
+const state=process.argv[process.argv.indexOf('--state-dir')+1];
+fs.appendFileSync(${JSON.stringify(attempts)},JSON.stringify(state)+'\\n');
+if (${failRecovery} || state.includes('/repositories/')) { console.error('Failed to acquire Lockfile: LockBusy'); process.exit(1); }
+http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({managed_clients:{workspace_metadata_control:true,embedding_input_type:true,strict_repo_embeddings:true,deterministic_profile_embeddings:true}}));}).listen(Number(process.argv[process.argv.indexOf('--port')+1]),'127.0.0.1');
+`, { mode: 0o700 });
+    const config = validateOrchestrationConfig({ schemaVersion: 1, profile: "recovery", providers: { local: { adapter: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1" } },
+      models: { text: { provider: "local", catalogId: "text", revision: "r1", operations: ["chat.completions"], contextWindow: 4096, maxOutputTokens: 128 },
+        embed: { provider: "local", catalogId: "embed", revision: "fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1, embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } } },
+      bindings: { lead: { candidates: ["text"] }, embedding: { candidates: ["embed"], embeddingSpace: "recovery" } } });
+    const embeddings = new ConfiguredEmbeddings({ config, hash: orchestrationHash(config), source: "test" });
+    const notices: string[] = [];
+    const instance = new ManagedDocdex({ workspaceRoot: root, stateRoot: path.join(root, "state"), embeddings, binary, startupTimeoutMs: 4000,
+      provider: { name: "fixture", generate: async () => { throw new Error("Unexpected inference"); } }, onStatus: message => notices.push(message) });
+    try {
+      if (failRecovery) await assert.rejects(instance.start(), /LockBusy/);
+      else await instance.start();
+      const states = (await fs.readFile(attempts, "utf8")).trim().split('\n').map(line => JSON.parse(line) as string);
+      assert.equal(states.length, 2);
+      assert.match(states[0], /repositories/); assert.match(states[1], /launch-.*repository/);
+      assert.notEqual(states[0], states[1]);
+      assert.ok(notices.some(message => message.includes("existing index is preserved")));
+    } finally { await instance.close(); }
+    const entries = await fs.readdir(path.join(root, "state", embeddings.space.id));
+    assert.equal(entries.some(entry => entry.startsWith("launch-")), false);
+  });
+}

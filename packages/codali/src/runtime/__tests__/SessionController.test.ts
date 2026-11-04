@@ -1624,3 +1624,41 @@ test("terminal shell is read-only by default and explicit writes cannot bypass s
     assert.equal(await fs.readFile(path.join(root, "math.js"), "utf8"), "original");
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
+
+for (const failure of ["startup", "index"] as const) {
+  test(`Docdex ${failure} failure continues with guarded local preparation and edits`, { concurrency: false }, async t => {
+    const { ManagedDocdex } = await import("../../docdex/ManagedDocdex.js");
+    const { DocdexClient } = await import("../../docdex/DocdexClient.js");
+    const start = ManagedDocdex.prototype.start, wait = DocdexClient.prototype.waitForIndex;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-docdex-fallback-"));
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-docdex-fallback-state-"));
+    t.after(async () => { ManagedDocdex.prototype.start = start; DocdexClient.prototype.waitForIndex = wait; await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+    ManagedDocdex.prototype.start = async () => {
+      if (failure === "startup") throw new Error("Managed Docdex failed to start: LockBusy");
+      return new DocdexClient({ baseUrl: "http://127.0.0.1:1", repoRoot: root });
+    };
+    DocdexClient.prototype.waitForIndex = async () => { throw new Error("Index unavailable"); };
+    const selected = structuredClone(config);
+    selected.models.embed = { provider: "local", catalogId: "embed", revision: "fixture", operations: ["embeddings"], contextWindow: 8192, maxOutputTokens: 1, embeddingDimensions: 2, embedding: { queryPrefix: "q:", documentPrefix: "d:", normalization: "l2", pooling: "mean" } };
+    selected.bindings.embedding = { candidates: ["embed"], embeddingSpace: "fallback-test" };
+    const events: SessionEvent[] = []; let step = 0;
+    await fs.writeFile(path.join(root, "math.js"), "export const x = 0;\n");
+    const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+      const contract = contractReviewFixture(request); if (contract) return contract;
+      assert.equal(request.tools?.some(tool => tool.name.startsWith("docdex_")), false);
+      const previous = request.messages.at(-1)!.content;
+      switch (step++) {
+        case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["math.js"] });
+        case 1: return call("write_file", { path: "math.js", content: "unsafe" });
+        case 2: assert.match(previous, /has not been read/); return call("prepare_edit", { path: "math.js" });
+        case 3: assert.match(previous, /"prepared":true/); assert.match(previous, /unavailable; inspect related files/); return call("write_file", { path: "math.js", search: "x = 0", content: "x = 1" });
+        case 4: assert.match(previous, /Patched math.js/); return call("work_block", { taskId: "T1", reason: "Fallback regression scenario finished" });
+        default: return reply("Checkpoint retained.");
+      }
+    } };
+    const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: selected, hash: orchestrationHash(selected), source: "test" }, provider, permissions: "workspace", onEvent: e => { events.push(e); } });
+    await controller.run("Update math.js");
+    assert.equal(await fs.readFile(path.join(root, "math.js"), "utf8"), "export const x = 1;\n");
+    assert.equal(events.filter(e => e.type === "docdex_degraded").length, 1);
+  });
+}

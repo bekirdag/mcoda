@@ -28,15 +28,28 @@ export class ManagedDocdex {
   private abort?: () => void;
   private diagnostic = "";
   private activeRequests = 0;
+  private recovery?: ManagedDocdex;
   private readonly lifetime = new AbortController();
   constructor(private readonly options: {
     workspaceRoot: string; stateRoot: string; embeddings: ConfiguredEmbeddings; provider: Provider;
     binary?: string; binarySha256?: string; signal?: AbortSignal; allowWeb?: boolean; startupTimeoutMs?: number;
     webSearch?: (query: string, signal: AbortSignal) => Promise<unknown>;
     onStatus?: (status: string) => void;
+    isolatedIndex?: boolean;
   }) {}
 
   async start(): Promise<DocdexClient> {
+    try { return await this.startOnce(); }
+    catch (error) {
+      this.options.signal?.throwIfAborted();
+      if (this.options.isolatedIndex || !/LockBusy|Failed to acquire (?:index lock|Lockfile)/i.test(String(error))) throw error;
+      this.options.onStatus?.("Docdex index is busy. Retrying with a fresh temporary index; the existing index is preserved.");
+      this.recovery = new ManagedDocdex({ ...this.options, isolatedIndex: true });
+      return this.recovery.start();
+    }
+  }
+
+  private async startOnce(): Promise<DocdexClient> {
     this.options.signal?.throwIfAborted();
     if (this.child || this.bridge) throw new Error("Managed Docdex already started");
     if (this.options.binarySha256 && (!this.options.binary || await runtimeFileHash(this.options.binary) !== this.options.binarySha256)) throw new Error("Managed Docdex runtime checksum mismatch; run codali doctor before continuing");
@@ -107,7 +120,8 @@ export class ManagedDocdex {
       const bridgeBase = `http://127.0.0.1:${bridgePort}${prefix}`;
       const reservation = createServer(); const port = await listen(reservation); await closeServer(reservation);
       const configPath = path.join(this.launchDirectory, "config.toml");
-      const repositoryState = path.join(root, "repositories", createHash("sha256").update(path.resolve(this.options.workspaceRoot)).digest("hex"));
+      const repositoryState = this.options.isolatedIndex ? path.join(this.launchDirectory, "repository")
+        : path.join(root, "repositories", createHash("sha256").update(path.resolve(this.options.workspaceRoot)).digest("hex"));
       const config = `[core]\nglobal_state_dir = ${JSON.stringify(root)}\n[server]\nhttp_bind_addr = "127.0.0.1:${port}"\n[llm]\nprovider = "ollama"\nbase_url = ${JSON.stringify(bridgeBase)}\ndefault_model = "configured-docdex-helper"\nembedding_model = ${JSON.stringify(model)}\n[llm.delegation]\nenabled = false\nauto_enable = false\n[memory]\nenabled = true\n[memory.profile]\nembedding_model = "hash-embed-v1"\nembedding_dim = 768\n[memory.conversations]\nenabled = true\nauto_capture = false\n[memory.personal_preferences]\nenabled = false\n[memory.user_memory_sync]\nenabled = false\n`;
       // The private process sees only a short-lived bridge credential. The host
       // retains the service credential and owns authorization/audit at tool entry.
@@ -156,6 +170,7 @@ export class ManagedDocdex {
   }
 
   async close(): Promise<void> {
+    await this.recovery?.close(); this.recovery = undefined;
     this.lifetime.abort();
     const child = this.child; this.child = undefined;
     if (child && child.exitCode === null && child.signalCode === null) {
