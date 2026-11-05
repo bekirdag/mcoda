@@ -10,9 +10,9 @@ export interface PermissionGrants { schemaVersion: 1; grants: string[]; denials:
 export type PermissionPrompt = (request: PermissionRequest, signal?: AbortSignal) => Promise<PermissionAnswer>;
 
 const fileRead = new Set(["prepare_edit", "read_file", "list_directory", "list_files", "stat_path", "diff_summary", "search", "search_files", "search_text", "glob", "file_search"]);
-const fileWrite = new Set(["write_file", "apply_patch", "apply_diff", "media_export_artifact"]);
-const controlRead = new Set(["work_status", "work_refine", "work_plan", "work_claim", "work_release", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block"]);
-const executionWork = new Set(["work_claim", "work_verify", "work_complete"]);
+const fileWrite = new Set(["write_file", "create_directory", "apply_patch", "apply_diff", "media_export_artifact"]);
+const controlRead = new Set(["work_status", "work_refine", "work_plan", "work_claim", "work_release", "work_rescope", "work_reopen", "work_checkpoint", "work_decision", "work_verify", "work_complete", "work_block"]);
+const executionWork = new Set(["work_claim", "work_rescope", "work_verify", "work_complete"]);
 export const isExecutionWorkTool = (name: string): boolean => executionWork.has(name);
 const docdexReads = /^(docdex_(search|batch_search|rerank|open|files|tree|stats|symbols|ast|repo_inspect|impact_graph|impact_diagnostics|dag_export|memory_recall|get_profile|wakeup|diary_read|capabilities|conversation_search|conversation_read|conversation_list|kg_query))$/;
 
@@ -23,9 +23,9 @@ export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (fileWrite.has(tool.name)) return "write";
   if (["tools_discover", "tools_enable"].includes(tool.name)) return "read";
   if (tool.name === "tools_describe" && tool.capability === "discovery" && tool.readOnly) return "read";
-  if (tool.name === "calculate" && tool.capability === "calculation" && tool.readOnly) return "read";
+  if ((tool.name === "calculate" || tool.name === "calendar_calculate") && tool.capability === "calculation" && tool.readOnly) return "read";
   if (["verify_javascript", "verify_tests"].includes(tool.name) && tool.capability === "verification" && tool.readOnly) return "read";
-  if (["decimal_calculate", "numerical_calculate", "validate_json", "symbolic_math", "solve_constraints", "query_data", "transform_data"].includes(tool.name) && tool.capability === "deterministic" && tool.readOnly) return "read";
+  if (["transform_text", "decimal_calculate", "numerical_calculate", "validate_json", "symbolic_math", "solve_constraints", "query_data", "transform_data"].includes(tool.name) && tool.capability === "deterministic" && tool.readOnly) return "read";
   if (tool.name === "server_time" && tool.capability === "clock" && tool.readOnly) return "read";
   if (tool.name === "extract_entities" && tool.capability === "entity_hints" && tool.readOnly) return "read";
   if (["skill_list", "skill_load", "skill_read"].includes(tool.name) && tool.capability === "skill_read" && tool.readOnly) return "read";

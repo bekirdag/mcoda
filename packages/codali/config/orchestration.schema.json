@@ -190,6 +190,20 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "requirePlan": {
+          "type": "boolean",
+          "description": "Require an explicit work_plan before claiming implementation tasks. Useful for complete application builds."
+        },
+        "immutableInputs": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Authoritative workspace inputs protected from writes. Defaults to RFP.md and ENVIRONMENT.md; set [] to disable.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
         "maxWritingTasksPerWorktree": {
           "const": 1
         },
@@ -220,6 +234,16 @@
         },
         "reviewPolicy": {
           "const": "risk-and-evidence"
+        },
+        "initialTools": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,79}$"
+          },
+          "description": "Optional initial execution tool schemas; discovery and host permissions remain active."
         }
       },
       "required": [
@@ -264,7 +288,10 @@
         },
         "routerResponseFormat": {
           "type": "string",
-          "enum": ["json", "json_schema"]
+          "enum": [
+            "json",
+            "json_schema"
+          ]
         },
         "calculator": {
           "type": "boolean",
@@ -273,11 +300,22 @@
         "answerReview": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled"],
+          "required": [
+            "enabled"
+          ],
           "properties": {
-            "enabled": { "type": "boolean" },
-            "binding": { "type": "string", "minLength": 1 },
-            "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 4096 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxOutputTokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096
+            }
           }
         },
         "routerPrompt": {
@@ -611,7 +649,9 @@
               "const": false
             }
           },
-          "required": ["enabled"]
+          "required": [
+            "enabled"
+          ]
         },
         {
           "required": [

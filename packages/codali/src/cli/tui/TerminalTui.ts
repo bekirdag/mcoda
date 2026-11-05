@@ -162,7 +162,7 @@ export class TerminalTui {
       else if (event.type === "session_started" && !event.data.interactionId && typeof event.data.objective === "string") this.user(event.data.objective);
       else if (event.type === "goal_amended" && !event.data.interactionId && typeof event.data.instruction === "string") this.user(event.data.instruction);
       else if (event.type === "turn_result" && typeof event.data.content === "string") this.result(event.data.content);
-      else if (event.type === "turn_failed" && typeof event.data.message === "string") this.error(event.data.message);
+      else if (event.type === "turn_failed" && typeof event.data.message === "string") { this.error(event.data.message); if (typeof event.data.handoff === "string") this.notice(event.data.handoff); }
       else if (["tool_intent", "tool_receipt", "usage", "model_route"].includes(event.type)) this.event(event);
     }
     this.state.busy = false; this.state.activity = "Session resumed"; this.state.scroll = 0; this.schedule();
@@ -190,17 +190,22 @@ export class TerminalTui {
       if (!this.lastTool) this.lastTool = this.append("tool", "Process output", "");
       this.lastTool.text = (this.lastTool.text + terminalText(data.content)).slice(-65536);
     } else if (event.type === "tool_receipt") {
-      const receipt = data.receipt as { id: string; tool: string; status: string; args?: unknown; output?: string; error?: string };
+      const receipt = data.receipt as { id: string; tool: string; status: string; args?: unknown; output?: string; error?: string; syntaxCheck?: { status: string } };
       const block = this.state.blocks.find(item => item.id === receipt.id);
       if (block) {
         block.title = terminalText(`${receipt.status === "success" ? "✓" : "!"} ${toolActivity(receipt.tool, receipt.args)} · ${receipt.status === "success" ? "done" : "needs attention"}`);
         block.summary = receipt.status === "success" ? terminalText(toolCompletionSummary(receipt.tool, receipt.args, receipt.output)).slice(0, 600) : terminalText(receipt.error ?? receipt.output ?? "This step needs attention. Ctrl+O shows the details.").slice(0, 600);
+        if (receipt.syntaxCheck?.status === "failed") {
+          block.title = terminalText(`! ${toolActivity(receipt.tool, receipt.args)} · syntax needs fixing`);
+          block.summary = "The file was saved, but its Node syntax check failed. Codali needs to fix it before broader testing. Ctrl+O shows the error.";
+        }
         if (typeof receipt.output === "string") block.text = terminalText([receipt.args ? JSON.stringify(receipt.args, null, 2) : "", receipt.output].filter(Boolean).join("\n\n")).slice(-65536);
         else if (receipt.error) block.text += "\n" + terminalText(receipt.error);
       }
     } else if (event.type === "status" && typeof data.message === "string") this.state.activity = terminalText(data.message);
     else if (event.type === "turn_result" || event.type === "turn_failed") {
       if (this.assistant) this.assistant.text += this.stream.finish();
+      if (event.type === "turn_failed" && typeof data.handoff === "string") this.notice(data.handoff);
       this.state.busy = false; this.state.activity = event.type === "turn_failed" ? "Turn stopped" : data.mode && data.mode !== "execute" ? "Ready" : data.completed ? "Goal completed" : "Ready to continue";
     }
     this.schedule();

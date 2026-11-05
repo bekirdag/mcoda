@@ -1,7 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { completionReport } from "../CompletionReport.js";
+import { completionReport, interruptedReport } from "../CompletionReport.js";
 import { createWorkState } from "../../session/WorkState.js";
+
+test("stopped-run handoff retains pending work without inventing verification", () => {
+  const state = createWorkState("Complete the original application");
+  state.tasks[0].status = "blocked"; state.tasks[0].blocker = "Build still fails";
+  const original = structuredClone(state);
+  const report = interruptedReport(state, "session-id", ["src/app.ts"], ["uncertain-call"]);
+  assert.match(report, /Work is incomplete/);
+  assert.match(report, /Recorded verification: 0 task/);
+  assert.match(report, /Build still fails/);
+  assert.match(report, /src\/app.ts/);
+  assert.match(report, /1 operation outcome/);
+  assert.match(report, /\/resume session-id, then \/continue/);
+  assert.deepEqual(state, original);
+});
 
 test("completion reports use only currently accepted review summaries", () => {
   const state = createWorkState("Deliver"); state.status = "completed";

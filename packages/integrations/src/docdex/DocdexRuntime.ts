@@ -92,8 +92,11 @@ export const resolveDocdexBinary = (env: NodeJS.ProcessEnv = process.env): strin
 
 export const runDocdex = async (
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> => {
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)) {
+    throw new Error("Docdex timeoutMs must be a positive integer no greater than 2147483647");
+  }
   const env = buildDocdexEnv(options.env);
   const binary = resolveDocdexBinary(env);
   if (!binary) {
@@ -103,6 +106,7 @@ export const runDocdex = async (
   const { stdout, stderr } = await execFile(javascript ? process.execPath : binary, javascript ? [binary, ...args] : args, {
     cwd: options.cwd,
     env,
+    timeout: options.timeoutMs,
   });
   return { stdout: stdout ?? "", stderr: stderr ?? "" };
 };
@@ -150,13 +154,14 @@ export const parseDocdexCheckOutput = (output: string): DocdexCheckResult => {
   throw new Error(`Docdex check returned invalid JSON: ${message}Output: "${snippet}"`);
 };
 
-export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<DocdexCheckResult> => {
+export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<DocdexCheckResult> => {
   let stdout = "";
   let stderr = "";
   try {
-    ({ stdout, stderr } = await runDocdex(["check"], options));
+    ({ stdout, stderr } = await runDocdex(["check"], { ...options, timeoutMs: options.timeoutMs ?? 30_000 }));
   } catch (error) {
-    const execError = error as NodeJS.ErrnoException & { stdout?: string | Buffer; stderr?: string | Buffer };
+    const execError = error as NodeJS.ErrnoException & { stdout?: string | Buffer; stderr?: string | Buffer; killed?: boolean };
+    if (execError.killed) throw Object.assign(new Error(`Docdex check timed out or was terminated after at most ${options.timeoutMs ?? 30_000}ms`), { cause: error });
     stdout = typeof execError.stdout === "string" ? execError.stdout : execError.stdout?.toString() ?? "";
     stderr = typeof execError.stderr === "string" ? execError.stderr : execError.stderr?.toString() ?? "";
     if (!stdout && !stderr) {

@@ -10,10 +10,10 @@ import { discoverHostToolchain, extraRuntimeMounts, type HostRuntime } from "./H
 export interface ExecutorStatus { available: boolean; backend: "bubblewrap" | "sandbox-exec" | "unavailable"; reason?: string; }
 
 /** All paths have been canonicalized by the host, before launching the sandbox. */
-export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false, runtimeRoots: string[] = []): string => {
+export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false, runtimeRoots: string[] = [], protectedPaths: string[] = [], cacheRoot?: string): string => {
   const quoted = (value: string) => JSON.stringify(value);
   const ancestors = new Set<string>();
-  for (const target of [root, scratch, ...runtimeRoots, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
+  for (const target of [root, scratch, ...(cacheRoot ? [cacheRoot] : []), ...runtimeRoots, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
     for (let parent = path.dirname(target); parent !== path.dirname(parent); parent = path.dirname(parent)) ancestors.add(parent);
   }
   return [
@@ -37,8 +37,10 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     ...runtimeRoots.map(runtime => `(allow file-read* (subpath ${quoted(runtime)}))`),
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
     `(allow file-read* file-write* (subpath ${quoted(scratch)}))`,
+    ...(cacheRoot ? [`(allow file-read* file-write* (subpath ${quoted(cacheRoot)}))`, `(deny file-write-unlink (literal ${quoted(cacheRoot)}))`] : []),
     ...writePaths.map(file => `(allow file-write* (subpath ${quoted(file)}))`),
     ...[".git", ".mcoda"].map(dir => `(deny file-write* (subpath ${quoted(path.join(root, dir))}))`),
+    ...protectedPaths.map(file => `(deny file-write* (subpath ${quoted(file)}))`),
     network ? "(allow network*)" : "(deny network*)",
   ].join("\n");
 };
@@ -50,6 +52,9 @@ const bubblewrapRoot = (): string[] => {
   // Expose only library targets already inside system library roots, not /etc
   // or the other configured alternatives. ffprobe needs these on Ubuntu 22.04.
   if (existsSync("/etc/ld.so.cache")) args.push("--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache");
+  // Toolchain installers inspect this public distribution descriptor. Do not
+  // expose all of /etc merely to identify the operating system.
+  if (existsSync("/etc/os-release")) args.push("--ro-bind", realpathSync("/etc/os-release"), "/etc/os-release");
   if (existsSync("/etc/alternatives")) for (const name of readdirSync("/etc/alternatives")) {
     if (!/^lib[^/]+\.so(?:\..+)?$/.test(name)) continue;
     try {
@@ -77,14 +82,44 @@ export const executorStatus = (): ExecutorStatus => {
   return { available: false, backend: "unavailable", reason: "No supported isolation backend on this platform" };
 };
 
-export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
+const packageCacheEnvironment = (root: string) => ({
+  NPM_CONFIG_CACHE: path.join(root, "npm"), GRADLE_USER_HOME: path.join(root, "gradle"),
+  PIP_CACHE_DIR: path.join(root, "pip"), UV_CACHE_DIR: path.join(root, "uv"),
+  CARGO_HOME: path.join(root, "cargo"), XDG_CACHE_HOME: path.join(root, "xdg"),
+});
+
+/** Disposable, workspace-specific cache. Never mount an existing host package cache or credentials. */
+const preparePackageCache = async (requested: string, workspace: string): Promise<string> => {
+  const absolute = path.resolve(requested);
+  const unsafe = (value: string) => value === path.parse(value).root || value === realpathSync(os.homedir())
+    || value === workspace || workspace.startsWith(`${value}${path.sep}`) || value.startsWith(`${workspace}${path.sep}`);
+  if (unsafe(absolute)) throw new ToolExecutionError("tool_permission_denied", "Package cache must be a private dedicated directory outside the workspace");
+  await fs.mkdir(absolute, { recursive: true, mode: 0o700 });
+  const stat = await fs.lstat(absolute), real = await fs.realpath(absolute);
+  if (stat.isSymbolicLink() || !stat.isDirectory() || unsafe(real)
+    || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) {
+    throw new ToolExecutionError("tool_permission_denied", "Package cache must be an owned private directory, not a symlink");
+  }
+  return real;
+};
+
+export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
   const status = options.status ?? executorStatus();
   return async (command, args, context) => {
     if (!status.available) throw new ToolExecutionError("tool_permission_denied", status.reason ?? "Isolation unavailable");
     const root = realpathSync(context.workspaceRoot);
     const cwd = resolveShellWorkingDirectory(root, context.shellWorkingDirectory);
     if (root === path.parse(root).root) throw new ToolExecutionError("tool_permission_denied", "Filesystem root cannot be an isolated workspace");
+    const cacheRoot = options.cacheRoot ? await preparePackageCache(options.cacheRoot, root) : undefined;
     const runtimes = discoverHostToolchain(root);
+    const protectedPaths = [...new Set((context.protectedPaths ?? []).flatMap(file => {
+      const requested = path.resolve(root, file);
+      if (requested === root || !requested.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Protected input must be inside the workspace");
+      if (!existsSync(requested)) return [];
+      const real = realpathSync(requested);
+      if (!real.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Protected input resolves outside the workspace");
+      return [requested, real];
+    }))];
     const runtimeRoots = [...new Set((options.readOnlyRuntimeRoots ?? []).map(requested => {
       const real = realpathSync(requested);
       if (!statSync(real).isDirectory() || [path.parse(real).root, os.homedir(), context.workspaceRoot].some(forbidden => real === realpathSync(forbidden))
@@ -94,10 +129,11 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
     const writePaths = (context.allowedWritePaths ?? ["."]).map(file => {
       const requested = path.resolve(root, file);
       if (requested !== root && !requested.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope escapes workspace");
-      if (!existsSync(requested)) throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory/file with write_file before shell execution");
+      if (!existsSync(requested)) throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory with create_directory (or file with write_file) before shell execution");
       const real = realpathSync(requested);
       if (real !== root && !real.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope resolves outside workspace");
       if ([".git", ".mcoda"].some(dir => real === path.join(root, dir) || real.startsWith(`${root}/${dir}/`))) throw new ToolExecutionError("tool_permission_denied", "Repository control metadata cannot be a write scope");
+      if (protectedPaths.some(input => real === input || real.startsWith(`${input}${path.sep}`))) throw new ToolExecutionError("tool_permission_denied", "Authoritative input cannot be a write scope");
       return real;
     });
     if (status.backend === "bubblewrap") {
@@ -112,10 +148,13 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       launch.push("--dir", "/tmp/codali-bin");
       for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
       for (const file of writePaths) launch.push("--bind", file, file);
+      if (cacheRoot) launch.push("--bind", cacheRoot, "/tmp/codali-cache");
       launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
       for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" })) launch.push("--setenv", key, value);
+      if (cacheRoot) for (const [key, value] of Object.entries(packageCacheEnvironment("/tmp/codali-cache"))) launch.push("--setenv", key, value);
       // Git hooks/config and private session state are not part of executable workspace access.
       for (const dir of [".git", ".mcoda"]) if (existsSync(path.join(root, dir))) launch.push("--ro-bind", path.join(root, dir), path.join(root, dir));
+      for (const file of protectedPaths) launch.push("--ro-bind", realpathSync(file), file);
       launch.push("--", command, ...args);
       return runProcess("/usr/bin/bwrap", launch, context);
     }
@@ -125,11 +164,12 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       const privateHome = path.join(scratch, "home"); const privateBin = path.join(scratch, "bin");
       await fs.mkdir(privateHome, { mode: 0o700 }); await fs.mkdir(privateBin, { mode: 0o700 });
       for (const runtime of runtimes) await fs.symlink(runtime.executable, path.join(privateBin, runtime.name));
-      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network, runtimeRoots);
+      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network, runtimeRoots, protectedPaths, cacheRoot);
       return await runProcess("/usr/bin/sandbox-exec", ["-p", profile, runtimes.find(runtime => runtime.name === command)?.executable ?? command, ...args], context, {
         ...runtimes.find(runtime => runtime.name === "cc")?.environment,
         HOME: privateHome, TMPDIR: scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
         CARGO_HOME: path.join(privateHome, "cargo"), XDG_CACHE_HOME: path.join(privateHome, "cache"),
+        ...(cacheRoot ? packageCacheEnvironment(cacheRoot) : {}),
         PYTHONPYCACHEPREFIX: path.join(privateHome, "pycache"), PYTHONUSERBASE: path.join(privateHome, "python"),
         // Host Git settings can invoke external helpers or read private paths.
         GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1",

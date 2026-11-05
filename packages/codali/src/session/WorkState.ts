@@ -164,6 +164,18 @@ export const releaseWorkTask = (state: WorkState, taskId: string, attemptId: str
   reopenTask(task!); refreshReadyTasks(state);
 };
 
+/** Change only a live task's file scope, preserving its contract and fencing old receipts. */
+export const rescopeWorkTask = (state: WorkState, taskId: string, attemptId: string, allowedPaths: string[], note: string, leaseMs = 300_000): WorkTask => {
+  const candidate = structuredClone(state);
+  const task = assertWorkAttempt(candidate, taskId, attemptId);
+  releaseWorkTask(candidate, taskId, attemptId, note);
+  updateWorkPlan(candidate, [{ id: task.id, title: task.title, phaseId: task.phaseId,
+    requirementIds: [...task.requirementIds], dependsOn: [...task.dependsOn], allowedPaths: [...allowedPaths] }], [], note);
+  const claimed = claimWorkTask(candidate, taskId, leaseMs);
+  Object.assign(state, candidate);
+  return claimed;
+};
+
 /** Withdraw a disproven verification and fence all dependent attempts without rewriting the plan. */
 export const reopenVerifiedTask = (state: WorkState, taskId: string, reason: string): string[] => {
   const task = state.tasks.find(t => t.id === taskId);

@@ -41,6 +41,20 @@ test("ShellTool blocks when disabled", { concurrency: false }, async () => {
   }, /Shell tool is disabled/);
 });
 
+test("ShellTool permits formatting source syntax but still blocks disk formatting", async () => {
+  const tool = createShellTool();
+  let launches = 0;
+  const context = { workspaceRoot: process.cwd(), shellAllowlist: ["sh", "format"], allowShell: true,
+    shellExecutor: async () => { launches++; return { output: "checked" }; } };
+  for (const source of ['swift -e \'print(String(format: "%.2f", 1.2))\'', 'node -e \'value.format()\'']) {
+    assert.equal((await tool.handler({ command: "sh", args: ["-c", source] }, context)).output, "checked");
+  }
+  for (const request of [{ command: "format", args: ["disk"] }, { command: "sh", args: ["-c", 'format "disk"'] }, { command: "sh", args: ["-c", "rm -rf directory"] }]) {
+    await assert.rejects(tool.handler(request, context), /Destructive operation blocked/);
+  }
+  assert.equal(launches, 2);
+});
+
 test("ShellTool blocks destructive operations by default", { concurrency: false }, async () => {
   const tool = createShellTool();
   await assert.rejects(async () => {

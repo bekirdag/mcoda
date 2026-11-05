@@ -67,7 +67,8 @@ test('default browser, testing and debugging skills are discoverable and readabl
       catalog.list().skills.some((skill) => skill.name === name),
       name
     );
-    assert.match(String((await catalog.read(name)).content), /https:\/\//);
+    const content = String((await catalog.read(name)).content);
+    assert.match(content, name === 'docdex-research' ? /Source: Docdex.*~\/\.codex\/AGENTS\.md/ : /https:\/\//);
   }
 });
 

@@ -6,6 +6,32 @@ import path from "node:path";
 import { createIsolatedExecutor, darwinSandboxProfile, executorStatus } from "../IsolatedExecutor.js";
 import { createShellTool } from "../ShellTool.js";
 
+test("package caches persist across invocations without exposing state or permitting source writes", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-cache-test-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "repo"), cacheRoot = path.join(parent, "state", "package-cache");
+  await fs.mkdir(root); await fs.mkdir(path.dirname(cacheRoot));
+  const secret = path.join(parent, "state", "credentials.json");
+  await fs.writeFile(secret, "private");
+  const context = { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 };
+  const execute = createIsolatedExecutor({ status, cacheRoot });
+  await execute("node", ["-e", "const fs=require('fs'),p=require('path');for(const key of ['NPM_CONFIG_CACHE','GRADLE_USER_HOME','PIP_CACHE_DIR','UV_CACHE_DIR','CARGO_HOME','XDG_CACHE_HOME']){fs.mkdirSync(process.env[key],{recursive:true});fs.writeFileSync(p.join(process.env[key],'artifact'),'cached')};fs.writeFileSync(p.join(process.env.HOME,'ephemeral'),'temporary')"], context);
+  const result = await createIsolatedExecutor({ status, cacheRoot })("node", ["-e", "const fs=require('fs'),p=require('path');console.log(fs.readFileSync(p.join(process.env.GRADLE_USER_HOME,'artifact'),'utf8'));if(fs.existsSync(p.join(process.env.HOME,'ephemeral')))throw Error('HOME leaked')"], context);
+  assert.equal(result.output.trim(), "cached");
+  await assert.rejects(execute("node", ["-e", "require('fs').writeFileSync('unexpected.txt','no')"], context));
+  await assert.rejects(execute("node", ["-e", "console.log(require('fs').readFileSync(process.argv[1],'utf8'))", secret], context));
+  await fs.symlink(secret, path.join(cacheRoot, "npm", "escape"));
+  await assert.rejects(execute("node", ["-e", "console.log(require('fs').readFileSync(require('path').join(process.env.NPM_CONFIG_CACHE,'escape'),'utf8'))"], context));
+  assert.deepEqual(await fs.readdir(root), []);
+  const other = createIsolatedExecutor({ status, cacheRoot: path.join(parent, "other-cache") });
+  assert.equal((await other("node", ["-e", "console.log(require('fs').existsSync(require('path').join(process.env.GRADLE_USER_HOME,'artifact')))"], context)).output.trim(), "false");
+  await fs.symlink(cacheRoot, path.join(parent, "cache-alias"));
+  for (const unsafe of [root, parent, os.homedir(), path.join(parent, "cache-alias")]) {
+    await assert.rejects(createIsolatedExecutor({ status, cacheRoot: unsafe })("node", ["-e", "0"], context), /cache must/i);
+  }
+});
+
 test("trusted runtime mounts expose libraries read-only without exposing adjacent files", async t => {
   const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-runtime-work-"));
@@ -21,6 +47,35 @@ test("trusted runtime mounts expose libraries read-only without exposing adjacen
     await assert.rejects(execute("node", ["-e", `require('fs').${operation}(process.argv[1]${operation === "writeFileSync" ? ", 'changed'" : ""})`, target], context));
   }
   await assert.rejects(createIsolatedExecutor({ status, readOnlyRuntimeRoots: [os.homedir()] })("node", ["-e", ""], context), /dedicated installed/);
+});
+
+test("Linux sandbox exposes distribution identity without exposing private system files", async t => {
+  const status = executorStatus();
+  if (status.backend !== "bubblewrap" || !status.available) { t.skip("Linux bubblewrap only"); return; }
+  const expected = await fs.readFile("/etc/os-release", "utf8");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-os-discovery-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const execute = createIsolatedExecutor({ status });
+  const context = { workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 5000 };
+  assert.equal((await execute("cat", ["/etc/os-release"], context)).output.trim(), expected.trim());
+  await assert.rejects(execute("cat", ["/etc/shadow"], context));
+});
+
+test("immutable inputs survive broad parent write mounts, replacement and aliases", async t => {
+  const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-input-mount-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, "RFP.md"), "original requirements");
+  await fs.symlink("RFP.md", path.join(root, "alias.md"));
+  const execute = createIsolatedExecutor({ status });
+  const context = { workspaceRoot: root, allowedWritePaths: ["."], protectedPaths: ["RFP.md"], shellTimeoutMs: 5000 };
+  await execute("node", ["-e", "require('fs').writeFileSync('implementation.txt','allowed')"], context);
+  for (const source of ["fs.writeFileSync('RFP.md','wrong')", "fs.writeFileSync('alias.md','wrong')", "fs.unlinkSync('RFP.md')", "fs.renameSync('implementation.txt','RFP.md')"]) {
+    await assert.rejects(execute("node", ["-e", `const fs=require('fs');${source}`], context));
+    assert.equal(await fs.readFile(path.join(root, "RFP.md"), "utf8"), "original requirements");
+  }
+  await assert.rejects(execute("node", ["-e", "0"], { ...context, allowedWritePaths: ["alias.md"] }), /Authoritative input/);
+  assert.equal(await fs.readFile(path.join(root, "implementation.txt"), "utf8"), "allowed");
 });
 
 test("Darwin policy confines temporary access to one owned directory and quotes hostile path syntax", () => {

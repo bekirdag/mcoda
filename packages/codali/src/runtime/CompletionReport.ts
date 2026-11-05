@@ -1,5 +1,20 @@
 import type { WorkState } from "../session/WorkTypes.js";
 
+/** A stopped turn is not a delivery. Summarize only durable state, without inference. */
+export function interruptedReport(state: WorkState, sessionId: string, touched: string[], uncertain: string[]): string {
+  const pending = state.tasks.filter(task => !["verified", "cancelled", "superseded"].includes(task.status));
+  const verified = state.tasks.filter(task => task.status === "verified").length;
+  const short = (text: string) => text.replace(/\s+/g, " ").slice(0, 180);
+  const lines = ["Work is incomplete; the original requirements and checkpoint are retained.",
+    `Recorded verification: ${verified} task(s). Remaining: ${pending.length} task(s).`,
+    ...pending.slice(0, 6).map(task => `- ${task.id} [${task.status}]: ${short(task.title)}${task.blocker ? ` — ${short(task.blocker)}` : ""}`)];
+  if (pending.length > 6) lines.push(`${pending.length - 6} more tasks are retained in /status.`);
+  if (touched.length) lines.push(`Changed files (not a completion claim): ${touched.slice(0, 8).map(short).join(", ")}${touched.length > 8 ? `; ${touched.length - 8} more` : ""}.`);
+  if (uncertain.length) lines.push(`${uncertain.length} operation outcome(s) need reconciliation before retrying.`);
+  lines.push(`Resume this session with /resume ${sessionId}, then /continue. Inspect /status and /usage for details.`);
+  return lines.join("\n");
+}
+
 /** Delivery repeats accepted evidence instead of asking the model to introduce
  * new factual claims after the goal has already passed review. */
 export function completionReport(state: WorkState, budgetExhausted = false): string {

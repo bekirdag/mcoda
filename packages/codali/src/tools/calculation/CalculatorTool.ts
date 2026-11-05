@@ -97,7 +97,7 @@ export const evaluateCalculation = (expression: string): number => {
 
 export const createCalculatorTool = (): ToolDefinition => ({
   name: "calculate", capability: "calculation", readOnly: true,
-  description: "Evaluate a numeric expression. Supports + - * / %, powers ^ or **, parentheses, pi, e, abs/sqrt/floor/ceil/round (one argument), min/max/sum (1-128 comma-separated arguments). % is signed remainder; round ties toward positive infinity. IEEE-754 floating-point, not exact decimal arithmetic; unsafe integers rejected. No variables, code, files or network. Use observed results to check arithmetic; you remain responsible for choosing the right formula and units.",
+  description: "Approximate IEEE-754 arithmetic only. For exact money/decimals discover decimal_calculate. No dates or code. Supports + - * / %, powers ^ or **, parentheses, pi, e, abs/sqrt/floor/ceil/round (one argument), min/max/sum (1-128 comma-separated arguments). % is signed remainder; round ties toward positive infinity; unsafe integers rejected. No variables, files or network. Verify the full formula and units, not only intermediate constants.",
   inputSchema: { type: "object", properties: { expression: { type: "string", minLength: 1, maxLength: 4096 } }, required: ["expression"], additionalProperties: false },
   handler: async (args, context) => {
     context.signal?.throwIfAborted();

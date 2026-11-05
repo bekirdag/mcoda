@@ -27,6 +27,17 @@ test("host toolchain discovery rejects workspace executables and mismatched pack
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(tools, { recursive: true, force: true }); }
 });
 
+test("host discovery exposes a user-installed native ripgrep but rejects workspace copies", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rg-work-"));
+  const install = await fs.mkdtemp(path.join(os.tmpdir(), "codali-rg-install-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(install, { recursive: true, force: true }); });
+  // Discovery inspects binary headers; it never executes untrusted candidates.
+  for (const directory of [root, install]) await fs.writeFile(path.join(directory, "rg"), Buffer.from("7f454c4600000000", "hex"), { mode: 0o755 });
+  const runtime = discoverHostToolchain(root, [root, install].join(path.delimiter)).find(item => item.name === "rg");
+  assert.equal(runtime?.executable, await fs.realpath(path.join(install, "rg")));
+  assert.equal(runtime?.directory, false);
+});
+
 test("isolated user-installed tools cannot read neighboring files, inherit secrets or modify their installation", async t => {
   const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tool-workspace-"));

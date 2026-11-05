@@ -8,6 +8,15 @@ export interface InteractionOutputContract {
 
 export const unconstrainedOutput = (): InteractionOutputContract => ({ format: "text", requiredKeys: [], minWords: null, maxWords: null });
 
+/** Remove only one enclosing JSON fence, never reserialize or reinterpret its values. */
+export const normalizeJsonPresentation = (content: string): string => {
+  const match = /^\s*```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```\s*$/u.exec(content);
+  if (!match) return content;
+  const body = match[1].trim();
+  try { JSON.parse(body); } catch { return content; }
+  return body;
+};
+
 export const outputContractSchema = {
   type: "object", additionalProperties: false, required: ["format", "requiredKeys", "minWords", "maxWords"],
   properties: {

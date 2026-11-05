@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { PermissionGate } from "../PermissionGate.js";
 import type { ToolDescriptor } from "../../tools/ToolTypes.js";
 const tool = (name: string, readOnly = false): ToolDescriptor => ({ name, readOnly, capability: "workspace", description: name });
+test("calendar arithmetic is trusted read-only computation, with explicit denials retained", async () => {
+  const calendar = { ...tool("calendar_calculate", true), capability: "calculation" };
+  await new PermissionGate("plan").authorize(calendar, {});
+  await assert.rejects(new PermissionGate("plan").authorize({ ...calendar, readOnly: false }, {}), /Planning mode/);
+  await assert.rejects(new PermissionGate("plan").authorize({ ...calendar, capability: "external" }, {}), /Planning mode/);
+  await assert.rejects(new PermissionGate("plan", undefined, { deniedTools: [calendar.name] }).authorize(calendar, {}), /explicitly denied/);
+});
 test("full automatically approves all tool kinds but retains explicit denials and isolation", async () => {
   let prompts = 0;
   const gate = new PermissionGate("full", async () => { prompts++; return { allow: false }; }, { shellIsolated: true });

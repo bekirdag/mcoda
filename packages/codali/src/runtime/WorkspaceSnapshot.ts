@@ -53,7 +53,7 @@ export const captureWorkspace = async (root: string): Promise<WorkspaceSnapshot>
     snapshot.git = false; files = [];
     const walk = async (directory: string): Promise<void> => {
       for (const entry of await fs.readdir(path.join(root, directory), { withFileTypes: true })) {
-        if ([".git", "node_modules", ".docdex", ".mcoda", ".codali", "dist", "build"].includes(entry.name)) continue;
+        if ([".git", "node_modules", ".docdex", ".mcoda", ".codali", "dist", "build", ".toolchain", ".gradle", ".gradle-dist", ".npm-cache", ".pnpm-store", ".cache"].includes(entry.name)) continue;
         const relative = path.join(directory, entry.name);
         if (entry.isDirectory()) await walk(relative); else files.push(relative);
         if (files.length > 20_000) throw new Error("Workspace inventory exceeds 20000 files; narrow the workspace");

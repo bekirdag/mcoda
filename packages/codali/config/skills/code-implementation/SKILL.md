@@ -3,13 +3,15 @@ name: code-implementation
 description: "Write or modify code in an existing project, preserving contracts and conventions with focused verification."
 ---
 
-Read the requested behavior and the canonical work record. Inspect the relevant source, callers, tests and package scripts with Docdex. Use current symbols/AST and impact evidence before existing-source edits; prepare_edit can assemble the required read/analysis. If the host reports Docdex unavailable, disclose that and use available reads/search without inventing receipts.
+Read the original request, canonical work record, relevant source/callers/tests and package scripts. Use Docdex symbols/impact before source edits; prepare_edit assembles read/analysis. If Docdex is unavailable, disclose it and inspect with local reads/search.
 
-Claim the ready task with work_claim and narrow allowedPaths before edits. Reuse the project's language, interfaces, dependencies and error conventions. Fix the behavior at its owning layer; avoid unrelated rewrites, speculative abstractions and introducing dependencies without need. Preserve user edits and compatibility contracts.
+Claim the ready task before edits. Preserve user changes, module format, interfaces and requirements. Fix behavior at its owning layer; avoid unrelated rewrites and unnecessary dependencies. Use small exact write_file patches against current content. Reproduce bugs, repair them and run meaningful behavior checks.
 
-Use write_file with small exact replacements; do not overwrite an unread file. For a bug, reproduce the failing behavior when feasible, then make the smallest coherent repair and run a meaningful regression check. For new behavior, derive checks from requirements, including relevant boundary/failure cases. Do not add tests that merely duplicate implementation text.
+run_shell takes command plus args; cwd and writePaths are workspace-relative. It cannot retain background services across calls. Use managed service tools for persistent previews.
 
-run_shell requires command plus an args array; cwd is workspace-relative. Its writePaths are root-relative even when cwd changes. Keep required writes within claimed scope. It cannot preserve a background server between calls.
+For a new application, first verify the available runtime/compiler and build one small runnable path through the real entry point, storage/API and UI. Run it before expanding features. Keep RFP.md and ENVIRONMENT.md unchanged. Maintain one authoritative interface/schema definition and update its consumers together; use contract tests to catch mismatched routes, fields, units and return types.
+
+Create missing scoped directories with create_directory before using them in run_shell.writePaths. HOME and /tmp are temporary; package-cache environment variables persist privately between commands. Keep source/build outputs in declared workspace paths. To expand scope, use work_rescope and its returned attempt ID; retain the task's requirements and implementation. Read-only shell discovery needs no claim.
 
 Review the resulting diff and actual check output. Attach real invocation evidence to work_verify; complete only satisfied criteria. Report changed behavior, validation and remaining limitations. Existing authorization persists; skill loading does not add approval gates.
 

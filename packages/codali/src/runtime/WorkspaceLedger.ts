@@ -1,6 +1,7 @@
 import { constants, promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
 import { hashWorkspacePath, workspaceHash, type WorkspaceSnapshot } from "./WorkspaceSnapshot.js";
 
@@ -45,26 +46,47 @@ export class WorkspaceLedger {
     } finally { await handle.close(); }
   }
 
+  /** Save large originals with bounded memory before admitting a workspace write. */
+  private async savePreimage(file: string, expectedHash: string): Promise<number> {
+    const target = path.resolve(this.workspaceRoot, file);
+    const parent = await fs.realpath(path.dirname(target));
+    if (!target.startsWith(`${this.workspaceRoot}${path.sep}`) || parent !== this.workspaceRoot && !parent.startsWith(`${this.workspaceRoot}${path.sep}`)) throw new Error("Workspace preimage path escapes the repository");
+    const directory = path.join(this.root, "blobs");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const temporary = path.join(directory, `pending-${randomUUID()}`);
+    const source = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = await source.stat();
+      if (!before.isFile()) throw new Error("Workspace preimage requires a regular file");
+      const destination = await fs.open(temporary, "wx", 0o600);
+      const digest = createHash("sha256"); let bytes = 0;
+      try {
+        for await (const chunk of source.createReadStream({ autoClose: false })) {
+          digest.update(chunk); bytes += chunk.length;
+          await destination.writeFile(chunk);
+        }
+        await destination.sync();
+      } finally { await destination.close(); }
+      const after = await source.stat();
+      if (before.size !== after.size || before.ctimeMs !== after.ctimeMs || bytes !== after.size || digest.digest("hex") !== expectedHash
+        || await hashWorkspacePath(this.workspaceRoot, file) !== expectedHash) throw new Error(`File changed while preparing the edit: ${file}`);
+      await fs.rename(temporary, path.join(directory, expectedHash));
+      return bytes;
+    } finally { await source.close(); await fs.rm(temporary, { force: true }); }
+  }
+
   async capture(snapshot: WorkspaceSnapshot, scopes: string[], explicitPaths: string[] = []): Promise<void> {
     await withStateLock(this.manifest, async () => {
       const record = await this.read();
       record.knownPaths ??= Object.keys(snapshot.hashes);
       const candidates = new Set([...Object.keys(snapshot.hashes).filter(file => inScope(file, scopes)), ...explicitPaths]);
-      let bytes = Object.values(record.files).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0);
       for (const file of candidates) {
         if (record.files[file]) continue;
         const hash = snapshot.hashes[file] ?? await hashWorkspacePath(this.workspaceRoot, file);
         const entry: Preimage = { hash };
         if (/^[a-f0-9]{64}$/.test(hash)) {
-          const stat = await fs.lstat(path.join(this.workspaceRoot, file));
-          if (stat.size > 8 * 1024 * 1024 || bytes + stat.size > 64 * 1024 * 1024) throw new Error("Task preimages exceed the 64 MiB ledger or 8 MiB file limit; narrow the task scope");
-          const content = await this.readWorkspaceContent(file, hash);
-          if (workspaceHash(content) !== hash || await hashWorkspacePath(this.workspaceRoot, file) !== hash) throw new Error(`File changed while preparing the edit: ${file}`);
-          const blob = path.join(this.root, "blobs", hash);
-          await fs.mkdir(path.dirname(blob), { recursive: true, mode: 0o700 });
-          try { await fs.writeFile(blob, content, { flag: "wx", mode: 0o600 }); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-          entry.blob = hash; entry.bytes = content.length; bytes += content.length;
+          entry.bytes = await this.savePreimage(file, hash);
+          entry.blob = hash;
         }
         record.files[file] = entry;
       }
@@ -84,7 +106,7 @@ export class WorkspaceLedger {
       if ((!entry.blob && entry.hash !== "missing") || currentHash.startsWith("symlink:") || currentHash.startsWith("directory:")) {
         const summary = `${file}: ${entry.hash} -> ${currentHash}\n`; sections.push(summary); length += summary.length; continue;
       }
-      if (currentHash !== "missing" && (await fs.lstat(path.join(this.workspaceRoot, file))).size > MAX_FILE_BYTES) {
+      if ((entry.bytes ?? 0) > MAX_FILE_BYTES || currentHash !== "missing" && (await fs.lstat(path.join(this.workspaceRoot, file))).size > MAX_FILE_BYTES) {
         const summary = `${file}: ${entry.hash} -> ${currentHash} (content diff omitted above 8 MiB; validate the artifact separately)\n`;
         sections.push(summary); length += summary.length; continue;
       }

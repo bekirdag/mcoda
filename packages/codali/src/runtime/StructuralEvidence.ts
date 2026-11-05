@@ -11,6 +11,9 @@ export interface StructuralAnalysis {
 
 export const isSourcePath = (file: string): boolean => /\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|kts|c|cc|cpp|cxx|h|hpp|cs|rb|php|swift|sh|bash|lua|ex|exs|scala|sc|vue|svelte)$/i.test(file);
 
+/** Installed dependencies/toolchains are inventoried for isolation, not authored source. */
+export const isDependencyArtifact = (file: string): boolean => file.split("/").some(part => ["node_modules", ".gradle", ".npm-cache", ".pnpm-store", ".toolchain"].includes(part));
+
 export const workspaceRelativePath = (root: string, file: string): string => {
   const relative = path.relative(root, path.resolve(root, file)).split(path.sep).join("/");
   if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) throw new Error("Path escapes the workspace");
@@ -20,11 +23,12 @@ export const workspaceRelativePath = (root: string, file: string): string => {
 export const isWithinScope = (file: string, scope: string[]): boolean => scope.some(p => p === "." || p === file || file.startsWith(`${p}/`));
 
 /** Git ignores cannot hide existing source from an explicitly writable directory. */
-export const writableInventory = async (root: string, scopes: string[], maxEntries = 20_000): Promise<Record<string, string>> => {
+export const writableInventory = async (root: string, scopes: string[], maxEntries = 20_000, protectedPaths: string[] = []): Promise<Record<string, string>> => {
   root = await fs.realpath(root);
   const hashes: Record<string, string> = {}; const visited = new Set<string>();
+  const links = new Map<string, { expected: number; files: string[] }>();
   const walk = async (file: string): Promise<void> => {
-    if ([".git", ".mcoda"].some(dir => file === dir || file.startsWith(`${dir}/`)) || visited.has(file)) return;
+    if ([".git", ".mcoda", ...protectedPaths].some(dir => file === dir || file.startsWith(`${dir}/`)) || visited.has(file)) return;
     visited.add(file);
     if (visited.size > maxEntries) throw new Error("Shell write inventory exceeds its bound; declare narrower writePaths");
     const absolute = path.resolve(root, file);
@@ -32,7 +36,12 @@ export const writableInventory = async (root: string, scopes: string[], maxEntri
     if (stat.isDirectory()) {
       for (const entry of await fs.readdir(absolute)) await walk(workspaceRelativePath(root, path.join(absolute, entry)));
     } else {
-      if (stat.isFile() && stat.nlink > 1) throw new Error(`Hard-linked writable file requires an independent copy: ${file}`);
+      if (stat.isFile() && stat.nlink > 1) {
+        const key = `${stat.dev}:${stat.ino}`;
+        const group = links.get(key) ?? { expected: stat.nlink, files: [] };
+        if (group.expected !== stat.nlink) throw new Error(`Hard-link inventory changed during inspection: ${file}`);
+        group.files.push(file); links.set(key, group);
+      }
       hashes[file] = await hashWorkspacePath(root, file);
     }
   };
@@ -42,6 +51,12 @@ export const writableInventory = async (root: string, scopes: string[], maxEntri
     try { if (await fs.realpath(requested) !== requested) throw new Error("Shell write paths must be canonical and cannot be symlink aliases"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     await walk(relative);
+  }
+  // Package managers may link two binaries within the same writable scope.
+  // Accept only a complete alias inventory: any unseen alias could modify a
+  // host cache, another task, or protected metadata through the shared inode.
+  for (const group of links.values()) {
+    if (group.files.length !== group.expected || group.files.some(file => isWithinScope(file, protectedPaths))) throw new Error(`Hard-linked writable file requires an independent copy: ${group.files[0]}`);
   }
   return hashes;
 };

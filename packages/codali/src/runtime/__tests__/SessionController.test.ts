@@ -14,6 +14,178 @@ const resolved = { config, hash: orchestrationHash(config), source: "test" };
 const reply = (content: string): ProviderResponse => ({ message: { role: "assistant", content }, usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 } });
 const call = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `${name}-${Math.random()}`, name, args }] });
 
+test("repeated real failures receive metered read-only diagnosis without replaying the command", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),"codali-repair-diagnosis-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(),"codali-repair-diagnosis-state-"));
+  t.after(async()=>{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});});
+  await fs.writeFile(path.join(root,"contract.mjs"), "export const contract = 'OBSERVED_DEPENDENCY';");
+  const selected=structuredClone(config); selected.bindings.repair={useBinding:"lead"};
+  let step=0, diagnoses=0; const events:SessionEvent[]=[]; let controller!:SessionController;
+  controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved:{config:selected,hash:orchestrationHash(selected),source:"test"},docdex:false,permissions:"workspace",onEvent:event=>events.push(event),provider:{name:"fixture",generate:async request=>{
+    if(request.messages[0].content.startsWith("Diagnose repeated implementation failures")) {
+      diagnoses++; assert.equal(request.tools,undefined);
+      assert.match(request.messages[1].content,/OBSERVED_DEPENDENCY/);
+      assert.match(request.messages[1].content,/KNOWN_SOURCE/); assert.match(request.messages[1].content,/fixture failure/);
+      return reply("Inspect the shared schema before another edit; then run the complete check.");
+    }
+    const current=step++;
+    if(current >= 3 && current < 15) return current % 2 === 1
+      ? call("run_shell",{command:"node",args:["-e","throw Error('fixture failure')"]})
+      : call("write_file",{path:"value.mjs",content:`export const value = 'KNOWN_SOURCE_${current}';`});
+    switch(current) {
+      case 0:return call("work_claim",{taskId:"T1",allowedPaths:["value.mjs"]});
+      case 1:return call("write_file",{path:"value.mjs",content:"export const value = 'KNOWN_SOURCE';"});
+      case 2:return call("read_file",{path:"contract.mjs"});
+      default:
+        assert.equal(diagnoses,2);
+        controller.cancel();request.signal?.throwIfAborted();throw Error("cancelled");
+    }
+  }}});
+  if(!controller.isolation.available){t.skip(controller.isolation.reason);return;}
+  await assert.rejects(controller.run("Write the fixture and validate its behavior."),/cancel/i);
+  assert.equal(events.filter(event=>event.type==="repair_diagnosis").length,2);
+  assert.equal(events.filter(event=>event.type==="model_receipt" && event.data.binding==="repair").length,2);
+  const failures=events.filter(event=>event.type==="tool_receipt" && (event.data.receipt as {tool:string}).tool==="run_shell");
+  assert.equal(failures.length,6);
+  assert.equal(failures.filter(event=>String((event.data.receipt as {output:string}).output).includes("Recovery diagnosis")).length,2);
+});
+
+test("scope rejection names the missing path and recovery preserves the task contract", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),"codali-rescope-recovery-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(),"codali-rescope-recovery-state-"));
+  t.after(async()=>{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});});
+  await fs.mkdir(path.join(root,"cache"));
+  let step=0, originalAttempt=""; let controller!:SessionController;
+  controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved,docdex:false,permissions:"workspace",provider:{name:"fixture",generate:async request=>{
+    const previous=()=>request.messages.filter(message=>message.role === "tool").at(-1)!.content;
+    switch(step++) {
+      case 0:return call("work_claim",{taskId:"T1",allowedPaths:["src"]});
+      case 1:originalAttempt=controller.state!.tasks[0].attemptId!;return call("run_shell",{command:"node",args:["-e","0"],writePaths:["cache"]});
+      case 2:
+        assert.match(previous(),/cache.*outside the claimed task scope/);
+        assert.match(previous(),/Current allowedPaths.*src/);
+        assert.match(previous(),/call work_rescope with/);
+        assert.equal(controller.state!.tasks[0].attemptId,originalAttempt);
+        return call("work_rescope",{taskId:"T1",attemptId:originalAttempt,allowedPaths:["src","cache"],note:"Needed build cache"});
+      case 3:
+        assert.notEqual(controller.state!.tasks[0].attemptId,originalAttempt);
+        assert.deepEqual(controller.state!.tasks[0].requirementIds,["R1"]);
+        return call("run_shell",{command:"node",args:["-e","require('fs').writeFileSync('cache/result.txt','ready');console.log('ready')"],writePaths:["cache"]});
+      default:
+        assert.match(previous(),/ready/);
+        assert.equal(await fs.readFile(path.join(root,"cache/result.txt"),"utf8"),"ready");
+        controller.cancel();request.signal?.throwIfAborted();throw Error("cancelled");
+    }
+  }}});
+  if(!controller.isolation.available){t.skip(controller.isolation.reason);return;}
+  await assert.rejects(controller.run("Build using the cache."),/cancel/i);
+});
+
+test("required planning prevents inline scope from bypassing explicit work_plan", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-required-plan-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-required-plan-state-"));
+  t.after(async () => { await fs.rm(root,{recursive:true,force:true}); await fs.rm(storage,{recursive:true,force:true}); });
+  const selected=structuredClone(config);
+  selected.taskControl={requirePlan:true,maxWritingTasksPerWorktree:1,maxConcurrentHelpers:1,helpers:"read-only-or-draft",repeatedFailureThreshold:3,repairAttemptsBeforeReplan:2,checkpointOn:[],reviewPolicy:"risk-and-evidence"};
+  let step=0; let controller!:SessionController;
+  const provider:Provider={name:"fixture",supportsToolCalls:true,generate:async request=>{
+    const previous=()=>[...request.messages].reverse().find(m=>m.role==="tool")!.content;
+    switch(step++) {
+      case 0:
+        assert.match(request.messages.find(m=>m.role==="system")!.content,/plan is REQUIRED and has not been recorded/);
+        return call("work_claim",{taskId:"T1",allowedPaths:["notes.txt"]});
+      case 1:
+        assert.match(previous(),/requires an explicit implementation plan/);
+        assert.equal(controller.state!.tasks[0].attemptId,undefined);
+        return call("work_plan",{tasks:[{id:"T1",title:"Write and check requested notes",requirementIds:["R1"],dependsOn:[],allowedPaths:["notes.txt"]}],reason:"Explicit requirement coverage"});
+      case 2:
+        assert.doesNotMatch(request.messages.find(m=>m.role==="system")!.content,/plan is REQUIRED and has not been recorded/);
+        return call("work_claim",{taskId:"T1"});
+      case 3:return call("write_file",{path:"notes.txt",content:"planned work"});
+      default:
+        assert.equal(await fs.readFile(path.join(root,"notes.txt"),"utf8"),"planned work");
+        controller.cancel();request.signal?.throwIfAborted();throw Error("cancelled");
+    }
+  }};
+  controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved:{config:selected,hash:orchestrationHash(selected),source:"test"},provider,docdex:false,permissions:"workspace"});
+  await assert.rejects(controller.run("Write notes.txt using an explicit plan."),/cancel/i);
+});
+
+test("own writes retain known content while external changes still require a fresh read", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-own-write-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-own-write-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  let step = 0; let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch(step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["notes.txt"] });
+      case 1: return call("write_file", { path: "notes.txt", content: "first" });
+      case 2: assert.match(previous(), /Wrote notes/); return call("write_file", { path: "notes.txt", search: "first", content: "second" });
+      case 3:
+        assert.match(previous(), /Patched notes/);
+        await fs.writeFile(path.join(root,"notes.txt"),"external user edit");
+        return call("write_file", { path: "notes.txt", content: "must not replace user edit" });
+      default:
+        assert.match(previous(), /File changed or has not been read/);
+        assert.equal(await fs.readFile(path.join(root,"notes.txt"),"utf8"),"external user edit");
+        controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+    }
+  } };
+  controller = new SessionController({workspaceRoot:root,storageRoot:storage,resolved,provider,docdex:false,permissions:"workspace"});
+  await assert.rejects(controller.run("Write and refine notes.txt."), /cancel/i);
+});
+
+test("configured execution schemas load progressively without granting write authority", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-exposure-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-exposure-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const selected = structuredClone(config);
+  selected.taskControl = { initialTools: ["read_file"], maxWritingTasksPerWorktree: 1, maxConcurrentHelpers: 1, helpers: "read-only-or-draft", repeatedFailureThreshold: 3, repairAttemptsBeforeReplan: 2, checkpointOn: [], reviewPolicy: "risk-and-evidence" };
+  let calls = 0; let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) {
+      assert.ok(request.tools?.some(t => t.name === "read_file"));
+      assert.ok(!request.tools?.some(t => t.name === "write_file"));
+      assert.ok(request.tools?.some(t => t.name === "tools_discover"));
+      return call("tools_enable", { names: ["write_file"] });
+    }
+    if (calls === 2) {
+      assert.ok(request.tools?.some(t => t.name === "write_file"));
+      return call("write_file", { path: "unauthorized.txt", content: "bad" });
+    }
+    assert.match([...request.messages].reverse().find(m => m.role === "tool")!.content, /Claim a ready/);
+    await assert.rejects(fs.stat(path.join(root, "unauthorized.txt")), { code: "ENOENT" });
+    controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+  } };
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: selected, hash: orchestrationHash(selected), source: "test" }, provider, docdex: false, permissions: "workspace" });
+  await assert.rejects(controller.run("Inspect the workspace and implement only after claiming a task."), /cancel/i);
+});
+
+test("claimed directory bootstrap enables narrow shell mounts without widening task scope", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-bootstrap-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-bootstrap-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  let step = 0; let controller!: SessionController;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("create_directory", { path: "build/cache" });
+      case 1: assert.match(previous(), /Claim a ready/); return call("work_claim", { taskId: "T1", allowedPaths: ["build/cache"] });
+      case 2: return call("create_directory", { path: "outside" });
+      case 3: assert.match(previous(), /outside.*scope/); return call("create_directory", { path: "build/cache" });
+      case 4: assert.match(previous(), /Created directory/); return call("create_directory", { path: "build/cache" });
+      case 5: assert.match(previous(), /Created directory/); return call("run_shell", { command: "sh", args: ["-c", "printf ready > build/cache/result.txt"], writePaths: ["build/cache"] });
+      default:
+        assert.equal(await fs.readFile(path.join(root, "build/cache/result.txt"), "utf8"), "ready");
+        await assert.rejects(fs.stat(path.join(root, "outside")), { code: "ENOENT" });
+        controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+    }
+  } };
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  await assert.rejects(controller.run("Create the build/cache directory and put a result there."), /cancel/i);
+});
+
 test("continuous work exceeds old limits, renews its owned task and remains cancellable", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-continuous-work-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-continuous-state-"));
@@ -1598,6 +1770,130 @@ for (const scenario of ["success", "skipped-parser", "content-race", "oversized"
     if (scenario === "budget") assert.equal((controller.status().usage as { toolCalls: number }).toolCalls, 3);
   });
 }
+
+test("authoritative inputs reject direct replacement even after reading and claiming their directory", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-immutable-input-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-immutable-store-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "RFP.md"), "Build the original game.");
+  let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["."] });
+      case 1: return call("read_file", { path: "RFP.md" });
+      case 2: return call("write_file", { path: "RFP.md", content: "Invent a different game." });
+      case 3: assert.match(request.messages.at(-1)!.content, /Authoritative input.*immutable/); return call("work_block", { taskId: "T1", reason: "Immutable input regression completed" });
+      default: return reply("Original requirements preserved.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "full" });
+  await controller.run("Build the game in RFP.md.");
+  assert.equal(await fs.readFile(path.join(root, "RFP.md"), "utf8"), "Build the original game.");
+});
+
+test("dependency installation does not require reading each installed library source", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-dependency-scope-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-dependency-store-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "node_modules", "fixture"), { recursive: true });
+  await fs.writeFile(path.join(root, "node_modules", "fixture", "index.js"), "module.exports=1;");
+  await fs.writeFile(path.join(root, "app.js"), "original app");
+  let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    const previous = request.messages.at(-1)!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["."] });
+      case 1: return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('node_modules/fixture/index.js','module.exports=2;');console.log('dependency updated')"], writePaths: ["node_modules"] });
+      case 2: assert.match(previous, /dependency updated/); return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('seed.json','{}');console.log('seeded')"], writePaths: ["."] });
+      case 3: assert.match(previous, /seeded/); return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('app.js','bypass')"], writePaths: ["."] });
+      case 4: assert.match(previous, /EROFS|EPERM|read-only|Operation not permitted/); return call("run_shell", { command: "node", args: ["-e", "require('fs').renameSync('app.js','renamed.js')"], writePaths: ["."] });
+      case 5: assert.match(previous, /EBUSY|EPERM|read-only|Operation not permitted/); return call("run_shell", { command: "node", args: ["-e", "const f=require('fs');f.linkSync('app.js','node_modules/alias.js');f.writeFileSync('node_modules/alias.js','bypass')"], writePaths: ["."] });
+      case 6: assert.match(previous, /EXDEV|EPERM|read-only|Operation not permitted/); return call("work_block", { taskId: "T1", reason: "Dependency regression finished" });
+      default: return reply("Dependency updated; authored source remains protected.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await controller.run("Update the installed dependency and inspect the application.");
+  assert.equal(await fs.readFile(path.join(root, "node_modules", "fixture", "index.js"), "utf8"), "module.exports=2;");
+  assert.equal(await fs.readFile(path.join(root, "app.js"), "utf8"), "original app");
+});
+
+test("original input contract survives tool-history trimming, explicit compaction and resume", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-pinned-input-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-pinned-store-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const contract = "Original tactical game: health=5, energy=3. ACCEPTANCE_7E9_DO_NOT_REPLACE";
+  await fs.writeFile(path.join(root, "RFP.md"), contract);
+  for (let i = 0; i < 14; i++) await fs.writeFile(path.join(root, `file-${i}.txt`), `observation-${i}`);
+  let step = 0;
+  const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    assert.match(request.messages[0].content, /ACCEPTANCE_7E9_DO_NOT_REPLACE/);
+    if (step < 14) return call("read_file", { path: `file-${step++}.txt` });
+    if (step++ === 14) return call("work_block", { taskId: "T1", reason: "Resume contract test" });
+    return reply("Checkpoint retained.");
+  } };
+  const first = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => events.push(event) });
+  await first.run("Build the game in RFP.md.");
+  await first.compact();
+  const snapshot = events.find(event => event.type === "context_compacted" && event.data.scope === "authoritative_inputs")!;
+  assert.ok(snapshot);
+  const archived = snapshot.data.archived as Array<{ sha256: string; message: { content: string } }>;
+  assert.equal(JSON.parse(archived[0].message.content).content, contract);
+  let resumedCalls = 0;
+  const resumed = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace", provider: { name: "fixture", generate: async request => {
+    assert.match(request.messages[0].content, /ACCEPTANCE_7E9_DO_NOT_REPLACE/);
+    assert.ok(request.messages[0].content.includes(archived[0].sha256));
+    if (++resumedCalls === 1) return call("work_block", { taskId: "T1", reason: "Original contract verified after resume" });
+    return reply("Original contract retained.");
+  } } });
+  await resumed.resume(first.sessionId!);
+  await resumed.run();
+  assert.ok(resumedCalls >= 2);
+});
+
+test("execution archive reads recover a moderate contract without tiny repeated pages", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-context-page-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-context-page-state-"));
+  t.after(async()=>{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});});
+  await fs.writeFile(path.join(root,"RFP.md"),"requirement ".repeat(600)+"END_OF_ORIGINAL_REQUIREMENTS");
+  let source = "", step = 0; let controller!: SessionController;
+  controller = new SessionController({workspaceRoot:root,storageRoot:storage,resolved,docdex:false,permissions:"workspace",
+    onEvent:event=>{if(event.type === "context_compacted" && event.data.scope === "authoritative_inputs") source=(event.data.archived as Array<{sha256:string}>)[0].sha256;},
+    provider:{name:"fixture",generate:async request=>{
+      if(step++ === 0){assert.ok(source);return call("context_read",{sha256:source});}
+      const recovered=request.messages.filter(message=>message.role === "tool").at(-1)!.content;
+      assert.match(recovered,/END_OF_ORIGINAL_REQUIREMENTS/);
+      assert.ok(recovered.length < 16000);
+      controller.cancel();request.signal?.throwIfAborted();throw Error("cancelled");
+    }}});
+  await assert.rejects(controller.run("Read the supplied requirements."),/cancel/i);
+});
+
+test("unclaimed shell discovery is read-only and explicit writes still require a task claim", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-discovery-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-discovery-store-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "input.txt"), "original");
+  let step = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const previous = request.messages.at(-1)!.content;
+    switch (step++) {
+      case 0: return call("run_shell", { command: "node", args: ["-e", "console.log(require('fs').readFileSync('input.txt','utf8'))"] });
+      case 1: assert.match(previous, /original/); return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('input.txt','changed')"] });
+      case 2: assert.match(previous, /EROFS|EPERM|read-only|Operation not permitted/); return call("run_shell", { command: "node", args: ["-e", "0"], writePaths: ["input.txt"] });
+      case 3: assert.match(previous, /Claim a ready work task/); return call("work_block", { taskId: "T1", reason: "Discovery regression completed" });
+      default: return reply("Discovery finished; original preserved.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await controller.run("Inspect this workspace before planning implementation.");
+  assert.equal(await fs.readFile(path.join(root, "input.txt"), "utf8"), "original");
+});
 
 test("terminal shell is read-only by default and explicit writes cannot bypass structural or task scope checks", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-scope-"));

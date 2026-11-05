@@ -1,5 +1,6 @@
 import { promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { ToolContext, ToolDefinition } from "../ToolTypes.js";
 
 const resolveWorkspacePath = async (context: ToolContext, targetPath: string): Promise<string> => {
@@ -81,6 +82,20 @@ const listFilesRecursive = async (
 export const createFileTools = (): ToolDefinition[] => {
   return [
     {
+      name: "create_directory", description: "Create a workspace directory and missing parents before using it as a shell writePaths mount. Existing directories are unchanged; files are never replaced.",
+      readOnly: false, capability: "workspace",
+      inputSchema: { type: "object", required: ["path"], additionalProperties: false,
+        properties: { path: { type: "string", minLength: 1, maxLength: 4096 } } },
+      handler: async (args, context) => {
+        context.signal?.throwIfAborted();
+        const resolved = await resolveWorkspacePath(context, (args as { path: string }).path);
+        assertPathScope(context, resolved, context.allowedWritePaths, "write");
+        await context.checkPath?.(resolved, "write");
+        await fs.mkdir(resolved, { recursive: true });
+        return { output: `Created directory ${toRelative(context, resolved)}` };
+      },
+    },
+    {
       name: "read_file",
       description: "Read a text file from the workspace.",
       readOnly: true,
@@ -137,7 +152,8 @@ export const createFileTools = (): ToolDefinition[] => {
         if (context.recordTouchedFile) {
           context.recordTouchedFile(toRelative(context, resolved));
         }
-        return { output: `${search === undefined ? "Wrote" : "Patched"} ${toRelative(context, resolved)}` };
+        return { output: `${search === undefined ? "Wrote" : "Patched"} ${toRelative(context, resolved)}`,
+          data: { path: toRelative(context, resolved), contentHash: createHash("sha256").update(nextContent, "utf8").digest("hex") } };
       },
     },
     {

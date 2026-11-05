@@ -14,6 +14,25 @@ const createRegistry = () => {
   return registry;
 };
 
+test("directory bootstrap preserves files and enforces scoped paths and host checks", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-directory-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const registry = createRegistry();
+  const context = { workspaceRoot: root, allowedWritePaths: ["build/cache"] };
+  assert.equal((await registry.execute("create_directory", { path: "build/cache" }, context)).ok, true);
+  assert.equal((await fs.stat(path.join(root, "build/cache"))).isDirectory(), true);
+  await fs.writeFile(path.join(root, "build/cache/file"), "retain");
+  assert.equal((await registry.execute("create_directory", { path: "build/cache" }, context)).ok, true);
+  assert.equal((await registry.execute("create_directory", { path: "build/cache/file" }, context)).ok, false);
+  assert.equal(await fs.readFile(path.join(root, "build/cache/file"), "utf8"), "retain");
+  assert.equal((await registry.execute("create_directory", { path: "other" }, context)).ok, false);
+  assert.equal((await registry.execute("create_directory", { path: "../escape" }, context)).ok, false);
+  await fs.symlink(os.tmpdir(), path.join(root, "outside"));
+  assert.equal((await registry.execute("create_directory", { path: "outside/escape" }, { ...context, allowedWritePaths: ["."] })).ok, false);
+  assert.equal((await registry.execute("create_directory", { path: "build/cache/denied" }, { ...context, checkPath: async () => { throw Error("denied"); } })).ok, false);
+  await assert.rejects(fs.stat(path.join(root, "build/cache/denied")), { code: "ENOENT" });
+});
+
 test("workspace root aliases retain relative receipts and still reject escaped file symlinks", async t => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-root-alias-"));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));

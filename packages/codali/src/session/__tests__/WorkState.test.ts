@@ -2,9 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { activeWorkContext, createWorkState, replaceWorkPlan, updateWorkPlan, claimWorkTask, assertWorkAttempt, recordIntegratedWorkEvidence, recordWorkEvidence, verifyWorkTask, completeWorkGoal, amendWorkGoal, recordDecision, refreshStaleEvidence, releaseWorkTask, reopenVerifiedTask } from "../WorkState.js";
 import type { EvidenceReceipt, WorkState } from "../WorkTypes.js";
+import { rescopeWorkTask } from "../WorkState.js";
 
 const task = (id: string, dependsOn: string[] = []) => ({ id, title: id, requirementIds: ["R1"], dependsOn, allowedPaths: ["src"] });
 const evidence = (state: WorkState, attempt: string) => recordWorkEvidence(state, "T1", attempt, { id: "E1", taskId: "T1", criterionIds: ["R1"], kind: "tool", ok: true, summary: "Regression check passed", invocationId: "I1", inputHashes: { "src/a.ts": "old" }, at: new Date().toISOString() });
+
+test("scope recovery retains contracts and history but fences old attempts atomically", () => {
+  const state = createWorkState("Implement the original contract");
+  replaceWorkPlan(state, [task("T1"), task("T2", ["T1"])]);
+  const old = claimWorkTask(state, "T1").attemptId!;
+  evidence(state, old);
+  const requirements = structuredClone(state.requirements), sibling = structuredClone(state.tasks[1]);
+  const next = rescopeWorkTask(state, "T1", old, ["src", "test", "package.json"], "Include regression tests");
+  assert.notEqual(next.attemptId, old);
+  assert.deepEqual(state.requirements, requirements); assert.deepEqual(state.tasks[1], sibling);
+  assert.deepEqual(next.allowedPaths, ["src", "test", "package.json"]);
+  assert.deepEqual(next.requirementIds, ["R1"]); assert.equal(state.evidence.length, 1);
+  assert.throws(() => assertWorkAttempt(state, "T1", old));
+  const before = structuredClone(state);
+  assert.throws(() => rescopeWorkTask(state, "T1", next.attemptId!, ["../escape"], "invalid"));
+  assert.deepEqual(state, before);
+  assert.throws(() => rescopeWorkTask(state, "T1", next.attemptId!, ["src"], ""));
+  assert.deepEqual(state, before);
+});
 
 function integrationFixture() {
   const state = createWorkState("Deliver A and B together.");

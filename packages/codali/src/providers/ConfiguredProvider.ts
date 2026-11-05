@@ -164,6 +164,7 @@ export class ModelServiceClient {
 
 export interface ModelInvocation {
   id: string; binding: string; configHash: string; modelId: string; catalogId: string; backend?: string; host?: string;
+  resolvedCatalogId?: string;
   nativeReasoningRequest?: Record<string, unknown>;
 }
 export class ConfiguredProvider implements Provider {
@@ -198,16 +199,39 @@ export class ConfiguredProvider implements Provider {
   async select(operation: ModelOperation, signal?: AbortSignal, requireTools = false) {
     const candidates = resolveBinding(this.resolved.config, this.binding, operation);
     const reasons: string[] = [];
+    const refreshed = new Set<string>();
     for (const candidate of candidates) {
       const { id, model } = candidate;
-      const catalog = await this.client(model.provider).catalog(signal);
-      const actual = catalog.find(entry => entry.aliases.includes(model.catalogId));
-      if (!actual) { reasons.push(`${id}: not entitled/advertised`); continue; }
-      if (!["healthy", "unknown", "ready"].includes(actual.health)) { reasons.push(`${id}: ${actual.health}`); continue; }
-      if (model.backend && actual.backend !== model.backend) { reasons.push(`${id}: backend identity not verified`); continue; }
-      if (actual.operations.length && !actual.operations.includes(operation)) { reasons.push(`${id}: unsupported operation`); continue; }
-      if (requireTools && (!model.supportsTools || this.resolved.config.providers[model.provider].adapter === "mswarm" && !actual.supportsTools)) { reasons.push(`${id}: tools unavailable`); continue; }
-      return { id, model, actual, provider: this.resolved.config.providers[model.provider] };
+      const client = this.client(model.provider);
+      let catalog = await client.catalog(signal);
+      for (;;) {
+        // A canonical model alias can identify several pools/backends. Inspect
+        // every matching entry, but never widen an explicitly pinned pool ID.
+        const exact = catalog.filter(entry => entry.id === model.catalogId);
+        const matches = exact.length ? exact : catalog.filter(entry => entry.aliases.includes(model.catalogId));
+        let transient = false;
+        const failures: string[] = [];
+        for (const actual of matches) {
+          if (model.backend && actual.backend !== model.backend) { failures.push("backend identity not verified"); continue; }
+          if (actual.operations.length && !actual.operations.includes(operation)) { failures.push("unsupported operation"); continue; }
+          if (requireTools && (!model.supportsTools || this.resolved.config.providers[model.provider].adapter === "mswarm" && !actual.supportsTools)) { failures.push("tools unavailable"); continue; }
+          if (!["healthy", "unknown", "ready"].includes(actual.health)) {
+            failures.push(actual.health);
+            transient ||= ["unreachable", "unhealthy", "offline"].includes(actual.health);
+            continue;
+          }
+          return { id, model, actual, provider: this.resolved.config.providers[model.provider] };
+        }
+        // Revalidate temporary health once instead of failing from a stale
+        // 30-second cache. Entitlement/quota/capability denials remain final.
+        if (transient && !refreshed.has(model.provider)) {
+          refreshed.add(model.provider);
+          catalog = await client.catalog(signal, true);
+          continue;
+        }
+        reasons.push(`${id}: ${failures.join(", ") || "not entitled/advertised"}`);
+        break;
+      }
     }
     throw new Error(`No eligible configured ${this.binding} route: ${reasons.join("; ")}`);
   }
@@ -219,7 +243,7 @@ export class ConfiguredProvider implements Provider {
       throw new Error("Model requestId must be a UUID for this inference attempt");
     }
     const { id, model, provider, actual } = await this.select("chat.completions", request.signal, !!request.tools?.length);
-    const invocation: ModelInvocation = { id: requestId, binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, backend: actual.backend, host: model.host };
+    const invocation: ModelInvocation = { id: requestId, binding: this.binding, configHash: this.resolved.hash, modelId: id, catalogId: model.catalogId, resolvedCatalogId: actual.id, backend: actual.backend, host: model.host };
     const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
     if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
     if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(actual.id, Object.keys(nativeReasoning), request.signal);
@@ -229,7 +253,7 @@ export class ConfiguredProvider implements Provider {
     const bounded = { ...request, requestId, maxTokens, stream: request.stream === true && model.supportsStreaming === true };
     await this.options.beforeRequest?.(invocation, bounded);
     const adapter = new OpenAiCompatibleProvider({
-      model: model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 300_000,
+      model: provider.adapter === "mswarm" ? actual.id : model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 300_000,
       supportsStreaming: model.supportsStreaming ?? true, supportsTools: model.supportsTools,
       headers: provider.adapter === "mswarm" ? { ...modelCallerHeaders(this.caller), "x-request-id": requestId } : undefined, retryTransient: false,
       extraBody: nativeReasoning,

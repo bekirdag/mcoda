@@ -145,7 +145,7 @@ const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] =>
 export const discoverHostToolchain = (workspaceRoot: string, searchPath = process.env.PATH ?? ""): HostRuntime[] => {
   const workspace = realpathSync.native(workspaceRoot); const home = realpathSync.native(os.homedir());
   const result: HostRuntime[] = darwinDeveloperTools(workspace, home);
-  for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar"]) {
+  for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar", "rg"]) {
     if (result.some(runtime => runtime.name === name)) continue;
     const candidates = name === "node" ? [process.execPath] : searchPath.split(path.delimiter).filter(Boolean).map(directory => path.resolve(directory, name));
     for (const candidate of candidates) {

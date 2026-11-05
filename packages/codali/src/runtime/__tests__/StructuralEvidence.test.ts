@@ -6,6 +6,18 @@ import path from "node:path";
 import { missingStructuralEvidence, validAnalysisResult, writableInventory } from "../StructuralEvidence.js";
 import { captureWorkspace } from "../WorkspaceSnapshot.js";
 
+test("protected toolchains are not writable inventory, but aliases cannot evade protection",async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"codali-protected-toolchain-"));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  await fs.mkdir(path.join(root,".toolchain"));
+  for(let i=0;i<12;i++)await fs.writeFile(path.join(root,`.toolchain/library-${i}`),"compiler artifact");
+  await fs.writeFile(path.join(root,"app.js"),"source");
+  assert.deepEqual(Object.keys(await writableInventory(root,["."],4,[".toolchain"])),["app.js"]);
+  await assert.rejects(writableInventory(root,["."],4),/narrower/);
+  await fs.link(path.join(root,".toolchain/library-0"),path.join(root,"alias"));
+  await assert.rejects(writableInventory(root,["."],20,[".toolchain"]),/Hard-linked/);
+});
+
 test("workspace aliases produce the same baseline and writable inventory as the canonical root", async t => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "codali-inventory-alias-"));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
@@ -52,5 +64,11 @@ test("writable inventory includes ignored sources and rejects alias, hard-link a
     await assert.rejects(writableInventory(root, ["alias"]), /canonical/);
     await fs.link(path.join(root, "ignored", "source.ts"), path.join(root, "copy.ts"));
     await assert.rejects(writableInventory(root, ["ignored"]), /Hard-linked/);
+    const complete = await writableInventory(root, ["."]);
+    assert.equal(complete["ignored/source.ts"], complete["copy.ts"]);
+    await assert.rejects(writableInventory(root, ["."], 20_000, ["copy.ts"]), /Hard-linked/);
+    // A link into protected metadata is not inventoried and must remain denied.
+    await fs.link(path.join(root, "copy.ts"), path.join(root, ".git", "shared"));
+    await assert.rejects(writableInventory(root, ["."]), /Hard-linked/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

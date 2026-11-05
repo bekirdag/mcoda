@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Preserve original task inputs and recoverable execution history across trimming,
+  compaction and resume; provide a truthful stopped-run handoff in the TUI.
+- Select compatible model pools across shared aliases, refresh temporary health
+  failures once, and send inference to the validated pool. Record its resolved ID.
+- Detect repeated unchanged reads despite unrelated file discovery. Use the
+  configured repair binding for bounded, metered diagnosis of repeated failures.
+- Return actionable task-scope recovery instructions. Keep unprepared source
+  read-only during broad shell setup while allowing scoped data/build outputs.
+- Add isolated syntax-only feedback after JavaScript writes, private persistent
+  package caches, exact calendar/text helpers and lossless JSON presentation repair.
+- Preserve large file preimages and permit safe in-scope dependency hard links;
+  protect original requirements from direct and shell writes.
+- Explain per-call shell scratch lifetime and available commands on rejection.
+  Include inspected implementation sources in recovery diagnoses.
+- Bound shared Docdex diagnostic subprocesses so failed health discovery can return.
+- Retain failed app-build diagnostics separately from later assisted continuations.
+  These changes do not establish superiority over raw Qwen or complete-app readiness.
+
 - Unify dispatch/tool/output contracts and validate final replies across modes.
   Add one budgeted, tool-free presentation repair, preserve execution evidence,
   and share the versioned dispatcher prompt with live evaluations. Legacy router

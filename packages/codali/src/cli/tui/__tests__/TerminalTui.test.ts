@@ -6,6 +6,25 @@ import type { SessionEvent } from "../../../runtime/SessionController.js";
 const make = (): TerminalTui => new TerminalTui({ workspace: "/tmp/project", version: "preview", profile: "local", effort: "medium", permissions: "ask", history: [], commands: [], submit: () => {}, cancel: () => {}, close: () => {} });
 const event = (type: string, data: Record<string, unknown>): SessionEvent => ({ schemaVersion: 1, id: "fixture", sessionId: "fixture", sequence: 1, at: new Date(0).toISOString(), type, data });
 
+test("saved code with failed syntax is not presented as a clean success", () => {
+  const ui=make();
+  ui.event(event("tool_intent",{receipt:{id:"write",tool:"write_file",args:{path:"db.js"}}}));
+  ui.event(event("tool_receipt",{receipt:{id:"write",tool:"write_file",status:"success",args:{path:"db.js"},output:"Wrote db.js. SyntaxError",syntaxCheck:{status:"failed"}}}));
+  assert.match(ui.state.blocks[0].title,/syntax needs fixing/);
+  assert.match(ui.state.blocks[0].summary!,/file was saved.*syntax check failed/);
+});
+
+test("stopped-run handoff is visible live and after resuming", () => {
+  const stopped = event("turn_failed", { message: "Model service unavailable", handoff: "Work is incomplete.\nRemaining: T2 frontend.\n/resume fixture, then /continue." });
+  for (const restore of [false, true]) {
+    const ui = make();
+    if (restore) ui.restore([stopped]); else ui.event(stopped);
+    assert.match(ui.state.blocks.map(block=>block.text).join("\n"), /Remaining: T2 frontend/);
+    assert.match(ui.state.blocks.map(block=>block.text).join("\n"), /\/resume fixture/);
+    assert.equal(ui.state.busy, false);
+  }
+});
+
 test("streamed terminal controls cannot become clipboard or screen commands", () => {
   const ui = make();
   ui.event(event("turn_started", {}));

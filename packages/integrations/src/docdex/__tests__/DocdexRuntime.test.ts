@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   readDocdexCheck,
   resolveDocdexBaseUrl,
@@ -53,8 +55,12 @@ test("readDocdexCheck returns parsed JSON output", async (t) => {
     t.skip("docdex binary not available in this environment");
     return;
   }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "docdex-check-state-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.toml");
+  await fs.writeFile(configPath, `[core]\nglobal_state_dir = ${JSON.stringify(path.join(root, "state"))}\n`);
   try {
-    const result = await readDocdexCheck();
+    const result = await readDocdexCheck({ env: { DOCDEX_CONFIG_PATH: configPath } });
     assert.ok(result);
     assert.ok(Array.isArray(result.checks), "expected checks array");
   } catch (error) {
@@ -72,7 +78,11 @@ test("resolveDocdexBrowserInfo returns a stable shape", async (t) => {
     t.skip("docdex check can hang on Windows CI");
     return;
   }
-  const info = await resolveDocdexBrowserInfo();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "docdex-browser-check-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.toml");
+  await fs.writeFile(configPath, `[core]\nglobal_state_dir = ${JSON.stringify(path.join(root, "state"))}\n`);
+  const info = await resolveDocdexBrowserInfo({ env: { DOCDEX_CONFIG_PATH: configPath } });
   assert.equal(typeof info.ok, "boolean");
   if (info.ok) {
     if (info.chromium) {
@@ -152,4 +162,17 @@ test("summarizeDocdexCheck reports failures", () => {
   assert.ok(summary.message?.includes("bind"));
   assert.ok(summary.message?.includes("ollama"));
   assert.equal(summary.failedChecks?.length, 2);
+});
+
+
+test("Docdex check rejects a hung check even after healthy JSON was printed", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "docdex-check-timeout-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const binary = path.join(root, "check.cjs");
+  await fs.writeFile(binary, "console.log(JSON.stringify({success:true,checks:[]})); setInterval(()=>{},1000);", { mode: 0o700 });
+  const env = { DOCDEX_BINARY: binary, MCODA_DOCDEX_BINARY: undefined };
+  await assert.rejects(readDocdexCheck({ env, timeoutMs: 200 }), /timed out or was terminated/);
+  await assert.rejects(readDocdexCheck({ env, timeoutMs: 0 }), /positive integer/);
+  await fs.writeFile(binary, "console.log(JSON.stringify({success:true,checks:[]}));");
+  assert.equal((await readDocdexCheck({ env, timeoutMs: 2000 })).success, true);
 });

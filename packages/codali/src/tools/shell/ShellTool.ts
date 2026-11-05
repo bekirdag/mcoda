@@ -3,6 +3,9 @@ import { ToolExecutionError, type ToolContext, type ToolDefinition } from "../To
 import { runProcess } from "./AsyncProcess.js";
 import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 
+/** Shared by terminal execution and tool-enabled benchmark baselines. */
+export const DEVELOPMENT_COMMANDS = ["git", "rg", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk", "uname", "which", "env", "find", "wc", "sort", "uniq", "cut", "diff", "file", "stat", "du", "df", "mkdir", "touch", "cp", "mv", "curl", "wget", "tar", "unzip", "zip", "cc", "gcc", "g++", "clang", "clang++", "ar", "swift", "swiftc", "java", "javac", "xcrun", "xcodebuild"];
+
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
 };
@@ -30,7 +33,9 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /\bshred\b/,
   /\bmkfs\b/,
   /\bdd\b/,
-  /\bformat\b/,
+  // Swift's named argument and formatting methods are source syntax, not the
+  // disk-format command. Direct executable names are checked separately.
+  /(?<!\.)\bformat\b(?!\s*:)/,
   /\bfs\.rm(?:sync)?\s*\(/,
   /\bunlink(?:sync)?\s*\(/,
 ];
@@ -46,7 +51,7 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
-  description: 'Run an allowlisted executable. Each call is isolated and kills its background processes on return; nohup, setsid and tmux cannot keep a server alive. Use browser_session for persistent noVNC/static previews and browser_interact for official Browser Use. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
+  description: 'Run an allowlisted executable. Use $TMPDIR for transient per-call scratch space; scratch files, exports and cwd changes do not persist between calls. Save required project outputs in claimed workspace writePaths; create missing scoped files/directories with write_file/create_directory first. Package-manager cache environment variables point to persistent workspace-private caches; do not hardcode their paths. Each call is isolated and kills its background processes on return; nohup, setsid and tmux cannot keep a server alive. Use browser_session for persistent noVNC/static previews and browser_interact for official Browser Use. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
   readOnly: false,
   capability: "shell",
   inputSchema: {
@@ -86,7 +91,7 @@ export const createShellTool = (): ToolDefinition => ({
     }
     const allowlist = resolveAllowlist(context);
     if (!allowlist.length || !allowlist.includes(command)) {
-      throw new ToolExecutionError("tool_permission_denied", `Command not allowed: ${command}`, {
+      throw new ToolExecutionError("tool_permission_denied", `Command not allowed: ${command.slice(0, 160)}. Available executables: ${allowlist.slice(0, 12).join(", ").slice(0, 700)}${allowlist.length > 12 ? " (first 12 shown)" : ""}`, {
         retryable: false,
         details: { command },
       });

@@ -1,7 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compressConversation, compressProviderContext, contextHash, estimateContextTokens } from "../ContextCompression.js";
+import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens } from "../ContextCompression.js";
 import type { ProviderMessage, ProviderRequest } from "../../providers/ProviderTypes.js";
+
+test("execution compaction preserves retrievable old findings and complete recent native groups", () => {
+  const messages: ProviderMessage[] = [{ role: "user", content: "Keep all original requirements." }];
+  for (let i = 0; i < 20; i++) {
+    messages.push({ role: "assistant", content: "", toolCalls: [{ id: `read-${i}`, name: "read_file", args: { path: `file-${i}.txt` } }] },
+      { role: "tool", toolCallId: `read-${i}`, name: "read_file", content: `finding-${i}: ` + "source".repeat(1000) });
+  }
+  const original = structuredClone(messages);
+  const compact = compressExecutionHistory(messages);
+  assert.deepEqual(messages, original);
+  assert.equal(compact.archived.length, 15);
+  assert.match(compact.messages[0].content, /finding-0/);
+  assert.equal(JSON.parse(compact.messages[0].content).sha256, compact.archived[0].sha256);
+  assert.equal(contextHash(compact.archived[0].message), compact.archived[0].sha256);
+  const firstFinding = JSON.parse(compact.messages[0].content).activity[0];
+  assert.equal(compact.archived.find(entry=>entry.sha256 === firstFinding.sha256)!.message.content, messages[2].content);
+  const restored: ProviderMessage[] = JSON.parse(compact.archived[0].message.content);
+  assert.deepEqual(restored.filter(m=>m.role === "tool"), original.filter(m=>m.role === "tool").slice(0, 14));
+  assert.deepEqual(compact.messages.filter(m=>m.role === "user"), original.filter(m=>m.role === "user"));
+  const ids = compact.messages.flatMap(m=>m.toolCalls?.map(call=>call.id) ?? []);
+  assert.deepEqual(compact.messages.filter(m=>m.role === "tool").map(m=>m.toolCallId), ids);
+  assert.deepEqual(compressExecutionHistory(compact.messages), { messages: compact.messages, archived: [] });
+  const continued = compressExecutionHistory([...compact.messages,
+    { role: "assistant", content: "New finding" }, { role: "assistant", content: "Next finding" }]);
+  assert.equal(continued.messages.filter(m=>m.name === "execution_history").length, 1);
+  assert.match(continued.archived[0].message.content, new RegExp(compact.archived[0].sha256));
+});
 
 test("conversation compression retains every user constraint and recoverable original replies", () => {
   const messages: ProviderMessage[] = [

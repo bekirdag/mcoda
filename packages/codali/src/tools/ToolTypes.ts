@@ -16,6 +16,8 @@ export interface ToolContext {
   allowOutsideWorkspace?: boolean;
   allowedReadPaths?: string[];
   allowedWritePaths?: string[];
+  /** Trusted workspace input paths, read-only even within a writable parent. */
+  protectedPaths?: string[];
   allowShell?: boolean;
   allowDestructiveOperations?: boolean;
   shellAllowlist?: string[];

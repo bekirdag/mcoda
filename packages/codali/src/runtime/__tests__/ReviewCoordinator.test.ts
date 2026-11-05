@@ -15,6 +15,27 @@ function fixture() {
   return { state, task, scope, hashes };
 }
 
+test("whole-goal contract preparation and verdict retain original requirement documents", async () => {
+  const { task, scope, hashes } = fixture(); let prepared = false; let reviewed = false;
+  const text = "A transfer must be atomic. Rejected requests must leave balances unchanged.";
+  const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Complete",
+    authoritativeInputs: [{ id: "input:RFP.md", text }], maxInputChars: 40000, maxOutputTokens: 4096,
+    diff: async () => "", readSource: async () => ({ content: "source", truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: "source", truncated: false }),
+    provider: { name: "fixture", generate: async request => {
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
+        prepared = true;
+        assert.equal(input.contractSources.find((s: { id: string }) => s.id === "input:RFP.md").excerpts.map((e: { text: string }) => e.text).join(""), text);
+        return { message: { role: "assistant", content: JSON.stringify({ checks: input.contractSources.map((s: { id: string }) => ({ sourceId: s.id, quoteIndex: 0, expectedBehavior: "Check all specified behavior" })) }) } };
+      }
+      reviewed = true; assert.deepEqual(input.authoritativeInputs, [{ id: "input:RFP.md", text }]);
+      assert.ok(Object.values(input.contractChecklist.quotes).some((q: any) => q.sourceId === "input:RFP.md" && q.contractQuote === text));
+      return { message: { role: "assistant", content: '{"passed":false,"findings":["Failure atomicity missing"]}' } };
+    } } });
+  assert.equal(prepared, true); assert.equal(reviewed, true); assert.equal(result.passed, false);
+});
+
 test("many checks share exact quotations without dropping obligations at the review context limit", async () => {
   const { task, scope, hashes } = fixture(); let reviewed = 0; const quotationIds = new Set<string>();
   const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review every obligation.",

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Provider, ProviderMessage } from "../providers/ProviderTypes.js";
 import type { WorkTask } from "../session/WorkTypes.js";
-import { prepareReviewContract, reviewContractSources } from "./ReviewContract.js";
+import { prepareReviewContract, reviewContractSources, type ReviewContractSource } from "./ReviewContract.js";
 import { reviewPromptContext, type taskReviewContext } from "./TaskReviewContext.js";
 import { runTaskReview, type ReviewSourcePage, type TaskReviewResult } from "./TaskReview.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
@@ -39,6 +39,7 @@ export async function reviewTaskScope(options: {
   preExistingDirtyPaths?: string[];
   summary: string;
   assessments?: readonly TaskReviewAssessment[];
+  authoritativeInputs?: readonly ReviewContractSource[];
   readSource: (file: string, maxChars: number) => Promise<{ content: string; truncated: boolean }>;
   readSourcePage: (file: string, offset: number) => Promise<ReviewSourcePage>;
   diff: (files: string[]) => Promise<string>;
@@ -51,7 +52,8 @@ export async function reviewTaskScope(options: {
   if (assessments.some(value => value.workspaceSnapshotHash !== workspaceSnapshotHash)) {
     return { passed: false, findings: ["Task assessments belong to a different workspace snapshot; acceptance is not established."] };
   }
-  const contract = await prepareReviewContract({ provider: options.provider, sources: reviewContractSources(options.scope),
+  const authoritativeInputs = options.scope.reviewScope === "whole_goal" ? options.authoritativeInputs ?? [] : [];
+  const contract = await prepareReviewContract({ provider: options.provider, sources: [...reviewContractSources(options.scope), ...authoritativeInputs],
     maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens, signal: options.signal });
   if ("findings" in contract) return { passed: false, findings: contract.findings };
   const quotes: Record<string, { sourceId: string; contractQuote: string }> = {};
@@ -78,6 +80,7 @@ export async function reviewTaskScope(options: {
     checks: selected,
   });
   const input = { ...reviewPromptContext(reviewScope, options.hashes), workspaceSnapshotHash,
+    ...(authoritativeInputs.length ? { authoritativeInputs } : {}),
     ...(assessments.length ? { taskAssessments: assessments } : {}),
     contractChecklist: checklist(checks), task: options.task,
     checklistBatch: undefined as { index: number; count: number; totalChecks: number } | undefined,

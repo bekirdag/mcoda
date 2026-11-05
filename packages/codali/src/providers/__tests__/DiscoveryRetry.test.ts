@@ -7,6 +7,46 @@ const service = { adapter: "mswarm" as const, baseUrl: "https://discovery.test/v
 const catalog = { agents: [{ slug: "large", supports_tools: true }] };
 const native = { data: [{ id: "large", native_reasoning: { transport_version: 1, parameters: ["reasoning_effort"] } }] };
 
+const routeProvider = (catalogId = "shared") => {
+  const config: OrchestrationConfig = { schemaVersion: 1, profile: "route-test", providers: { service },
+    models: { lead: { provider: "service", catalogId, revision: "fixture", backend: "strata", supportsTools: true,
+      operations: ["chat.completions"], contextWindow: 8192, maxOutputTokens: 512 } }, bindings: { lead: { candidates: ["lead"] } } };
+  return new ConfiguredProvider({ config, hash: orchestrationHash(config), source: "fixture" }, "lead", { credentials: { service: "fixture-key" } });
+};
+
+test("shared alias skips incompatible/unhealthy pools and submits the validated pool ID", async t => {
+  let gets = 0; let submitted: unknown;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      submitted = JSON.parse(String(init.body)).model;
+      return Response.json({ choices: [{ message: { role: "assistant", content: "ready" } }] });
+    }
+    gets++;
+    return Response.json({ agents: [
+      { slug: "a-bad", canonical_model_id: "shared", pool_scope: "owner", member_count: 8, backend: "strata", health_status: "unreachable", supports_tools: true },
+      { slug: "b-wrong", canonical_model_id: "shared", pool_scope: "owner", member_count: 4, backend: "openai-api", health_status: "healthy", supports_tools: true },
+      { slug: "c-good", canonical_model_id: "shared", pool_scope: "owner", member_count: 2, backend: "strata", health_status: "healthy", supports_tools: true },
+    ] });
+  });
+  await routeProvider().generate({ messages: [{ role: "user", content: "Hello" }] });
+  assert.equal(submitted, "c-good"); assert.equal(gets, 1);
+  await assert.rejects(routeProvider("a-bad").select("chat.completions"), /unreachable/);
+});
+
+for (const health of ["unreachable", "limited", "healthy"]) {
+  test(`catalog health ${health} has bounded revalidation`, async t => {
+    let gets = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      gets++;
+      return Response.json({ agents: [{ slug: "shared", backend: "strata", supports_tools: true, health_status: gets > 1 ? "healthy" : health }] });
+    });
+    const provider = routeProvider();
+    if (health === "limited") await assert.rejects(provider.select("chat.completions"), /limited/);
+    else assert.equal((await provider.select("chat.completions")).actual.health, "healthy");
+    assert.equal(gets, health === "unreachable" ? 2 : 1);
+  });
+}
+
 test("temporary catalog and native-discovery failures precede exactly one inference", { concurrency: false }, async t => {
   const gets = { catalog: 0, native: 0 }; let posts = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {

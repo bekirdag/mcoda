@@ -5,6 +5,20 @@ import os from "node:os";
 import path from "node:path";
 import { captureWorkspace, hashWorkspacePath, workspaceGit, workspaceHash } from "../WorkspaceSnapshot.js";
 
+test("non-Git baselines skip toolchain caches but Git-tracked files remain visible", async t => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"codali-toolchain-baseline-"));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  await fs.mkdir(path.join(root,".toolchain"));
+  await fs.writeFile(path.join(root,".toolchain/compiler"),"provided compiler");
+  await fs.writeFile(path.join(root,"app.js"),"source");
+  const baseline=await captureWorkspace(root);
+  assert.equal(baseline.git,false);
+  assert.deepEqual(Object.keys(baseline.hashes),["app.js"]);
+  await workspaceGit(root,["init"]);
+  await workspaceGit(root,["add",".toolchain/compiler"]);
+  assert.equal((await captureWorkspace(root)).hashes[".toolchain/compiler"],workspaceHash("provided compiler"));
+});
+
 test("unborn Git repositories retain staged and untracked dirty paths without filename escaping", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-unborn-"));
   try {

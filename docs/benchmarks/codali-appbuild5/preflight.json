@@ -1,0 +1,48 @@
+{
+  "at": "2026-11-04T21:28:13.848782+00:00",
+  "harnessTests": "4 passed",
+  "smoke": [
+    {
+      "arm": "raw_tools",
+      "content": "All three steps completed successfully:\n\n1. **Created `smoke.js`** \u2014 contains `console.log(\"smoke-ok\");`\n2. **Ran `node smoke.js`** \u2014 output: `smoke-ok` \u2713\n3. **Ran `npm view is-number version`** \u2014 returned `7.0.0` \u2713 (public npm registry network access confirmed)",
+      "error": null,
+      "completed": null,
+      "usage": {
+        "tokens": 8818,
+        "inputTokens": 8267,
+        "outputTokens": 551,
+        "modelCalls": 5,
+        "toolCalls": 5,
+        "embeddingCalls": 0,
+        "embeddingTokens": 0,
+        "estimated": false,
+        "pendingReservations": []
+      },
+      "elapsedMs": 24775,
+      "runtimeArchive": "/home/wodo/.local/state/codali/evaluation-workspaces/run-GNkatf"
+    },
+    {
+      "arm": "codali_candidate",
+      "content": "Required work completed with recorded verification evidence.\n\nThree requested steps actually performed: (1) created smoke.js containing console.log('smoke-ok'); (2) `node smoke.js` printed exactly \"smoke-ok\" (receipt:dc134a91) and `node --test smoke.js` passed against the current file (receipt:0c2bc877); (3) `npm view is-number version` returned 7.0.0, confirming public dependency network access (receipt:786dc5fd).",
+      "error": null,
+      "completed": true,
+      "usage": {
+        "modelCalls": 21,
+        "tokens": 138213,
+        "inputTokens": 133133,
+        "outputTokens": 5080,
+        "embeddingCalls": 0,
+        "embeddingTokens": 0,
+        "estimated": false,
+        "toolCalls": 14,
+        "pendingReservations": []
+      },
+      "elapsedMs": 187345,
+      "runtimeArchive": "/home/wodo/.local/state/codali/evaluation-workspaces/run-57KuuB"
+    }
+  ],
+  "androidJdk": "Temurin17.0.21",
+  "androidSdk": 35,
+  "kvm": "usable in scoped Docker container",
+  "ios": "Mac/Xcode not supplied; native execution unverified"
+}

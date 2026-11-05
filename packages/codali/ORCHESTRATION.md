@@ -129,6 +129,25 @@ Roles such as `planner`, `architect`, `worker`, `router`, `repair`, `compactor`,
 `adjudicator`, `synthesizer` and `verifier` can explicitly alias the lead. Disabled
 optional capabilities do not silently invoke a model from daemon defaults.
 
+When an enabled `repair` binding is explicitly configured, repeated admitted shell
+execution failures trigger a read-only diagnosis after
+`taskControl.repairAttemptsBeforeReplan` failures (default two). Each diagnosis
+receives the task, actual error and bounded excerpts of already observed source.
+At most two diagnoses are requested per command/task attempt in a loaded turn;
+these calls count toward the shared model budget. Advice cannot execute tools,
+change permissions or verify completion. Permission denials do not trigger this
+repair path. A successful command resets the failure streak.
+
+Successful JavaScript writes receive an isolated `node --check` where available.
+A parse failure leaves the saved file intact and shows “syntax needs fixing” in
+the TUI. Parsing is feedback, not behavioral verification. Interrupted runs retain
+a deterministic handoff listing unfinished tasks and the resume command.
+
+Isolated shell scratch files and environment changes last for one call. Use
+`$TMPDIR` for temporary work and claimed workspace paths for required artifacts.
+Package-manager cache environment variables identify persistent private caches;
+do not hardcode Linux cache paths in portable tasks.
+
 Effort controls shared limits, not a claim about hidden model reasoning:
 
 | Effort | Steps | Model calls | Tool calls | Total tokens | Time |

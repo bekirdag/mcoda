@@ -12,7 +12,11 @@ export class ProgressTracker {
   observe(input: { tool: string; args: unknown; ok: boolean; hashes: Record<string, string>; task?: unknown; output: string; errorCode?: string }): number {
     if (!["read_file", "list_files", "run_shell"].includes(input.tool) || input.ok && input.tool === "run_shell") return 0;
     const signature = createHash("sha256").update(JSON.stringify(canonical({
-      tool: input.tool, args: input.args, ok: input.ok, hashes: input.hashes, task: input.task,
+      tool: input.tool, args: input.args, ok: input.ok,
+      // Successful reads/listings already fingerprint their actual result. The
+      // observation inventory grows during discovery; unrelated reads must not
+      // reset this counter. Failed operations retain their input dependencies.
+      hashes: input.ok ? undefined : input.hashes, task: input.task,
       // File/list results can change without a prior snapshot, e.g. a user edit.
       observed: input.ok ? createHash("sha256").update(input.output).digest("hex") : input.errorCode,
     }))).digest("hex");

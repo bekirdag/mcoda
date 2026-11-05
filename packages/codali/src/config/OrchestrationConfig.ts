@@ -52,6 +52,12 @@ export interface ModelBinding {
   embeddingSpace?: string;
 }
 export interface TaskControlConfig {
+  /** Require an explicit work_plan before claiming implementation tasks. */
+  requirePlan?: boolean;
+  /** Initial execution schemas; additional tools remain discoverable and policy-checked. */
+  initialTools?: string[];
+  /** Workspace-relative authoritative inputs that tools must not change. */
+  immutableInputs?: string[];
   maxWritingTasksPerWorktree: 1;
   maxConcurrentHelpers: number;
   helpers: "read-only-or-draft";
@@ -207,7 +213,12 @@ export const validateOrchestrationConfig = (input: unknown): OrchestrationConfig
   }
   if (root.taskControl !== undefined) {
     const t = object(root.taskControl, "taskControl");
-    fields(t, ["maxWritingTasksPerWorktree", "maxConcurrentHelpers", "helpers", "repeatedFailureThreshold", "repairAttemptsBeforeReplan", "checkpointOn", "reviewPolicy"], "taskControl");
+    fields(t, ["requirePlan", "initialTools", "immutableInputs", "maxWritingTasksPerWorktree", "maxConcurrentHelpers", "helpers", "repeatedFailureThreshold", "repairAttemptsBeforeReplan", "checkpointOn", "reviewPolicy"], "taskControl");
+    if (t.requirePlan !== undefined && typeof t.requirePlan !== "boolean") throw new Error("taskControl.requirePlan: expected boolean");
+    if (t.initialTools !== undefined && (!Array.isArray(t.initialTools) || t.initialTools.length > 64
+      || t.initialTools.some(name => typeof name !== "string" || !/^[a-z][a-z0-9_]{0,79}$/.test(name))
+      || new Set(t.initialTools).size !== t.initialTools.length)) throw new Error("taskControl.initialTools: expected unique tool names");
+    if (t.immutableInputs !== undefined && (!Array.isArray(t.immutableInputs) || t.immutableInputs.length > 64 || t.immutableInputs.some(v => typeof v !== "string" || !v || v.length > 1024 || v.startsWith("/") || v.includes("\\") || v.split("/").some(part => !part || part === "." || part === "..") || /[:\x00-\x1f]/u.test(v)))) throw new Error("taskControl.immutableInputs: expected confined workspace-relative input paths");
     if (t.maxWritingTasksPerWorktree !== 1 || t.helpers !== "read-only-or-draft" || t.reviewPolicy !== "risk-and-evidence") throw new Error("Invalid task-control safety policy");
     for (const key of ["maxConcurrentHelpers", "repeatedFailureThreshold", "repairAttemptsBeforeReplan"]) positive(t[key], `taskControl.${key}`);
     if (!Array.isArray(t.checkpointOn) || t.checkpointOn.some(v => !["task-transition", "before-compaction", "before-exit"].includes(String(v)))) throw new Error("Invalid checkpointOn policy");
