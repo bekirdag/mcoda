@@ -12,20 +12,22 @@ test("execution compaction preserves retrievable old findings and complete recen
   const original = structuredClone(messages);
   const compact = compressExecutionHistory(messages);
   assert.deepEqual(messages, original);
-  assert.equal(compact.archived.length, 15);
+  const omittedCount = original.filter(m=>m.role === "tool").length - compact.messages.filter(m=>m.role === "tool").length;
+  assert.ok(omittedCount > 0 && omittedCount < 20);
+  assert.equal(compact.archived.length, omittedCount + 1);
   assert.match(compact.messages[0].content, /finding-0/);
   assert.equal(JSON.parse(compact.messages[0].content).sha256, compact.archived[0].sha256);
   assert.equal(contextHash(compact.archived[0].message), compact.archived[0].sha256);
   const firstFinding = JSON.parse(compact.messages[0].content).activity[0];
   assert.equal(compact.archived.find(entry=>entry.sha256 === firstFinding.sha256)!.message.content, messages[2].content);
   const restored: ProviderMessage[] = JSON.parse(compact.archived[0].message.content);
-  assert.deepEqual(restored.filter(m=>m.role === "tool"), original.filter(m=>m.role === "tool").slice(0, 14));
+  assert.deepEqual(restored.filter(m=>m.role === "tool"), original.filter(m=>m.role === "tool").slice(0, omittedCount));
   assert.deepEqual(compact.messages.filter(m=>m.role === "user"), original.filter(m=>m.role === "user"));
   const ids = compact.messages.flatMap(m=>m.toolCalls?.map(call=>call.id) ?? []);
   assert.deepEqual(compact.messages.filter(m=>m.role === "tool").map(m=>m.toolCallId), ids);
   assert.deepEqual(compressExecutionHistory(compact.messages), { messages: compact.messages, archived: [] });
   const continued = compressExecutionHistory([...compact.messages,
-    { role: "assistant", content: "New finding" }, { role: "assistant", content: "Next finding" }]);
+    { role: "assistant", content: "New finding".repeat(3000) }, { role: "assistant", content: "Next finding" }]);
   assert.equal(continued.messages.filter(m=>m.name === "execution_history").length, 1);
   assert.match(continued.archived[0].message.content, new RegExp(compact.archived[0].sha256));
 });
@@ -93,4 +95,20 @@ test("recent recovered excerpts survive compaction of older history", () => {
   assert.equal(result.request.messages.at(-1)?.content, fresh);
   assert.ok(result.afterTokens + 1024 <= 3500);
   assert.ok(result.archived.every(entry => entry.message.content !== fresh));
+});
+
+
+test("execution history keeps many short tool groups while they fit the token budget", () => {
+  const messages: ProviderMessage[] = [{role:"user",content:"Preserve the original architecture."}];
+  for(let i=0;i<17;i++) messages.push(
+    {role:"assistant",content:"",toolCalls:[{id:`call-${i}`,name:"read_file",args:{path:`module-${i}.js`}}]},
+    {role:"tool",toolCallId:`call-${i}`,content:`export const value${i} = ${i};`});
+  assert.deepEqual(compressExecutionHistory(messages),{messages,archived:[]});
+  const compact=compressExecutionHistory(messages,300);
+  assert.ok(compact.archived.length>0);
+  assert.deepEqual(compact.messages.filter(m=>m.role==="user"),messages.filter(m=>m.role==="user"));
+  const calls=compact.messages.flatMap(m=>m.toolCalls?.map(call=>call.id)??[]);
+  assert.deepEqual(compact.messages.filter(m=>m.role==="tool").map(m=>m.toolCallId),calls);
+  assert.equal(calls.at(-1),"call-16");
+  assert.deepEqual(compressExecutionHistory(compact.messages,300),{messages:compact.messages,archived:[]});
 });

@@ -8,7 +8,8 @@ export const estimateContextTokens = (request: Pick<ProviderRequest, "messages" 
 
 /** Retain complete recent call/result groups and a retrievable activity inventory.
  * The inventory is literal historical data, never a model-authored completion claim. */
-export function compressExecutionHistory(messages: ProviderMessage[]): { messages: ProviderMessage[]; archived: ArchivedContext[] } {
+export function compressExecutionHistory(messages: ProviderMessage[], maxTokens = 12_000): { messages: ProviderMessage[]; archived: ArchivedContext[] } {
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new Error("Execution history token budget must be a positive integer");
   const groups: ProviderMessage[][] = [];
   const prior = messages.filter(message => message.name === "execution_history");
   for (let i = 0; i < messages.length; i++) {
@@ -25,11 +26,16 @@ export function compressExecutionHistory(messages: ProviderMessage[]): { message
     }
     groups.push(group);
   }
-  let count = 0;
+  let tokens = 0, keptGroup = false, overflow = false;
   const recent: ProviderMessage[][] = [], omitted: ProviderMessage[][] = [];
   for (const group of [...groups].reverse()) {
-    if (count && count + group.length > 12 && group[0].role !== "user") omitted.unshift(group);
-    else { recent.unshift(group); count += group.length; }
+    // User constraints are never expendable history. The provider guard accounts
+    // for them, tool schemas and the system prompt against the actual window.
+    if (group[0].role === "user") { recent.unshift(group); continue; }
+    const cost = Math.ceil(JSON.stringify(group).length / 3);
+    if (overflow || (keptGroup && tokens + cost > maxTokens)) {
+      overflow = true; omitted.unshift(group);
+    } else { recent.unshift(group); tokens += cost; keptGroup = true; }
   }
   if (!omitted.length) return { messages: [...prior, ...recent.flat()], archived: [] };
   const source: ProviderMessage = { role: "assistant", name: "execution_history_source", content: JSON.stringify([...prior, ...omitted.flat()]) };

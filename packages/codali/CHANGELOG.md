@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Size retained execution history by the configured lead context rather than a
+  fixed message count; resolve localhost in offline Linux tool sandboxes.
 - Preserve original task inputs and recoverable execution history across trimming,
   compaction and resume; provide a truthful stopped-run handoff in the TUI.
 - Select compatible model pools across shared aliases, refresh temporary health

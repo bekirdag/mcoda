@@ -143,6 +143,15 @@ A parse failure leaves the saved file intact and shows “syntax needs fixing”
 the TUI. Parsing is feedback, not behavioral verification. Interrupted runs retain
 a deterministic handoff listing unfinished tasks and the resume command.
 
+Execution history retains complete recent tool-call/result groups within a token
+reserve: one quarter of the smallest configured lead context after its output
+allowance. This replaces the fixed twelve-message cutoff. Older findings remain
+retrievable by hash, all user constraints survive, and the provider context guard
+still accounts for instructions, schemas and output before dispatch.
+
+On Linux, offline shell execution provides a synthetic localhost-only hosts file.
+It resolves loopback names without sharing the host network or its hostname map.
+
 Isolated shell scratch files and environment changes last for one call. Use
 `$TMPDIR` for temporary work and claimed workspace paths for required artifacts.
 Package-manager cache environment variables identify persistent private caches;

@@ -684,7 +684,12 @@ export class SessionController {
   }
 
   private async compactMessages(): Promise<ProviderMessage[]> {
-    const result = compressExecutionHistory(this.messages);
+    const windows = resolveBinding(this.options.resolved.config, "lead", "chat.completions")
+      .map(({ model }) => model.contextWindow - model.maxOutputTokens);
+    // Reserve most of the window for instructions, schemas, retrieved context and
+    // output. Small tool interactions should not evict code after six calls.
+    const historyTokens = Math.max(1, Math.floor(Math.min(...windows) / 4));
+    const result = compressExecutionHistory(this.messages, historyTokens);
     await this.archiveContext(result.archived, { scope: "execution_history" });
     return result.messages;
   }

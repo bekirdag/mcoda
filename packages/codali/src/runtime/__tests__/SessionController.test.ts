@@ -964,7 +964,7 @@ test("the latest failed check survives conversation compaction and a new control
   const marker = "PERSISTED_CHECK_FAILURE_X";
   await fs.writeFile(path.join(root, "value.test.mjs"), `import test from 'node:test'; import assert from 'node:assert/strict'; for(let i=0;i<18;i++)test('earlier successful validation case '+i,()=>assert.equal(1,1)); test('late failure',()=>assert.fail('${marker}'));\n`);
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { test: "node --test value.test.mjs" } }));
-  for (let i = 1; i <= 10; i++) await fs.writeFile(path.join(root, `notes-${i}.txt`), `User-owned note ${i}\n`);
+  for (let i = 1; i <= 10; i++) await fs.writeFile(path.join(root, `notes-${i}.txt`), `User-owned note ${i}\n` + "Context pressure without changing the original task. ".repeat(160));
   let step = 0;
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;

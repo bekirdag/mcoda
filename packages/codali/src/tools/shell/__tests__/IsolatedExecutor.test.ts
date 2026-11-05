@@ -168,3 +168,28 @@ test("module cwd retains root-relative sandbox write scopes", async t => {
   await assert.rejects(tool.handler({ command: "node", cwd: "module", args: ["-e", "require('fs').writeFileSync('../protected.txt','changed')"] }, context));
   assert.equal(await fs.readFile(path.join(root, "protected.txt"), "utf8"), "protected");
 });
+
+
+test("offline Linux commands resolve localhost without access to host loopback services", async t => {
+  const status = executorStatus();
+  if (!status.available || status.backend !== "bubblewrap") { t.skip("Linux namespace regression"); return; }
+  const { createServer } = await import("node:net");
+  const server = createServer(socket => socket.end("host-only"));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve())));
+  const port = (server.address() as {port:number}).port;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-offline-localhost-"));
+  t.after(() => fs.rm(root, { recursive:true, force:true }));
+  const script = `
+    const assert=require('node:assert/strict');
+    require('node:dns').promises.lookup('localhost',{family:4}).then(({address})=>{
+      assert.equal(address,'127.0.0.1');
+      assert.equal(require('node:fs').readFileSync('/etc/hosts','utf8'),'127.0.0.1 localhost\\n::1 localhost\\n');
+      const socket=require('node:net').connect({host:'localhost',family:4,port:${port}});
+      socket.on('connect',()=>process.exit(9));
+      socket.on('error',()=>{console.log('resolved; host loopback denied');process.exit(0)});
+      setTimeout(()=>process.exit(8),1000);
+    }).catch(error=>{console.error(error);process.exit(7)});`;
+  const result=await createIsolatedExecutor({status})('node',['-e',script],{workspaceRoot:root,shellTimeoutMs:5000});
+  assert.match(result.output,/resolved; host loopback denied/);
+});

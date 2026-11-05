@@ -171,3 +171,14 @@ This is a development ledger, not a new benchmark score. Original attempts and r
 ### Final package gates (2026-11-05)
 
 Full monorepo attempt04 passed, including2057Codali checks with7skips and565repository checks. Final clean packed install passed; exact receipt is `~/.local/state/codali-remediation/codali30-final-clean-install.json`, log `/tmp/codali30-final-package-install.log`. This includes packed CLI/TUI, deterministic packing, native runtime pins/cache reuse and uninstall preservation. Candidate remains unpublished `0.1.135-codali.30`. These passing package gates do not close incomplete app-build outcomes or missing native Mac/iOS qualification.
+
+### New live-run findings and follow-up fixes
+
+- Web05 recovery02 failed its declared budget:1964887continuation tokens/88calls, still incomplete. Independent copied-workspace backend checks6pass/7fail; declared test/build commands fail. Preserve these results as failed assisted development, not benchmark scores.
+- Desktop recovery01 reached its one-hour deadline:1431248continuation tokens/82calls. Independent copy passes typecheck and build with authorized output writes. Initial test failure was sandbox localhost resolution; after the resolver fix it correctly reports no test files. UI/business-feature completion remains unqualified.
+- Found premature execution history trimming to12messages (about6tool calls) irrespective of model window. New candidate retains full groups within25% of the smallest configured lead context after output reserve, with all user constraints and retrievable archives retained. Hard provider context guard remains.
+- Linux offline tools now receive a synthetic read-only localhost-only hosts file, keeping network namespaces isolated. Regression verifies lookup succeeds while a real host loopback listener stays inaccessible.
+- Focused context/controller/isolation98/98 passed. These new product changes postdate the f96c2a4 clean-package qualification and require renewed full/package checks.
+- Smoke06 exposed additional basic tools early:20/20,124876tokens versus smoke05 140840 (~11.3% reduction). No production default change; development prompts and uncontrolled concurrent load are not held-out intelligence or speed evidence.
+
+- Follow-up qualification: full monorepo attempt06 passed (`/tmp/codali-monorepo-release-tests-06.log`), and renewed clean packed installation passed (`~/.local/state/codali-remediation/codali30-context-resolver-clean-install.json`). Python deterministic worker wall grace is now15s for cold imports/contended startup; CPU6s, memory2GiB and cancellation remain unchanged. No app completion or comparative intelligence claim follows from these package checks.

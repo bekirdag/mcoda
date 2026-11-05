@@ -64,7 +64,7 @@ async function execute(name: string, args: unknown, context: ToolContext, option
     const result = await createIsolatedExecutor({ network: false, readOnlyRuntimeRoots: python ? [runtime] : [] })(
       python ? path.join(runtime, "bin", "python") : process.execPath,
       python ? ["-I", "-B", script] : ["--max-old-space-size=128", script],
-      { workspaceRoot: root, signal: context.signal, allowedWritePaths: [], shellTimeoutMs: 7000, shellMaxOutputBytes: 128000 });
+      { workspaceRoot: root, signal: context.signal, allowedWritePaths: [], shellTimeoutMs: python ? 15_000 : 7000, shellMaxOutputBytes: 128000 });
     const observation = result.data as { stdout: string; truncated: boolean };
     if (observation.truncated) throw new ToolExecutionError("tool_execution_failed", "Deterministic output exceeded the limit");
     const data = JSON.parse(observation.stdout) as Record<string, unknown>;
