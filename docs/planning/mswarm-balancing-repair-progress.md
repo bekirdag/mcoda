@@ -18,3 +18,9 @@
 - Codali installed provider updated; lead/intent catalogId now qwen-latest-flash-next. Configured lead resolves owner pool fcbd290aa1d1 with both physical nodes. Config/provider backups retained locally.
 - Shared gateway/proxy files and local deployment image tags updated; both health checks pass. Node processes were not restarted. Protected deployment backups: ~/.local/state/mswarm-balancing-repair-20261104. No npm publication.
 - Operations dashboard reports historical failure-count alerts from retained node history; this is separate from the passing current routing checks. Earlier catalog/preview findings were corrected after inspecting opt-in catalog flags and product/owner scope.
+
+## 2026-11-05 relay degradation / pool-health correction
+
+- Fixed pool serialization excluding relay-degraded nodes whose models remain healthy. Commit e031a9446 in /srv/mswarm. Approval, freshness, model-unavailable and drain gates retained.
+- Core67, scheduler16, gateway6 tests and TypeScript passed. Shared gateway/proxy deployed with prior-image rollback tags and source backup under ~/.local/state/mswarm-pool-health-20261105. Image snapshot briefly paused gateway; manually unpaused during capture, services healthy after restart.
+- Live owner Qwen Strata pool 0a4a20df558f now healthy with Raijin and Suku candidates. Both Codali web04 and Android02 continuations have completed real model requests via that balanced alias. No claim of even distribution inferred solely from catalog membership.
