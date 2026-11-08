@@ -17,6 +17,13 @@ export interface ProcessEnvironment {
   GIT_CONFIG_NOSYSTEM?: string; GIT_CONFIG_GLOBAL?: string; GIT_ATTR_NOSYSTEM?: string;
 }
 
+// Failed commands are rendered from error.message by native tool loops. Preserve
+// both streams there, not only in details that those loops may never expose.
+const processFailureMessage = (reason: string, stdout: string, stderr: string): string => {
+  const excerpt = (value: string) => value.length <= 3000 ? value : `${value.slice(0, 1400)}\n[diagnostic excerpt truncated]\n${value.slice(-1500)}`;
+  return [reason, stdout && `stdout:\n${excerpt(stdout)}`, stderr && `stderr:\n${excerpt(stderr)}`].filter(Boolean).join("\n\n");
+};
+
 export const runProcess = (command: string, args: string[], context: ToolContext, environment: ProcessEnvironment = {}): Promise<ToolHandlerResult> => {
   context.signal?.throwIfAborted();
   const timeoutMs = context.shellTimeoutMs ?? 120_000;
@@ -60,8 +67,8 @@ export const runProcess = (command: string, args: string[], context: ToolContext
       if (group) kill("SIGKILL");
       const details = { command, args, cwd, exitCode, signal, stdout, stderr, truncated, timedOut };
       if (context.signal?.aborted) { reject(context.signal.reason ?? new Error("Process cancelled")); return; }
-      if (timedOut) { reject(new ToolExecutionError("tool_timeout", "Process deadline exceeded", { retryable: false, details })); return; }
-      if (exitCode !== 0 || signal) { reject(new ToolExecutionError("tool_execution_failed", stderr || stdout || `Process terminated (${signal ?? exitCode})`, { retryable: false, details })); return; }
+      if (timedOut) { reject(new ToolExecutionError("tool_timeout", processFailureMessage("Process deadline exceeded", stdout, stderr), { retryable: false, details })); return; }
+      if (exitCode !== 0 || signal) { reject(new ToolExecutionError("tool_execution_failed", processFailureMessage(`Process terminated (${signal ?? exitCode})`, stdout, stderr), { retryable: false, details })); return; }
       resolve({ output: (stdout || stderr) + (truncated ? "\n[output truncated]" : ""), data: details });
     });
   });

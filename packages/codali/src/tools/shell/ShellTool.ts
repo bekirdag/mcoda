@@ -4,7 +4,7 @@ import { runProcess } from "./AsyncProcess.js";
 import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 
 /** Shared by terminal execution and tool-enabled benchmark baselines. */
-export const DEVELOPMENT_COMMANDS = ["git", "rg", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk", "uname", "which", "env", "find", "wc", "sort", "uniq", "cut", "diff", "file", "stat", "du", "df", "mkdir", "touch", "cp", "mv", "curl", "wget", "tar", "unzip", "zip", "cc", "gcc", "g++", "clang", "clang++", "ar", "swift", "swiftc", "java", "javac", "xcrun", "xcodebuild"];
+export const DEVELOPMENT_COMMANDS = ["git", "rg", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk", "uname", "which", "env", "find", "wc", "sort", "uniq", "cut", "diff", "file", "stat", "du", "df", "mkdir", "touch", "cp", "mv", "curl", "wget", "tar", "unzip", "zip", "cc", "gcc", "g++", "clang", "clang++", "ar", "swift", "swiftc", "java", "javac", "xcrun", "xcodebuild", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
@@ -98,6 +98,16 @@ export const createShellTool = (): ToolDefinition => ({
     }
 
     const shellWorkingDirectory = resolveShellWorkingDirectory(context.workspaceRoot, cwd);
-    return (context.shellExecutor ?? runProcess)(command, commandArgs, { ...context, shellWorkingDirectory });
+    const effectiveArgs = [...commandArgs];
+    if (command === "bash") {
+      // Bash requires long options before short options. Preserve caller flags
+      // and script parameters; only make failed pipeline stages observable.
+      let at = 0;
+      while (effectiveArgs[at]?.startsWith("--") && effectiveArgs[at] !== "--") {
+        at += ["--rcfile", "--init-file"].includes(effectiveArgs[at]) ? 2 : 1;
+      }
+      effectiveArgs.splice(at, 0, "-o", "pipefail");
+    }
+    return (context.shellExecutor ?? runProcess)(command, effectiveArgs, { ...context, shellWorkingDirectory });
   },
 });

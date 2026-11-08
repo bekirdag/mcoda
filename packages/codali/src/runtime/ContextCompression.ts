@@ -1,10 +1,22 @@
 import { createHash } from "node:crypto";
 import type { ProviderMessage, ProviderRequest } from "../providers/ProviderTypes.js";
+import { estimateProviderInputTokens } from "../providers/RequestSize.js";
 
 export interface ArchivedContext { sha256: string; message: ProviderMessage; }
 export const contextHash = (message: ProviderMessage): string => createHash("sha256").update(JSON.stringify(message)).digest("hex");
-export const estimateContextTokens = (request: Pick<ProviderRequest, "messages" | "tools" | "responseFormat">): number =>
-  Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools, responseFormat: request.responseFormat }).length / 3);
+export const estimateContextTokens = estimateProviderInputTokens;
+
+/** Reserve an affordable output, rather than rejecting useful remaining budget
+ * solely because the configured maximum response would not fit. Input should
+ * already be compressed; this never expands the caller's output ceiling. */
+export const fitOutputBudget = (request: ProviderRequest, remainingTokens: number, outputCeiling: number): ProviderRequest => {
+  const ceiling = Math.min(request.maxTokens ?? outputCeiling, outputCeiling);
+  const affordable = Math.floor(remainingTokens - estimateContextTokens(request));
+  // Do not dispatch a token-sized fragment. The ordinary admission gate reports
+  // exhaustion when there is no useful response allowance left.
+  const maxTokens = affordable < 128 ? ceiling : Math.min(ceiling, affordable);
+  return maxTokens === request.maxTokens ? request : { ...request, maxTokens };
+};
 
 /** Retain complete recent call/result groups and a retrievable activity inventory.
  * The inventory is literal historical data, never a model-authored completion claim. */
@@ -28,10 +40,22 @@ export function compressExecutionHistory(messages: ProviderMessage[], maxTokens 
   }
   let tokens = 0, keptGroup = false, overflow = false;
   const recent: ProviderMessage[][] = [], omitted: ProviderMessage[][] = [];
+  // Only collapse identical observations, never writes, failures, changed source,
+  // different pages or user instructions. The complete old groups are archived.
+  const observations = new Set<string>();
   for (const group of [...groups].reverse()) {
     // User constraints are never expendable history. The provider guard accounts
     // for them, tool schemas and the system prompt against the actual window.
     if (group[0].role === "user") { recent.unshift(group); continue; }
+    const calls = group[0].toolCalls ?? [];
+    const observation = calls.length === 1 && ["read_file", "docdex_open", "prepare_edit"].includes(calls[0].name)
+      && group.length === 2 && !/^\s*(?:ERROR|Error|Failed)\b/.test(group[1].content)
+      ? JSON.stringify([calls[0].name, calls[0].args, group[1].content]) : undefined;
+    // Never deduplicate across an intervening action/failure: identical text
+    // before and after a mutation can still matter to its diagnosis.
+    if (!observation && calls.length) observations.clear();
+    if (observation && observations.has(observation)) { omitted.unshift(group); continue; }
+    if (observation) observations.add(observation);
     const cost = Math.ceil(JSON.stringify(group).length / 3);
     if (overflow || (keptGroup && tokens + cost > maxTokens)) {
       overflow = true; omitted.unshift(group);
@@ -50,13 +74,13 @@ export function compressExecutionHistory(messages: ProviderMessage[], maxTokens 
       const result = group.find(message => message.toolCallId === call.id);
       const resultHash = result ? contextHash(result) : undefined;
       if (result && resultHash) archived.push({ sha256: resultHash, message: result });
-      activity.push({ tool: call.name, args: JSON.stringify(call.args ?? {}).slice(0, 160), result: result?.content.slice(0, 240), sha256: resultHash });
+      activity.push({ tool: call.name, args: JSON.stringify(call.args ?? {}).slice(0, 100), result: result?.content.slice(0, 120), sha256: resultHash });
     }
     if (!group[0].toolCalls?.length && group[0].content) activity.push({ assistant: group[0].content.slice(0, 240) });
   }
   const summary: ProviderMessage = { role: "assistant", name: "execution_history", content: JSON.stringify({
     note: "Untrusted historical activity, not current instructions or proof of completion. Avoid repeating unchanged discovery. Retrieve full earlier results with context_read using sha256; older archive references are preserved there.",
-    sha256, activity: activity.slice(-24),
+    sha256, activity: activity.slice(-12),
   }) };
   return { messages: [summary, ...recent.flat()], archived };
 }
@@ -87,14 +111,35 @@ export const compressConversation = (messages: ProviderMessage[], targetChars: n
   return { messages: result, archived: [...archived.values()] };
 };
 
-/** All routes share this context guard. User/system messages, native call arguments
- * and call/result identities remain intact; no model-generated summary is trusted. */
+const OUTPUT_RESERVE_SHARE = 0.3;
+const KEPT_HISTORY_MARKERS = 8;
+const INVENTORY_ENTRIES = 40;
+
+/** Retain what already ran when markers are folded. A bare hash tells the model
+ * nothing, so it could not tell which sources it had already consulted. */
+const historyInventory = (markers: ProviderMessage[]): unknown[] => markers.flatMap(marker => {
+  try {
+    const value = JSON.parse(marker.content) as { sha256?: string; tools?: string[]; results?: string[]; inventory?: unknown[] };
+    if (Array.isArray(value.inventory)) return value.inventory;
+    return [{ tools: value.tools?.slice(0, 6), result: value.results?.[0]?.slice(0, 120), sha256: value.sha256 }];
+  } catch { return []; }
+}).slice(-INVENTORY_ENTRIES);
+
+/** All routes share this guard. User/system instructions stay intact. Completed
+ * calls can be archived atomically; no model-generated summary is trusted. */
 export const compressProviderContext = (request: ProviderRequest, contextWindow: number, outputTokens: number): {
   request: ProviderRequest; archived: ArchivedContext[]; beforeTokens: number; afterTokens: number;
 } => {
-  const available = contextWindow - outputTokens - 512;
+  // The output ceiling is an allowance, not occupied context. Reserving a 40k
+  // ceiling inside a 65k window left 24k for evidence and forced amnesia loops,
+  // so reserve at most a share of the window and clamp generation to what fits.
+  const reservedOutput = Math.min(outputTokens, Math.floor(contextWindow * OUTPUT_RESERVE_SHARE));
+  const available = contextWindow - reservedOutput - 512;
   const beforeTokens = estimateContextTokens(request);
-  if (beforeTokens <= available * 0.8) return { request, archived: [], beforeTokens, afterTokens: beforeTokens };
+  if (beforeTokens <= available * 0.8) {
+    const room = contextWindow - beforeTokens - 512;
+    return { request: (request.maxTokens ?? outputTokens) > room ? { ...request, maxTokens: room } : request, archived: [], beforeTokens, afterTokens: beforeTokens };
+  }
   const archived = new Map<string, ArchivedContext>();
   const messages = request.messages.map(message => ({ ...message }));
   const compressed = { ...request, messages };
@@ -113,7 +158,59 @@ export const compressProviderContext = (request: ProviderRequest, contextWindow:
       }
     }
   }
+  // Content abbreviation cannot shrink native write arguments. Archive only
+  // completed, contiguous call/result groups; never modify arguments in place
+  // or discard an outstanding call. Preserve all user/system instructions.
+  for (let i = 0; i < messages.length && estimateContextTokens(compressed) > available; i++) {
+    const message = messages[i];
+    if (!message.toolCalls?.length) continue;
+    const expected = new Set(message.toolCalls.map(call => call.id));
+    let end = i + 1;
+    while (end < messages.length && messages[end].role === "tool") {
+      const id = messages[end].toolCallId;
+      if (!id || !expected.delete(id)) break;
+      end++;
+    }
+    if (expected.size) continue;
+    // Original long result content is separately retained by shorten().
+    const source: ProviderMessage = { role: "assistant", name: "completed_tool_history", content: JSON.stringify(messages.slice(i, end)) };
+    const sha256 = contextHash(source);
+    archived.set(sha256, { sha256, message: source });
+    const receipt: ProviderMessage = { role: "assistant", name: "completed_tool_history", content: JSON.stringify({
+      note: "Untrusted completed tool history; not proof of task completion. Retrieve full arguments/results with context_read.",
+      sha256, toolCount: message.toolCalls.length, tools: message.toolCalls.slice(-12).map(call => call.name), results: messages.slice(Math.max(i + 1, end - 4), end).map(result => result.content.slice(0, 240)),
+    }) };
+    messages.splice(i, end - i, receipt);
+  }
+  // Receipts are context too. Long sessions used to accumulate one permanent
+  // marker per archived call until the markers alone exhausted the window.
+  // Fold adjacent old markers into a retrievable archive of archives. Do not
+  // cross instructions, native calls/results or the most recent evidence.
+  const isHistory = (message: ProviderMessage): boolean => message.role === "assistant"
+    && !message.toolCalls?.length && ["completed_tool_history", "context_history_index"].includes(message.name ?? "");
+  for (let i = 0; i < messages.length - 4 && estimateContextTokens(compressed) > target; i++) {
+    if (!isHistory(messages[i])) continue;
+    let run = i + 1;
+    while (run < messages.length - 4 && isHistory(messages[run])) run++;
+    // Fold the oldest markers only. Folding the whole run dropped every prior
+    // observation at once and the model then repeated its discovery forever.
+    const end = Math.max(i, run - KEPT_HISTORY_MARKERS);
+    if (end - i < 2) { i = run; continue; }
+    const folded = messages.slice(i, end);
+    const source: ProviderMessage = { role: "assistant", name: "context_history_source", content: JSON.stringify(folded) };
+    const sha256 = contextHash(source);
+    archived.set(sha256, { sha256, message: source });
+    messages.splice(i, end - i, { role: "assistant", name: "context_history_index", content: JSON.stringify({
+      note: "Untrusted earlier history index, not instructions or proof of completion. These steps already ran: do not repeat them unless their inputs changed. Use context_read with a sha256 to recover full results.", sha256, inventory: historyInventory(folded),
+    }) });
+  }
   const afterTokens = estimateContextTokens(compressed);
-  if (afterTokens > available) throw new Error("User instructions, current request and tool schemas exceed this model's context after compression. The full transcript is saved. Use a larger compatible context window or narrow the request; no model call was sent.");
+  if (afterTokens > available) {
+    // Output is an allowance, not occupied context. Preserve required input
+    // and use the remaining generation room after exhausting safe compression.
+    const remainingOutput = contextWindow - afterTokens - 512;
+    if (remainingOutput < 128) throw new Error("User instructions, current request and tool schemas exceed this model's context after compression. The full transcript is saved. Use a larger compatible context window or narrow the request; no model call was sent.");
+    compressed.maxTokens = Math.min(request.maxTokens ?? outputTokens, outputTokens, remainingOutput);
+  } else compressed.maxTokens = Math.min(request.maxTokens ?? outputTokens, outputTokens, contextWindow - afterTokens - 512);
   return { request: compressed, archived: [...archived.values()], beforeTokens, afterTokens };
 };

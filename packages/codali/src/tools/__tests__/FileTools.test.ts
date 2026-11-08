@@ -139,3 +139,28 @@ test("stale, ambiguous and overlapping patches never alter the file", async t =>
     assert.equal(await fs.readFile(path.join(workspaceRoot, "source"), "utf8"), "aaa repeated repeated");
   }
 });
+
+test("batched file patches validate original nonoverlapping matches before any write", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-patches-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const registry = createRegistry(), file = path.join(root, "source.txt");
+  const context = { workspaceRoot: root, allowedWritePaths: ["source.txt"] };
+  const original = "alpha beta gamma";
+  await fs.writeFile(file, original);
+  for (const args of [
+    { edits: [{ search: "alpha", content: "changed" }, { search: "absent", content: "bad" }] },
+    { edits: [{ search: "alpha beta", content: "x" }, { search: "beta", content: "y" }] },
+    { edits: [{ search: "a", content: "x" }] },
+    { edits: [{ search: "alpha", content: "beta" }, { search: "beta beta", content: "x" }] },
+    { edits: [{ search: "alpha", content: "x" }], content: "mixed" },
+    { edits: [] }, {},
+  ]) {
+    assert.equal((await registry.execute("write_file", { path: "source.txt", ...args }, context)).ok, false);
+    assert.equal(await fs.readFile(file, "utf8"), original);
+  }
+  assert.equal((await registry.execute("write_file", { path: "source.txt", edits: [
+    { search: "gamma", content: "$& literal" }, { search: "alpha", content: "beta" },
+  ] }, context)).ok, true);
+  assert.equal(await fs.readFile(file, "utf8"), "beta beta $& literal");
+  assert.equal((await registry.execute("write_file", { path: "outside.txt", edits: [{ search: "x", content: "y" }] }, context)).ok, false);
+});

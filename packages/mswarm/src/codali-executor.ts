@@ -71,6 +71,7 @@ function normalizeCodaliProviderName(providerOrAdapter: unknown): string | undef
 export interface ProviderMessage {
   role: ProviderRole;
   content: string;
+  images?: Array<{ dataUrl: string }>;
   name?: string;
   toolCallId?: string;
 }
@@ -603,7 +604,7 @@ interface CodaliModule {
 
 export interface MswarmCodaliChatMessage {
   role: string;
-  content: string | Array<{ type: string; text?: string }>;
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 }
 
 export interface MswarmCodaliAgent {
@@ -1344,9 +1345,17 @@ function toProviderMessages(messages: MswarmCodaliChatMessage[]): ProviderMessag
       message.role === "user"
         ? message.role
         : "user";
+    const images = Array.isArray(message.content) ? message.content.filter(part => part.type === "image_url").map(part => {
+      const dataUrl = part.image_url?.url;
+      if (role !== "user" || typeof dataUrl !== "string" || dataUrl.length > 3_000_000 || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(dataUrl)) {
+        throw new Error("Image input requires a bounded user PNG data URL");
+      }
+      return { dataUrl };
+    }) : [];
     return {
       role,
       content: textFromMessageContent(message.content),
+      ...(images.length ? { images } : {}),
     };
   });
 }

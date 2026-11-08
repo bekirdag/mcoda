@@ -22,6 +22,7 @@ const executableBinary = (file: string): boolean => {
 };
 
 const rustTools = new Set(["cargo", "rustc", "rustdoc"]);
+const browserTools = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
 /** Resolve a rustup proxy without executing it or consulting repository overrides.
  * Only an already-installed, host-selected toolchain can become a runtime mount. */
@@ -145,7 +146,7 @@ const darwinDeveloperTools = (workspace: string, home: string): HostRuntime[] =>
 export const discoverHostToolchain = (workspaceRoot: string, searchPath = process.env.PATH ?? ""): HostRuntime[] => {
   const workspace = realpathSync.native(workspaceRoot); const home = realpathSync.native(os.homedir());
   const result: HostRuntime[] = darwinDeveloperTools(workspace, home);
-  for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar", "rg"]) {
+  for (const name of ["node", "npm", "pnpm", "yarn", "bun", "python3", "python", "rustc", "cargo", "rustdoc", "cc", "ar", "rg", ...browserTools]) {
     if (result.some(runtime => runtime.name === name)) continue;
     const candidates = name === "node" ? [process.execPath] : searchPath.split(path.delimiter).filter(Boolean).map(directory => path.resolve(directory, name));
     for (const candidate of candidates) {
@@ -168,6 +169,19 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
           return runtime;
         };
         if (systemPath(executable)) { result.push(pythonAlias({ name, executable, readOnlyRoot: executable, directory: false })); break; }
+        if (browserTools.includes(name)) {
+          // Debian Chrome launchers resolve outside /usr. Mount only the known
+          // installation bundle, never /opt, alternatives, or a browser profile.
+          // The private PATH alias points straight at the canonical launcher.
+          const bundle = path.dirname(executable);
+          if (process.platform !== "linux" || !["/opt/google/chrome", "/opt/google/chrome-beta", "/opt/google/chrome-unstable"].includes(bundle)) continue;
+          if ([bundle, path.dirname(bundle), "/opt"].some(directory => { const stat = statSync(directory); return stat.uid !== 0 || (stat.mode & 0o022) !== 0; })) continue;
+          if (!["chrome", "resources.pak", "icudtl.dat"].every(file => {
+            const target = realpathSync.native(path.join(bundle, file));
+            return within(target, bundle) && statSync(target).isFile();
+          }) || !executableBinary(path.join(bundle, "chrome"))) continue;
+          result.push({ name, executable, readOnlyRoot: bundle, directory: true }); break;
+        }
         if (rustTools.has(name) || name === "python" || name === "python3") {
           const runtime = languageRuntime(name, executable, workspace, home);
           if (runtime) { result.push(pythonAlias(runtime)); break; }

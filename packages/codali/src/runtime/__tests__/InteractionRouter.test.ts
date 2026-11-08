@@ -6,7 +6,7 @@ import path from "node:path";
 import { SessionController, type SessionEvent, type SessionControllerOptions } from "../SessionController.js";
 import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { Provider, ProviderResponse, ProviderMessage } from "../../providers/ProviderTypes.js";
-import { parseInteractionDecision, parseDirectInteractionDecision, DIRECT_INTERACTION_VERSION, interactionFirstPrompt, interactionResponseFormat, compactToolSchema } from "../InteractionRouter.js";
+import { parseNativeInteractionDecision, parseInteractionDecision, parseDirectInteractionDecision, DIRECT_INTERACTION_VERSION, interactionFirstPrompt, interactionResponseFormat, compactToolSchema } from "../InteractionRouter.js";
 import { normalizeJsonPresentation, unconstrainedOutput, type InteractionOutputContract } from "../InteractionContract.js";
 import { registerSecretValue } from "../SecretRedaction.js";
 import { DocdexClient } from "../../docdex/DocdexClient.js";
@@ -25,6 +25,40 @@ const fixture = async (t: test.TestContext, provider: Provider, config = base, r
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e), ...options });
   return { controller, events, root, storage };
 };
+
+test("answer-only gateway exposes configured specialists, accounts drafts and removes them on reload", async t => {
+  const config = structuredClone(base);
+  config.models.specialist = { ...config.models.model, contextWindow: 4096, maxOutputTokens: 512 };
+  config.bindings.coding = { candidates: ["specialist"] };
+  config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: [] };
+  let leadCalls = 0, specialistCalls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.messages[0].content.includes("You are the coding specialist")) {
+      specialistCalls++;
+      assert.equal(request.maxTokens, 512);
+      assert.match(request.messages.at(-1)!.content, /preserve order/);
+      return reply("def unique(xs):\n    return list(dict.fromkeys(xs))");
+    }
+    leadCalls++;
+    if (leadCalls === 1) {
+      assert.ok(request.tools?.some(tool => tool.name === "delegate_coding"));
+      assert.ok(!request.tools?.some(tool => tool.name === "delegate_frontend"));
+      return { ...reply(""), toolCalls: [{ id: "specialist", name: "delegate_coding", args: { instruction: "Draft unique", context: "Hashable input", acceptance: "preserve order" } }] };
+    }
+    if (leadCalls === 2) assert.match(request.messages.at(-1)!.content, /verified.*false/);
+    else assert.ok(!request.tools?.some(tool => tool.name === "delegate_coding"));
+    return { ...reply(""), toolCalls: [{ id: `final-${leadCalls}`, name: "final_answer", args: { text: "Draft ready for review." } }] };
+  } }, config);
+  await controller.interact("Draft unique, without editing the workspace.");
+  assert.equal(specialistCalls, 1);
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.ok(events.some(event => event.type === "tool_receipt"));
+  assert.equal(controller.state, undefined);
+  const disabled = structuredClone(config); disabled.bindings.coding.enabled = false;
+  await controller.reloadConfiguration({ config: disabled, hash: orchestrationHash(disabled), source: "test" });
+  await controller.interact("Hello again.");
+  assert.equal(specialistCalls, 1);
+});
 
 test("immutable input configuration accepts confined paths and rejects escapes", () => {
   const config = structuredClone(base);
@@ -75,6 +109,7 @@ test("continuous interactive answers exceed aggregate budgets and retain real to
   config.interaction = { strategy: "adaptive", maxTotalTokens: 1, maxModelCalls: 1, maxInspectionSteps: 1, timeoutMs: 1 };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
     await new Promise(resolve => setTimeout(resolve, 5));
     request.signal?.throwIfAborted();
     const name = ++calls <= 3 ? "calculate" : "final_answer";
@@ -82,8 +117,8 @@ test("continuous interactive answers exceed aggregate budgets and retain real to
       toolCalls: [{ id: `continuous-${calls}`, name: "codali", args: { name, args: name === "calculate" ? { expression: "2+2" } : { text: "4" } } }] };
   } }, config, undefined, false, { continuous: true });
   assert.equal((await controller.interact("Calculate 2+2 three times then answer.")).content, "4");
-  assert.equal(calls, 4);
-  assert.equal(controller.turnUsageSnapshot().tokens, 400080);
+  assert.equal(calls, 5);
+  assert.equal(controller.turnUsageSnapshot().tokens, 400400);
   assert.equal(events.filter(e => e.type === "tool_receipt").length, 3);
 });
 
@@ -92,7 +127,7 @@ test("continuous invalid-response recovery accounts each attempt once and never 
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
     if (++calls === 1) throw new ModelServiceError("invalid_response", 502);
-    assert.equal(request.maxTokens, 1024);
+    assert.equal(request.maxTokens, 512);
     assert.match(JSON.stringify(request.messages), /none of its tool calls executed/);
     return { ...reply(""), toolCalls: [{ id: "answer", name: "codali", args: { name: "final_answer", args: { text: "Recovered." } } }] };
   } }, config, undefined, false, { continuous: true });
@@ -107,12 +142,61 @@ test("continuous invalid-response recovery accounts each attempt once and never 
 });
 
 test("invalid-response and transient outage recovery remain bounded", async t => {
-  for (const code of ["invalid_response", "service_unavailable"] as const) {
+  for (const code of ["invalid_response", "service_unavailable", "model_unavailable"] as const) {
     let calls = 0;
-    const { controller } = await fixture(t, { name: "fixture", generate: async () => { calls++; throw new ModelServiceError(code, 502); } }, base, undefined, false, { continuous: true });
+    const { controller } = await fixture(t, { name: "fixture", generate: async () => { calls++; throw new ModelServiceError(code, code === "model_unavailable" ? 404 : 502); } }, base, undefined, false, { continuous: true });
     await assert.rejects(controller.interact("hello"), ModelServiceError);
     assert.equal(calls, 3);
   }
+});
+
+test("complete long answers survive native and control parsing without an arbitrary character cutoff", () => {
+  const content = "a".repeat(16000);
+  assert.equal(parseNativeInteractionDecision(reply(content)).reply, content);
+  assert.equal(parseDirectInteractionDecision(JSON.stringify({ mode: "answer", text: content })).reply, content);
+  assert.throws(() => parseNativeInteractionDecision(reply(" \n\t ")));
+  const literal = "Example text containing <tool_call> is not execution.";
+  assert.equal(parseNativeInteractionDecision(reply(literal)).reply, literal);
+  assert.throws(() => parseDirectInteractionDecision(JSON.stringify({ mode: "execute", text: content })), /500/);
+});
+
+for (const reason of ["output_limit", "incomplete_stream", undefined] as const) test(`bounded turns recover invalid responses (${reason}) without raising output caps`, async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxOutputTokens: 512, maxModelCalls: 4, maxTotalTokens: 32000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    assert.equal(request.maxTokens, 512);
+    if (++calls === 1) throw new ModelServiceError("invalid_response", reason ? 200 : 502, undefined, false, reason);
+    assert.match(JSON.stringify(request.messages), /concise complete answer/);
+    return reply("A complete recovered answer.");
+  } }, config);
+  assert.equal((await controller.interact("Explain the supplied example.")).content, "A complete recovered answer.");
+  assert.equal(calls, 2);
+  assert.equal(controller.usageSnapshot().modelCalls, 2);
+  assert.equal(events.filter(e => e.type === "tool_intent").length, 0);
+});
+
+test("rejected completions settle known usage and retain partial prose in the audit only", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxOutputTokens: 512, maxModelCalls: 4, maxTotalTokens: 32000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) {
+      const error = new ModelServiceError("invalid_response", 200, undefined, false, "output_limit");
+      error.responseUsage = { inputTokens: 30, outputTokens: 40, totalTokens: 70 };
+      error.partialText = "An unfinished draft";
+      throw error;
+    }
+    return reply("Complete answer");
+  } }, config);
+  assert.equal((await controller.interact("Explain this example")).content, "Complete answer");
+  assert.equal(controller.usageSnapshot().tokens, 390);
+  assert.equal(controller.usageSnapshot().estimated, false);
+  assert.equal(events.find(e => e.type === "model_failure")?.data.partialText, "An unfinished draft");
+  const id = controller.sessionId!;
+  await controller.resume(id);
+  assert.equal(controller.usageSnapshot().tokens, 390);
+  assert.equal(controller.usageSnapshot().estimated, false);
 });
 
 test("ordinary answers recover transient service failures with separate accounting", async t => {
@@ -138,6 +222,22 @@ test("authentication, quota and long retry-after refusals are not retried", asyn
     await assert.rejects(controller.interact("Hello"), ModelServiceError);
     assert.equal(calls, 1);
   }
+});
+
+test("explicit busy-capacity conflicts recover without inventing failed-request usage", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 4, maxTotalTokens: 16000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) throw await ModelServiceError.fromResponse(Response.json({ error: "mswarm_error", code: "conflict", details: { reason_code: "all_compatible_nodes_busy" } }, { status: 409 }));
+    return reply("Recovered after capacity became available.");
+  } }, config);
+  assert.match((await controller.interact("Hello")).content, /Recovered/);
+  assert.equal(calls, 2);
+  assert.equal(events.filter(e => e.type === "model_recovery").length, 1);
+  // The pool refused before inference, so the failed request carries no usage.
+  assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "not_dispatched").length, 1);
+  assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 0);
+  assert.equal(events.filter(e => e.type === "tool_intent").length, 0);
 });
 
 test("fetch transport failures recover without retrying programming TypeErrors", async t => {
@@ -196,7 +296,9 @@ test("direct strategy answers code and follow-ups in one call per turn without l
   assert.ok(events.filter(e => e.type === "interaction_request").every(e => e.data.contractVersion === DIRECT_INTERACTION_VERSION));
   assert.equal(controller.state, undefined);
   const format = interactionResponseFormat("json_schema", "direct");
-  assert.ok(format.type === "json_schema" && JSON.stringify(format).includes('"maxLength":12000'));
+  assert.equal(format.type, "json_schema");
+  assert.equal(JSON.parse(JSON.stringify(format)).schema.schema.properties.text.maxLength, undefined);
+  assert.ok(JSON.stringify(interactionResponseFormat("json_schema", "routed")).includes('"maxLength":500'));
   assert.ok(interactionFirstPrompt(config.interaction).length < 2000);
 });
 
@@ -295,7 +397,7 @@ test("adaptive replies directly in one call without initializing a tool runtime"
   const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.toolChoice, "auto"); return reply("Hello!");
+    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]); assert.equal(request.toolChoice, "auto"); return reply("Hello!");
   } }, config);
   assert.equal((await controller.interact("Hello!")).content, "Hello!");
   assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
@@ -306,10 +408,11 @@ test("adaptive directly invokes a real tool and preserves the original instructi
   const config = structuredClone(base); config.interaction = { strategy: "adaptive", toolExposure: "gateway", calculator: true, routerPrompt: "CUSTOM_ROUTING_MARKER" };
   const original = "Use the calculator for two plus three."; let calls = 0;
   const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
     assert.ok(request.messages.some(message => message.role === "user" && message.content === original));
     assert.match(request.messages[0].content, /WORKSPACE_MARKER/);
     assert.ok(request.messages.some(message => message.content.includes("CUSTOM_ROUTING_MARKER")));
-    assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]);
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]);
     if (++calls === 1) {
       assert.equal(request.toolChoice, "auto");
       assert.match(request.messages[0].content, /only native codali\(\{name,args\}\)/);
@@ -322,12 +425,12 @@ test("adaptive directly invokes a real tool and preserves the original instructi
     return { ...reply(""), toolCalls: [{ id: "answer", name: "codali", args: { name: "final_answer", args: { text: "5" } } }] };
   } }, config);
   await fs.writeFile(path.join(root, "AGENTS.md"), "WORKSPACE_MARKER");
-  assert.equal((await controller.interact(original)).content, "5"); assert.equal(calls, 2);
-  assert.equal(controller.turnUsageSnapshot().modelCalls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+  assert.equal((await controller.interact(original)).content, "5"); assert.equal(calls, 3);
+  assert.equal(controller.turnUsageSnapshot().modelCalls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
 });
 
 for (const strategy of ["adaptive", "gateway"] as const) for (const toolExposure of ["gateway", "native"] as const)
-test(`${strategy}/${toolExposure} finalizes from real evidence without advertising removed controls`, async t => {
+test(`${strategy}/${toolExposure} finalizes from real evidence with final delivery and the execution handoff available`, async t => {
   const config = structuredClone(base);
   config.interaction = { strategy, toolExposure, calculator: true, maxModelCalls: 2, answerPrompt: "KEEP_ANSWER_POLICY" };
   const prompt = 'Use the calculator for 2+3. Return only JSON {"sum":number}.';
@@ -341,9 +444,9 @@ test(`${strategy}/${toolExposure} finalizes from real evidence without advertisi
       return { ...reply(""), toolCalls: [{ id: "sum", name: gateway ? "codali" : "calculate",
         args: gateway ? { name: "calculate", args: { expression: "2+3" } } : { expression: "2+3" } }] };
     }
-    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["start_work", "final_answer"]); assert.equal(request.toolChoice, "auto");
     assert.doesNotMatch(request.messages[0].content, /final_answer|start_work|tools_describe|Call codali/);
-    assert.match(request.messages.at(-1)!.content, /No further tool calls/);
+    assert.match(request.messages.at(-1)!.content, /No further inspection tools/);
     const evidence = JSON.parse(request.messages.find(message => message.role === "tool")!.content);
     assert.equal(evidence.tool, "calculate"); assert.equal(JSON.parse(evidence.content).result, 5);
     return reply('{"sum":5}');
@@ -372,13 +475,14 @@ test("adaptive escalation cannot reset the shared model budget", async t => {
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
     calls++; return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
   } }, config);
-  await assert.rejects(controller.interact("Use the calculator."), /answer budget was reserved/i);
+  await assert.rejects(controller.interact("Use the calculator."), /Only final delivery or the execution handoff/i);
   assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
 });
 
-test("adaptive repairs printed tool markup without executing it, preserving literal answers", async t => {
+for (const strategy of ["adaptive", "gateway"] as const)
+test(`${strategy} repairs printed tool markup without executing it, preserving literal answers`, async t => {
   const text = '<tool_call>\n<function=write_file>bad.txt</function>\n</tool_call>';
-  const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
+  const config = structuredClone(base); config.interaction = { strategy };
   let calls = 0;
   const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return reply(text);
@@ -396,6 +500,7 @@ test("adaptive native discovery retains its gateway and repairs later markup wit
   const config = structuredClone(base); config.interaction = { strategy: "adaptive", toolExposure: "native", calculator: true, maxInspectionSteps: 8 };
   let calls = 0;
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
     calls++;
     if (calls > 1) assert.ok(request.tools?.some(tool => tool.name === "codali"), "original gateway remains available");
     if (calls === 1 || calls === 3) return { ...reply(""), toolCalls: [{ id: `sum-${calls}`, name: "codali", args: { name: "calculate", args: { expression: calls === 1 ? "2+3" : "5+4" } } }] };
@@ -404,7 +509,7 @@ test("adaptive native discovery retains its gateway and repairs later markup wit
     return { ...reply(""), toolCalls: [{ id: "answer", name: "codali", args: { name: "final_answer", args: { text: "9" } } }] };
   } }, config);
   assert.equal((await controller.interact("Use the calculator for 2+3, then add four.")).content, "9");
-  assert.equal(calls, 4);
+  assert.equal(calls, 5);
 });
 
 test("adaptive markup correction is bounded and shares the original model budget", async t => {
@@ -417,14 +522,50 @@ test("adaptive markup correction is bounded and shares the original model budget
   }
 });
 
-test("gateway invokes the real calculator in two model calls and retains instruction policy", async t => {
+test("repeated printed tool calls finish with a plain-text answer instead of failing", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 8 };
+  let calls = 0; const seen: Array<boolean> = [];
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++; seen.push(!!request.tools?.length);
+    return calls <= 2 ? reply("<tool_call><function=context_read></function></tool_call>") : reply("Answer from collected evidence.");
+  } }, config);
+  assert.equal((await controller.interact("Research it.")).content, "Answer from collected evidence.");
+  assert.equal(calls, 3); assert.equal(seen.at(-1), false, "the last request offers no tools");
+});
+
+test("an investigation that stops learning is finalized from its evidence", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 40 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (!request.tools?.length || request.tools.every(tool => ["start_work", "final_answer"].includes(tool.name))) return reply("Finished from what was found.");
+    return { ...reply(""), toolCalls: [{ id: `same-${calls}`, name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
+  } }, config);
+  assert.equal((await controller.interact("Look into this.")).content, "Finished from what was found.");
+  assert.ok(calls <= 12, `stopped after ${calls} model calls`);
+  assert.ok(events.some(event => event.type === "inspection_converged"));
+});
+
+test("a capacity refusal is not charged and later succeeds", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 4, maxTotalTokens: 16000 };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) throw await ModelServiceError.fromResponse(Response.json({ error: "mswarm_error", code: "conflict", details: { reason_code: "all_compatible_nodes_busy" } }, { status: 409 }));
+    return reply("Recovered.");
+  } }, config);
+  assert.equal((await controller.interact("Hello")).content, "Recovered.");
+  assert.equal(controller.turnUsageSnapshot().modelCalls, 1, "only the served request counts");
+});
+
+test("gateway invokes the calculator and audits its short answer with retained policy", async t => {
   const config = structuredClone(base); config.interaction = { strategy: "gateway", calculator: true, answerPrompt: "CUSTOM_ANSWER_POLICY" };
   let calls = 0;
   const { controller, events, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
     assert.match(request.messages[0].content, /CUSTOM_ANSWER_POLICY/);
     assert.match(request.messages[0].content, /GATEWAY_WORKSPACE_RULE/);
     if (++calls === 1) {
-      assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.responseFormat, undefined);
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]); assert.equal(request.responseFormat, undefined);
       assert.deepEqual(request.toolChoice, { name: "codali" });
       return { ...reply(""), toolCalls: [{ id: "sum", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
     }
@@ -433,12 +574,13 @@ test("gateway invokes the real calculator in two model calls and retains instruc
   } }, config);
   await fs.writeFile(path.join(root, "AGENTS.md"), "GATEWAY_WORKSPACE_RULE");
   assert.equal((await controller.interact("Use the calculator for 2+3.")).content, "5");
-  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1); assert.equal(controller.state, undefined);
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 1); assert.equal(controller.state, undefined);
   assert.ok(events.some(event => event.type === "tool_receipt"));
 });
 
 for (const toolExposure of ["gateway", "native"] as const) test(`${toolExposure} prepares Docdex evidence before truncation and preserves the original audit receipt`, async t => {
   const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   const raw = { repo_id: "transport-only-".repeat(260), hits: [{ doc_id: "notes-doc", path: "notes.txt", snippet: "Owner: Iris", start_line: 7, end_line: 7 }], meta: { dag_session_id: "evidence-trace" } };
   t.mock.method(DocdexClient.prototype, "search", async () => raw);
@@ -462,6 +604,7 @@ test("native tool exposure executes declared tools and enables discovered schema
   const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
   let calls = 0;
   const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
     calls++;
     const tool = (name: string, args: unknown): ProviderResponse => ({ ...reply(""), toolCalls: [{ id: `call-${calls}`, name, args }] });
     assert.ok(request.tools?.some(tool => tool.name === "calculate"));
@@ -481,17 +624,29 @@ test("native tool exposure executes declared tools and enables discovered schema
   } }, config);
   await fs.writeFile(path.join(root, "note.txt"), "sample text");
   assert.equal((await controller.interact("Calculate2+3and read note.txt.")).content, "The sum is 5; the file says sample text.");
-  assert.equal(calls, 4); assert.equal(controller.turnUsageSnapshot().toolCalls, 3);
+  assert.equal(calls, 5); assert.equal(controller.turnUsageSnapshot().toolCalls, 3);
 });
 
 test("schema compression preserves property names, enum data and validation constraints", () => {
   const schema = { type: "object", description: "metadata", properties: { description: { type: "string", description: "field metadata", maxLength: 10 },
     value: { enum: [{ title: "data", description: "data" }] } }, required: ["description"], additionalProperties: false };
-  assert.deepEqual(compactToolSchema(schema), { type: "object", properties: { description: { type: "string", maxLength: 10 },
+  assert.deepEqual(compactToolSchema(schema), { type: "object", description: "metadata", properties: { description: { type: "string", description: "field metadata", maxLength: 10 },
     value: { enum: [{ title: "data", description: "data" }] } }, required: ["description"], additionalProperties: false });
   const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native" };
   assert.equal(validateOrchestrationConfig(config).interaction?.toolExposure, "native");
   assert.throws(() => validateOrchestrationConfig({ ...config, interaction: { ...config.interaction, toolExposure: ["native"] } }), /toolExposure/);
+});
+
+test("schema compression retains complete parameter guidance without truncating constraints", () => {
+  const guidance = "Paths are literal workspace-relative existing paths. Scratch space is already writable. ".repeat(8);
+  const schema = { type: "object", title: "Arguments", examples: [], properties: {
+    writePaths: { type: "array", description: guidance, items: { type: "string" } },
+    title: { type: "string", description: "A real input named title" },
+    value: { const: { description: "literal", title: "literal", examples: [1] } },
+  } };
+  const expected = { ...schema } as Partial<typeof schema>;
+  delete expected.title; delete expected.examples;
+  assert.deepEqual(compactToolSchema(schema), expected);
 });
 
 test("configured empty exposure preserves discovery and host-denied tools stay unavailable", async t => {
@@ -650,10 +805,10 @@ test("gateway cannot bypass failed checks with an unchecked final reply", async 
 test("gateway final-budget boundary cannot execute another tool", async t => {
   const config = structuredClone(base); config.interaction = { strategy: "gateway", maxModelCalls: 1 };
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["start_work", "final_answer"]); assert.equal(request.toolChoice, "auto");
     return { ...reply(""), toolCalls: [{ id: "ignored", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
   } }, config);
-  await assert.rejects(controller.interact("Calculate 2+3."), /answer budget was reserved/);
+  await assert.rejects(controller.interact("Calculate 2+3."), /Only final delivery or the execution handoff/);
   assert.equal(controller.turnUsageSnapshot().toolCalls, 0); assert.equal(controller.turnUsageSnapshot().modelCalls, 1);
 });
 
@@ -1114,6 +1269,95 @@ for (const allow of [false, true]) test(`native Docdex web calls require permiss
   assert.equal(controller.state, undefined);
 });
 
+test("standalone answer verification guidance never executes code or overrides a prohibition", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 80000 };
+  const draft = "```js\nexport const add=(a,b)=>a+b;\n```\n```js\nimport test from 'node:test';import {add} from './impl.js';test('sum',()=>add(1,2));\n```\n";
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) return reply(draft);
+    assert.match(request.messages.at(-1)!.content, /Respect any prohibition/);
+    return reply(`Untested, as requested.\n${draft}`);
+  } }, config);
+  assert.match((await controller.interact("Show source and tests, but do not execute anything.")).content, /Untested/);
+  assert.equal(calls, 2);
+  assert.equal(events.filter(event => event.type === "tool_receipt").length, 0);
+  assert.ok(events.some(event => event.type === "answer_verification_requested"));
+});
+
+for (const input of [{ names: ["write_file"] }, { query: "write file content workspace" }]) test(`inspection discovery explains execution handoff without enabling writes ${JSON.stringify(input)}`, async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 80000 };
+  let calls = 0;
+  const { controller, events, root } = await fixture(t, { name: "fixture", generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "discover", name: "codali", args: { name: "tools_describe", args: input } }] };
+    const tool = [...request.messages].reverse().find(message => message.role === "tool")!;
+    assert.match(tool.content, /execution_only/);
+    assert.match(tool.content, /start_work/);
+    assert.ok(!request.tools?.some(tool => tool.name === "write_file"));
+    return reply("Writing requires the execution stage and the original user's authorization.");
+  } }, config);
+  assert.match((await controller.interact("Explain the file-writing capability without modifying anything.")).content, /execution stage/);
+  assert.equal(events.filter(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "write_file").length, 0);
+  assert.equal(await fs.stat(path.join(root, "unauthorized.txt")).then(() => true, () => false), false);
+});
+
+for (const nativeFinal of [false, true]) test(`researched adaptive answers are audited against received evidence (${nativeFinal})`, async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 80000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://example.org/source", content: "The measured value was 27 in one experiment." }] }));
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web", name: "codali", args: { name: "docdex_web_research", args: { query: "measured value" } } }] };
+    if (calls === 2) return nativeFinal ? { ...reply(""), toolCalls: [{ id: "final", name: "codali", args: { name: "final_answer", args: { text: "The value is always 27." } } }] } : reply("The value is always 27.");
+    assert.equal(calls, 3);
+    assert.equal(request.tools, undefined); assert.equal(request.toolChoice, "none");
+    assert.match(request.messages[0].content, /Evidence audit/);
+    assert.match(request.messages[0].content, /do not invent a criticism/);
+    const packet = JSON.parse(request.messages[1].content);
+    assert.equal(packet.draft, "The value is always 27.");
+    assert.match(JSON.stringify(packet.sourcePackets), /one experiment/);
+    return reply("One experiment measured 27; general applicability is unverified. https://example.org/source");
+  } }, config, undefined, true, { allowWeb: true });
+  const answer = await controller.interact("Research the measured value.");
+  assert.match(answer.content, /general applicability is unverified/);
+  assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
+  assert.ok(events.some(event => event.type === "research_answer_audit"));
+});
+
+test("single-pass research review cannot dispatch unrequested extra tool activity", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 160000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  let lookups = 0;
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => { lookups++; return { web_context: [{ url: "https://example.org/primary", content: "One experiment measured 27." }] }; });
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "initial", name: "codali", args: { name: "docdex_web_research", args: { query: "experiment" } } }] };
+    if (calls === 2) return reply("One experiment measured 27.");
+    assert.equal(request.toolChoice, "none"); assert.equal(request.tools, undefined);
+    return { ...reply(""), toolCalls: [{ id: "extra", name: "docdex_web_research", args: { query: "unrequested follow-up" } }] };
+  } }, config, undefined, true, { allowWeb: true });
+  await assert.rejects(controller.interact("Research the measured value."), /evidence audit did not produce a final answer/);
+  assert.equal(calls, 3); assert.equal(lookups, 1);
+  assert.equal(events.filter(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "docdex_web_research").length, 1);
+});
+
+test("mixed SQL and Python verification discovery includes the SQL capability", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 4, maxTotalTokens: 16000 };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "discover", name: "codali", args: { name: "tools_describe", args: { query: "execute python sandbox run code SQL duckdb verify tests shell" } } }] };
+    assert.ok(request.tools?.some(tool => tool.name === "query_data"));
+    assert.ok(request.tools?.some(tool => tool.name === "verify_tests"));
+    assert.ok(!request.tools?.some(tool => tool.name === "run_shell"), "discovery does not grant execution");
+    return reply("Both requested verification capabilities are available.");
+  } }, config);
+  await controller.interact("Find SQL and Python verification capabilities without workspace writes.");
+  assert.equal(calls, 2);
+});
+
 test("calendar capability is discoverable and callable in a read-only adaptive turn", async t => {
   const config = structuredClone(base);
   config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 4, maxTotalTokens: 16000 };
@@ -1213,6 +1457,7 @@ test("configured native dispatcher schema is sent on the initial request and rep
 });
 
 test("Docdex inspection starts only on an authorized Docdex call and exposes no mutations", async t => {
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   const search = t.mock.method(DocdexClient.prototype, "search", async (query: string) => {
     assert.equal(query, "owner"); return { hits: [{ path: "notes.txt", snippet: "Owner: Iris" }] };
@@ -1248,6 +1493,7 @@ test("host-denied Docdex calls never start indexing or reach the daemon", async 
 });
 
 test("inspection discovers extra read tools without enabling mutations or widening host permissions", async t => {
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   t.mock.method(DocdexClient.prototype, "stats", async () => ({ num_docs: 37 }));
   let calls = 0;
@@ -1279,6 +1525,7 @@ test("inspection discovers extra read tools without enabling mutations or wideni
 });
 
 test("failed Docdex preparation leaves ordinary read-only investigation available", async t => {
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   const start = t.mock.method(DocdexClient.prototype, "waitForIndex", async () => { throw new Error("fixture daemon unavailable"); });
   let calls = 0;
   const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
@@ -1467,4 +1714,156 @@ test("interrupted conversation-to-work initialization resumes the original actio
   t.mock.method(controller.store, "initializeWork", original);
   await controller.resume(id);
   assert.equal(controller.state?.originalObjective, "Create notes.txt containing violet.");
+});
+
+test("bounded JSON tool pages remain parseable with their complete tail and continuation offset", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: ["read_file"] };
+  const source = JSON.stringify({ content: "evidence ".repeat(390) + "PAGE_TAIL_7F1", nextOffset: 3523 });
+  assert.ok(source.length > 3000 && source.length < 4000);
+  let calls = 0;
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "read-page", name: "read_file", args: { path: "page.json" } }] };
+    const envelope = JSON.parse(request.messages.at(-1)!.content);
+    assert.equal(envelope.truncated, false);
+    assert.equal(envelope.content, source);
+    assert.match(JSON.parse(envelope.content).content, /PAGE_TAIL_7F1$/);
+    return reply("The complete evidence page was read.");
+  } }, config);
+  await fs.writeFile(path.join(root, "page.json"), source);
+  assert.match((await controller.interact("Read page.json.")).content, /complete evidence/);
+  assert.equal(calls, 2);
+});
+
+test("a relay success at the output cap is recovered rather than delivering cut-off prose", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: 'adaptive', maxOutputTokens: 512, maxModelCalls: 4, maxTotalTokens: 32000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: 'relay', generate: async request => {
+    assert.equal(request.maxTokens, 512);
+    if (++calls === 1) return { message: { role: 'assistant', content: 'The final condition is `unfinished' }, usage: { inputTokens: 30, outputTokens: 512, totalTokens: 542 }, raw: { finish_reason: 'stop' } };
+    assert.match(JSON.stringify(request.messages), /concise complete answer/);
+    return reply('Complete, bounded answer.');
+  } }, config);
+  assert.equal((await controller.interact('Explain the conditions.')).content, 'Complete, bounded answer.');
+  assert.equal(calls, 2); assert.equal(controller.usageSnapshot().tokens, 862);
+  assert.equal(controller.usageSnapshot().estimated, false);
+  assert.equal(events.find(event => event.type === 'model_failure')?.data.partialText, 'The final condition is `unfinished');
+  assert.equal(events.filter(event => event.type === 'tool_intent').length, 0);
+});
+
+test("the capped-prose guard does not replay complete native tool calls", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: 'gateway', toolExposure: 'native', calculator: true, maxOutputTokens: 512, maxModelCalls: 4, maxTotalTokens: 32000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: 'relay', supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
+    if (++calls === 1) return { message: { role: 'assistant', content: '' }, toolCalls: [{ id: 'complete-call', name: 'calculate', args: { expression: '2+2' } }], usage: { inputTokens: 30, outputTokens: 512, totalTokens: 542 } };
+    assert.ok(request.messages.some(message => message.role === 'tool' && message.content.includes('calculate')));
+    return reply('4');
+  } }, config);
+  assert.equal((await controller.interact('Calculate two plus two.')).content, '4');
+  assert.equal(calls, 3); assert.equal(events.filter(event => event.type === 'model_recovery').length, 0);
+  assert.equal(events.filter(event => event.type === 'tool_receipt' && (event.data.receipt as { tool: string }).tool === 'calculate').length, 1);
+});
+
+for (const form of ["double", "args-only"] as const) test(`gateway ${form} wrapper recovers once without another model call`, async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", calculator: true };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (request.toolChoice === "none" && request.messages[0].content.includes("Independently solve")) { calls++; return reply(JSON.parse(request.messages.at(-1)!.content).draft); }
+    if (++calls === 1) {
+      const inner = { name: "calculate", args: { expression: "7*9" } };
+      return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: form === "double" ? { name: "codali", args: inner } : { args: inner } }] };
+    }
+    assert.match(request.messages.find(m => m.role === "tool")!.content, /63/);
+    return reply("63");
+  } }, config);
+  assert.equal((await controller.interact("Calculate 7*9.")).content, "63");
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
+});
+
+test("nested gateway recovery preserves read-only permissions and exclusive control batches", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", calculator: true };
+  let calls = 0;
+  const wrapped = (id: string, name: string, args: unknown) => ({ id, name: "codali", args: { name: "codali", args: { name, args } } });
+  const { controller, root } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [wrapped("write", "write_file", { path: "forbidden.txt", content: "bad" })] };
+    if (calls === 2) {
+      assert.match(request.messages.filter(m => m.role === "tool").at(-1)!.content, /not permitted|permission|Unknown tool/);
+      return { ...reply(""), toolCalls: [wrapped("final", "final_answer", { text: "premature" }), wrapped("calc", "calculate", { expression: "3+4" })] };
+    }
+    assert.match(request.messages.filter(m => m.role === "tool").at(-1)!.content, /only call in their batch/);
+    return reply("No files changed.");
+  } }, config);
+  assert.equal((await controller.interact("Inspect only; do not change files.")).content, "No files changed.");
+  await assert.rejects(fs.stat(path.join(root, "forbidden.txt")), /ENOENT/);
+  assert.equal(controller.state, undefined);
+});
+
+for (const strategy of ["adaptive", "gateway"] as const) test(`${strategy} inspection exhaustion still hands authorized builds to execution`, async t => {
+  const config = structuredClone(base); config.interaction = { strategy, maxInspectionSteps: 1 };
+  let calls = 0;
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["start_work", "final_answer"]);
+    return { ...reply(""), toolCalls: [{ id: "handoff", name: "start_work", args: { task: "Implement the requested app" } }] };
+  } }, config);
+  t.mock.method(controller, "run", async () => ({ content: "Execution remains open", completed: false }));
+  const result = await controller.interact("Build the inventory app. Never deploy it.");
+  assert.equal(result.mode, "execute"); assert.equal(result.completed, false); assert.equal(calls, 1);
+  assert.match(controller.state!.objective, /Never deploy/);
+});
+
+test("substantial calculated answers receive one separately metered equation review", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 5, maxTotalTokens: 64000, calculator: true };
+  const prompt = "A trip is 12 km at 4 km/h. Give its elapsed hours and explain the units.";
+  const draft = "The trip takes 48 hours. " + "The calculator evaluated multiplication, but this alone does not establish the governing equation. ".repeat(5);
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "12*4" } } }] };
+    if (calls === 2) return reply(draft);
+    assert.equal(request.toolChoice, "none");
+    const packet = JSON.parse(request.messages[1].content);
+    assert.equal(packet.request, prompt); assert.equal(packet.draft, draft);
+    assert.equal(packet.calculations[0].args.expression, "12*4");
+    assert.match(request.messages[0].content, /governing equation/);
+    return reply("The trip takes 3 hours: 12 km / (4 km/h).");
+  } }, config);
+  assert.match((await controller.interact(prompt)).content, /3 hours/);
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
+  assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 1);
+});
+
+for (const persistent of [false, true]) test(`failed tool batches ${persistent ? 'halt after repeated feedback' : 'allow a corrected response'}`, async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: 'gateway', calculator: true, maxModelCalls: 12, maxInspectionSteps: 30, maxTotalTokens: 1000000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: 'fixture', supportsToolCalls: true, generate: async () => {
+    calls++;
+    if (!persistent && calls === 2) return reply('The invalid calculation was not executed.');
+    assert.ok(calls <= 6, 'unchanged failures must eventually halt');
+    return { ...reply(''), toolCalls: Array.from({ length: 6 }, (_, index) => ({ id: `invalid-${calls}-${index}`, name: 'codali', args: { name: 'calculate', args: {} } })) };
+  } }, config);
+  if (persistent) {
+    await assert.rejects(controller.interact('Use the calculator if needed.'), /Repeated calculate failure/);
+    assert.equal(calls, 6);
+  } else {
+    assert.equal((await controller.interact('Use the calculator if needed.')).content, 'The invalid calculation was not executed.');
+    assert.equal(calls, 2);
+    assert.equal(events.filter(event => event.type === 'tool_receipt').length, 6);
+  }
+});
+
+test('inspection finalization can deliver requested code without creating a durable goal', async t => {
+  const config = structuredClone(base); config.interaction = { strategy: 'gateway', maxModelCalls: 1 };
+  const source = '```python\ndef double(x):\n    return 2 * x\n```';
+  const { controller, events } = await fixture(t, { name: 'fixture', supportsToolCalls: true, generate: async request => {
+    const answer = request.tools?.find(tool => tool.name === 'final_answer');
+    assert.ok(answer);
+    assert.equal(Object.prototype.hasOwnProperty.call(answer.inputSchema?.properties ?? {}, 'checks'), false);
+    return { ...reply(''), toolCalls: [{ id: 'answer', name: 'final_answer', args: { text: source } }] };
+  } }, config);
+  assert.equal((await controller.interact('Return only a Python function in a fenced code block.')).content, source);
+  assert.equal(controller.state, undefined);
+  assert.equal(events.filter(event => event.type === 'tool_receipt').length, 0);
 });

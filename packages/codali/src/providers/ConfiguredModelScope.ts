@@ -3,6 +3,7 @@ import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel,
 import { ConfiguredProvider, normalizeModelCaller, type ModelCallerContext, type ModelInvocation } from "./ConfiguredProvider.js";
 import { ModelServiceError } from "./ModelServiceError.js";
 import type { Provider, ProviderRequest, ProviderResponse, ProviderUsage } from "./ProviderTypes.js";
+import { estimateProviderInputTokens } from "./RequestSize.js";
 
 export interface ScopedModelUsage {
   modelCalls: number; inputTokens: number; outputTokens: number; totalTokens: number;
@@ -96,7 +97,7 @@ export class ConfiguredModelScope {
       beforeRequest: async (route, bounded) => {
         linked.signal.throwIfAborted();
         if (this.invocationIds.has(route.id)) throw new Error("Model requestId has already been used in this scope; use a new UUID for each inference attempt");
-        const reservation = Math.ceil(JSON.stringify([bounded.messages, bounded.tools]).length / 3) + (bounded.maxTokens ?? this.limits.maxOutputTokens);
+        const reservation = estimateProviderInputTokens(bounded) + (bounded.maxTokens ?? this.limits.maxOutputTokens);
         if (this.usage.modelCalls >= this.limits.maxModelCalls || this.usage.totalTokens + reservation > this.limits.maxTotalTokens) throw new Error("Shared model budget exhausted");
         invocation = route; this.invocationIds.add(route.id); this.usage.modelCalls++; this.usage.totalTokens += reservation; this.pending.set(route.id, reservation);
         await this.options.onEvent?.({ type: "intent", id: route.id, binding, configHash: this.resolved.hash, route, status: "pending", usage: this.snapshot() });

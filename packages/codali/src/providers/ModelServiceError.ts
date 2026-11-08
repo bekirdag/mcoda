@@ -1,4 +1,4 @@
-export type ModelServiceErrorCode = "authentication_failed" | "entitlement_missing" | "quota_exhausted" | "rate_limited" | "service_unavailable" | "model_unavailable" | "invalid_request" | "invalid_response" | "context_length_exceeded";
+export type ModelServiceErrorCode = "authentication_failed" | "entitlement_missing" | "quota_exhausted" | "rate_limited" | "service_unavailable" | "model_unavailable" | "invalid_request" | "request_conflict" | "invalid_response" | "context_length_exceeded";
 
 function nativeContextRefusal(error: Record<string, unknown>): boolean {
   if (error.type !== "invalid_request_error" || typeof error.message !== "string" || error.message.length > 1024) return false;
@@ -10,12 +10,18 @@ function nativeContextRefusal(error: Record<string, unknown>): boolean {
 
 /** Transport diagnostics contain stable classifications, never an upstream body. */
 export class ModelServiceError extends Error {
+  /** A rejected completion can still carry real usage and recoverable prose.
+   * Partial tool arguments are deliberately never exposed for execution. */
+  responseUsage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  partialText?: string;
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
   constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
-    readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream") {
+    readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream" | "capacity_busy") {
     super(`Model service HTTP ${status}: ${code}${responseReason === "output_limit" ? "; the model reached its per-response output limit before finishing. No partial tool call was executed; continue with smaller file patches" : responseReason === "incomplete_stream" ? "; the response stream ended before completion. No partial tool call was executed" : code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
     this.name = "ModelServiceError";
+    if (responseReason === "capacity_busy") this.message += "; all compatible model workers are busy; retry after capacity becomes available";
+    if (code === "request_conflict") this.message += "; the service reported a request conflict. Completion and usage are unconfirmed; inspect request status before retrying";
   }
 
   /** A relay may already have sent HTTP 200 headers when the model fails. */
@@ -30,12 +36,14 @@ export class ModelServiceError extends Error {
     let serverCode = "";
     let contextRefused = false;
     let nativeRefused = false;
+    let capacityBusy = false;
     if (response.body) {
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {
         while (true) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 8192) break; chunks.push(part.value); }
-        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { error?: Record<string, unknown>; code?: unknown };
+        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { error?: Record<string, unknown>; code?: unknown; details?: { reason_code?: unknown } };
         if (typeof (payload.error?.code ?? payload.code) === "string") serverCode = String(payload.error?.code ?? payload.code);
+        capacityBusy = response.status === 409 && serverCode === "conflict" && payload.details?.reason_code === "all_compatible_nodes_busy";
         nativeRefused = response.status === 400 && !!payload.error && nativeContextRefusal(payload.error);
         contextRefused = response.status === 400 && (serverCode === "context_length_exceeded" || nativeRefused);
       } catch { /* The status still supplies a safe classification. */ }
@@ -44,12 +52,13 @@ export class ModelServiceError extends Error {
     const code: ModelServiceErrorCode = response.status === 401 ? "authentication_failed"
       : response.status === 403 ? "entitlement_missing"
       : ["quota_exceeded", "quota_exhausted", "insufficient_quota", "credits_exhausted", "insufficient_credits"].includes(serverCode) || response.status === 402 ? "quota_exhausted"
-      : response.status === 429 ? "rate_limited"
+      : response.status === 429 || capacityBusy ? "rate_limited"
       : response.status === 404 ? "model_unavailable"
       : contextRefused ? "context_length_exceeded"
       : ["structured_output_failed", "invalid_response"].includes(serverCode) ? "invalid_response"
+      : response.status === 409 ? "request_conflict"
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
-    return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : undefined, nativeRefused);
+    return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : capacityBusy ? 2 : undefined, nativeRefused, capacityBusy ? "capacity_busy" : undefined);
   }
 }

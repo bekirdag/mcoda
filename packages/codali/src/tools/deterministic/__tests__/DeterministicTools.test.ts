@@ -87,3 +87,41 @@ test("deterministic tools honor explicit denials and cancellation", options, asy
   try { await assert.rejects(run("symbolic_math", { operation: "expand", expression: "(x+y+z)**100", symbols: ["x", "y", "z"] }, abort.signal), /cancel deterministic/); }
   finally { clearTimeout(timer); }
 });
+
+test("DuckDB expected rows distinguish execution from exact example validation", options, async () => {
+  const query = { sql: 'SELECT n FROM sample ORDER BY n', tables: [{ name: 'sample', columns: { n: 'DOUBLE' }, rows: [[2], [1], [1]] }] };
+  assert.equal((await data('query_data', query)).validation, undefined);
+  assert.equal((await data('query_data', { ...query, expectedRows: [[1], [1], [2]] })).validation.passed, true);
+  assert.equal((await data('query_data', { ...query, expectedRows: [[2], [1], [1]] })).validation.passed, false);
+  assert.equal((await data('query_data', { ...query, expectedRows: [[2], [1], [1]], rowOrder: 'unordered' })).validation.passed, true);
+  assert.equal((await data('query_data', { ...query, expectedRows: [[2], [1]], rowOrder: 'unordered' })).validation.passed, false);
+  assert.equal((await data('query_data', { ...query, expectedRows: [['1'], ['1'], ['2']] })).validation.passed, false);
+  const empty = await data('query_data', { sql: 'SELECT NULL WHERE false', tables: [], expectedRows: [] });
+  assert.equal(empty.validation.passed, true);
+  const nullRow = await data('query_data', { sql: 'SELECT NULL', tables: [], expectedRows: [[null]] });
+  assert.equal(nullRow.validation.passed, true);
+  assert.match(nullRow.validation.scope, /provided examples only/);
+});
+
+test("SQL row binding is independent of JSON object key order and rejects ambiguity", async () => {
+  const sql = 'SELECT first, second FROM sample';
+  const columns = { second: 'DOUBLE', first: 'DOUBLE' };
+  for (const table of [
+    { name: 'sample', columns, rows: [{ first: 11, second: 22 }] },
+    { name: 'sample', columns: { first: 'DOUBLE', second: 'DOUBLE' }, rows: [{ second: 22, first: 11 }] },
+    { name: 'sample', columns, columnOrder: ['first', 'second'], rows: [[11, 22]] },
+  ]) assert.deepEqual((await data('query_data', { sql, tables: [table] })).rows, [[11, 22]]);
+  const ambiguous = await run('query_data', { sql, tables: [{ name: 'sample', columns, rows: [[11, 22]] }] });
+  assert.equal(ambiguous.ok, false);
+  assert.match(JSON.stringify(ambiguous), /columnOrder/);
+  for (const table of [
+    { rows: [[11, 22]], columnOrder: ['first', 'first'] },
+    { rows: [[11, 22]], columnOrder: ['first', 'other'] },
+    { rows: [[11, 22]], columnOrder: ['first'] },
+    { rows: [{ first: 11 }] },
+    { rows: [{ first: 11, second: 22, extra: 33 }] },
+    { rows: [{ first: { nested: 11 }, second: 22 }] },
+    { rows: [{ first: 11, second: 22 }, [11, 22]], columnOrder: ['first', 'second'] },
+  ]) assert.equal((await run('query_data', { sql, tables: [{ name: 'sample', columns, ...table }] })).ok, false);
+  assert.deepEqual((await data('query_data', { sql, tables: [{ name: 'sample', columns, rows: [] }] })).rows, []);
+});

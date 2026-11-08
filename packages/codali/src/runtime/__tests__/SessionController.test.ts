@@ -93,6 +93,7 @@ test("required planning prevents inline scope from bypassing explicit work_plan"
     switch(step++) {
       case 0:
         assert.match(request.messages.find(m=>m.role==="system")!.content,/plan is REQUIRED and has not been recorded/);
+        assert.match(request.messages.find(m=>m.role==="system")!.content,/Never put tests needed to verify a task in a later dependent task/);
         return call("work_claim",{taskId:"T1",allowedPaths:["notes.txt"]});
       case 1:
         assert.match(previous(),/requires an explicit implementation plan/);
@@ -100,6 +101,7 @@ test("required planning prevents inline scope from bypassing explicit work_plan"
         return call("work_plan",{tasks:[{id:"T1",title:"Write and check requested notes",requirementIds:["R1"],dependsOn:[],allowedPaths:["notes.txt"]}],reason:"Explicit requirement coverage"});
       case 2:
         assert.doesNotMatch(request.messages.find(m=>m.role==="system")!.content,/plan is REQUIRED and has not been recorded/);
+        assert.doesNotMatch(request.messages.find(m=>m.role==="system")!.content,/Required planning workflow/);
         return call("work_claim",{taskId:"T1"});
       case 3:return call("write_file",{path:"notes.txt",content:"planned work"});
       default:
@@ -109,6 +111,25 @@ test("required planning prevents inline scope from bypassing explicit work_plan"
   }};
   controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved:{config:selected,hash:orchestrationHash(selected),source:"test"},provider,docdex:false,permissions:"workspace"});
   await assert.rejects(controller.run("Write notes.txt using an explicit plan."),/cancel/i);
+});
+
+test("claimed trailing-slash directory permits descendants but not prefix siblings", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scope-slash-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scope-slash-state-"));
+  t.after(() => Promise.all([fs.rm(root, { recursive: true, force: true }), fs.rm(storage, { recursive: true, force: true })]));
+  let step = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace", provider: { name: "fixture", generate: async request => {
+    if (step++ === 0) return call("work_claim", { taskId: "T1", allowedPaths: ["src/"] });
+    if (step === 2) return call("write_file", { path: "src/value.mjs", content: "export const value=1;\n" });
+    if (step === 3) {
+      assert.equal(await fs.readFile(path.join(root, "src/value.mjs"), "utf8"), "export const value=1;\n");
+      return call("write_file", { path: "src-other/value.mjs", content: "export const value=2;\n" });
+    }
+    assert.match(request.messages.filter(message => message.role === "tool").at(-1)!.content, /outside the claimed task scope/);
+    assert.equal(await fs.stat(path.join(root, "src-other/value.mjs")).then(() => true, () => false), false);
+    controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+  } } });
+  await assert.rejects(controller.run("Create the requested module in src."), /cancel/i);
 });
 
 test("own writes retain known content while external changes still require a fresh read", async t => {
@@ -487,7 +508,7 @@ test("claim and stale-verification failures identify the owner without replacing
     switch (++step) {
       case 1: return call("work_claim", { taskId: "T1", allowedPaths: [] });
       case 2: attemptId = JSON.parse(previous()).attemptId; return call("work_claim", { taskId: "T1" });
-      case 3: assert.match(previous(), /already owns/); assertOwner(); return call("work_verify", { taskId: "T1", attemptId: "stale-attempt", summary: "Unverified claim" });
+      case 3: assert.equal(JSON.parse(previous()).alreadyClaimed, true); assert.equal(JSON.parse(previous()).attemptId, attemptId); return call("work_verify", { taskId: "T1", attemptId: "stale-attempt", summary: "Unverified claim" });
       case 4: assert.match(previous(), /Stale task attempt/); assertOwner(); return call("work_release", { taskId: "T1", attemptId, note: "Recover the existing task without changing its contract." });
       case 5: assert.equal(JSON.parse(previous()).released, true); return call("work_block", { taskId: "T1", reason: "Fixture ends with verification still pending." });
       default: return reply("The goal remains unverified.");
@@ -1988,4 +2009,129 @@ test("large prepare_edit pages escaped source and preserves it during an exact p
   await controller.run("Patch the value in large.js");
   assert.ok(pages > 1);
   assert.equal(await fs.readFile(path.join(root, "large.js"), "utf8"), original.replace("value = 1", "value = 2"));
+});
+
+test("context recovery accepts actual receipt handles without replaying reads", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-receipt-context-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-receipt-context-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "data.txt"), "prefix-" + "x".repeat(13000) + "EVIDENCE-suffix");
+  let receiptRef = "", step = 0, reads = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace",
+    onEvent: event => { if (event.type === "tool_receipt") { const receipt = event.data.receipt as { tool: string; id: string }; if (receipt.tool === "read_file") { receiptRef = receipt.id; reads++; } } },
+    provider: { name: "fixture", generate: async request => {
+      switch (step++) {
+        case 0: return call("read_file", { path: "data.txt" });
+        case 1: assert.ok(receiptRef); return call("context_read", { receiptRef: `receipt:${receiptRef.slice(0, 8)}`, offset: 13007, maxChars: 8 });
+        case 2: assert.match(request.messages.at(-1)!.content, /EVIDENCE/); return call("context_read", { sha256: receiptRef, offset: 13007, maxChars: 8 });
+        case 3: assert.match(request.messages.at(-1)!.content, /EVIDENCE/); return call("context_read", { receiptRef: "unknown-session-handle" });
+        default:
+          assert.match(request.messages.at(-1)!.content, /unavailable in the current session/);
+          controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+      }
+    } } });
+  await assert.rejects(controller.run("Read data.txt and inspect its saved evidence."), /cancel/i);
+  assert.equal(reads, 1);
+});
+
+test("a small follow-up read does not evict a working file that fits the model history allowance", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-working-context-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-working-context-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "working.txt"), "a".repeat(8500) + "MID_FILE_CONTRACT_6D2B" + "b".repeat(8500));
+  await fs.writeFile(path.join(root, "small.txt"), "small adjacent dependency");
+  let step = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace",
+    provider: { name: "fixture", generate: async request => {
+      if (step++ === 0) return call("read_file", { path: "working.txt" });
+      if (step === 2) return call("read_file", { path: "small.txt" });
+      assert.ok(request.messages.some(message => message.role === "tool" && message.content.includes("MID_FILE_CONTRACT_6D2B")));
+      controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+    } } });
+  await assert.rejects(controller.run("Compare the two input files."), /cancel/i);
+});
+
+test("validation phase supplies the bundled testing guide once without extra inference or scripts", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-guide-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-guide-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "sample.test.mjs"), "import test from 'node:test'; test('positive',()=>{});");
+  const events: SessionEvent[] = []; let step = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace", onEvent: event => events.push(event),
+    provider: { name: "fixture", generate: async request => {
+      if (step++ < 2) return call("run_shell", { command: "node", args: ["--test", "sample.test.mjs"] });
+      assert.match(request.messages[0].content, /Validation workflow/);
+      assert.match(request.messages[0].content, /invalid-to-valid sequences/);
+      controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+    } } });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await assert.rejects(controller.run("Run the existing test and report actual evidence."), /cancel/i);
+  const applied = events.filter(event => event.type === "skill_applied" && event.data.reason === "validation_phase");
+  assert.equal(applied.length, 1); assert.equal(applied[0].data.scriptsExecuted, false); assert.equal(step, 3);
+});
+
+test("an unavailable validation guide does not prevent subsequent tools or leave a stale fence", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-guide-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-guide-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, "sample.test.mjs"), "import test from 'node:test'; test('positive',()=>{});");
+  const events: SessionEvent[] = []; let step = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace", onEvent: event => events.push(event),
+    provider: { name: "fixture", generate: async request => {
+      if (step++ < 2) return call("run_shell", { command: "node", args: ["--test", "sample.test.mjs"] });
+      assert.doesNotMatch(request.messages[0].content, /Validation workflow/);
+      controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+    } } });
+  const read = controller.skills.read.bind(controller.skills);
+  controller.skills.read = async (...args) => { if (args[0].startsWith("builtin:testing-and-verification:")) throw Error("fixture missing skill"); return read(...args); };
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await assert.rejects(controller.run("Run the existing test and report actual evidence."), /cancel/i);
+  const applied = events.filter(event => event.type === "skill_applied" && event.data.reason === "validation_phase");
+  assert.equal(applied.length, 0); assert.equal(step, 3);
+  assert.equal(events.filter(event => event.type === "skill_unavailable").length, 2);
+  const receipts = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string });
+  assert.equal(receipts.filter(receipt => receipt.tool === "run_shell" && receipt.status === "success").length, 2);
+});
+
+
+test("scratch-variable write grants receive actionable recovery without expanding task scope", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scratch-recovery-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-scratch-recovery-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  let step = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace",
+    provider: { name: "fixture", generate: async request => {
+      const prior = () => request.messages.filter(message => message.role === "tool").at(-1)!.content;
+      switch (step++) {
+        case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src"] });
+        case 1: return call("run_shell", { command: "node", args: ["-e", "0"], writePaths: ["$TMPDIR"] });
+        case 2:
+          assert.match(prior(), /literal workspace-relative paths/);
+          assert.match(prior(), /already writable isolated scratch/);
+          assert.doesNotMatch(prior(), /call work_rescope with/);
+          assert.deepEqual(controller.state!.tasks[0].allowedPaths, ["src"]);
+          return call("run_shell", { command: "node", args: ["-e", "const fs=require('fs'); const p=require('path').join(process.env.TMPDIR,'check.txt'); fs.writeFileSync(p,'scratch-ok'); console.log(fs.readFileSync(p,'utf8'));" ] });
+        default:
+          assert.match(prior(), /scratch-ok/);
+          controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+      }
+    } } });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await assert.rejects(controller.run("Check a temporary scratch file without changing source."), /cancel/i);
+});
+
+test("claiming a planned task tolerates identical scope without amending the plan", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-repeat-scope-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-repeat-scope-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  let step = 0, revision = 0; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false, permissions: "workspace", provider: { name: "fixture", generate: async request => {
+    if (step++ === 0) return call("work_plan", { tasks: [{ id: "T1", title: "Implement module", requirementIds: ["R1"], dependsOn: [], allowedPaths: ["a.mjs", "test.mjs"] }] });
+    if (step === 2) { revision = controller.state!.planRevision!; return call("work_claim", { taskId: "T1", allowedPaths: ["test.mjs", "a.mjs"] }); }
+    assert.equal(controller.state!.tasks[0].status, "running");
+    assert.equal(controller.state!.planRevision, revision);
+    assert.deepEqual(controller.state!.tasks[0].allowedPaths, ["a.mjs", "test.mjs"]);
+    controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+  } } });
+  await assert.rejects(controller.run("Implement the module with tests"), /cancel/i);
 });

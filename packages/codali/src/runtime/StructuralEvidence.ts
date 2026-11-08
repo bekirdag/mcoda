@@ -1,6 +1,8 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { hashWorkspacePath } from "./WorkspaceSnapshot.js";
+import { isWithinScope } from "../session/WorkspaceScope.js";
+export { isWithinScope } from "../session/WorkspaceScope.js";
 
 export interface StructuralAnalysis {
   kind: "structure" | "impact";
@@ -19,8 +21,6 @@ export const workspaceRelativePath = (root: string, file: string): string => {
   if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) throw new Error("Path escapes the workspace");
   return relative || ".";
 };
-
-export const isWithinScope = (file: string, scope: string[]): boolean => scope.some(p => p === "." || p === file || file.startsWith(`${p}/`));
 
 /** Git ignores cannot hide existing source from an explicitly writable directory. */
 export const writableInventory = async (root: string, scopes: string[], maxEntries = 20_000, protectedPaths: string[] = []): Promise<Record<string, string>> => {

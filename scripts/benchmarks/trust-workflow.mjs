@@ -19,7 +19,7 @@ export function validateWorkflowExecution(value) {
     || Object.keys(value).sort().join() !== 'deadlineMs,effort,media,web,writes'
     || ['writes', 'web', 'media'].some(key => typeof value[key] !== 'boolean')
     || !['low', 'medium', 'high', 'max'].includes(value.effort)
-    || !Number.isSafeInteger(value.deadlineMs) || value.deadlineMs < 1000 || value.deadlineMs > 3600000
+    || !Number.isSafeInteger(value.deadlineMs) || value.deadlineMs < 1000 || value.deadlineMs > 86_400_000
     || value.media && !value.writes) throw Error('Invalid frozen workflow execution contract');
   return value;
 }

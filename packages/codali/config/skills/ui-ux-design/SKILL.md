@@ -11,6 +11,6 @@ Map the main journey and navigation before styling details. Use familiar labels,
 
 Design responsive behavior explicitly: narrow/wide layouts, wrapping, overflow and touch targets. Include semantic controls, keyboard operation, visible focus, labels, contrast and reduced-motion behavior. Check the applicable accessibility criteria rather than asserting compliance from appearance.
 
-For implementation, follow code-implementation and existing components. For validation, read references/validation.md and use webapp-testing/browser tools that are actually available. Inspect the rendered journey and visual output where possible; text snapshots alone cannot prove spacing, color or visual polish. Report unverified visual/accessibility checks honestly.
+For implementation, follow code-implementation and existing components. For validation, read references/validation.md and use webapp-testing/browser tools that are actually available. Inspect the rendered journey and visual output where possible; text snapshots alone cannot prove spacing, color or visual polish. Test representative API payloads and user roles: render named fields instead of raw objects, and ensure CSS does not override role-dependent hidden states. Inspect actual browser visibility, not markup alone. Report unverified visual/accessibility checks honestly.
 
 Sources: https://www.nngroup.com/articles/ten-usability-heuristics/ and https://www.w3.org/WAI/WCAG22/quickref/. Original Codali adaptation.

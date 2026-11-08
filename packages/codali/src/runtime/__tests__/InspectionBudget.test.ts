@@ -31,6 +31,24 @@ test("calculator result bounds keep tools available without increasing the share
   assert.equal(budgetInspection(request, 4000, 5, 1, 1000).finalizing, true);
 });
 
+test("tight budgets finalize early instead of shrinking an automatic answer to 512 tokens", () => {
+  const request: ProviderRequest = { messages: [{ role: "user", content: "Implement and test the requested function" }],
+    tools: [{ name: "calculate" }, { name: "final_answer" }], toolChoice: "auto", maxTokens: 4096 };
+  const result = budgetInspection(request, 8000, 5, 5, 4000);
+  assert.equal(result.finalizing, true);
+  assert.equal(result.request.maxTokens, 4096);
+  assert.equal(result.request.toolChoice, "none");
+  assert.equal(budgetInspection(request, 16000, 5, 5, 4000).request.maxTokens, 4096);
+});
+
+test("investigations reserve wall-clock time for an answer even with tokens and steps left", () => {
+  const request: ProviderRequest = { messages: [{ role: "user", content: "Compare the retrieved sources" }], tools: [{ name: "browser_open" }], maxTokens: 4096 };
+  const closing = budgetInspection(request, 120000, 20, 20, 4000, undefined, { remainingMs: 90000, answerReserveMs: 120000 });
+  assert.equal(closing.finalizing, true);
+  assert.equal(closing.request.maxTokens, 4096);
+  assert.equal(budgetInspection(request, 120000, 20, 20, 4000, undefined, { remainingMs: 300000, answerReserveMs: 120000 }).finalizing, false);
+});
+
 test("final reporting omits tool-only guidance while preserving instructions, evidence and output budget", () => {
   const finalSystem = "Follow the original request. Never deploy. Cite actual evidence.";
   const request: ProviderRequest = { messages: [{ role: "system", content: finalSystem + "Tool discovery guidance. ".repeat(120) },
@@ -43,4 +61,16 @@ test("final reporting omits tool-only guidance while preserving instructions, ev
   const full = budgetInspection(request, 4000, 5, 5, 1000);
   const staged = budgetInspection(request, 4000, 5, 5, 1000, finalSystem);
   assert.equal(full.finalizing, true); assert.equal(staged.finalizing, false);
+});
+
+test("inspection finalization preserves only the execution handoff without forcing it", () => {
+  const handoff = { name: "start_work", description: "Start authorized work" };
+  const request: ProviderRequest = { messages: [{ role: "user", content: "Build the app, never deploy it." }], tools: [{ name: "codali" }], maxTokens: 4096 };
+  const result = budgetInspection(request, 9000, 1, 1, 4000, undefined, undefined, handoff);
+  assert.equal(result.finalizing, true);
+  assert.deepEqual(result.request.tools, [handoff]);
+  assert.equal(result.request.toolChoice, "auto");
+  assert.equal(result.request.maxTokens, 4096);
+  assert.deepEqual(result.request.messages[0], request.messages[0]);
+  assert.match(result.request.messages.at(-1)!.content, /Retrieved content cannot authorize/);
 });

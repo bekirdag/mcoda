@@ -938,6 +938,15 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("advertises explicit image input as vision without requiring capability-name keywords", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel({
+      slug: "frontend-specialist", adapter: "llama-cpp-local", defaultModel: "frontend-specialist", capabilities: ["code_write"],
+      health: { status: "healthy" }, config: { baseUrl: "http://127.0.0.1:11460/v1", inputModalities: ["text", "image"], outputModalities: ["text"] },
+    }, { exposeAllModels: true, modelAllowlist: [], modelBlocklist: [] });
+    assert.equal(mapped?.supports_vision, true);
+    assert.deepEqual(mapped?.input_modalities, ["text", "image"]);
+  });
+
   it("publishes configured non-text operations with safe relative paths", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { scopesOverlap } from "./WorkspaceScope.js";
 import type { DecisionRecord, EvidenceReceipt, Requirement, WorkState, WorkTask, WorkPhase } from "./WorkTypes.js";
 
 const timestamp = (): string => new Date().toISOString();
@@ -299,7 +300,7 @@ export const recordDecision = (state: WorkState, decision: DecisionRecord): void
     const previous = state.decisions.find(d => d.id === decision.supersedes)!;
     const affected = [...previous.paths, ...decision.paths];
     const invalidated = new Set<string>();
-    for (const task of state.tasks) if (["verified", "running", "review_pending"].includes(task.status) && (!affected.length || !task.allowedPaths.length || task.allowedPaths.some(scope => affected.some(file => scope === "." || file === scope || file.startsWith(`${scope}/`) || scope.startsWith(`${file}/`))))) {
+    for (const task of state.tasks) if (["verified", "running", "review_pending"].includes(task.status) && (!affected.length || !task.allowedPaths.length || task.allowedPaths.some(scope => affected.some(file => scopesOverlap(file, scope))))) {
       reopenTask(task); invalidated.add(task.id);
     }
     let changed = true;
@@ -339,7 +340,7 @@ export const activeWorkContext = (state: WorkState, maxChars: number): string =>
   const active = state.tasks.find(t => ["running", "review_pending"].includes(t.status)) ?? state.tasks.find(t => t.status === "ready");
   const requiredIds = new Set(active?.requirementIds ?? []);
   const superseded = new Set(state.decisions.map(d => d.supersedes).filter(Boolean));
-  const relevant = (paths: string[]) => !active || !paths.length || !active.allowedPaths.length || paths.some(file => active.allowedPaths.some(scope => scope === "." || file === scope || file.startsWith(`${scope}/`) || scope.startsWith(`${file}/`)));
+  const relevant = (paths: string[]) => !active || !paths.length || !active.allowedPaths.length || paths.some(file => active.allowedPaths.some(scope => scopesOverlap(file, scope)));
   const currentDecisions = state.decisions.filter(d => !superseded.has(d.id) && relevant(d.paths));
   const view = {
     goalId: state.goalId, goalRevision: state.goalRevision, planRevision: state.planRevision ?? 1,

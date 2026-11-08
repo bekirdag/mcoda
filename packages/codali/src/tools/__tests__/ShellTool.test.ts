@@ -6,6 +6,19 @@ import path from "node:path";
 import { createShellTool } from "../shell/ShellTool.js";
 import { ToolExecutionError } from "../ToolTypes.js";
 
+test("Bash reports failed pipeline stages while preserving handled failures and arguments", async t => {
+  if (process.platform === "win32") { t.skip("Bash platform qualification runs on Linux/macOS"); return; }
+  const tool = createShellTool();
+  const context = { workspaceRoot: process.cwd(), shellAllowlist: ["bash"], allowShell: true };
+  const args = ["--noprofile", "--norc", "-c", "false | true"];
+  await assert.rejects(tool.handler({ command: "bash", args }, context), (error: unknown) => {
+    assert.ok(error instanceof ToolExecutionError); assert.equal(error.code, "tool_execution_failed"); return true;
+  });
+  assert.deepEqual(args, ["--noprofile", "--norc", "-c", "false | true"]);
+  assert.match((await tool.handler({ command: "bash", args: ["-c", "if false | true; then printf wrong; else printf handled; fi"] }, context)).output, /^handled$/);
+  assert.equal((await tool.handler({ command: "bash", args: ["--noprofile", "-c", 'printf "%s" "$1"', "argument-zero", "literal spaces"] }, context)).output, "literal spaces");
+});
+
 test("ShellTool runs allowlisted commands", { concurrency: false }, async () => {
   const tool = createShellTool();
   const result = await tool.handler(

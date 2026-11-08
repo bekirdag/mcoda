@@ -4,11 +4,11 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicWriteJson, withStateLock } from "../session/AtomicState.js";
 import { hashWorkspacePath, workspaceHash, type WorkspaceSnapshot } from "./WorkspaceSnapshot.js";
+import { isWithinScope as inScope } from "../session/WorkspaceScope.js";
 
 interface Preimage { hash: string; blob?: string; bytes?: number; }
 interface OwnershipRecord { schemaVersion: 1; files: Record<string, Preimage>; knownPaths?: string[]; }
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const inScope = (file: string, scopes: string[]): boolean => scopes.some(scope => scope === "." || file === scope || file.startsWith(`${scope}/`));
 
 /** Private original contents separate the agent's diff from a dirty checkout. */
 export class WorkspaceLedger {

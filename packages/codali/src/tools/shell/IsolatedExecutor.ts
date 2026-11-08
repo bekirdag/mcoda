@@ -55,6 +55,9 @@ const bubblewrapRoot = (): string[] => {
   // Toolchain installers inspect this public distribution descriptor. Do not
   // expose all of /etc merely to identify the operating system.
   if (existsSync("/etc/os-release")) args.push("--ro-bind", realpathSync("/etc/os-release"), "/etc/os-release");
+  // Public system font selection is needed for reproducible browser rendering.
+  // User font settings/profiles and the rest of /etc remain inaccessible.
+  if (existsSync("/etc/fonts")) args.push("--ro-bind", realpathSync("/etc/fonts"), "/etc/fonts");
   if (existsSync("/etc/alternatives")) for (const name of readdirSync("/etc/alternatives")) {
     if (!/^lib[^/]+\.so(?:\..+)?$/.test(name)) continue;
     try {

@@ -105,3 +105,20 @@ test('runProcess aborts endless child process via signal', async () => {
   clearTimeout(timer);
   assert.ok(Date.now() - started < 3000);
 });
+
+for (const timeout of [false, true]) test(`failed process retains both bounded diagnostic streams: timeout=${timeout}`, async () => {
+  const script = 'console.log("ASSERTION_START"+"x".repeat(6000)+"ASSERTION_END"); console.error("runtime warning"); ' +
+    (timeout ? 'setInterval(()=>{},1000)' : 'process.exitCode=1');
+  await assert.rejects(runProcess(process.execPath, ['-e', script], makeContext({ shellMaxOutputBytes: 10000, shellTimeoutMs: 1500 })), (error: unknown) => {
+    const failure = error as Error & { code: string; retryable: boolean; details: { stdout: string; stderr: string } };
+    assert.equal(failure.code, timeout ? 'tool_timeout' : 'tool_execution_failed');
+    assert.equal(failure.retryable, false);
+    assert.match(failure.message, /ASSERTION_START/); assert.match(failure.message, /ASSERTION_END/);
+    assert.match(failure.message, /stderr:\n.*runtime warning/);
+    assert.match(failure.message, /diagnostic excerpt truncated/);
+    assert.ok(failure.message.length < 6500);
+    assert.ok(failure.details.stdout.length > 6000);
+    if (timeout) assert.match(failure.message, /^Process deadline exceeded/);
+    return true;
+  });
+});

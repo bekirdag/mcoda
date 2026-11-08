@@ -51,6 +51,6 @@ for(const name of (await fs.readdir(root)).filter(n=>/^build-0[12]-(custody|work
   }
  }finally{abort.abort(Error('Independent checks finished'));await fs.writeFile(path.join(checks,'server.json'),JSON.stringify({ready,base,...await server},null,2));}
  const after=await snapshotWorkflowWorkspace(source);if(JSON.stringify(before)!==JSON.stringify(after))throw Error('Original submission changed during evaluation');
- await fs.writeFile(path.join(checks,'summary.json'),JSON.stringify({name,sourcePreserved:true,ready,api,browser,commands:receipts.map(r=>({label:r.label,result:r.result,elapsedMs:r.elapsedMs}))},null,2));
- console.log(JSON.stringify({name,ready,apiPassed:api?.passed,apiTotal:api?.total,browserError:browser?.error}));
+ await fs.writeFile(path.join(checks,'summary.json'),JSON.stringify({name,sourcePreserved:true,serverReady:ready,productReady:null,readinessNote:'Server startup is not product acceptance; manual rubric review remains required.',api,browser,commands:receipts.map(r=>({label:r.label,result:r.result,elapsedMs:r.elapsedMs}))},null,2));
+ console.log(JSON.stringify({name,serverReady:ready,productReady:null,apiPassed:api?.passed,apiTotal:api?.total,browserError:browser?.error}));
 }

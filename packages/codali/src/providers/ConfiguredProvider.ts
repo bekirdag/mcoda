@@ -9,6 +9,7 @@ import { ModelServiceError } from "./ModelServiceError.js";
 import { parseRequestUsage, type RequestUsageReceipt } from "./RequestUsage.js";
 import { registerSecretValue } from "../runtime/SecretRedaction.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "./ProviderTypes.js";
+import { estimateProviderInputTokens } from "./RequestSize.js";
 
 export interface CatalogEntry {
   id: string;
@@ -247,13 +248,14 @@ export class ConfiguredProvider implements Provider {
     const nativeReasoning = this.options.effort ? model.reasoning?.[this.options.effort] : undefined;
     if (nativeReasoning) invocation.nativeReasoningRequest = { ...nativeReasoning };
     if (nativeReasoning) await this.client(model.provider).requireNativeReasoning(actual.id, Object.keys(nativeReasoning), request.signal);
-    const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens);
-    const inputEstimate = Math.ceil(JSON.stringify([request.messages, request.tools]).length / 3);
-    if (inputEstimate + maxTokens > Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow)) throw new Error("Context budget exceeded; checkpoint and compact before continuing");
+    const inputEstimate = estimateProviderInputTokens(request);
+    const available = Math.floor(Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow) - inputEstimate);
+    if (available < 128) throw new Error("Context budget exceeded; checkpoint and compact before continuing");
+    const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens, available);
     const bounded = { ...request, requestId, maxTokens, stream: request.stream === true && model.supportsStreaming === true };
     await this.options.beforeRequest?.(invocation, bounded);
     const adapter = new OpenAiCompatibleProvider({
-      model: provider.adapter === "mswarm" ? actual.id : model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 300_000,
+      model: provider.adapter === "mswarm" ? actual.id : model.catalogId, baseUrl: provider.baseUrl, apiKey: this.credentials[model.provider] ?? await providerCredential(provider), timeoutMs: 86_400_000,
       supportsStreaming: model.supportsStreaming ?? true, supportsTools: model.supportsTools,
       headers: provider.adapter === "mswarm" ? { ...modelCallerHeaders(this.caller), "x-request-id": requestId } : undefined, retryTransient: false,
       extraBody: nativeReasoning,

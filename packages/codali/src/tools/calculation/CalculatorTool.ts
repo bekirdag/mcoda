@@ -9,7 +9,7 @@ const finite = (value: number): number => {
 /** A numeric grammar, not JavaScript: every character is consumed, and nothing is evaluated as code. */
 const tokenize = (expression: string): string[] => {
   if (typeof expression !== "string" || !expression.trim() || expression.length > 4096) throw new Error("Expected an expression of 1 to 4096 characters");
-  const pattern = /\s+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z_0-9]*|\*\*|[+*/%^(),-]/y;
+  const pattern = /\s+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|Math\.[A-Za-z_][A-Za-z_0-9]*|[A-Za-z_][A-Za-z_0-9]*|\*\*|[+*/%^(),-]/y;
   const tokens: string[] = [];
   let offset = 0;
   while (offset < expression.length) {
@@ -17,7 +17,9 @@ const tokenize = (expression: string): string[] => {
     const match = pattern.exec(expression);
     if (!match) throw new Error(`Unsupported character at position ${offset + 1}`);
     offset = pattern.lastIndex;
-    if (match[0].trim()) tokens.push(match[0]);
+    // Literal aliases enter the same bounded grammar; no object lookup or code execution.
+    const token = match[0].startsWith("Math.") ? match[0].slice(5) : match[0];
+    if (token.trim()) tokens.push(token === "PI" ? "pi" : token === "E" ? "e" : token);
     if (tokens.length > 1024) throw new Error("Expression exceeds 1024 tokens");
   }
   return tokens;
@@ -26,6 +28,14 @@ const tokenize = (expression: string): string[] => {
 const functions = new Map<string, { min: number; max: number; run: (...args: number[]) => number }>([
   ["abs", { min: 1, max: 1, run: Math.abs }],
   ["sqrt", { min: 1, max: 1, run: Math.sqrt }],
+  ["exp", { min: 1, max: 1, run: Math.exp }],
+  ["ln", { min: 1, max: 1, run: Math.log }],
+  ["log", { min: 1, max: 1, run: Math.log }],
+  ["log10", { min: 1, max: 1, run: Math.log10 }],
+  ["sin", { min: 1, max: 1, run: Math.sin }],
+  ["cos", { min: 1, max: 1, run: Math.cos }],
+  ["tan", { min: 1, max: 1, run: Math.tan }],
+  ["pow", { min: 2, max: 2, run: Math.pow }],
   ["floor", { min: 1, max: 1, run: Math.floor }],
   ["ceil", { min: 1, max: 1, run: Math.ceil }],
   ["round", { min: 1, max: 1, run: Math.round }],
@@ -97,15 +107,28 @@ export const evaluateCalculation = (expression: string): number => {
 
 export const createCalculatorTool = (): ToolDefinition => ({
   name: "calculate", capability: "calculation", readOnly: true,
-  description: "Approximate IEEE-754 arithmetic only. For exact money/decimals discover decimal_calculate. No dates or code. Supports + - * / %, powers ^ or **, parentheses, pi, e, abs/sqrt/floor/ceil/round (one argument), min/max/sum (1-128 comma-separated arguments). % is signed remainder; round ties toward positive infinity; unsafe integers rejected. No variables, files or network. Verify the full formula and units, not only intermediate constants.",
-  inputSchema: { type: "object", properties: { expression: { type: "string", minLength: 1, maxLength: 4096 } }, required: ["expression"], additionalProperties: false },
+  description: "Calculate {expression:'formula'} OR {expressions:{label:'formula'}} (up to16). Supports exp,ln/log(natural),log10,pow,sin/cos/tan(radians),abs,sqrt,floor,ceil,round,min,max,sum; + - * / %, ^ **, pi,e. Math.function aliases accepted only for this allowlist. No variables, assignments or code. IEEE-754 approximate; exact decimals use decimal_calculate. Tool success checks arithmetic, not whether your formula models the request.",
+  inputSchema: { type: "object", properties: { expression: { type: "string", description: "One numeric formula, e.g. exp(-2)*3. Supply this OR expressions.", minLength: 1, maxLength: 4096 },
+    expressions: { type: "object", description: "Map labels to complete formula STRINGS, e.g. {total:'2*3+4',check:'10'}. Each formula is independent; labels are not variables. Supply this OR expression.", minProperties: 1, maxProperties: 16, propertyNames: { pattern: "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, additionalProperties: true },
+  }, oneOf: [{ required: ["expression"] }, { required: ["expressions"] }], additionalProperties: false },
   handler: async (args, context) => {
     context.signal?.throwIfAborted();
     try {
-      const result = evaluateCalculation((args as { expression: string }).expression);
+      const input = args as { expression?: string; expressions?: Record<string, string> };
+      if (!input || typeof input !== "object" || Array.isArray(input) || input.expression === undefined && input.expressions === undefined) throw new Error('Use {"expression":"2+3"} or {"expressions":{"total":"2+3"}}; formulas must be strings');
+      if (input.expressions !== undefined) {
+        if (input.expression !== undefined || !input.expressions || Array.isArray(input.expressions) || Object.keys(input.expressions).length < 1 || Object.keys(input.expressions).length > 16) throw new Error("Supply expression or up to16 named expressions, not both");
+        const results = Object.fromEntries(Object.entries(input.expressions).map(([label, expression]) => {
+          if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(label)) throw new Error("Invalid calculation label");
+          return [label, evaluateCalculation(expression)];
+        }));
+        return { output: JSON.stringify({ results, arithmetic: "IEEE-754 double; not exact decimal arithmetic" }) };
+      }
+      const result = evaluateCalculation(input.expression!);
       return { output: JSON.stringify({ result, arithmetic: "IEEE-754 double; not exact decimal arithmetic" }) };
     } catch (error) {
-      throw new ToolExecutionError("tool_invalid_args", error instanceof Error ? error.message : String(error), { retryable: false });
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ToolExecutionError("tool_invalid_args", `${message}. Correct the arguments before retrying; use tools_describe for the schema. No assignments or arbitrary code; supported functions include exp(x), ln(x), log10(x), pow(x,y).`, { retryable: false });
     }
   },
 });

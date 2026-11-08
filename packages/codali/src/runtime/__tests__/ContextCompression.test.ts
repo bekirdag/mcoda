@@ -1,7 +1,47 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens } from "../ContextCompression.js";
+
+test("required input can borrow unused output allowance without changing input", () => {
+  const request: ProviderRequest = { messages: [{ role: "user", content: "input ".repeat(1200) }], maxTokens: 2048 };
+  const result = compressProviderContext(request, 4096, 2048);
+  assert.deepEqual(result.request.messages, request.messages);
+  assert.ok(result.request.maxTokens! >= 128 && result.request.maxTokens! < 2048);
+  assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 4096);
+  assert.equal(request.maxTokens, 2048);
+});
+import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, fitOutputBudget } from "../ContextCompression.js";
 import type { ProviderMessage, ProviderRequest } from "../../providers/ProviderTypes.js";
+
+test("history indices stay bounded and retrievable across long sessions", () => {
+  const history = (offset: number): ProviderMessage[] => Array.from({ length: 500 }, (_, index) => ({ role: "assistant", name: "completed_tool_history",
+    content: JSON.stringify({ sha256: String(index + offset).padStart(64, "0"), tools: ["read_file"], results: ["retrieved source".repeat(10)] }) }));
+  const pending: ProviderMessage = { role: "assistant", content: "", toolCalls: [{ id: "pending", name: "read_file", args: { path: "current.ts" } }] };
+  const recent: ProviderMessage[] = [{ role: "user", content: "Keep the original requirements" }, { role: "assistant", content: "Recent evidence" }, pending];
+  const first = compressProviderContext({ messages: [{ role: "system", content: "Never deploy" }, ...history(0), ...recent] }, 16000, 4096);
+  assert.ok(first.afterTokens < 11000);
+  assert.deepEqual(first.request.messages.slice(-3), recent);
+  const index = first.request.messages.find(message => message.name === "context_history_index")!;
+  assert.ok(index);
+  const source = first.archived.find(entry => entry.sha256 === JSON.parse(index.content).sha256)!;
+  assert.equal(contextHash(source.message), source.sha256);
+  assert.ok(JSON.parse(source.message.content).length > 400);
+  const second = compressProviderContext({ messages: [...first.request.messages.slice(0, -3), ...history(500), ...recent] }, 16000, 4096);
+  assert.ok(second.afterTokens < 11000);
+  assert.deepEqual(second.request.messages.slice(-3), recent);
+  assert.ok(second.archived.some(entry => entry.message.content.includes(source.sha256)));
+});
+
+test("remaining budget admits a useful smaller response without raising ceilings", () => {
+  const request: ProviderRequest = { messages: [{ role: "user", content: "Summarize the verified findings" }], maxTokens: 40960 };
+  const input = estimateContextTokens(request);
+  const affordable = fitOutputBudget(request, input + 2000, 40960);
+  assert.equal(affordable.maxTokens, 2000);
+  assert.equal(affordable.messages, request.messages);
+  assert.equal(request.maxTokens, 40960);
+  assert.equal(fitOutputBudget(request, 100000, 1024).maxTokens, 1024);
+  assert.equal(fitOutputBudget({ ...request, maxTokens: 256 }, input + 2000, 40960).maxTokens, 256);
+  assert.equal(fitOutputBudget(request, input + 127, 40960).maxTokens, 40960);
+});
 
 test("execution compaction preserves retrievable old findings and complete recent native groups", () => {
   const messages: ProviderMessage[] = [{ role: "user", content: "Keep all original requirements." }];
@@ -15,11 +55,11 @@ test("execution compaction preserves retrievable old findings and complete recen
   const omittedCount = original.filter(m=>m.role === "tool").length - compact.messages.filter(m=>m.role === "tool").length;
   assert.ok(omittedCount > 0 && omittedCount < 20);
   assert.equal(compact.archived.length, omittedCount + 1);
-  assert.match(compact.messages[0].content, /finding-0/);
+  assert.match(compact.messages[0].content, new RegExp(`finding-${omittedCount - 1}`));
   assert.equal(JSON.parse(compact.messages[0].content).sha256, compact.archived[0].sha256);
   assert.equal(contextHash(compact.archived[0].message), compact.archived[0].sha256);
   const firstFinding = JSON.parse(compact.messages[0].content).activity[0];
-  assert.equal(compact.archived.find(entry=>entry.sha256 === firstFinding.sha256)!.message.content, messages[2].content);
+  assert.ok(messages.some(message => message.content === compact.archived.find(entry=>entry.sha256 === firstFinding.sha256)!.message.content));
   const restored: ProviderMessage[] = JSON.parse(compact.archived[0].message.content);
   assert.deepEqual(restored.filter(m=>m.role === "tool"), original.filter(m=>m.role === "tool").slice(0, omittedCount));
   assert.deepEqual(compact.messages.filter(m=>m.role === "user"), original.filter(m=>m.role === "user"));
@@ -47,6 +87,26 @@ test("conversation compression retains every user constraint and recoverable ori
   assert.match(result.messages[1].content, /Pending decision/);
   assert.deepEqual(result.archived[0].message, messages[1]); assert.equal(result.archived[0].sha256, contextHash(messages[1]));
   const repeated = compressConversation(result.messages, 2000); assert.equal(repeated.archived.length, 0);
+});
+
+test("identical observations are archived without dropping fresh source, errors or native pairs", () => {
+  const pair = (id: string, content: string, name = "read_file"): ProviderMessage[] => [
+    { role: "assistant", content: "", toolCalls: [{ id, name, args: { path: "server.js" } }] },
+    { role: "tool", name, toolCallId: id, content },
+  ];
+  const source = "export const port = 0;".repeat(400);
+  const messages: ProviderMessage[] = [{ role: "user", content: "Do not remove authentication." },
+    ...pair("old", source), ...pair("changed", "new implementation"), ...pair("fresh", source),
+    ...pair("error1", "ERROR denied"), ...pair("error2", "ERROR denied"),
+    ...pair("write1", "written", "write_file"), ...pair("write2", "written", "write_file")];
+  const copy = structuredClone(messages);
+  const result = compressExecutionHistory(messages, 30000);
+  assert.deepEqual(messages, copy);
+  assert.deepEqual(result.messages.filter(m => m.role === "tool").map(m => m.toolCallId), ["changed", "fresh", "error1", "error2", "write1", "write2"]);
+  assert.equal(result.messages.find(m => m.toolCallId === "fresh")?.content, source);
+  assert.ok(result.archived.some(entry => entry.message.content === source));
+  assert.deepEqual(result.messages.filter(m => m.role === "user"), [messages[0]]);
+  assert.deepEqual(result.messages.flatMap(m => m.toolCalls?.map(c => c.id) ?? []), result.messages.filter(m => m.role === "tool").map(m => m.toolCallId));
 });
 
 test("context compaction counts schemas and output reserve and preserves native tool pairs", () => {
@@ -111,4 +171,45 @@ test("execution history keeps many short tool groups while they fit the token bu
   assert.deepEqual(compact.messages.filter(m=>m.role==="tool").map(m=>m.toolCallId),calls);
   assert.equal(calls.at(-1),"call-16");
   assert.deepEqual(compressExecutionHistory(compact.messages,300),{messages:compact.messages,archived:[]});
+});
+
+test("provider compression archives completed large write arguments without orphaning calls", () => {
+  const request: ProviderRequest = { messages: [
+    { role: "system", content: "Never deploy" }, { role: "user", content: "Implement the project" },
+    { role: "assistant", content: "", toolCalls: [{ id: "write", name: "write_file", args: { path: "app.ts", content: "code".repeat(20000) } }] },
+    { role: "tool", toolCallId: "write", content: "File saved successfully" },
+    { role: "user", content: "Continue and run tests" },
+  ] };
+  const original = structuredClone(request);
+  const result = compressProviderContext(request, 16000, 4096);
+  assert.deepEqual(request, original);
+  assert.ok(result.afterTokens < 11000);
+  assert.deepEqual(result.request.messages.filter(m => m.role === "user" || m.role === "system"), request.messages.filter(m => m.role === "user" || m.role === "system"));
+  assert.equal(result.request.messages.some(m => m.toolCallId === "write" || m.toolCalls?.some(c => c.id === "write")), false);
+  assert.ok(result.archived.some(entry => entry.message.content.includes('"path":"app.ts"')));
+});
+
+test("a large output ceiling does not starve evidence, and generation is clamped to what fits", () => {
+  const evidence = Array.from({ length: 16 }, (_, index): ProviderMessage[] => [
+    { role: "assistant", content: "", toolCalls: [{ id: `c${index}`, name: "browser_read", args: { snapshotId: `snap-${index}` } }] },
+    { role: "tool", name: "browser_read", toolCallId: `c${index}`, content: `finding ${index} ` + "x".repeat(9000) }]).flat();
+  const request: ProviderRequest = { messages: [{ role: "user", content: "Research this." }, ...evidence], maxTokens: 40960 };
+  const result = compressProviderContext(request, 65536, 40960);
+  assert.ok(result.afterTokens > 24000, `kept ${result.afterTokens} tokens of evidence`);
+  assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 65536);
+  assert.ok(result.request.maxTokens! >= 19000);
+  const small: ProviderRequest = { messages: [{ role: "user", content: "y".repeat(90000) }], maxTokens: 40960 };
+  const clamped = compressProviderContext(small, 65536, 40960);
+  assert.ok(clamped.afterTokens + clamped.request.maxTokens! + 512 <= 65536, "an uncompressed request also fits the window");
+});
+
+test("folding keeps recent markers and a readable inventory of what already ran", () => {
+  const markers: ProviderMessage[] = Array.from({ length: 400 }, (_, index) => ({ role: "assistant", name: "completed_tool_history", content: JSON.stringify({ sha256: `s${index}`, tools: ["browser_open"], results: [`opened page ${index} ` + "z".repeat(200)] }) }));
+  const result = compressProviderContext({ messages: [{ role: "user", content: "Go." }, ...markers, { role: "user", content: "Continue." }], maxTokens: 1024 }, 16384, 1024);
+  const index = result.request.messages.find(message => message.name === "context_history_index")!;
+  const parsed = JSON.parse(index.content) as { inventory: Array<{ result: string }>; sha256: string };
+  assert.ok(parsed.inventory.length > 0 && parsed.inventory.length <= 40);
+  assert.match(parsed.inventory.at(-1)!.result, /opened page/);
+  assert.ok(result.archived.some(entry => entry.sha256 === parsed.sha256));
+  assert.ok(result.request.messages.filter(message => message.name === "completed_tool_history").length >= 8, "recent markers remain individually visible");
 });

@@ -17,18 +17,10 @@ import { compactToolSchema } from '../../packages/codali/dist/runtime/Interactio
 import { compressProviderContext } from '../../packages/codali/dist/runtime/ContextCompression.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
 import { fullTrustTools } from './trust-full-tools.mjs';
+import { validateWorkflowExecution } from './trust-workflow.mjs';
+export { validateWorkflowExecution } from './trust-workflow.mjs';
 
 export const workflowShellAllowlist = DEVELOPMENT_COMMANDS;
-
-export function validateWorkflowExecution(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).sort().join() !== 'deadlineMs,effort,media,web,writes'
-    || ['writes', 'web', 'media'].some(key => typeof value[key] !== 'boolean')
-    || !['low', 'medium', 'high', 'max'].includes(value.effort)
-    || !Number.isSafeInteger(value.deadlineMs) || value.deadlineMs < 1000 || value.deadlineMs > 3600000
-    || value.media && !value.writes) throw Error('Invalid frozen workflow execution contract');
-  return value;
-}
 
 export function workflowControllerOptions(execution) {
   validateWorkflowExecution(execution);

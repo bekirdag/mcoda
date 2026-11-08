@@ -1,16 +1,16 @@
 ---
 name: tool-selection
-description: "Choose and invoke available tools for repository, web, calculation, browser and operating-system tasks efficiently."
+description: Choose available repository, web, calculation, browser and system tools efficiently.
 ---
 
-Start with the operation and required evidence. Inspect advertised capabilities; use tools_discover/tools_enable or tools_describe only when exposed by the current runtime. Read the actual input schema before an unfamiliar call. If only tool names are known, describe the intended operation and request/discover its schema; omit argument objects rather than inventing parameter names. A tool mentioned in a skill may not be connected on this machine.
+Start with the required operation and evidence. Discover capabilities with the exposed tools_discover/tools_enable or tools_describe. Read the actual schema before unfamiliar calls; never invent parameters. Runtime schemas override examples; a tool mentioned in a skill may be unavailable here.
 
-Use Docdex for repository search, structure, impact and memory; use its web research for external facts and verify primary pages when needed. Use calculate or an advertised deterministic math/data/validation tool for exact operations, and server_time for current server time. Choose a specialist media tool for media generation. The LLM interprets and explains results; it should not simulate a tool result.
+Use Docdex for repo search, symbols, impact, memory and web research. Retrieve primary passages for external claims. Use deterministic math/data/validation tools for exact operations, server_time for time and specialist local media tools for generation. Interpret actual results; never simulate execution. Batch independent complete calculations and reuse unchanged results.
 
-Use browser_open/browser_read for read-only page evidence, browser_session for persistent noVNC/static previews, and browser_interact for authorized actions in that desktop. Use a discovered host-management connector for host services. run_shell is workspace-scoped and temporary, not a substitute for host access or persistent service management.
+Use browser_open/browser_read for read-only pages; search retained snapshots by query instead of repeatedly paging through irrelevant text. Use browser_session for persistent noVNC/static previews and browser_interact for authorized desktop actions. Discover host-management connectors for host services: run_shell is workspace-scoped and temporary, not persistent host management.
 
-Pass minimal sufficient context and narrow arguments. Follow result pagination instead of repeatedly fetching the same content. Batch independent reads when supported. On an error, distinguish invalid arguments, unavailable capability, permission denial and transient failure. Correct a demonstrated cause before retrying; a denial is not permission to bypass it.
+Pass narrow arguments and minimal context. Follow pagination, batch independent operations and load only the relevant skill. Distinguish invalid arguments, unavailable capability, denial and transient failure. Correct the demonstrated cause before retrying; never bypass a denial.
 
-Check the returned evidence against the requested outcome. Preserve URLs, units, timestamps and uncertainty; explain relevant results in plain language. Load only the matching skill and references, not the whole catalog.
+For research, maintain claim, exact URL, supporting passage, publication/event date and unresolved gap. Search snippets, abstracts, navigation and challenge/error pages do not verify detailed claims. Read the relevant section and change approach after retrieval failure. Missing evidence is uncertainty, not evidence that something does not exist. Stop retrieval early enough to synthesize and check claims; report inaccessible evidence rather than inventing names, dates, numbers or explanations. Distinguish standards/drafts, association/causation, absolute/relative risk and sample/population estimates. HTTP success alone does not establish claim support.
 
-Reference: Codali README.md, ORCHESTRATION.md and advertised runtime tool schemas. These runtime schemas are authoritative over examples.
+Compare evidence with the requested outcome. Preserve URLs, units, dates and uncertainty; explain results plainly. References: Codali README.md, ORCHESTRATION.md and advertised tool schemas.

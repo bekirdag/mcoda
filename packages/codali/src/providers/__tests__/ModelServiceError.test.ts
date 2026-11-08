@@ -1,6 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ModelServiceError } from "../ModelServiceError.js";
+import { OpenAiCompatibleProvider } from "../OpenAiCompatibleProvider.js";
+
+test("explicit all-workers-busy admission failures use bounded capacity recovery", async () => {
+  const payload = { error: "mswarm_error", code: "conflict", message: "private body", details: { reason_code: "all_compatible_nodes_busy" } };
+  const error = await ModelServiceError.fromResponse(Response.json(payload, { status: 409 }));
+  assert.equal(error.code, "rate_limited");
+  assert.equal(error.responseReason, "capacity_busy");
+  assert.equal(error.retryAfterSeconds, 2);
+  assert.equal(error.responseUsage, undefined, "capacity rejection does not invent a usage receipt");
+  assert.match(error.message, /workers are busy/);
+  assert.doesNotMatch(error.message, /private body/);
+  for (const body of [{ ...payload, details: {} }, { ...payload, code: "unknown" }, { error: { message: "All nodes busy" } }]) {
+    assert.equal((await ModelServiceError.fromResponse(Response.json(body, { status: 409 }))).code, "request_conflict");
+  }
+  assert.equal((await ModelServiceError.fromResponse(Response.json(payload, { status: 409, headers: { "retry-after": "60" } }))).retryAfterSeconds, 60);
+});
+
+test("request conflicts retain uncertainty and are not automatically replayed", async () => {
+  const original = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ error: { code: "unknown_conflict", message: "private prompt or token" } }, { status: 409 }); };
+  try {
+    await assert.rejects(new OpenAiCompatibleProvider({ model: "test" }).generate({ messages: [] }), (error: unknown) => {
+      assert.ok(error instanceof ModelServiceError);
+      assert.equal(error.code, "request_conflict");
+      assert.match(error.message, /Completion and usage are unconfirmed/);
+      assert.doesNotMatch(error.message, /private prompt|unknown_conflict/);
+      assert.equal(error.responseUsage, undefined);
+      assert.equal(error.nativeContextRefused, false);
+      return true;
+    });
+    assert.equal(calls, 1);
+    assert.equal((await ModelServiceError.fromResponse(Response.json({ error: { code: "quota_exhausted" } }, { status: 409 }))).code, "quota_exhausted");
+    assert.equal((await ModelServiceError.fromResponse(Response.json({ error: { code: "invalid_response" } }, { status: 409 }))).code, "invalid_response");
+  } finally { globalThis.fetch = original; }
+});
 
 test("proxy invalid_response 502 is not mislabeled as a service outage", async () => {
   for (const payload of [{ error: "mswarm_error", code: "invalid_response" }, { error: { code: "invalid_response" } }]) {

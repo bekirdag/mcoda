@@ -73,6 +73,19 @@ test("length-truncated tool arguments are rejected before a caller can execute t
   });
 });
 
+test("truncated prose retains measured usage and partial text without becoming an answer", { concurrency: false }, async () => {
+  await withStubbedFetch(() => ({ choices: [{ finish_reason: "length", message: { role: "assistant", content: "Incomplete explanation" } }],
+    usage: { prompt_tokens: 17, completion_tokens: 23, total_tokens: 40 } }), async () => {
+    const provider = new OpenAiCompatibleProvider({ model: "fixture", baseUrl: "http://127.0.0.1:9999/v1/" });
+    await assert.rejects(provider.generate({ messages: [{ role: "user", content: "Explain" }] }), (error: unknown) => {
+      assert.ok(error instanceof ModelServiceError);
+      assert.equal(error.partialText, "Incomplete explanation");
+      assert.deepEqual(error.responseUsage, { inputTokens: 17, outputTokens: 23, totalTokens: 40 });
+      return true;
+    });
+  });
+});
+
 test("model context survives a strict Unicode server without changing source or tool values", async () => {
   const originalText = "high:\ud800 low:\udfff adjacent:\ud800\ud800\udc00 emoji:😀 literal:\\ud800";
   const expectedText = "high:\\ud800 low:\\udfff adjacent:\\ud800\ud800\udc00 emoji:😀 literal:\\ud800";

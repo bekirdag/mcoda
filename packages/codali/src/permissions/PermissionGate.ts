@@ -34,6 +34,7 @@ export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (tool.name === "browser_open" && tool.capability === "browser") return "web";
   if (tool.name === "tnl_read" && tool.capability === "tnl_evidence" && tool.readOnly) return "web";
   if (["media_job_status", "media_job_wait", "delegate_helper"].includes(tool.name)) return "read";
+  if (["delegate_coding", "delegate_frontend"].includes(tool.name) && tool.capability === "helper" && tool.readOnly) return "read";
   if (tool.name === "media_job_cancel") return "media";
   if (/image.*generat|audio.*generat|video.*generat|media.*generat/.test(tool.name) || /^(image|audio|video|media)_generation$/.test(tool.capability)) return "media";
   if (tool.name === "docdex_web_research") return "web";

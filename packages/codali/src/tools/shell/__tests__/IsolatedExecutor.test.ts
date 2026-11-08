@@ -4,7 +4,28 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createIsolatedExecutor, darwinSandboxProfile, executorStatus } from "../IsolatedExecutor.js";
-import { createShellTool } from "../ShellTool.js";
+import { createShellTool, DEVELOPMENT_COMMANDS } from "../ShellTool.js";
+
+test("isolated system Chrome renders a local app with fonts without mounting host profiles", async t => {
+  const status = executorStatus();
+  if (status.backend !== "bubblewrap" || !status.available) { t.skip("Linux bubblewrap only"); return; }
+  if (!(await fs.stat("/opt/google/chrome/chrome").catch(() => undefined))?.isFile()) { t.skip("System Chrome is not installed"); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-chrome-local-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  assert.ok(DEVELOPMENT_COMMANDS.includes("google-chrome"));
+  const script = `
+    const http = require('http'), { execFile } = require('child_process'), fs = require('fs');
+    if (fs.existsSync(process.argv[1])) throw Error('Host profile exposed');
+    const server = http.createServer((req,res) => { res.setHeader('Content-Type','text/html'); res.end('<main id="result">waiting</main><script>document.getElementById("result").textContent="local-app-rendered"</script>'); });
+    server.listen(0,'127.0.0.1', () => execFile('google-chrome', ['--headless','--no-sandbox','--disable-dev-shm-usage','--log-level=3','--dump-dom','http://127.0.0.1:'+server.address().port], {timeout:20000}, (error,stdout,stderr) => {
+      server.close(); if(error){console.error(error);process.exitCode=1;} console.log(stdout);console.error(stderr);
+    }));`;
+  const result = await createIsolatedExecutor({ status, network: false })("node", ["-e", script, path.join(os.homedir(), ".config/google-chrome")], {
+    workspaceRoot: root, allowedWritePaths: [], shellTimeoutMs: 30000, shellMaxOutputBytes: 16000,
+  });
+  assert.match(result.output, /<main id="result">local-app-rendered<\/main>/);
+  assert.doesNotMatch(result.output, /Fontconfig error/);
+});
 
 test("package caches persist across invocations without exposing state or permitting source writes", async t => {
   const status = executorStatus(); if (!status.available) { t.skip(status.reason); return; }

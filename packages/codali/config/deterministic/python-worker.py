@@ -146,14 +146,29 @@ def query(a):
             table_name = name(table["name"])
             columns = table["columns"]
             require(isinstance(columns, dict) and 1 <= len(columns) <= 32, "Use 1..32 typed columns")
+            column_order = table.get("columnOrder", list(columns))
+            require(isinstance(column_order, list) and all(isinstance(key, str) for key in column_order)
+                    and len(column_order) == len(columns) and set(column_order) == set(columns),
+                    "columnOrder must name each column exactly once")
+            rows = table["rows"]
+            require(isinstance(rows, list) and len(rows) <= 2000, "Use at most 2000 table rows")
+            if rows and all(isinstance(row, dict) for row in rows):
+                require(all(set(row) == set(columns) for row in rows), "Named rows must contain exactly the declared column names")
+                rows = [[row[key] for key in column_order] for row in rows]
+            else:
+                require(all(isinstance(row, list) and len(row) == len(columns) for row in rows),
+                        "Use either named row objects or equal-width row arrays; do not mix them")
+                require(not rows or len(columns) == 1 or "columnOrder" in table,
+                        "Multi-column array rows require columnOrder matching their value order; alternatively use named row objects")
+            require(all(value is None or isinstance(value, (str, int, float, bool)) for row in rows for value in row),
+                    "Table cells must be strings, numbers, booleans or null")
             definitions = []
-            for key, value in columns.items():
+            for key in column_order:
+                value = columns[key]
                 name(key)
                 require(isinstance(value, str) and re.fullmatch(r"(?:VARCHAR|BIGINT|DOUBLE|BOOLEAN|DECIMAL\((?:[1-9]|[12][0-9]|3[0-8]),(?:[0-9]|[12][0-9]|3[0-8])\))", value), "Unsupported column type")
                 definitions.append('"' + key + '" ' + value)
             connection.execute('CREATE TABLE "' + table_name + '" (' + ','.join(definitions) + ')')
-            rows = table["rows"]
-            require(isinstance(rows, list) and len(rows) <= 2000 and all(isinstance(row, list) and len(row) == len(columns) for row in rows), "Invalid table rows")
             if rows: connection.executemany('INSERT INTO "' + table_name + '" VALUES (' + ','.join('?' for _ in columns) + ')', rows)
         sql = a["sql"]
         require(isinstance(sql, str) and 0 < len(sql) <= 8000, "SQL length out of range")

@@ -19,7 +19,9 @@ const schemas: Record<string, ToolInputSchema> = {
   validate_json: object({ schema: jsonValue, data: jsonValue }, ["schema", "data"]),
   symbolic_math: object({ operation: choices("simplify", "factor", "expand", "differentiate", "integrate", "solve"), expression: string(), symbols: array(identifier, 16), variable: identifier }, ["operation", "expression", "symbols"]),
   solve_constraints: object({ variables: { type: "object", additionalProperties: true }, constraints: array(string(), 64, 1) }, ["variables", "constraints"]),
-  query_data: object({ sql: string(8000), tables: array(object({ name: identifier, columns: { type: "object", additionalProperties: true }, rows: array(array(scalar, 32, 1), 2000) }, ["name", "columns", "rows"]), 8) }, ["sql", "tables"]),
+  query_data: object({ sql: string(8000), tables: array(object({ name: identifier, columns: { type: "object", additionalProperties: true },
+    columnOrder: array(identifier, 32, 1), rows: array({ type: ["array", "object"], items: scalar, minItems: 1, maxItems: 32, additionalProperties: true }, 2000) }, ["name", "columns", "rows"]), 8),
+    expectedRows: array(array(scalar, 32), 1000), rowOrder: choices("ordered", "unordered") }, ["sql", "tables"]),
   transform_data: object({ rows: array({ type: "object", additionalProperties: true }, 2000), steps: array(object({
     operation: choices("select", "sort", "head", "filter", "aggregate"), columns: array(string(128), 32, 1), descending: { type: "boolean" },
     count: { type: "integer", minimum: 0, maximum: 1000 }, column: string(128), comparison: choices("eq", "ne", "gt", "ge", "lt", "le"), value: scalar,
@@ -32,7 +34,7 @@ const descriptions: Record<string, string> = {
   validate_json: "Ajv validates data against JSON Schema draft-07, without mutation/coercion, remote refs or format checks. Returns valid/errors. Offline and bounded.",
   symbolic_math: "SymPy exact symbolic algebra/calculus. Declare symbols; expression uses + - * / ** and sin/cos/tan/exp/log/sqrt/Abs, pi/E. solve treats expression as zero; variable required for solve/differentiate/integrate.",
   solve_constraints: "Z3 satisfiability. variables maps names to Int/Real/Bool. constraints use arithmetic, comparisons, and/or/not, And/Or/Not/If/Implies/Distinct. Returns sat/model with checks, unsat, or unknown; no claims of optimum.",
-  query_data: "DuckDB SELECT over supplied in-memory tables. columns maps names to BIGINT/DOUBLE/VARCHAR/BOOLEAN/DECIMAL(p,s); rows are ordered arrays. Decimal/large integer values use strings. No files/network/extensions; max 1000 output rows.",
+  query_data: "Execute DuckDB SQL SELECT on in-memory tables. Use named row objects, or arrays with explicit columnOrder matching their value order (required for multiple columns). columns maps names to BIGINT/DOUBLE/VARCHAR/BOOLEAN/DECIMAL(p,s). Decimal/large integers use strings. expectedRows checks typed results; rowOrder ordered(default) or unordered preserves duplicates. Examples do not prove general correctness. No files/network/extensions; max1000 output rows.",
   transform_data: "Polars transforms supplied JSON rows through select/sort/head/filter/aggregate steps. aggregate uses by columns and {column,function,alias}; filter uses column/comparison/value. No files or code execution; max 1000 output rows.",
 };
 const pythonPackages: Record<string, [string, string]> = { symbolic_math: ["sympy", "1.14.0"], solve_constraints: ["z3-solver", "5.3.3.0"], query_data: ["duckdb", "2.0.0"], transform_data: ["polars", "2.1.0"] };
@@ -71,6 +73,14 @@ async function execute(name: string, args: unknown, context: ToolContext, option
     if (data.error) throw new ToolExecutionError("tool_invalid_args", String(data.error));
     const [library, version] = (python ? pythonPackages : nodePackages)[name];
     if (data.library !== library || data.version !== version) throw new ToolExecutionError("tool_execution_failed", "Tool runtime version does not match the pinned contract");
+    const input = args as { expectedRows?: unknown[][]; rowOrder?: string };
+    if (name === "query_data" && input.expectedRows !== undefined) {
+      if (!Array.isArray(data.rows)) throw new ToolExecutionError("tool_execution_failed", "Query runtime did not return rows for validation");
+      const actual = data.rows.map(row => JSON.stringify(row)), expected = input.expectedRows.map(row => JSON.stringify(row));
+      if (input.rowOrder === "unordered") { actual.sort(); expected.sort(); }
+      data.validation = { passed: JSON.stringify(actual) === JSON.stringify(expected), comparison: input.rowOrder ?? "ordered",
+        expectedCount: expected.length, actualCount: actual.length, scope: "provided examples only; no type coercion" };
+    }
     const receipt = { inputSha256: createHash("sha256").update(payload).digest("hex"), workerSha256: createHash("sha256").update(source).digest("hex"), elapsedMs: Date.now() - started,
       isolation: "offline, ephemeral input only", ...data };
     return { output: JSON.stringify(receipt), data: receipt };

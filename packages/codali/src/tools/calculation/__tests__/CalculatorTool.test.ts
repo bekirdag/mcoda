@@ -2,7 +2,41 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateCalculation, createCalculatorTool } from "../CalculatorTool.js";
 import { PermissionGate, permissionKind } from "../../../permissions/PermissionGate.js";
-import { toolDescriptorFor } from "../../ToolRegistry.js";
+import { ToolRegistry, toolDescriptorFor } from "../../ToolRegistry.js";
+
+test("scientific functions retain numeric grammar, domains and arity boundaries", () => {
+  for (const [formula, expected] of [
+    ["Math.exp(0)", 1], ["Math.max(2,5)", 5], ["Math.sqrt(9)", 3], ["Math.sin(Math.PI/2)", 1], ["exp(0)", 1], ["ln(e)", 1], ["log(e^2)", 2], ["log10(1000)", 3],
+    ["sin(pi/2)", 1], ["cos(pi)", -1], ["tan(0)", 0], ["pow(3,4)", 81],
+    ["exp(ln(7.25))", 7.25], ["sin(.7)^2+cos(.7)^2", 1],
+  ] as const) assert.ok(Math.abs(evaluateCalculation(formula) - expected) < 1e-12, formula);
+  for (const formula of ["ln(0)", "ln(-2)", "log10(-1)", "exp(1000)", "pow(-1,.5)",
+    "pow(2)", "pow(2,3,4)", "exp()", "ln(2,3)", "Math.random()", "Math.constructor(2)", "Math.max.constructor(2)", "x=exp(2)"]) {
+    assert.throws(() => evaluateCalculation(formula), Error, formula);
+  }
+});
+
+test("malformed calculator calls explain a valid recoverable shape", async () => {
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  const failed = await registry.execute("calculate", {}, { workspaceRoot: "." });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error!.message, /expression.*2\+3/);
+  const corrected = await registry.execute("calculate", { expressions: { decay: "exp(-ln(2))", check: "1/2" } }, { workspaceRoot: "." });
+  assert.equal(corrected.ok, true);
+  assert.deepEqual(JSON.parse(corrected.output).results, { decay: .5, check: .5 });
+});
+
+test("calculator batches named formulas atomically without allowing code or ambiguous inputs", async () => {
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  const run = (args: unknown) => registry.execute("calculate", args, { workspaceRoot: "." });
+  const result = await run({ expressions: { total: "18*7", ratio: "(3*8)/(3*8+2*4)" } });
+  assert.equal(result.ok, true, result.output);
+  assert.deepEqual(JSON.parse(result.output).results, { total: 126, ratio: 0.75 });
+  for (const args of [{}, { expression: "1", expressions: { a: "2" } }, { expressions: {} },
+    { expressions: { a: "1", b: "process.env" } }, { expressions: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`a${i}`, "1"])) }]) {
+    assert.equal((await run(args)).ok, false);
+  }
+});
 
 test("calculator handles precedence, numeric notation, functions and units expressed as arithmetic", () => {
   for (const [expression, expected] of [
@@ -17,7 +51,7 @@ test("calculator handles precedence, numeric notation, functions and units expre
 test("calculator rejects unsupported code, incomplete syntax and ambiguous implicit operations", () => {
   for (const expression of ["", "   ", "1 2", "2(3)", "1e", "1e+", "1..2", "sum(1,)", "abs()", "abs(1,2)",
     "(1+2", "1+2)", "1;2", "1//2", "1/*x*/+2", "globalThis", "process.env", "require('fs')", "import('fs')",
-    "constructor(1)", "__proto__(1)", "(()=>1)()", "[1,2]", "{a:1}", "x=1", "Math.sqrt(4)", "sqrt(4).constructor", "1\u0000+2"]) {
+    "constructor(1)", "__proto__(1)", "(()=>1)()", "[1,2]", "{a:1}", "x=1", "Math['sqrt'](4)", "sqrt(4).constructor", "1\u0000+2"]) {
     assert.throws(() => evaluateCalculation(expression), Error, expression);
   }
 });

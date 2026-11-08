@@ -44,6 +44,8 @@ export interface ProviderResponseFormat {
 export interface ProviderMessage {
   role: ProviderRole;
   content: string;
+  /** Host-read bounded PNG screenshots; never arbitrary URLs fetched by the model service. */
+  images?: Array<{ dataUrl: string }>;
   name?: string;
   toolCallId?: string;
   /** Assistant calls retained alongside the matching tool result messages. */

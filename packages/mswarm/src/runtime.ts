@@ -435,7 +435,7 @@ export interface SelfHostedNodeUninstallNotificationResult {
 
 export interface SelfHostedOpenAIChatMessage {
   role: string;
-  content: string | Array<{ type: string; text?: string }>;
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 }
 
 export interface SelfHostedNodeCodaliJobPayload {
@@ -3369,6 +3369,7 @@ export function mapMcodaAgentToSelfHostedModel(
     [defaultGenerativeOperationDescriptor("chat.completions", localRunner ? "/chat/completions" : undefined)];
   const inferredInputModalities = inferGenerativeModalities(operations, "input");
   const supportsVision =
+    localRunner?.inputModalities?.includes("image") === true ||
     capabilities.some((capability) => capability.toLowerCase().includes("vision")) ||
     capabilities.some((capability) => capability.toLowerCase().includes("visual"));
   const inputModalities =
