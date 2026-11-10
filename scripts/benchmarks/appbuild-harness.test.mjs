@@ -109,12 +109,18 @@ test('raw loop has actual write and shell tools behind progressive discovery',as
 });
 
 import {deadlineBoundResolved} from './appbuild-tools.mjs';
-test('the controller is told the attempt deadline without changing the frozen config',()=>{
+test('the controller is told the attempt deadline with a hash that matches the bound config',async()=>{
   const resolved={hash:'h',config:{interaction:{timeoutMs:86400000,maxModelCalls:9},bindings:{}}};
-  const bound=deadlineBoundResolved(resolved,1800000);
-  assert.equal(bound.config.interaction.timeoutMs,1800000); assert.equal(bound.config.interaction.maxModelCalls,9); assert.equal(bound.hash,'h');
-  assert.equal(resolved.config.interaction.timeoutMs,86400000);
-  assert.equal(deadlineBoundResolved(resolved,172800000).config.interaction.timeoutMs,86400000);
+  const bound=deadlineBoundResolved(resolved,1800000,config=>'hash:'+config.interaction.timeoutMs);
+  assert.equal(bound.config.interaction.timeoutMs,1800000); assert.equal(bound.config.interaction.maxModelCalls,9); assert.equal(bound.hash,'hash:1800000');
+  assert.equal(resolved.config.interaction.timeoutMs,86400000); assert.equal(resolved.hash,'h');
+  assert.equal(deadlineBoundResolved(resolved,172800000),resolved);
+  // The controller pins the config it receives; a stale hash fails every attempt at start.
+  const {pinOrchestrationConfig,orchestrationHash,validateOrchestrationConfig}=await import('../../packages/codali/dist/config/OrchestrationConfig.js');
+  const {readFileSync}=await import('node:fs');
+  const real=validateOrchestrationConfig(JSON.parse(readFileSync(new URL('../../packages/codali/config/raijin-suku.example.json',import.meta.url),'utf8')));
+  const pinned=pinOrchestrationConfig(deadlineBoundResolved({config:real,hash:orchestrationHash(real),source:'test'},1234567));
+  assert.equal(pinned.config.interaction.timeoutMs,1234567);
 });
 
 test('raw arm retries a malformed model reply with the same request, at most twice', async () => {

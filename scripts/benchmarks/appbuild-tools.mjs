@@ -16,6 +16,7 @@ import { createIsolatedExecutor, executorStatus } from '../../packages/codali/di
 import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 import { compressProviderContext } from '../../packages/codali/dist/runtime/ContextCompression.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
+import { orchestrationHash } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { fullTrustTools } from './trust-full-tools.mjs';
 import { validateWorkflowExecution } from './trust-workflow.mjs';
 export { validateWorkflowExecution } from './trust-workflow.mjs';
@@ -120,8 +121,14 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
 /** The attempt deadline is enforced from outside the controller, so tell the
  * controller too; otherwise its time-based finalizer works from the longer config
  * limit and it runs into the deadline with nothing delivered. */
-export const deadlineBoundResolved = (resolved, deadlineMs) => ({ ...resolved, config: { ...resolved.config,
-  interaction: { ...resolved.config.interaction, timeoutMs: Math.min(resolved.config.interaction?.timeoutMs ?? deadlineMs, deadlineMs) } } });
+// The controller verifies the hash against the contents it is given, so a
+// changed deadline needs its own hash; an unchanged config keeps the frozen one.
+export const deadlineBoundResolved = (resolved, deadlineMs, hashOf = orchestrationHash) => {
+  const timeoutMs = Math.min(resolved.config.interaction?.timeoutMs ?? deadlineMs, deadlineMs);
+  if (resolved.config.interaction?.timeoutMs === timeoutMs) return resolved;
+  const config = { ...resolved.config, interaction: { ...resolved.config.interaction, timeoutMs } };
+  return { ...resolved, config, hash: hashOf(config) };
+};
 
 export const RAW_FINAL_ANSWER_NOTICE = 'The time limit is almost up. Stop using tools and give your final answer now from what you already have. Say what you could not finish or verify.';
 export const finalAnswerReserveMs = deadlineMs => Math.min(300000, Math.ceil(deadlineMs * 0.1));
