@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-/** New source files at least this long are drafted by a specialist when one is configured. */
+/** New source files around this size are worth a specialist draft; guidance only, never enforced. */
 export const SPECIALIST_DRAFT_MIN_CHARS = 6000;
 
 /** Specialists produce drafts; the controlling agent retains permissions and verification. */

@@ -5,10 +5,11 @@
 - Wait out a temporary model-service outage before the first dispatch (up to
   about four minutes) instead of ending the turn after one second.
 - Shell scratch ($TMPDIR) persists between calls in a session; grep is allowed.
-- New-app builds: large new source files are drafted by the coding or frontend
-  specialist (targetPath, then write_file with draftId); files created in the
-  running task skip structural analysis on revision; rm is allowed when the
-  shell is confined to the claimed write paths.
+- New-app builds: a specialist can write a new file for the lead (targetPath,
+  then write_file with draftId, or with corrected content); this is guidance,
+  a large file typed directly is accepted. Files created in the running task
+  skip structural analysis on revision; rm is allowed when the shell is
+  confined to the claimed write paths.
 - Reserve output for history sizing the same way as provider compression, so a
   large output ceiling no longer leaves a few thousand tokens of history and
   each file read evicts the last. Re-reading an evicted result is no longer a

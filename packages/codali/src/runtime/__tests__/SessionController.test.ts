@@ -2200,7 +2200,7 @@ test("a temporary outage during native reasoning preflight is waited out instead
   assert.equal(events.filter(event => event.type === "model_preflight_failed").length, 1);
 });
 
-test("large new source files go through a specialist draft, and session-created files are revised without re-analysis", async t => {
+test("a specialist draft is saved by draftId, a large direct write is accepted, and session-created files are revised without re-analysis", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-draft-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-draft-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
@@ -2217,10 +2217,9 @@ test("large new source files go through a specialist draft, and session-created 
       const prior = () => request.messages.filter(message => message.role === "tool").at(-1)!.content;
       switch (step++) {
         case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src"] });
-        case 1: return call("write_file", { path: "src/big.js", content: big });
+        case 1: return call("write_file", { path: "src/direct.js", content: big });
         case 2:
-          assert.match(prior(), /drafted by a specialist first/);
-          await assert.rejects(fs.stat(path.join(root, "src/big.js")));
+          assert.match(prior(), /Wrote src\/direct\.js/);
           return call("write_file", { path: "src/small.js", content: "export const small = 1;\n" });
         case 3:
           assert.match(prior(), /Wrote src\/small\.js/);
