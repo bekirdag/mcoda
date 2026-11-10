@@ -2139,8 +2139,12 @@ test("scratch-variable write grants receive actionable recovery without expandin
           assert.doesNotMatch(prior(), /call work_rescope with/);
           assert.deepEqual(controller.state!.tasks[0].allowedPaths, ["src"]);
           return call("run_shell", { command: "node", args: ["-e", "const fs=require('fs'); const p=require('path').join(process.env.TMPDIR,'check.txt'); fs.writeFileSync(p,'scratch-ok'); console.log(fs.readFileSync(p,'utf8'));" ] });
-        default:
+        case 3:
           assert.match(prior(), /scratch-ok/);
+          // Scratch written by one call is still there for the next one, and text search is available.
+          return call("run_shell", { command: "bash", args: ["-c", 'grep -c scratch-ok "$TMPDIR/check.txt" && echo kept-between-calls'] });
+        default:
+          assert.match(prior(), /kept-between-calls/);
           controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
       }
     } } });

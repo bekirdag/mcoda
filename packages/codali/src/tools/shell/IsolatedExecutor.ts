@@ -10,10 +10,10 @@ import { discoverHostToolchain, extraRuntimeMounts, type HostRuntime } from "./H
 export interface ExecutorStatus { available: boolean; backend: "bubblewrap" | "sandbox-exec" | "unavailable"; reason?: string; }
 
 /** All paths have been canonicalized by the host, before launching the sandbox. */
-export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false, runtimeRoots: string[] = [], protectedPaths: string[] = [], cacheRoot?: string): string => {
+export const darwinSandboxProfile = (root: string, scratch: string, writePaths: string[], runtimes: HostRuntime[], network = false, runtimeRoots: string[] = [], protectedPaths: string[] = [], cacheRoot?: string, sessionScratch?: string): string => {
   const quoted = (value: string) => JSON.stringify(value);
   const ancestors = new Set<string>();
-  for (const target of [root, scratch, ...(cacheRoot ? [cacheRoot] : []), ...runtimeRoots, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
+  for (const target of [root, scratch, ...(cacheRoot ? [cacheRoot] : []), ...(sessionScratch ? [sessionScratch] : []), ...runtimeRoots, ...extraRuntimeMounts(runtimes).map(runtime => runtime.readOnlyRoot)]) {
     for (let parent = path.dirname(target); parent !== path.dirname(parent); parent = path.dirname(parent)) ancestors.add(parent);
   }
   return [
@@ -38,6 +38,7 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     ...extraRuntimeMounts(runtimes).map(runtime => `(allow file-read* (${runtime.directory ? "subpath" : "literal"} ${quoted(runtime.readOnlyRoot)}))`),
     `(allow file-read* file-write* (subpath ${quoted(scratch)}))`,
     ...(cacheRoot ? [`(allow file-read* file-write* (subpath ${quoted(cacheRoot)}))`, `(deny file-write-unlink (literal ${quoted(cacheRoot)}))`] : []),
+    ...(sessionScratch ? [`(allow file-read* file-write* (subpath ${quoted(sessionScratch)}))`, `(deny file-write-unlink (literal ${quoted(sessionScratch)}))`] : []),
     ...writePaths.map(file => `(allow file-write* (subpath ${quoted(file)}))`),
     ...[".git", ".mcoda"].map(dir => `(deny file-write* (subpath ${quoted(path.join(root, dir))}))`),
     ...protectedPaths.map(file => `(deny file-write* (subpath ${quoted(file)}))`),
@@ -92,21 +93,21 @@ const packageCacheEnvironment = (root: string) => ({
 });
 
 /** Disposable, workspace-specific cache. Never mount an existing host package cache or credentials. */
-const preparePackageCache = async (requested: string, workspace: string): Promise<string> => {
+const preparePackageCache = async (requested: string, workspace: string, label = "Package cache"): Promise<string> => {
   const absolute = path.resolve(requested);
   const unsafe = (value: string) => value === path.parse(value).root || value === realpathSync(os.homedir())
     || value === workspace || workspace.startsWith(`${value}${path.sep}`) || value.startsWith(`${workspace}${path.sep}`);
-  if (unsafe(absolute)) throw new ToolExecutionError("tool_permission_denied", "Package cache must be a private dedicated directory outside the workspace");
+  if (unsafe(absolute)) throw new ToolExecutionError("tool_permission_denied", `${label} must be a private dedicated directory outside the workspace`);
   await fs.mkdir(absolute, { recursive: true, mode: 0o700 });
   const stat = await fs.lstat(absolute), real = await fs.realpath(absolute);
   if (stat.isSymbolicLink() || !stat.isDirectory() || unsafe(real)
     || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) {
-    throw new ToolExecutionError("tool_permission_denied", "Package cache must be an owned private directory, not a symlink");
+    throw new ToolExecutionError("tool_permission_denied", `${label} must be an owned private directory, not a symlink`);
   }
   return real;
 };
 
-export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
+export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Host-owned scratch kept between calls of one session; never model arguments. */ scratchRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
   const status = options.status ?? executorStatus();
   return async (command, args, context) => {
     if (!status.available) throw new ToolExecutionError("tool_permission_denied", status.reason ?? "Isolation unavailable");
@@ -114,6 +115,7 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
     const cwd = resolveShellWorkingDirectory(root, context.shellWorkingDirectory);
     if (root === path.parse(root).root) throw new ToolExecutionError("tool_permission_denied", "Filesystem root cannot be an isolated workspace");
     const cacheRoot = options.cacheRoot ? await preparePackageCache(options.cacheRoot, root) : undefined;
+    const sessionScratch = options.scratchRoot ? await preparePackageCache(options.scratchRoot, root, "Shell scratch") : undefined;
     const runtimes = discoverHostToolchain(root);
     const protectedPaths = [...new Set((context.protectedPaths ?? []).flatMap(file => {
       const requested = path.resolve(root, file);
@@ -160,7 +162,9 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
         for (const file of writePaths) launch.push("--bind", file, file);
         if (cacheRoot) launch.push("--bind", cacheRoot, "/tmp/codali-cache");
-        launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
+        // The rest of /tmp stays per-call; only $TMPDIR survives between calls.
+        if (sessionScratch) launch.push("--bind", sessionScratch, "/tmp/scratch");
+        launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", sessionScratch ? "/tmp/scratch" : "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
         for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" })) launch.push("--setenv", key, value);
         if (cacheRoot) for (const [key, value] of Object.entries(packageCacheEnvironment("/tmp/codali-cache"))) launch.push("--setenv", key, value);
         // Git hooks/config and private session state are not part of executable workspace access.
@@ -176,10 +180,10 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       const privateHome = path.join(scratch, "home"); const privateBin = path.join(scratch, "bin");
       await fs.mkdir(privateHome, { mode: 0o700 }); await fs.mkdir(privateBin, { mode: 0o700 });
       for (const runtime of runtimes) await fs.symlink(runtime.executable, path.join(privateBin, runtime.name));
-      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network, runtimeRoots, protectedPaths, cacheRoot);
+      const profile = darwinSandboxProfile(root, scratch, writePaths, runtimes, options.network, runtimeRoots, protectedPaths, cacheRoot, sessionScratch);
       return await runProcess("/usr/bin/sandbox-exec", ["-p", profile, runtimes.find(runtime => runtime.name === command)?.executable ?? command, ...args], context, {
         ...runtimes.find(runtime => runtime.name === "cc")?.environment,
-        HOME: privateHome, TMPDIR: scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+        HOME: privateHome, TMPDIR: sessionScratch ?? scratch, PATH: `${privateBin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
         CARGO_HOME: path.join(privateHome, "cargo"), XDG_CACHE_HOME: path.join(privateHome, "cache"),
         ...(cacheRoot ? packageCacheEnvironment(cacheRoot) : {}),
         PYTHONPYCACHEPREFIX: path.join(privateHome, "pycache"), PYTHONUSERBASE: path.join(privateHome, "python"),
