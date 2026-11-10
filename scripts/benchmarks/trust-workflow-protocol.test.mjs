@@ -132,7 +132,8 @@ test('a failed follow-up retains earlier answers and usage and never dispatches 
   for(const {result} of results){
     t.after(()=>fs.rm(result.runtimeArchive,{recursive:true,force:true}));assert.match(result.error,/502|fixture failure/);
     assert.equal(result.turns.length,2);assert.equal(result.turns[0].content,'first retained answer');assert.equal(result.turns[0].usage.tokens,10);assert.ok(result.turns[1].error);
-    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);assert.equal(result.usage.modelCalls,2);
+    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);// Codali waits out a transient 502 and resends the failing turn twice; the raw arms send it once.
+    assert.equal(result.usage.modelCalls,result.arm==='codali_candidate'?4:2);
   }
   assert.ok(!seen.includes('must-never-dispatch'));const calls=seen.length;assert.equal((await run(args)).code,0);assert.equal(seen.length,calls);
 });
