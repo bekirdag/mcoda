@@ -20,6 +20,9 @@ export interface ToolContext {
   protectedPaths?: string[];
   allowShell?: boolean;
   allowDestructiveOperations?: boolean;
+  /** Set by a host whose shell executor confines writes to scratch and the
+   * declared write paths, so a delete cannot reach anything else. */
+  shellIsolated?: boolean;
   shellAllowlist?: string[];
 }
 

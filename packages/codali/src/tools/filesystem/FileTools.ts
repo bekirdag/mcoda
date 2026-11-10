@@ -140,6 +140,7 @@ export const createFileTools = (): ToolDefinition[] => {
         properties: {
           path: { type: "string" },
           content: { type: "string" },
+          draftId: { type: "string", maxLength: 64, description: "Write the specialist draft with this id as the whole file instead of sending content. Only for the targetPath the draft was requested for." },
           search: { type: "string", minLength: 1, description: "Exact unique old text to replace; omit only when writing the entire file." },
           edits: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", required: ["search", "content"], additionalProperties: false,
             properties: { search: { type: "string", minLength: 1 }, content: { type: "string" } } } },
@@ -147,6 +148,8 @@ export const createFileTools = (): ToolDefinition[] => {
       },
       handler: async (args, context) => {
         const { path: target, content, search, edits } = args as { path: string; content?: string; search?: string; edits?: Array<{ search: string; content: string }> };
+        // A host that keeps specialist drafts replaces draftId with content before this point.
+        if ((args as { draftId?: unknown }).draftId !== undefined) throw new Error("Unknown draftId; supply content, or request a specialist draft for this path first");
         if (edits !== undefined ? content !== undefined || search !== undefined || !Array.isArray(edits) || !edits.length || edits.length > 20
           || edits.some(edit => !edit || typeof edit.search !== "string" || !edit.search.length || typeof edit.content !== "string")
           : typeof content !== "string") throw new Error("Supply either content (and optional search), or edits; do not combine these forms");

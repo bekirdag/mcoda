@@ -4,7 +4,7 @@ import { runProcess } from "./AsyncProcess.js";
 import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 
 /** Shared by terminal execution and tool-enabled benchmark baselines. */
-export const DEVELOPMENT_COMMANDS = ["git", "rg", "grep", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk", "uname", "which", "env", "find", "wc", "sort", "uniq", "cut", "diff", "file", "stat", "du", "df", "mkdir", "touch", "cp", "mv", "curl", "wget", "tar", "unzip", "zip", "cc", "gcc", "g++", "clang", "clang++", "ar", "swift", "swiftc", "java", "javac", "xcrun", "xcodebuild", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+export const DEVELOPMENT_COMMANDS = ["git", "rg", "grep", "node", "npm", "pnpm", "npx", "python3", "pytest", "cargo", "rustc", "go", "make", "cmake", "tsc", "sh", "bash", "ls", "cat", "pwd", "expr", "printf", "head", "tail", "sed", "awk", "uname", "which", "env", "find", "wc", "sort", "uniq", "cut", "diff", "file", "stat", "du", "df", "mkdir", "touch", "cp", "mv", "rm", "curl", "wget", "tar", "unzip", "zip", "cc", "gcc", "g++", "clang", "clang++", "ar", "swift", "swiftc", "java", "javac", "xcrun", "xcodebuild", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
 const resolveAllowlist = (context: ToolContext): string[] => {
   return context.shellAllowlist ?? [];
@@ -51,7 +51,7 @@ const isDestructiveShellAction = (command: string, args: string[]): boolean => {
 
 export const createShellTool = (): ToolDefinition => ({
   name: "run_shell",
-  description: 'Run an allowlisted executable. Use $TMPDIR for scratch space: files written under $TMPDIR stay available to later calls in this session, while exports, cwd changes and other /tmp paths do not persist between calls. Save required project outputs in claimed workspace writePaths; create missing scoped files/directories with write_file/create_directory first. Package-manager cache environment variables point to persistent workspace-private caches; do not hardcode their paths. Each call is isolated and kills its background processes on return; nohup, setsid and tmux cannot keep a server alive. Use browser_session for persistent noVNC/static previews and browser_interact for official Browser Use. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
+  description: 'Run an allowlisted executable. Use $TMPDIR for scratch space: files written under $TMPDIR stay available to later calls in this session, while exports, cwd changes and other /tmp paths do not persist between calls. Save required project outputs in claimed workspace writePaths; create missing scoped files/directories with write_file/create_directory first. Package-manager cache environment variables point to persistent workspace-private caches; do not hardcode their paths. Deleting files works only inside $TMPDIR and the writePaths of the call. Each call is isolated and kills its background processes on return; nohup, setsid and tmux cannot keep a server alive. Use browser_session for persistent noVNC/static previews and browser_interact for official Browser Use. Default cwd is the workspace root; set cwd for a module-local command, e.g. {"command":"npm","args":["test"],"cwd":"packages/app"}. In terminal mode the workspace is read-only unless writePaths names root-relative paths inside the claimed task. Existing source files in those paths require current reads and structural analysis.',
   readOnly: false,
   capability: "shell",
   inputSchema: {
@@ -73,6 +73,7 @@ export const createShellTool = (): ToolDefinition => ({
     const { command, args: commandArgs = [], cwd } = args as { command: string; args?: string[]; cwd?: string };
     if (
       !context.allowDestructiveOperations
+      && !context.shellIsolated
       && isDestructiveShellAction(command, commandArgs)
     ) {
       throw new ToolExecutionError(

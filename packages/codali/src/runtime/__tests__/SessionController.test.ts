@@ -2199,3 +2199,49 @@ test("a temporary outage during native reasoning preflight is waited out instead
   assert.equal(recoveries[0].data.code, "service_unavailable");
   assert.equal(events.filter(event => event.type === "model_preflight_failed").length, 1);
 });
+
+test("large new source files go through a specialist draft, and session-created files are revised without re-analysis", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-draft-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-draft-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const candidate = structuredClone(config); candidate.bindings.coding = { candidates: ["model"] };
+  const big = `// drafted module\n${"export const value = 1; // filler line for a long generated module\n".repeat(120)}`;
+  let step = 0, specialistCalls = 0, draftId = ""; let controller!: SessionController;
+  controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config: candidate, hash: orchestrationHash(candidate), source: "test" }, docdex: false, permissions: "workspace",
+    provider: { name: "fixture", generate: async request => {
+      if (request.messages[0].content.includes("You are the coding specialist")) {
+        specialistCalls++;
+        assert.match(request.messages[0].content, /Return only the complete content of the file "src\/big\.js"/);
+        return reply("```js\n" + big.trimEnd() + "\n```");
+      }
+      const prior = () => request.messages.filter(message => message.role === "tool").at(-1)!.content;
+      switch (step++) {
+        case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src"] });
+        case 1: return call("write_file", { path: "src/big.js", content: big });
+        case 2:
+          assert.match(prior(), /drafted by a specialist first/);
+          await assert.rejects(fs.stat(path.join(root, "src/big.js")));
+          return call("write_file", { path: "src/small.js", content: "export const small = 1;\n" });
+        case 3:
+          assert.match(prior(), /Wrote src\/small\.js/);
+          return call("delegate_coding", { instruction: "Draft the module", context: "No dependencies", acceptance: "Exports value", targetPath: "src/big.js" });
+        case 4:
+          draftId = /"draftId":"([a-f0-9-]{36})"/.exec(prior())?.[1] ?? ""; assert.ok(draftId);
+          return call("write_file", { path: "src/other.js", draftId });
+        case 5:
+          assert.match(prior(), /requested for src\/big\.js/);
+          return call("write_file", { path: "src/big.js", draftId });
+        case 6:
+          assert.match(prior(), /Wrote src\/big\.js/);
+          assert.equal(await fs.readFile(path.join(root, "src/big.js"), "utf8"), big);
+          // No read or prepare_edit since creation: the session's own new file is patched directly.
+          return call("write_file", { path: "src/big.js", search: "// drafted module", content: "// revised module" });
+        default:
+          assert.match(prior(), /Patched src\/big\.js/);
+          controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
+      }
+    } } });
+  await assert.rejects(controller.run("Create the source modules under src."), /cancel/i);
+  assert.equal(specialistCalls, 1);
+  assert.match(await fs.readFile(path.join(root, "src/big.js"), "utf8"), /^\/\/ revised module/);
+});
