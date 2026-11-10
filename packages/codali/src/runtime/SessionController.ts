@@ -17,7 +17,7 @@ import type { WorkState, WorkTask } from "../session/WorkTypes.js";
 import { formatInstructionBlocks, loadInstructionBlocks } from "../session/InstructionLoader.js";
 import { SkillCatalog } from "../session/SkillCatalog.js";
 import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, executionHistoryBudget, fitOutputBudget, resultStillVisible, type ArchivedContext } from "./ContextCompression.js";
-import { ConfiguredProvider, ModelServiceClient, type ModelInvocation } from "../providers/ConfiguredProvider.js";
+import { ConfiguredProvider, ModelServiceClient, NativeReasoningTransportError, type ModelInvocation } from "../providers/ConfiguredProvider.js";
 import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type EffortBudget, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
@@ -35,6 +35,8 @@ import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
 import { InspectionConvergence } from "./InspectionConvergence.js";
 import { capacityRetryDelayMs, isCapacityRefusal, MODEL_CAPACITY_WAIT_MS } from "../providers/ModelCapacityWait.js";
+/** Waits between retries of a model request that failed before dispatch (about four minutes in total). */
+export const PREFLIGHT_RECOVERY_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_000, 60_000];
 import { ProgressTracker } from "./ProgressTracker.js";
 import { accountedUsage, usageAccounts } from "./UsageReconciliation.js";
 import { ToolRegistry, toolDescriptorFor } from "../tools/ToolRegistry.js";
@@ -1062,6 +1064,11 @@ export class SessionController {
         return response;
       }).catch(async error => {
         if (!ownsTurn()) throw error;
+        // Nothing was sent for inference yet, so waiting out an outage here
+        // cannot duplicate remote work or spend tokens.
+        const preflightOnly = !this.options.provider && !dispatchReady.has(id);
+        const serviceError = error instanceof ModelServiceError ? error
+          : error instanceof NativeReasoningTransportError && error.cause instanceof ModelServiceError ? error.cause : undefined;
         await persistSettlement(async () => {
           // Discovery, capability/context checks and route observers run before
           // the configured provider hands this request to its transport. A
@@ -1097,9 +1104,9 @@ export class SessionController {
         });
         if (error instanceof ModelServiceError) await this.emit("model_failure", { id, code: error.code, httpStatus: error.status, responseReason: error.responseReason, maxTokens: request.maxTokens ?? limits.maxOutputTokens, recoveryAttempt,
           partialText: error.partialText, partial: !!error.partialText, toolsExecuted: false });
-        const transientCode = error instanceof ModelServiceError && ["service_unavailable", "rate_limited", "model_unavailable"].includes(error.code) ? error.code
+        const transientCode = serviceError && ["service_unavailable", "rate_limited", "model_unavailable"].includes(serviceError.code) ? serviceError.code
           : error instanceof TypeError && error.message === "fetch failed" ? "transport_unavailable" : undefined;
-        const retryAfter = error instanceof ModelServiceError ? error.retryAfterSeconds ?? 0 : 0;
+        const retryAfter = serviceError?.retryAfterSeconds ?? 0;
         const remainingMs = limits.timeoutMs ? Math.max(0, limits.timeoutMs - (Date.now() - this.budgetStartedAt)) : Infinity;
         const capacityWaitMs = capacityRetryDelayMs(error, recoveryAttempt, capacityWaitedMs, Math.min(MODEL_CAPACITY_WAIT_MS, remainingMs * 0.5));
         if (capacityWaitMs !== undefined) {
@@ -1110,9 +1117,13 @@ export class SessionController {
           recovered = true;
           return this.provider(binding, addGoal, recoveryAttempt + 1, capacityWaitedMs + capacityWaitMs).generate({ ...request, requestId: undefined });
         }
-        if (transientCode && recoveryAttempt < 2 && retryAfter <= 30) {
+        // A long task must survive a short service outage. Before dispatch the
+        // wait is free, so back off for a few minutes; after dispatch keep the
+        // two quick retries because the failed call may have run remotely.
+        const transientWaitMs = Math.max((preflightOnly ? PREFLIGHT_RECOVERY_WAITS_MS : [500, 2000])[recoveryAttempt] ?? Infinity, retryAfter * 1000);
+        if (transientCode && retryAfter <= 30 && transientWaitMs < remainingMs) {
           request.signal?.throwIfAborted();
-          const waitMs = Math.max(recoveryAttempt === 0 ? 500 : 2000, retryAfter * 1000);
+          const waitMs = transientWaitMs;
           await this.emit("model_recovery", { attempt: recoveryAttempt + 1, code: transientCode, waitMs,
             message: "The model service is temporarily unavailable. Retrying the same request; no tool action from the failed response was executed." });
           await delay(waitMs, undefined, { signal: request.signal });

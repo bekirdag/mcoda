@@ -38,7 +38,8 @@ const record = (v: unknown): Record<string, unknown> => v && typeof v === "objec
 
 /** Discovery failed before inference; a caller may release its local token reservation. */
 export class NativeReasoningTransportError extends Error {
-  constructor(message: string) { super(message); this.name = "NativeReasoningTransportError"; }
+  readonly cause?: unknown;
+  constructor(message: string, options?: { cause?: unknown }) { super(message); this.name = "NativeReasoningTransportError"; this.cause = options?.cause; }
 }
 
 export const providerCredential = async (provider: OrchestrationProvider): Promise<string | undefined> => {
@@ -151,7 +152,9 @@ export class ModelServiceClient {
     endpoint.pathname = ["", "/v1"].includes(endpoint.pathname)
       ? "/v1/swarm/self-hosted/openai/models" : `${endpoint.pathname}/models`;
     const payload = record(await this.discoveryJson(endpoint.href, signal).catch(error => {
-      throw new NativeReasoningTransportError(`Native reasoning preflight failed before inference: ${error instanceof Error ? error.message : String(error)}`);
+      // Keep the service error as the cause so the controller can tell a
+      // temporary outage from a real contract mismatch and wait it out.
+      throw new NativeReasoningTransportError(`Native reasoning preflight failed before inference: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }));
     const models = Array.isArray(payload.data) ? payload.data.map(record) : [];
     const model = models.find(item => [item.id, item.agent_slug, item.remote_slug].includes(modelId));

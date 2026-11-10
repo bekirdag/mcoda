@@ -2163,3 +2163,35 @@ test("claiming a planned task tolerates identical scope without amending the pla
   } } });
   await assert.rejects(controller.run("Implement the module with tests"), /cancel/i);
 });
+
+test("a temporary outage during native reasoning preflight is waited out instead of ending the turn", { concurrency: false }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-outage-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-native-outage-state-"));
+  const originalFetch = globalThis.fetch; const originalKey = process.env.CODALI_NATIVE_TEST_KEY;
+  process.env.CODALI_NATIVE_TEST_KEY = "fixture-native-credential";
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.CODALI_NATIVE_TEST_KEY; else process.env.CODALI_NATIVE_TEST_KEY = originalKey;
+    await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true });
+  });
+  const candidate = structuredClone(config);
+  candidate.providers.local = { adapter: "mswarm", baseUrl: "https://models.test/v1/swarm/self-hosted/openai", credentialRef: "env:CODALI_NATIVE_TEST_KEY" };
+  candidate.models.model.reasoning = { high: { reasoning_effort: "high" } };
+  const selected = { config: candidate, hash: orchestrationHash(candidate), source: "fixture" };
+  let dispatched = 0, nativeGets = 0; const events: SessionEvent[] = [];
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === "POST") { dispatched++; throw new Error("Stop after the first dispatch"); }
+    if (new URL(String(url)).pathname.endsWith("/agents")) return Response.json({ agents: [{ slug: "test", supports_tools: true }] });
+    // The first controller attempt exhausts the three quick discovery tries.
+    if (++nativeGets <= 4) return Response.json({ error: { code: "upstream_error" } }, { status: 503 });
+    return Response.json({ data: [{ id: "test", native_reasoning: { transport_version: 1, parameters: ["reasoning_effort"] } }] });
+  };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: selected, docdex: false, permissions: "plan", effort: "high",
+    onEvent: event => { events.push(event); } });
+  await assert.rejects(controller.run("Plan a small source change using native reasoning."));
+  assert.equal(dispatched >= 1, true);
+  const recoveries = events.filter(event => event.type === "model_recovery");
+  assert.equal(recoveries.length >= 1, true);
+  assert.equal(recoveries[0].data.code, "service_unavailable");
+  assert.equal(events.filter(event => event.type === "model_preflight_failed").length, 1);
+});
