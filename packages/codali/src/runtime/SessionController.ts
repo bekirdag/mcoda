@@ -1299,7 +1299,7 @@ export class SessionController {
       this.previousSnapshot = next;
       await this.emit("files_touched", { paths: [...this.touched] });
     }
-    if (result.ok && tool.name === "read_file" && typeof data.path === "string") this.observed.set(typeof argsObject(result.data).path === "string" ? String(argsObject(result.data).path) : path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.path)), hash(result.output));
+    if (result.ok && tool.name === "read_file" && typeof data.path === "string") this.observed.set((typeof argsObject(result.data).path === "string" ? String(argsObject(result.data).path) : path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.path))).split(path.sep).join("/"), hash(result.output));
     if (tool.name === "delegate_coding" || tool.name === "delegate_frontend") {
       // A failed request also counts: the lead must not be stuck when a specialist is down.
       const target = typeof data.targetPath === "string" ? path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.targetPath)).split(path.sep).join("/") : undefined;
@@ -1311,7 +1311,9 @@ export class SessionController {
     }
     const creating = this.pendingCreation; this.pendingCreation = undefined;
     if (result.ok && !workspaceConflict && tool.name === "write_file") {
-      const written = argsObject(result.data);
+      const written = { ...argsObject(result.data) };
+      // Tool results carry platform separators; session bookkeeping is keyed by POSIX-relative paths.
+      if (typeof written.path === "string") written.path = written.path.split(path.sep).join("/");
       const owner = this.state?.tasks.find(task => task.status === "running");
       if (creating && creating === written.path && owner) this.created.set(creating, owner.id);
       // The model already supplied these exact bytes. Retain that observation,

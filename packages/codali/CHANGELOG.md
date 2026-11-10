@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Windows: a file the session just wrote or read is recognised on the next
+  edit; the record was keyed with backslashes and never matched, so every
+  revision demanded a fresh read.
 - Wait out a temporary model-service outage before the first dispatch (up to
   about four minutes) instead of ending the turn after one second.
 - Shell scratch ($TMPDIR) persists between calls in a session; grep is allowed.
