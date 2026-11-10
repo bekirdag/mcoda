@@ -34,6 +34,7 @@ test("specialists reject invalid capsules and unexecuted model tool calls", asyn
 
 test("frontend screenshot respects workspace and read policy, strips no image from request", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "codali-specialist-outside-"));
   let request: ProviderRequest | undefined;
   const [tool] = createSpecialistTools({ frontend: {} }, () => ({ name: "vision", generate: async input => {
     request = input; return { message: { role: "assistant", content: "layout draft" } };
@@ -43,7 +44,8 @@ test("frontend screenshot respects workspace and read policy, strips no image fr
     await fs.writeFile(path.join(root, "shot.png"), png);
     await assert.rejects(() => tool.handler({ ...capsule, screenshot: "shot.png" }, { workspaceRoot: root, checkPath: async () => { throw new Error("denied"); } }), /denied/);
     assert.equal(request, undefined);
-    await fs.symlink("/etc/hosts", path.join(root, "escape.png"));
+    await fs.writeFile(path.join(outside, "hosts"), "outside the workspace");
+    await fs.symlink(path.join(outside, "hosts"), path.join(root, "escape.png"));
     await assert.rejects(() => tool.handler({ ...capsule, screenshot: "escape.png" }, { workspaceRoot: root }), /inside workspace/);
     await tool.handler({ ...capsule, screenshot: "shot.png" }, { workspaceRoot: root });
     assert.ok(request!.messages[1].images?.[0].dataUrl.startsWith("data:image/png;base64,"));
@@ -51,5 +53,5 @@ test("frontend screenshot respects workspace and read policy, strips no image fr
     assert.equal(estimateProviderInputTokens(request!) - estimateProviderInputTokens(textOnly), 8192);
     png.writeUInt32BE(4000, 16); await fs.writeFile(path.join(root, "shot.png"), png);
     await assert.rejects(() => tool.handler({ ...capsule, screenshot: "shot.png" }, { workspaceRoot: root }), /dimensions/);
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
+  } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(outside, { recursive: true, force: true }); }
 });

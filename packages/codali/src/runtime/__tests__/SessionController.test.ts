@@ -204,6 +204,7 @@ test("claimed directory bootstrap enables narrow shell mounts without widening t
     }
   } };
   controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
   await assert.rejects(controller.run("Create the build/cache directory and put a result there."), /cancel/i);
 });
 

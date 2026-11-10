@@ -10,7 +10,14 @@ export async function assertRegularStateFile(file: string): Promise<void> {
       if (stat.nlink === 1) return;
       // An atomic rename may unlink the old inode while the asynchronous stat
       // is completing. Validate the new named file; never accept the old one.
-    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      // Windows reports a file that another process is deleting (e.g. a SQLite
+      // journal) as EPERM/EBUSY until the delete completes; look again.
+      if (process.platform !== "win32" || (code !== "EPERM" && code !== "EBUSY") || attempt === 7) throw error;
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
   }
   throw new Error(`Session state file changed during validation: ${path.basename(file)}`);
 }

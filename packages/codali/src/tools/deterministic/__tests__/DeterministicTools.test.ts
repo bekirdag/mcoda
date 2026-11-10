@@ -103,7 +103,7 @@ test("DuckDB expected rows distinguish execution from exact example validation",
   assert.match(nullRow.validation.scope, /provided examples only/);
 });
 
-test("SQL row binding is independent of JSON object key order and rejects ambiguity", async () => {
+test("SQL row binding is independent of JSON object key order and rejects ambiguity", options, async () => {
   const sql = 'SELECT first, second FROM sample';
   const columns = { second: 'DOUBLE', first: 'DOUBLE' };
   for (const table of [

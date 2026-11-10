@@ -11,6 +11,11 @@
   requested section. Turkish grounding rules.
 - Pin playwright/playwright-core 1.64.1 workspace-wide; a fresh resolution
   pulled 1.65.0 through browser-use and broke the browser worker types.
+- Windows: non-Git workspace inventories use POSIX-relative keys, so nested
+  writes inside a claimed directory are no longer reported as out-of-scope
+  changes; session state validation waits out files another process is deleting.
+- Tests that need the isolated executor skip where it is unavailable, and the
+  screenshot escape test no longer depends on /etc/hosts.
 
 - Size retained execution history by the configured lead context rather than a
   fixed message count; resolve localhost in offline Linux tool sandboxes.
