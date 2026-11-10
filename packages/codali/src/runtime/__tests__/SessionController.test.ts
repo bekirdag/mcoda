@@ -2219,10 +2219,10 @@ test("a specialist draft is saved by draftId, a large direct write is accepted, 
         case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["src"] });
         case 1: return call("write_file", { path: "src/direct.js", content: big });
         case 2:
-          assert.match(prior(), /Wrote src\/direct\.js/);
+          assert.match(prior(), /Wrote src[\\/]direct\.js/);
           return call("write_file", { path: "src/small.js", content: "export const small = 1;\n" });
         case 3:
-          assert.match(prior(), /Wrote src\/small\.js/);
+          assert.match(prior(), /Wrote src[\\/]small\.js/);
           return call("delegate_coding", { instruction: "Draft the module", context: "No dependencies", acceptance: "Exports value", targetPath: "src/big.js" });
         case 4:
           draftId = /"draftId":"([a-f0-9-]{36})"/.exec(prior())?.[1] ?? ""; assert.ok(draftId);
@@ -2231,12 +2231,12 @@ test("a specialist draft is saved by draftId, a large direct write is accepted, 
           assert.match(prior(), /requested for src\/big\.js/);
           return call("write_file", { path: "src/big.js", draftId });
         case 6:
-          assert.match(prior(), /Wrote src\/big\.js/);
+          assert.match(prior(), /Wrote src[\\/]big\.js/);
           assert.equal(await fs.readFile(path.join(root, "src/big.js"), "utf8"), big);
           // No read or prepare_edit since creation: the session's own new file is patched directly.
           return call("write_file", { path: "src/big.js", search: "// drafted module", content: "// revised module" });
         default:
-          assert.match(prior(), /Patched src\/big\.js/);
+          assert.match(prior(), /Patched src[\\/]big\.js/);
           controller.cancel(); request.signal?.throwIfAborted(); throw Error("cancelled");
       }
     } } });
