@@ -89,7 +89,7 @@ const RECENCY_QUESTION =
   /\b(?:when (?:did|was|has).{0,40}\b(?:last|most recently)\b|how recently|what(?:'s| is) the (?:newest|latest))/i;
 
 /**
- * Turkish forms of the anchors above; OKACAM's product language is Turkish.
+ * Turkish forms of the anchors above, for Turkish-language deployments.
  *
  * Matched against Turkish-lowercased text, since the `i` flag folds neither
  * I/ı nor İ/i correctly. JavaScript's `\b` is ASCII-only and cannot bound a word
