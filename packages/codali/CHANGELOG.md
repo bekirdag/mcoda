@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Reserve output for history sizing the same way as provider compression, so a
+  large output ceiling no longer leaves a few thousand tokens of history and
+  each file read evicts the last. Re-reading an evicted result is no longer a
+  stall; a 5x backstop still ends a read loop.
+- Consistency audit for long reasoned answers. Research audit prefers vendor
+  release notes over stale aggregators, checks unexecuted code and fills every
+  requested section. Turkish grounding rules.
+- Pin playwright/playwright-core 1.64.1 workspace-wide; a fresh resolution
+  pulled 1.65.0 through browser-use and broke the browser worker types.
+
 - Size retained execution history by the configured lead context rather than a
   fixed message count; resolve localhost in offline Linux tool sandboxes.
 - Preserve original task inputs and recoverable execution history across trimming,
