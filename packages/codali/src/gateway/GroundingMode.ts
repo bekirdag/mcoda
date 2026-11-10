@@ -88,10 +88,38 @@ const FRESHNESS_NOUNS =
 const RECENCY_QUESTION =
   /\b(?:when (?:did|was|has).{0,40}\b(?:last|most recently)\b|how recently|what(?:'s| is) the (?:newest|latest))/i;
 
+/**
+ * Turkish forms of the anchors above; OKACAM's product language is Turkish.
+ *
+ * Matched against Turkish-lowercased text, since the `i` flag folds neither
+ * I/ı nor İ/i correctly. JavaScript's `\b` is ASCII-only and cannot bound a word
+ * starting with ş or ü, so these use a Unicode lookbehind and leave the end open:
+ * Turkish carries case and possession in suffixes ("bugünkü", "projedeki").
+ */
+const TR_WORD = "(?<![\\p{L}\\p{N}])";
+const TR_CONTEXT_NOUNS = new RegExp(`${TR_WORD}(?:bu depo|bu proje|bu kod|kod taban|depodaki|projedeki)`, "u");
+const TR_POSSESSIVE = new RegExp(
+  `${TR_WORD}(?:benim|bizim|bana (?:atanan|ait)|bize (?:atanan|ait)|elimdeki|hesabım|takvimim)` +
+    // Plural plus first-person possessive: faturalarım, görevlerimiz.
+    `|\\p{L}{2,}l[ae]r[ıiuü]m(?:[ıiuü]z)?(?![\\p{L}\\p{N}])`,
+  "u",
+);
+const TR_FRESHNESS = new RegExp(
+  `${TR_WORD}(?:bugün|dün|şu an|şuan|şimdi|güncel|en son|son durum|bu (?:hafta|ay|yıl)|geçen (?:hafta|ay|yıl)|hava durumu|döviz kuru|hisse fiyat)`,
+  "u",
+);
+/** Turkish is verb-final, so the request verb is found at the end, not the start. */
+const TR_GENERATION_CLOSERS = new RegExp(
+  `${TR_WORD}(?:yaz|oluştur|üret|hazırla|tasarla|çiz)(?:y?[ıiuü]n(?:[ıiuü]z)?|y?[ae]bilir|[ıiuü]r|[ae]r)?(?:\\s+m[ıiuü]s[ıiuü]n(?:[ıiuü]z)?)?\\s*[.!?]*\\s*$`,
+  "u",
+);
+const turkishLowered = (query: string): string => query.toLocaleLowerCase("tr");
+
 export const decideGroundingMode = (
   input: GroundingDecisionInput,
 ): GroundingDecision => {
   const query = input.query ?? "";
+  const lowered = turkishLowered(query);
   const classifier = input.classifier;
 
   // Never answer about someone's own data from memory, whatever the phrasing.
@@ -101,14 +129,15 @@ export const decideGroundingMode = (
   if (classifier.needsAppTools) {
     return { mode: "grounded", reason: "request needs product tools" };
   }
-  if (CONTEXT_NOUNS.test(query)) {
+  if (CONTEXT_NOUNS.test(query) || TR_CONTEXT_NOUNS.test(lowered)) {
     return { mode: "grounded", reason: "request names something in the workspace" };
   }
-  if (POSSESSIVE.test(query)) {
+  if (POSSESSIVE.test(query) || TR_POSSESSIVE.test(lowered)) {
     return { mode: "grounded", reason: "request is about the user's own data" };
   }
   if (
     FRESHNESS_NOUNS.test(query) ||
+    TR_FRESHNESS.test(lowered) ||
     RECENCY_QUESTION.test(query) ||
     classifier.needsFreshData
   ) {
@@ -117,7 +146,7 @@ export const decideGroundingMode = (
 
   // A generation request with no workspace or freshness anchor has nothing to
   // retrieve. Checked after the anchors above so they always win.
-  if (GENERATION_OPENERS.test(query)) {
+  if (GENERATION_OPENERS.test(query) || TR_GENERATION_CLOSERS.test(lowered)) {
     return { mode: "open", reason: "generation request with nothing to retrieve" };
   }
 
@@ -191,4 +220,5 @@ export const requestTouchesOwnData = (
   classifier.needsPrivateData === true ||
   classifier.needsAppTools === true ||
   POSSESSIVE.test(query ?? "") ||
+  TR_POSSESSIVE.test(turkishLowered(query ?? "")) ||
   OWNED_SYSTEM_NOUNS.test(query ?? "");

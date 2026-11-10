@@ -5,7 +5,7 @@ import { randomUUID,createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { validateRuntime } from './generalization-freeze.mjs';
 import { validateWorkflowCase } from './trust-workflow-protocol.mjs';
-import { waitForModelRoute } from './model-route-wait.mjs';
+import { probeModelDispatch, waitForModelRoute } from './model-route-wait.mjs';
 import { validateStudyShape, studyLabels } from './study-shape.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -72,7 +72,7 @@ try{
       const {ConfiguredProvider}=await import(pathToFileURL(path.join(arm.runtime,'dist/providers/ConfiguredProvider.js')));
       await waitForModelRoute({
         probe: signal => Promise.all(['lead', ...(label === 'raw_tools' ? [] : ['coding','frontend'].filter(binding => resolved.config.bindings[binding] && resolved.config.bindings[binding].enabled !== false))]
-          .map(binding => new ConfiguredProvider(resolved,binding).select('chat.completions',signal))),
+          .map(binding => probeModelDispatch(new ConfiguredProvider(resolved,binding),signal))),
         signal: abort.signal,
         sleep: (ms,signal) => sleep(ms,undefined,{signal}),
         onState: async state => {const event={...state,key,at:new Date().toISOString()};await append(event);console.log(JSON.stringify(event));},

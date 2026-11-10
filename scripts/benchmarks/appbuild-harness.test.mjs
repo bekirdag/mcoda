@@ -4,12 +4,35 @@ import {promises as fs} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {snapshotWorkflowWorkspace,provisionAppWorkspace} from './appbuild-workspace.mjs';
-import {createWorkflowTools,runRawWorkflow} from './appbuild-tools.mjs';
+import {createWorkflowTools,runRawWorkflow,RAW_FINAL_ANSWER_NOTICE,finalAnswerReserveMs,generateWithRetry} from './appbuild-tools.mjs';
 import {estimateContextTokens} from '../../packages/codali/dist/runtime/ContextCompression.js';
 import {createIsolatedExecutor,executorStatus} from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import {readWorkflowCorpus} from './trust-workflow-protocol.mjs';
 import {connectBenchmarkDocdex} from './shared-docdex.mjs';
 import {DocdexClient} from '../../packages/codali/dist/docdex/DocdexClient.js';
+test('raw arm gets one tool-free final turn near the deadline',async()=>{
+ const limits={maxSteps:5,maxToolCalls:5,maxOutputTokens:512,timeoutMs:1800000};
+ assert.equal(finalAnswerReserveMs(1800000),180000);
+ assert.equal(finalAnswerReserveMs(86400000),300000);
+ const toolCall={message:{role:'assistant',content:''},toolCalls:[{id:'a',name:'read_file',args:{}}]};
+ let clock=0;const requests=[];
+ const result=await runRawWorkflow({messages:[{role:'user',content:'Research'}],limits,contextWindow:65536,deadlineAt:1800000,now:()=>clock,
+  tools:{schemas:()=>[{name:'read_file',description:'',inputSchema:{type:'object'}}],execute:async()=>{clock=1650000;return {ok:true,output:'notes'};}},
+  provider:{generate:async request=>{requests.push({tools:request.tools,last:request.messages.at(-1).content});return requests.length===1?toolCall:{message:{role:'assistant',content:'Best answer so far'}};}}});
+ assert.equal(requests.length,2);
+ assert.ok(requests[0].tools.length>0);
+ assert.equal(requests[1].tools.length,0);
+ assert.equal(requests[1].last,RAW_FINAL_ANSWER_NOTICE);
+ assert.equal(result.content,'Best answer so far');
+ assert.equal(result.finalizedAtDeadline,true);
+});
+test('raw arm without a deadline keeps its existing loop',async()=>{
+ let calls=0;
+ const result=await runRawWorkflow({messages:[{role:'user',content:'Q'}],limits:{maxSteps:2,maxToolCalls:1,maxOutputTokens:512},contextWindow:65536,
+  tools:{schemas:()=>[],execute:async()=>assert.fail('no tools expected')},
+  provider:{generate:async()=>{calls++;return {message:{role:'assistant',content:'A'}};}}});
+ assert.equal(calls,1);assert.equal(result.finalizedAtDeadline,undefined);
+});
 test('new raw tool results retain their full tail before inference compression',async()=>{
  const output='prefix '+ 'x'.repeat(20000)+' REQUIRED TAIL';
  let calls=0;
@@ -83,4 +106,24 @@ test('raw loop has actual write and shell tools behind progressive discovery',as
  const t=await createWorkflowTools({workspace:root,execution:{effort:'low',deadlineMs:10000,writes:true,web:true,media:false},resolved:{config:{}},startDocdex:async()=>{throw Error('not needed');}});
  assert.ok(t.registry.list().some(x=>x.name==='write_file'));assert.ok(t.registry.list().some(x=>x.name==='run_shell'));assert.ok(t.schemas().some(x=>x.name==='tools_describe'));
  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+import {deadlineBoundResolved} from './appbuild-tools.mjs';
+test('the controller is told the attempt deadline without changing the frozen config',()=>{
+  const resolved={hash:'h',config:{interaction:{timeoutMs:86400000,maxModelCalls:9},bindings:{}}};
+  const bound=deadlineBoundResolved(resolved,1800000);
+  assert.equal(bound.config.interaction.timeoutMs,1800000); assert.equal(bound.config.interaction.maxModelCalls,9); assert.equal(bound.hash,'h');
+  assert.equal(resolved.config.interaction.timeoutMs,86400000);
+  assert.equal(deadlineBoundResolved(resolved,172800000).config.interaction.timeoutMs,86400000);
+});
+
+test('raw arm retries a malformed model reply with the same request, at most twice', async () => {
+ const fail=code=>Object.assign(Error(code),{code});const seen=[];const retries=[];
+ let n=0;const provider={generate:async request=>{seen.push(request);if(n++<2)throw fail('invalid_response');return {message:{role:'assistant',content:'ok'}};}};
+ const request={messages:[{role:'user',content:'Q'}]};
+ const response=await generateWithRetry(provider,request,{wait:async()=>{},onRetry:r=>retries.push(r)});
+ assert.equal(response.message.content,'ok');assert.equal(seen.length,3);
+ assert.ok(seen.every(r=>r===request),'retry must not add guidance');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
+ let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('invalid_response');}},request,{wait:async()=>{}}),/invalid_response/);assert.equal(m,3);
+ let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw fail('invalid_request');}},request,{wait:async()=>{}}),/invalid_request/);assert.equal(k,1);
 });

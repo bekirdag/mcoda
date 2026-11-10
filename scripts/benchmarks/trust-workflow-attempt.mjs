@@ -105,7 +105,7 @@ try{
         if(arm==='raw_direct'){
           const response=await provider.generate({messages,maxTokens:limits.maxOutputTokens,temperature:0,signal:abort.signal});output=response.message.content;messages.push(response.message);
         }else{
-          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,signal:abort.signal});output=answer.content;messages=answer.messages;
+          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,onRetry:retry=>emit('raw_model_retry',retry),signal:abort.signal});output=answer.content;messages=answer.messages;
         }
         await fs.mkdir(storage,{recursive:true,mode:0o700});await fs.writeFile(path.join(storage,'raw-transcript.json'),JSON.stringify(messages),{mode:0o600});
       }

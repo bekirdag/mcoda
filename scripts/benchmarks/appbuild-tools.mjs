@@ -117,13 +117,55 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
   };
 }
 
+/** The attempt deadline is enforced from outside the controller, so tell the
+ * controller too; otherwise its time-based finalizer works from the longer config
+ * limit and it runs into the deadline with nothing delivered. */
+export const deadlineBoundResolved = (resolved, deadlineMs) => ({ ...resolved, config: { ...resolved.config,
+  interaction: { ...resolved.config.interaction, timeoutMs: Math.min(resolved.config.interaction?.timeoutMs ?? deadlineMs, deadlineMs) } } });
+
+export const RAW_FINAL_ANSWER_NOTICE = 'The time limit is almost up. Stop using tools and give your final answer now from what you already have. Say what you could not finish or verify.';
+export const finalAnswerReserveMs = deadlineMs => Math.min(300000, Math.ceil(deadlineMs * 0.1));
+
 /** Native raw-model loop, without automatic answer repair or Codali's planning policy.
  * Model hooks own aggregate token/embedding reservations; caller supplies the same
- * frozen budget as the candidate and retains every request/response/error. */
-export async function runRawWorkflow({ provider, tools, messages, limits, contextWindow = 32768, signal, onResponse = () => {} }) {
+ * frozen budget as the candidate and retains every request/response/error.
+ * With deadlineAt, one tool-free turn near the deadline lets the raw arm deliver
+ * what it has, since Codali also knows its deadline. It is not answer repair: the
+ * reply is returned as given. */
+/** Model-service failures a plain agent loop retries. Codali retries these too;
+ * without it one malformed reply ended a raw app build after three hours. */
+export const RAW_RETRYABLE_MODEL_CODES = new Set(['invalid_response', 'service_unavailable', 'rate_limited']);
+export const RAW_MODEL_RETRIES = 2;
+
+/** The same request again, unchanged: no added guidance, so it is not answer repair. */
+export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {} } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await provider.generate(request); }
+    catch (error) {
+      if (attempt >= RAW_MODEL_RETRIES || !RAW_RETRYABLE_MODEL_CODES.has(error?.code) || signal?.aborted) throw error;
+      await onRetry({ attempt: attempt + 1, code: error.code });
+      await wait(attempt === 0 ? 500 : 2000);
+    }
+  }
+}
+
+export async function runRawWorkflow({ provider, tools, messages, limits, contextWindow = 32768, signal, onResponse = () => {}, onRetry, wait, deadlineAt, now = Date.now }) {
   const transcript = structuredClone(messages); let toolCalls = 0;
+  const finalAt = deadlineAt === undefined ? Infinity : deadlineAt - finalAnswerReserveMs(limits.timeoutMs);
   for (let step = 0; step < limits.maxSteps; step++) {
     signal?.throwIfAborted();
+    if (now() >= finalAt) {
+      transcript.push({ role: 'user', content: RAW_FINAL_ANSWER_NOTICE });
+      const compressed=compressProviderContext({messages:transcript,tools:[],maxTokens:limits.maxOutputTokens,temperature:0,signal},contextWindow,limits.maxOutputTokens);
+      if(compressed.archived.length){
+        if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
+        await tools.rememberContext(compressed.archived);
+      }
+      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait });
+      await onResponse(response);
+      transcript.push(response.message);
+      return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript, finalizedAtDeadline: true };
+    }
     // Keep the complete transcript for restoration; compress only inference input.
     // Include archive schema before budgeting so recovery cannot overflow the window.
     if (tools.registry?.list().some(tool=>tool.name==='context_read'))tools.exposed.add('context_read');
@@ -132,7 +174,7 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
       if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
       await tools.rememberContext(compressed.archived);
     }
-    const response = await provider.generate(compressed.request);
+    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait });
     await onResponse(response);
     const calls = response.toolCalls ?? response.message.toolCalls ?? [];
     if (!calls.length) {

@@ -534,7 +534,7 @@ test("repeated printed tool calls finish with a plain-text answer instead of fai
 });
 
 test("an investigation that stops learning is finalized from its evidence", async t => {
-  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 40 };
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 40, maxInspectionSteps: 40 };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     calls++;
@@ -1832,6 +1832,73 @@ test("substantial calculated answers receive one separately metered equation rev
   assert.match((await controller.interact(prompt)).content, /3 hours/);
   assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
   assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 1);
+});
+
+const longDesignDraft = "The reservation state machine moves from held to confirmed under a conditional update. ".repeat(40);
+const designPrompt = "Design a reservation service and specify its failure tests.";
+const consistencyConfig = () => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 5, maxTotalTokens: 64000 };
+  return config;
+};
+
+test("long reasoned answers receive one separately metered consistency audit", async t => {
+  const revised = `${longDesignDraft}Stale leaders are fenced by a per-shard epoch.`;
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(longDesignDraft);
+    assert.equal(request.toolChoice, "none");
+    const packet = JSON.parse(request.messages[1].content);
+    assert.equal(packet.request, designPrompt); assert.equal(packet.draft, longDesignDraft);
+    assert.match(request.messages[0].content, /Internal consistency audit/);
+    return reply(revised);
+  } }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, revised);
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().modelCalls, 2);
+  assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
+});
+
+test("short answers skip the consistency audit", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; return reply("Use a conditional update."); } }, consistencyConfig());
+  assert.match((await controller.interact("How do I avoid oversell?")).content, /conditional update/);
+  assert.equal(calls, 1);
+  assert.equal(events.filter(e => e.type.startsWith("consistency_answer_audit")).length, 0);
+});
+
+test("code-only answers skip the consistency audit however long they are", async t => {
+  const code = `\`\`\`python\n${"value = 1\n".repeat(800)}\`\`\``;
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; return reply(code); } }, consistencyConfig());
+  await controller.interact("Show the module.");
+  assert.equal(events.filter(e => e.type.startsWith("consistency_answer_audit")).length, 0);
+  assert.ok(calls >= 1);
+});
+
+for (const [name, audited, reason] of [["a truncated rewrite", "Too short.", "shrank"], ["an empty rewrite", "", "empty"]] as const) test(`the consistency audit keeps the draft after ${name}`, async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1 ? reply(longDesignDraft) : reply(audited) }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(events.find(e => e.type === "consistency_answer_audit_rejected")?.data.reason, reason);
+});
+
+test("a failed consistency audit returns the draft", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return reply(longDesignDraft);
+    throw new Error("audit unavailable");
+  } }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(events.filter(e => e.type === "consistency_answer_audit_failed").length, 1);
+});
+
+test("the consistency audit is skipped when the shared budget cannot cover it", async t => {
+  const config = consistencyConfig(); config.interaction = { ...config.interaction, maxModelCalls: 1 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; return reply(longDesignDraft); } }, config);
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(calls, 1);
+  assert.equal(events.find(e => e.type === "consistency_answer_audit_skipped")?.data.reason, "remaining_shared_budget");
 });
 
 for (const persistent of [false, true]) test(`failed tool batches ${persistent ? 'halt after repeated feedback' : 'allow a corrected response'}`, async t => {

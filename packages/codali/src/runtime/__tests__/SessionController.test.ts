@@ -1267,6 +1267,33 @@ for (const permissions of ["plan", "workspace"] as const) test(`unchanged succes
   assert.equal(await fs.readFile(path.join(root, "notes.txt"), "utf8"), "Original notes\n");
 });
 
+for (const endless of [false, true]) test(`re-reading files that compaction evicted is recovery${endless ? ", bounded by a backstop" : ""}`, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evicted-read-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-evicted-read-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  // Each file is larger than half the history budget, so reading one evicts the other.
+  for (const name of ["a.txt", "b.txt"]) await fs.writeFile(path.join(root, name), `${name}\n${"evidence line\n".repeat(1100)}`);
+  const events: SessionEvent[] = []; let calls = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    calls++;
+    if (!endless && calls > 16) return reply("Plan: both files inspected.");
+    return call("read_file", { path: calls % 2 ? "a.txt" : "b.txt" });
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false,
+    permissions: "plan", effort: "high", onEvent: event => { events.push(event); } });
+  const outcome = await controller.run("Inspect both files and prepare a plan.").then(() => undefined, (error: unknown) => error);
+  assert.ok(events.some(event => event.type === "progress_reread_after_eviction"));
+  if (endless) {
+    // threshold 3: the backstop ends the loop at the 15th read of one file.
+    assert.match(String(outcome), /Repeated read_file.*checkpoint retained/);
+    assert.ok(calls >= 29 && calls <= 31, `calls=${calls}`);
+  } else {
+    assert.doesNotMatch(String(outcome ?? ""), /Repeated read_file/);
+    assert.ok(calls > 16);
+  }
+});
+
 test("a rejected validation retry preserves the last executed failure in model context", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-rejection-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-validation-rejection-state-"));

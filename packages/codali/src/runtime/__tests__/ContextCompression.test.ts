@@ -9,7 +9,7 @@ test("required input can borrow unused output allowance without changing input",
   assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 4096);
   assert.equal(request.maxTokens, 2048);
 });
-import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, fitOutputBudget } from "../ContextCompression.js";
+import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, executionHistoryBudget, fitOutputBudget, resultStillVisible } from "../ContextCompression.js";
 import type { ProviderMessage, ProviderRequest } from "../../providers/ProviderTypes.js";
 
 test("history indices stay bounded and retrievable across long sessions", () => {
@@ -212,4 +212,19 @@ test("folding keeps recent markers and a readable inventory of what already ran"
   assert.match(parsed.inventory.at(-1)!.result, /opened page/);
   assert.ok(result.archived.some(entry => entry.sha256 === parsed.sha256));
   assert.ok(result.request.messages.filter(message => message.name === "completed_tool_history").length >= 8, "recent markers remain individually visible");
+});
+
+test("execution history keeps a usable share of a window with a large output ceiling", () => {
+  // 65k window with a 40k output ceiling used to leave 6k tokens of history.
+  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - Math.floor(65536 * 0.3)) / 4));
+  assert.equal(executionHistoryBudget(32768, 2048), (32768 - 2048) / 4);
+});
+
+test("an abbreviated or evicted tool result is not still visible", () => {
+  const output = "source line\n".repeat(400);
+  assert.equal(resultStillVisible(output, [output]), true);
+  assert.equal(resultStillVisible(output, [`${output}\n\n[Tool metadata: invocation receipt ID x; receiptRef=y]`]), true);
+  assert.equal(resultStillVisible(output, []), false);
+  assert.equal(resultStillVisible(output, [`[Earlier tool content abbreviated. Full saved source: abc]\n${output.slice(0, 1000)}`]), false);
+  assert.equal(resultStillVisible("", [""]), false);
 });

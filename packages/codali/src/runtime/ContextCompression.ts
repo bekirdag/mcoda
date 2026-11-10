@@ -112,6 +112,24 @@ export const compressConversation = (messages: ProviderMessage[], targetChars: n
 };
 
 const OUTPUT_RESERVE_SHARE = 0.3;
+
+/** Token budget for retained execution history. It reserves output the same way
+ * as compressProviderContext: subtracting the full 40k ceiling of a 65k model
+ * left 6k tokens of history, so each file read evicted the previous one, the
+ * model re-read what it had lost, and the repeat guard ended a 24-hour app build
+ * after 19 minutes. */
+const ABBREVIATION_MARKER = "[Earlier ";
+
+/** Whether an identical earlier tool result is still in front of the model,
+ * unabbreviated. An abbreviated copy keeps the head, so it is recognised by the
+ * marker `shorten` prepends rather than by its text. */
+export const resultStillVisible = (output: string, visible: readonly string[]): boolean => {
+  const probe = output.slice(0, 300);
+  return probe.length > 0 && visible.some(content => content.includes(probe) && !content.startsWith(ABBREVIATION_MARKER));
+};
+
+export const executionHistoryBudget = (contextWindow: number, maxOutputTokens: number): number =>
+  Math.max(1, Math.floor((contextWindow - Math.min(maxOutputTokens, Math.floor(contextWindow * OUTPUT_RESERVE_SHARE))) / 4));
 const KEPT_HISTORY_MARKERS = 8;
 const INVENTORY_ENTRIES = 40;
 

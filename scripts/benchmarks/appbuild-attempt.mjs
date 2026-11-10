@@ -12,7 +12,7 @@ import { loadOrchestrationConfig, resolveBinding } from '../../packages/codali/d
 import { argumentsMap, json, writeNew, hash } from './trust-common.mjs';
 import { provisionAppWorkspace, snapshotWorkflowWorkspace } from './appbuild-workspace.mjs';
 import { validateWorkflowCase, validateWorkflowConfig, workflowLimits, workflowAccounting, workflowTurns, sumWorkflowUsage, candidateWorkflowUsage } from './trust-workflow-protocol.mjs';
-import { createWorkflowTools, runRawWorkflow, workflowControllerOptions } from './appbuild-tools.mjs';
+import {deadlineBoundResolved,createWorkflowTools, runRawWorkflow, workflowControllerOptions} from './appbuild-tools.mjs';
 
 const args=argumentsMap(undefined,['request']);
 const request=await json(args.request), task=validateWorkflowCase(request.task);
@@ -36,7 +36,7 @@ let accounting=workflowAccounting(limits,emit);
 let controller,rawStore,rawTools,output='',error,mode,usage,completed,mediaJobs=[];
 const sessionIds=new Set();
 const accountingTypes=new Set(['model_intent','model_receipt','model_route','model_usage_reconciled','embedding_intent','embedding_receipt','tool_intent']);
-const makeController=()=>new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved,...workflowControllerOptions(task.execution),
+const makeController=()=>new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved:deadlineBoundResolved(resolved,limits.timeoutMs),...workflowControllerOptions(task.execution),
   runContext:{mcpServers:[],httpConnectors:[]},onEvent:event=>{if(accountingTypes.has(event.type))candidateEvents.push({type:event.type,data:event.data});emit(event.type,event.data);}});
 const readMediaJobs=async()=>{
   const jobs=[];
@@ -105,7 +105,7 @@ try{
         if(arm==='raw_direct'){
           const response=await provider.generate({messages,maxTokens:limits.maxOutputTokens,temperature:0,signal:abort.signal});output=response.message.content;messages.push(response.message);
         }else{
-          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,contextWindow:Math.min(...resolveBinding(resolved.config,"lead","chat.completions").map(candidate=>candidate.model.contextWindow)),signal:abort.signal});output=answer.content;messages=answer.messages;
+          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,onRetry:retry=>emit('raw_model_retry',retry),contextWindow:Math.min(...resolveBinding(resolved.config,"lead","chat.completions").map(candidate=>candidate.model.contextWindow)),signal:abort.signal});output=answer.content;messages=answer.messages;
         }
         await fs.mkdir(storage,{recursive:true,mode:0o700});await fs.writeFile(path.join(storage,'raw-transcript.json'),JSON.stringify(messages),{mode:0o600});
       }

@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { waitForModelRoute } from './model-route-wait.mjs';
+import { probeModelDispatch, waitForModelRoute } from './model-route-wait.mjs';
+
+test('a refused dispatch keeps the study waiting even when discovery would pass', async () => {
+  const events=[]; let calls=0;
+  const provider={generate:async()=>{if(++calls<3)throw Error('HTTP 409: capacity_busy');return {message:{content:'READY'}};}};
+  const signal=new AbortController().signal;
+  await waitForModelRoute({signal,probe:s=>probeModelDispatch(provider,s),sleep:async()=>{},onState:async e=>events.push(e.type)});
+  assert.equal(calls,3);
+  assert.deepEqual(events,['model_route_wait','model_route_ready']);
+});
+test('dispatch probe is small and carries cancellation', async () => {
+  const controller=new AbortController(), reason=Error('cancelled');let request;
+  await probeModelDispatch({generate:async r=>{request=r;}},controller.signal);
+  assert.equal(request.maxTokens,64);
+  controller.abort(reason);
+  assert.equal(request.signal.aborted,true);
+  assert.equal(request.signal.reason,reason);
+});
 
 test('repeated unavailable discovery waits without creating an attempt', async () => {
   const events=[]; let calls=0, pauses=0;
