@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { runProcess } from "./AsyncProcess.js";
 import { resolveShellWorkingDirectory } from "./ShellWorkingDirectory.js";
 import { ToolExecutionError, type ToolContext, type ToolHandlerResult } from "../ToolTypes.js";
-import { discoverHostToolchain, extraRuntimeMounts, type HostRuntime } from "./HostToolchain.js";
+import { discoverHostToolchain, extraRuntimeMounts, venvInterpreter, type HostRuntime } from "./HostToolchain.js";
 
 export interface ExecutorStatus { available: boolean; backend: "bubblewrap" | "sandbox-exec" | "unavailable"; reason?: string; }
 
@@ -134,6 +134,10 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         || root.startsWith(`${real}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Runtime mount must be a dedicated installed library directory");
       return real;
     }))];
+    for (const [index, venv] of runtimeRoots.entries()) {
+      const interpreter = venvInterpreter(venv, root);
+      if (interpreter && !runtimes.some(runtime => runtime.executable === interpreter.executable)) runtimes.push({ ...interpreter, name: `python-runtime-${index}` });
+    }
     const writePaths = (context.allowedWritePaths ?? ["."]).map(file => {
       const requested = path.resolve(root, file);
       if (requested !== root && !requested.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope escapes workspace");

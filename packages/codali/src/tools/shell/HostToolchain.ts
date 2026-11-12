@@ -1,4 +1,4 @@
-import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -230,6 +230,28 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
     }
   }
   return result;
+};
+
+/** The interpreter a trusted virtual environment was created from. A venv is
+ * only links to it, so a venv whose interpreter is not on the current PATH
+ * (installed from another shell, or by a setup step) was a dangling link in
+ * the sandbox and every tool using it failed with "No such file". */
+export const venvInterpreter = (venvRoot: string, workspaceRoot: string): HostRuntime | undefined => {
+  try {
+    const workspace = realpathSync.native(workspaceRoot), home = realpathSync.native(os.homedir()), venv = realpathSync.native(venvRoot);
+    if (!existsSync(path.join(venv, "pyvenv.cfg"))) return undefined;
+    const entry = path.join(venv, "bin", "python"), executable = realpathSync.native(entry);
+    if (within(executable, venv) || within(executable, workspace) || systemPath(executable)) return undefined;
+    accessSync(executable, constants.X_OK);
+    const runtime = languageRuntime("python3", executable, workspace, home);
+    if (!runtime) return undefined;
+    // Recreate the links between the venv and the real binary (bin/python3 -> python3.12).
+    for (let hop = entry, steps = 0; steps < 8 && lstatSync(hop).isSymbolicLink(); steps++) {
+      hop = path.resolve(path.dirname(hop), readlinkSync(hop));
+      if (hop !== executable && !within(hop, venv) && !within(hop, workspace) && realpathSync.native(hop) === executable) runtime.support!.push({ readOnlyRoot: hop, directory: false, linkTo: executable });
+    }
+    return runtime;
+  } catch { return undefined; }
 };
 
 export const extraRuntimeMounts = (runtimes: HostRuntime[]): HostRuntimeMount[] => {
