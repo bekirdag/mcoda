@@ -36,7 +36,7 @@ let accounting=workflowAccounting(limits,emit);
 let controller,rawStore,rawTools,output='',error,mode,usage,completed,mediaJobs=[];
 const sessionIds=new Set();
 const accountingTypes=new Set(['model_intent','model_receipt','model_route','model_usage_reconciled','embedding_intent','embedding_receipt','tool_intent']);
-const makeController=()=>new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved:deadlineBoundResolved(resolved,limits.timeoutMs),...workflowControllerOptions(task.execution),
+const makeController=()=>new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved:deadlineBoundResolved(resolved,limits.timeoutMs),deadlineAt,...workflowControllerOptions(task.execution),
   runContext:{mcpServers:[],httpConnectors:[]},onEvent:event=>{if(accountingTypes.has(event.type))candidateEvents.push({type:event.type,data:event.data});emit(event.type,event.data);}});
 const readMediaJobs=async()=>{
   const jobs=[];
@@ -47,6 +47,7 @@ const readMediaJobs=async()=>{
   return jobs;
 };
 const abort=new AbortController(),started=Date.now();
+const deadlineAt=Date.now()+limits.timeoutMs;
 const timer=setTimeout(()=>{abort.abort(Error('Common workflow deadline exceeded'));controller?.cancel();},limits.timeoutMs);
 const stop=()=>{abort.abort(Error('Workflow attempt interrupted'));controller?.cancel();};process.once('SIGTERM',stop);process.once('SIGINT',stop);
 const result={schemaVersion:1,protocol:'trust-workflows-v1',attemptId,arm,caseId:task.id,domain:task.domain,family:task.family,split:task.split,comparison:task.comparison,configHash:resolved.hash,

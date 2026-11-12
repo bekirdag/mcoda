@@ -14,7 +14,7 @@ const fixture=()=>({id:'fixture.answer.01',domain:'fixture',family:'fixture.answ
 const config=baseUrl=>({schemaVersion:1,profile:'workflow-transport-fixture',providers:{local:{adapter:'openai-compatible',baseUrl}},models:{text:{provider:'local',catalogId:'fixture',revision:'fixture-v1',operations:['chat.completions'],contextWindow:32768,maxOutputTokens:2048,supportsTools:true}},bindings:{lead:{candidates:['text']}},interaction:{strategy:'adaptive',toolSelection:'progressive',initialTools:[],routerBinding:'lead',answerBinding:'lead',answerReview:{enabled:false}}});
 async function root(t){const value=await fs.mkdtemp(path.join(os.tmpdir(),'workflow-protocol-test-'));t.after(()=>fs.rm(value,{recursive:true,force:true}));return value;}
 async function corpus(directory,tasks){await fs.mkdir(directory,{recursive:true});const bytes=tasks.map(task=>JSON.stringify(task)+'\n').join('');await fs.writeFile(path.join(directory,'prompts.jsonl'),bytes);await fs.writeFile(path.join(directory,'manifest.json'),JSON.stringify({schemaVersion:1,protocol:'trust-workflows-v1',caseCount:tasks.length,promptsSha256:hash(bytes),limitations:['Deterministic test fixture, not a benchmark question.']}));}
-async function run(args){return await new Promise((resolve,reject)=>{const child=spawn(process.execPath,[fileURLToPath(new URL('./run-workflow-benchmark.mjs',import.meta.url)),...args],{stdio:['ignore','pipe','pipe']});let output='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>output+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,output}));});}
+async function run(args){return await new Promise((resolve,reject)=>{const child=spawn(process.execPath,[fileURLToPath(new URL('./run-workflow-benchmark.mjs',import.meta.url)),...args],{stdio:['ignore','pipe','pipe'],env:{...process.env,CODALI_MODEL_OUTAGE_WAIT_MS:'2500'}});let output='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>output+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,output}));});}
 
 test('public workflow fixtures accept verified binary/text data and reject hidden fields, unsafe paths, roles and corrupt bytes',()=>{
   const task=fixture();task.files={'input.txt':{encoding:'utf8',content:'42',sha256:hash('42')},'input.bin':{encoding:'base64',content:'AQID',sha256:hash(Buffer.from([1,2,3]))}};assert.equal(validateWorkflowCase(task),task);
@@ -132,7 +132,7 @@ test('a failed follow-up retains earlier answers and usage and never dispatches 
   for(const {result} of results){
     t.after(()=>fs.rm(result.runtimeArchive,{recursive:true,force:true}));assert.match(result.error,/502|fixture failure/);
     assert.equal(result.turns.length,2);assert.equal(result.turns[0].content,'first retained answer');assert.equal(result.turns[0].usage.tokens,10);assert.ok(result.turns[1].error);
-    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);// Codali waits out a transient 502 and resends the failing turn twice; the raw arms send it once.
+    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);// Codali waits out a transient 502 (here bounded to two resends by CODALI_MODEL_OUTAGE_WAIT_MS); the raw arms send it once.
     assert.equal(result.usage.modelCalls,result.arm==='codali_candidate'?4:2);
   }
   assert.ok(!seen.includes('must-never-dispatch'));const calls=seen.length;assert.equal((await run(args)).code,0);assert.equal(seen.length,calls);

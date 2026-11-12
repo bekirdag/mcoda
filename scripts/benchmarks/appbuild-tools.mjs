@@ -143,15 +143,21 @@ export const finalAnswerReserveMs = deadlineMs => Math.min(300000, Math.ceil(dea
  * without it one malformed reply ended a raw app build after three hours. */
 export const RAW_RETRYABLE_MODEL_CODES = new Set(['invalid_response', 'service_unavailable', 'rate_limited']);
 export const RAW_MODEL_RETRIES = 2;
+/** A temporary outage is waited out on the same schedule Codali uses, so
+ * neither arm loses a long build to a two-minute service restart. A malformed
+ * reply keeps the two quick retries. */
+export const RAW_OUTAGE_CODES = new Set(['service_unavailable', 'rate_limited']);
+export const RAW_OUTAGE_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_000, 60_000];
 
 /** The same request again, unchanged: no added guidance, so it is not answer repair. */
 export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {} } = {}) {
   for (let attempt = 0; ; attempt++) {
     try { return await provider.generate(request); }
     catch (error) {
-      if (attempt >= RAW_MODEL_RETRIES || !RAW_RETRYABLE_MODEL_CODES.has(error?.code) || signal?.aborted) throw error;
-      await onRetry({ attempt: attempt + 1, code: error.code });
-      await wait(attempt === 0 ? 500 : 2000);
+      const waits = RAW_OUTAGE_CODES.has(error?.code) ? RAW_OUTAGE_WAITS_MS : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES);
+      if (attempt >= waits.length || !RAW_RETRYABLE_MODEL_CODES.has(error?.code) || signal?.aborted) throw error;
+      await onRetry({ attempt: attempt + 1, code: error.code, waitMs: waits[attempt] });
+      await wait(waits[attempt]);
     }
   }
 }

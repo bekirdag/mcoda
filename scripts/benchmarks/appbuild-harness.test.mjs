@@ -4,7 +4,7 @@ import {promises as fs} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {snapshotWorkflowWorkspace,provisionAppWorkspace} from './appbuild-workspace.mjs';
-import {createWorkflowTools,runRawWorkflow,RAW_FINAL_ANSWER_NOTICE,finalAnswerReserveMs,generateWithRetry} from './appbuild-tools.mjs';
+import {createWorkflowTools,runRawWorkflow,RAW_FINAL_ANSWER_NOTICE,finalAnswerReserveMs,generateWithRetry,RAW_OUTAGE_WAITS_MS} from './appbuild-tools.mjs';
 import {estimateContextTokens} from '../../packages/codali/dist/runtime/ContextCompression.js';
 import {createIsolatedExecutor,executorStatus} from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import {readWorkflowCorpus} from './trust-workflow-protocol.mjs';
@@ -132,4 +132,13 @@ test('raw arm retries a malformed model reply with the same request, at most twi
  assert.ok(seen.every(r=>r===request),'retry must not add guidance');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
  let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('invalid_response');}},request,{wait:async()=>{}}),/invalid_response/);assert.equal(m,3);
  let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw fail('invalid_request');}},request,{wait:async()=>{}}),/invalid_request/);assert.equal(k,1);
+});
+
+test('raw arm waits out a temporary outage on the schedule Codali uses', async () => {
+ const fail=code=>Object.assign(Error(code),{code});const waits=[];const request={messages:[{role:'user',content:'Q'}]};
+ let n=0;const provider={generate:async()=>{if(n++<6)throw fail('service_unavailable');return {message:{role:'assistant',content:'ok'}};}};
+ const response=await generateWithRetry(provider,request,{wait:async ms=>{waits.push(ms);}});
+ assert.equal(response.message.content,'ok');assert.deepEqual(waits,RAW_OUTAGE_WAITS_MS.slice(0,6));
+ let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('service_unavailable');}},request,{wait:async()=>{}}),/service_unavailable/);
+ assert.equal(m,RAW_OUTAGE_WAITS_MS.length+1);
 });
