@@ -15,6 +15,15 @@ export function interruptedReport(state: WorkState, sessionId: string, touched: 
   return lines.join("\n");
 }
 
+/** What a turn that ran out of time hands back: recorded state only, with the
+ * latest check as it was observed. */
+export function deadlineReport(handoff: string, latestCheck?: { command: string; status: string }): string {
+  return ["The time limit was reached before the goal passed its completion gate. This is a status report, not a completion claim.",
+    handoff,
+    latestCheck ? `Latest recorded check: ${latestCheck.command} ended with status ${latestCheck.status}.` : "No test, build or lint check was recorded.",
+  ].join("\n");
+}
+
 /** Delivery repeats accepted evidence instead of asking the model to introduce
  * new factual claims after the goal has already passed review. */
 export function completionReport(state: WorkState, budgetExhausted = false): string {

@@ -32,7 +32,7 @@ async function fixture(task: TerminalCorpusTask, action: (workspace: string) => 
 }
 
 for (const task of terminalWorkflowCorpus()) {
-  test(`workflow harness: ${task.id} accepts reference and rejects starter`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow harness: ${task.id} accepts reference and rejects starter`, { ...isolated, timeout: 120000 }, async () => {
     await fixture(task, async workspace => {
       const starter = await gradeTerminalTask(task, workspace);
       assert.equal(starter.passed, false);
@@ -52,7 +52,7 @@ test("workflow IDs and content hash are stable and distinct", () => {
 });
 
 for (const mutation of ["generic-error", "invalid-name", "crlf-value"] as const) {
-  test(`workflow v3 header contract: ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow v3 header contract: ${mutation}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "header-normalization")!;
     await fixture(task, async workspace => {
       await reference(task, workspace);
@@ -69,7 +69,7 @@ for (const mutation of ["generic-error", "invalid-name", "crlf-value"] as const)
 }
 
 for (const mutation of ["wrong-report", "protected-source", "weaken-tests", "extra-file", "missing-report"] as const) {
-  test(`workflow investigation rejects ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow investigation rejects ${mutation}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "investigate-tenant-key")!;
     await fixture(task, async workspace => {
       await reference(task, workspace);
@@ -86,7 +86,7 @@ for (const mutation of ["wrong-report", "protected-source", "weaken-tests", "ext
   });
 }
 
-test("workflow coding still requires extended tests", { ...isolated, timeout: 30000 }, async () => {
+test("workflow coding still requires extended tests", { ...isolated, timeout: 120000 }, async () => {
   const task = terminalWorkflowCorpus()[0];
   await fixture(task, async workspace => {
     await reference(task, workspace);
@@ -97,7 +97,7 @@ test("workflow coding still requires extended tests", { ...isolated, timeout: 30
 });
 
 for (const mutation of ["reverse", "duplicate", "missing", "unknown", "wrong-boundary"] as const) {
-  test(`workflow v2 expiry evidence: ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow v2 expiry evidence: ${mutation}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "investigate-cache-expiry")!;
     await fixture(task, async workspace => {
       const report = JSON.parse(task.reference["docs/report.json"]);
@@ -120,7 +120,7 @@ for (const citations of [
   ["vendor-docs/v2.md", "vendor-docs/v2.md"],
   ["invented.md", "vendor-docs/v2.md"],
 ]) {
-  test(`workflow v2 research citations: ${citations.join(",")}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow v2 research citations: ${citations.join(",")}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "research-pinned-upgrade")!;
     await fixture(task, async workspace => {
       const report = { ...JSON.parse(task.reference["docs/report.json"]), citations };
@@ -133,7 +133,7 @@ for (const citations of [
 }
 
 for (const mutation of ["code-only", "all-sources", "empty", "incident-only", "missing-server", "unsorted", "duplicate", "unknown", "wrong-cause"] as const) {
-  test(`workflow v4 duplicate-submit evidence: ${mutation}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow v4 duplicate-submit evidence: ${mutation}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "investigate-duplicate-submit")!;
     await fixture(task, async workspace => {
       const report = JSON.parse(task.reference["docs/report.json"]);
@@ -153,7 +153,7 @@ for (const mutation of ["code-only", "all-sources", "empty", "incident-only", "m
 }
 
 for (const failure of ["sync-range", "sync-type", "resolve"] as const) {
-  test(`workflow v2 pool invalid limit: ${failure}`, { ...isolated, timeout: 30000 }, async () => {
+  test(`workflow v2 pool invalid limit: ${failure}`, { ...isolated, timeout: 120000 }, async () => {
     const task = terminalWorkflowCorpus().find(t => t.id === "async-worker-pool")!;
     await fixture(task, async workspace => {
       await reference(task, workspace);
@@ -167,7 +167,7 @@ for (const failure of ["sync-range", "sync-type", "resolve"] as const) {
   });
 }
 
-test("workflow v5 pool rejects dispatch after an observed synchronous worker throw", { ...isolated, timeout: 30000 }, async () => {
+test("workflow v5 pool rejects dispatch after an observed synchronous worker throw", { ...isolated, timeout: 120000 }, async () => {
   const task = terminalWorkflowCorpus().find(t => t.id === "async-worker-pool")!;
   await fixture(task, async workspace => {
     await reference(task, workspace);

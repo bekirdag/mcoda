@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, type SessionEvent, type SessionControllerOptions } from "../SessionController.js";
+import { SessionController, looksCutOff, rewriteDefect, markUnretrievedLinks, linkKey, type SessionEvent, type SessionControllerOptions } from "../SessionController.js";
 import { orchestrationHash, validateOrchestrationConfig, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { Provider, ProviderResponse, ProviderMessage } from "../../providers/ProviderTypes.js";
 import { parseNativeInteractionDecision, parseInteractionDecision, parseDirectInteractionDecision, DIRECT_INTERACTION_VERSION, interactionFirstPrompt, interactionResponseFormat, compactToolSchema } from "../InteractionRouter.js";
@@ -157,7 +157,9 @@ test("complete long answers survive native and control parsing without an arbitr
   assert.throws(() => parseNativeInteractionDecision(reply(" \n\t ")));
   const literal = "Example text containing <tool_call> is not execution.";
   assert.equal(parseNativeInteractionDecision(reply(literal)).reply, literal);
-  assert.throws(() => parseDirectInteractionDecision(JSON.stringify({ mode: "execute", text: content })), /500/);
+  // A work brief is an aid to the original request: an over-long one is shortened, not refused.
+  const brief = parseDirectInteractionDecision(JSON.stringify({ mode: "execute", text: content })).prepared;
+  assert.equal(brief.length, 500); assert.ok(brief.endsWith("..."));
 });
 
 for (const reason of ["output_limit", "incomplete_stream", undefined] as const) test(`bounded turns recover invalid responses (${reason}) without raising output caps`, async t => {
@@ -312,7 +314,8 @@ test("compact direct contracts default to no tools and reject malformed constrai
   }
   assert.throws(() => parse({ mode: "answer", text: "Hello", tools: null }));
   assert.throws(() => parse({ mode: "answer", text: "Hello", unexpected: true }));
-  assert.throws(() => parse({ mode: "execute", text: "x".repeat(501), tools: "available" }));
+  assert.equal(parse({ mode: "execute", text: "x".repeat(501), tools: "available" }).prepared.length, 500);
+  assert.equal(parse({ mode: "execute", text: "x".repeat(500), tools: "available" }).prepared, "x".repeat(500));
 });
 
 test("native strategy preserves literal JSON answers without treating them as control", async t => {
@@ -1338,7 +1341,9 @@ test("single-pass research review cannot dispatch unrequested extra tool activit
     assert.equal(request.toolChoice, "none"); assert.equal(request.tools, undefined);
     return { ...reply(""), toolCalls: [{ id: "extra", name: "docdex_web_research", args: { query: "unrequested follow-up" } }] };
   } }, config, undefined, true, { allowWeb: true });
-  await assert.rejects(controller.interact("Research the measured value."), /evidence audit did not produce a final answer/);
+  // A review that tries to call tools is discarded; the draft built from retrieved evidence is delivered.
+  assert.equal((await controller.interact("Research the measured value.")).content, "One experiment measured 27.");
+  assert.equal(events.find(event => event.type === "research_answer_audit_rejected")?.data.reason, "tool_call");
   assert.equal(calls, 3); assert.equal(lookups, 1);
   assert.equal(events.filter(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "docdex_web_research").length, 1);
 });
@@ -1880,6 +1885,106 @@ for (const [name, audited, reason] of [["a truncated rewrite", "Too short.", "sh
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1 ? reply(longDesignDraft) : reply(audited) }, consistencyConfig());
   assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
   assert.equal(events.find(e => e.type === "consistency_answer_audit_rejected")?.data.reason, reason);
+});
+
+test("the consistency audit keeps the draft when the rewrite stops at a server output cap", async t => {
+  const cut = `${longDesignDraft}Stale leaders are fenced by a per-shard epoch:\n\`\`\`ts\nconst epoch = shard.`;
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1 ? reply(longDesignDraft) : reply(cut) }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(events.find(e => e.type === "consistency_answer_audit_rejected")?.data.reason, "cut_off");
+});
+
+test("cut-off detection needs an open code fence or a mid-sentence stop on a round token count", () => {
+  assert.equal(looksCutOff("Measure:\n\n- `tick_ms` p", 8192), true);
+  assert.equal(looksCutOff("Measure:\n\n- `tick_ms` p", 7616), false);
+  assert.equal(looksCutOff("A complete sentence.", 8192), false);
+  assert.equal(looksCutOff("Done.\n```ts\nconst a = 1;\n```", 8192), false);
+  assert.equal(looksCutOff("Done.\n```ts\nconst a = 1;"), true);
+  assert.equal(looksCutOff(""), false);
+});
+
+for (const [name, audited, reason] of [
+  ["its own input envelope", JSON.stringify({ request: designPrompt, output: {}, draft: longDesignDraft }), "envelope_echo"],
+  ["an answer padded far beyond the draft", `${longDesignDraft}${"Further unrequested background. ".repeat(80)}`, "grew"],
+] as const) test(`the consistency audit keeps the draft when the rewrite is ${name}`, async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1 ? reply(longDesignDraft) : reply(audited) }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(events.find(e => e.type === "consistency_answer_audit_rejected")?.data.reason, reason);
+});
+
+test("a long design that used the calculator keeps its figures: one consistency audit with the receipts, no equation rewrite", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 64000, calculator: true };
+  const draft = `${longDesignDraft}Each shard holds 40000/30 = 1333 reservations per second with a 60 s hold timer.`;
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "40000/30" } } }] };
+    if (calls === 2) return reply(draft);
+    assert.doesNotMatch(request.messages[0].content, /Independently solve/);
+    assert.match(request.messages[0].content, /Preserve every concrete value/);
+    const packet = JSON.parse(request.messages[1].content);
+    assert.equal(packet.draft, draft); assert.equal(packet.calculationReceipts[0].args.expression, "40000/30");
+    return reply(packet.draft);
+  } }, config);
+  assert.equal((await controller.interact(designPrompt)).content, draft);
+  assert.equal(calls, 3);
+  assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 0);
+  assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
+});
+
+test("an answer that stops at a server output cap is continued, not delivered half-written", async t => {
+  const head = `${longDesignDraft}The fencing check is:\n\`\`\`ts\nconst epoch = shard.`, tail = "epoch + 1;\n```\nStale leaders are rejected by that comparison.";
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(head);
+    if (calls === 2) {
+      assert.match(request.messages[0].content, /Write only the continuation/);
+      assert.equal(JSON.parse(request.messages[1].content).partialAnswer, head);
+      return reply(tail);
+    }
+    return reply(JSON.parse(request.messages[1].content).draft);
+  } }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, head + tail);
+  assert.equal(events.filter(e => e.type === "answer_continued").length, 1);
+});
+
+test("rewrite defects and unretrieved links are detected deterministically", () => {
+  const draft = "A complete draft answer. ".repeat(20), ok = { message: { content: draft } };
+  assert.equal(rewriteDefect(draft, ok, { minRatio: 0.6, maxRatio: 1.5 }), undefined);
+  assert.equal(rewriteDefect(draft, { message: { content: "" } }), "empty");
+  assert.equal(rewriteDefect(draft, { message: { content: draft }, toolCalls: [{}] }), "tool_call");
+  assert.equal(rewriteDefect(draft, { message: { content: `{"request":"x","draft":"y"}` } }), "envelope_echo");
+  assert.equal(rewriteDefect(`{"a":1}`, { message: { content: `{"request":1}` } }), undefined, "a JSON answer may legitimately start with any key");
+  assert.equal(rewriteDefect(draft, { message: { content: `${draft} and then it stops mid` }, usage: { outputTokens: 8192 } }), "cut_off");
+  assert.equal(rewriteDefect(draft, { message: { content: "Short." } }, { minRatio: 0.6 }), "shrank");
+  const retrieved = new Set([linkKey("https://www.example.org/spec/"), linkKey("https://vendor.test/notes?v=2")]);
+  const answer = "See [the spec](https://example.org/spec) and https://vendor.test/notes?v=2. Also [a memo](https://invented.test/memo) and https://invented.test/memo, plus https://other.test/a.";
+  const marked = markUnretrievedLinks(answer, retrieved);
+  assert.deepEqual(marked.unretrieved, ["https://invented.test/memo", "https://other.test/a"]);
+  assert.equal(marked.answer, "See [the spec](https://example.org/spec) and https://vendor.test/notes?v=2. Also [a memo](https://invented.test/memo) (link not opened in this session) and https://invented.test/memo, plus https://other.test/a (link not opened in this session).");
+  assert.deepEqual(markUnretrievedLinks("No links here.", retrieved), { answer: "No links here.", unretrieved: [] });
+});
+
+test("a printed call to a real but undeclared tool declares it instead of ending the investigation", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools: [], calculator: true };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls <= 2) {
+      assert.ok(!request.tools?.some(tool => tool.name === (calls === 1 ? "calculate" : "no_such_tool")));
+      return reply(`<tool_call>\n<function=${calls === 1 ? "calculate" : "no_such_tool"}>\n<parameter=expression>6*7</parameter>\n</function>\n</tool_call>`);
+    }
+    if (calls === 3) {
+      assert.ok(request.tools?.some(tool => tool.name === "calculate"), "the printed tool is declared after the first repair");
+      return { ...reply(""), toolCalls: [{ id: "c", name: "calculate", args: { expression: "6*7" } }] };
+    }
+    return { ...reply(""), toolCalls: [{ id: "a", name: "final_answer", args: { text: "42" } }] };
+  } }, config);
+  assert.equal((await controller.interact("What is six times seven? Use the calculator.")).content, "42");
+  const repairs = events.filter(event => event.type === "interaction_protocol_repair");
+  assert.deepEqual(repairs.map(event => event.data.declared), [["calculate"], []]);
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 1, "printed text is never executed");
 });
 
 test("a failed consistency audit returns the draft", async t => {

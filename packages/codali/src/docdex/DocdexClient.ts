@@ -358,7 +358,34 @@ export class DocdexClient {
     signal.throwIfAborted();
     await this.options.beforeRequest?.(input);
     signal.throwIfAborted();
-    return globalThis.fetch(input, { ...init, signal, redirect: "error" });
+    const response = await globalThis.fetch(input, { ...init, signal, redirect: "error" });
+    if (response.status !== 404 || input.endsWith("/v1/initialize")) return response;
+    const body = typeof response.clone === "function" ? await response.clone().text().catch(() => "") : "";
+    if (!/unknown_repo/.test(body)) return response;
+    const previous = this.repoId;
+    if (!(await this.recoverRepo())) return response;
+    const headers = new Headers(init.headers as Record<string, string> | undefined);
+    if (this.repoId && headers.has("x-docdex-repo-id")) headers.set("x-docdex-repo-id", this.repoId);
+    const url = previous && this.repoId && previous !== this.repoId ? input.replace(`repo_id=${encodeURIComponent(previous)}`, `repo_id=${encodeURIComponent(this.repoId)}`) : input;
+    signal.throwIfAborted();
+    return globalThis.fetch(url, { ...init, headers, signal, redirect: "error" });
+  }
+
+  private repoRecovery?: Promise<boolean>;
+  /** The daemon unmounts a repository it has not served for a while. A long
+   * build that had not used Docdex for an hour then got unknown_repo on every
+   * structural lookup for the rest of the run. Mount it again, once per
+   * failure however many requests are waiting, and let the caller resend. */
+  private recoverRepo(): Promise<boolean> {
+    if (!this.options.repoRoot || this.isImmutableRuntimeContext()) return Promise.resolve(false);
+    if (!this.repoRecovery) {
+      const previous = this.repoId;
+      this.repoId = undefined;
+      this.repoRecovery = this.initializeRepo(pathToFileURL(path.resolve(this.options.repoRoot)).toString())
+        .then(() => true, () => false)
+        .finally(() => { this.repoId ??= previous; this.repoRecovery = undefined; });
+    }
+    return this.repoRecovery;
   }
 
   setRepoId(repoId: string): void {
@@ -1127,7 +1154,7 @@ export class DocdexClient {
     try { await this.mcpInitialize; } finally { this.mcpInitialize = undefined; }
   }
 
-  async callMcp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+  async callMcp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number, recovered = false): Promise<T> {
     const operation = MCP_OPERATION_BY_METHOD[method];
     if (operation) {
       this.assertOperationAllowed(operation);
@@ -1159,6 +1186,7 @@ export class DocdexClient {
     };
     if (raw.error) {
       const body = JSON.stringify(raw.error);
+      if (!recovered && /unknown_repo/.test(body) && await this.recoverRepo()) return this.callMcp<T>(method, params, timeoutMs, true);
       const code = this.mapResponseErrorCode(500, body);
       throw this.runtimeError(code, raw.error.message ?? "Docdex MCP error", {
         retryable: code === "docdex_unavailable",

@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- Long builds: history compaction saves each old step once and pages its
+  index, instead of saving the whole earlier history again on every model
+  call (452 MB of one 537 MB session log); appending a transcript event no
+  longer re-reads the transcript, and transcripts are read record by record.
+  A seven-hour build ended with "Invalid string length".
+- The system prompt budget reserves a share of the window for output, not the
+  whole output ceiling, and the active work contract is kept whole with the
+  latest check output shortened first. A two-hour build ended with "exceed the
+  context reservation" after one skill was applied.
+- A host deadline (`deadlineAt`) reaches execution turns: work winds down
+  shortly before it and ends with a status report instead of an empty answer.
+- A temporary model-service outage is waited out after dispatch as well as
+  before it (about four minutes), not retried for three seconds.
+- Answers: a rewrite that is cut off, empty, a tool call, an echo of the audit
+  input or far longer than its draft never replaces the draft, in every audit.
+  An answer that stops at a server output cap is continued. The equation
+  review no longer rewrites long designs; the consistency audit keeps concrete
+  values, commits to labelled defaults instead of open items and rechecks
+  derived figures. Answers do not mention drafts, audits or tool names.
+- Research: page tools are declared whenever web search is, a printed call to a
+  real but undeclared tool declares it, and printed calls no longer end an
+  investigation that still has time. Links that appear in nothing retrieved are
+  labelled; the audit cites only retrieved links and quotes only copied text.
+- Docdex: a repository the daemon unmounted while idle is mounted again and
+  the request resent, instead of failing every structural lookup.
+- New-app builds: the request's input files are included whole when the window
+  has room; the "no plan needed" shortcut is not shown when a plan is required;
+  an over-long work brief is shortened, not refused; a declared output
+  directory is created for shell checks; awk and other /etc/alternatives
+  commands work in the sandbox; the failure diagnosis has room to finish.
+- Specialists: one file per call with a clear message on failure. The mSwarm
+  node no longer drops a local model call after 300 seconds without response
+  headers.
+- Token limits: a model alias resolves to a route that meets the configured
+  context and output limits before one that advertises less (a capped pool cut
+  answers at 8,192 tokens while 40,960 were requested); a request asks only
+  for what its route advertises, and a reply that used its whole allowance is
+  treated as possibly cut and continued. Fixed 2,048-token ceilings on direct
+  answers, answer reviews and format repairs are gone, review evidence is
+  sized with the shared output reserve, and the failure diagnosis and task
+  review have room to finish.
+
 - Windows: a file the session just wrote or read is recognised on the next
   edit; the record was keyed with backslashes and never matched, so every
   revision demanded a fresh read.

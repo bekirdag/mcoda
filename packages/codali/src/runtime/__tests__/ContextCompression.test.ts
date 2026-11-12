@@ -9,7 +9,7 @@ test("required input can borrow unused output allowance without changing input",
   assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 4096);
   assert.equal(request.maxTokens, 2048);
 });
-import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, executionHistoryBudget, fitOutputBudget, resultStillVisible } from "../ContextCompression.js";
+import { compressConversation, compressExecutionHistory, compressProviderContext, contextHash, estimateContextTokens, executionHistoryBudget, reservedOutputTokens, fitOutputBudget, resultStillVisible } from "../ContextCompression.js";
 import type { ProviderMessage, ProviderRequest } from "../../providers/ProviderTypes.js";
 
 test("history indices stay bounded and retrievable across long sessions", () => {
@@ -54,13 +54,16 @@ test("execution compaction preserves retrievable old findings and complete recen
   assert.deepEqual(messages, original);
   const omittedCount = original.filter(m=>m.role === "tool").length - compact.messages.filter(m=>m.role === "tool").length;
   assert.ok(omittedCount > 0 && omittedCount < 20);
-  assert.equal(compact.archived.length, omittedCount + 1);
+  // One index page, then each omitted step and each omitted result once.
+  assert.equal(compact.archived.length, 1 + omittedCount * 2);
   assert.match(compact.messages[0].content, new RegExp(`finding-${omittedCount - 1}`));
   assert.equal(JSON.parse(compact.messages[0].content).sha256, compact.archived[0].sha256);
-  assert.equal(contextHash(compact.archived[0].message), compact.archived[0].sha256);
+  for (const entry of compact.archived) assert.equal(contextHash(entry.message), entry.sha256);
   const firstFinding = JSON.parse(compact.messages[0].content).activity[0];
   assert.ok(messages.some(message => message.content === compact.archived.find(entry=>entry.sha256 === firstFinding.sha256)!.message.content));
-  const restored: ProviderMessage[] = JSON.parse(compact.archived[0].message.content);
+  const index = JSON.parse(compact.archived[0].message.content) as { previous: string | null; steps: Array<{ sha256: string; tools: string[] }> };
+  assert.equal(index.previous, null); assert.deepEqual(index.steps[0].tools, ["read_file"]);
+  const restored: ProviderMessage[] = index.steps.flatMap(step => JSON.parse(compact.archived.find(entry => entry.sha256 === step.sha256)!.message.content) as ProviderMessage[]);
   assert.deepEqual(restored.filter(m=>m.role === "tool"), original.filter(m=>m.role === "tool").slice(0, omittedCount));
   assert.deepEqual(compact.messages.filter(m=>m.role === "user"), original.filter(m=>m.role === "user"));
   const ids = compact.messages.flatMap(m=>m.toolCalls?.map(call=>call.id) ?? []);
@@ -70,6 +73,34 @@ test("execution compaction preserves retrievable old findings and complete recen
     { role: "assistant", content: "New finding".repeat(3000) }, { role: "assistant", content: "Next finding" }]);
   assert.equal(continued.messages.filter(m=>m.name === "execution_history").length, 1);
   assert.match(continued.archived[0].message.content, new RegExp(compact.archived[0].sha256));
+});
+
+test("a growing history saves each old step once, however often it is compacted", () => {
+  const messages: ProviderMessage[] = [{ role: "user", content: "Build the application." }];
+  const saved = new Map<string, number>(); let rewritten = 0, head = "";
+  for (let i = 0; i < 120; i++) {
+    messages.push({ role: "assistant", content: "", toolCalls: [{ id: `step-${i}`, name: "read_file", args: { path: `file-${i}.txt` } }] },
+      { role: "tool", toolCallId: `step-${i}`, name: "read_file", content: `content-${i}: ` + "x".repeat(4000) });
+    // The controller compacts the full history before every model call and saves only unseen hashes.
+    const compact = compressExecutionHistory(messages, 6000);
+    for (const entry of compact.archived) {
+      if (saved.has(entry.sha256)) continue;
+      saved.set(entry.sha256, entry.message.content.length);
+      if (entry.message.name === "execution_history_index") rewritten++;
+    }
+    if (compact.archived.length) head = JSON.parse(compact.messages[0].content).sha256;
+  }
+  const history = JSON.stringify(messages).length, bytes = [...saved.values()].reduce((sum, size) => sum + size, 0);
+  // Steps and results are each stored once; index pages add a small bounded overhead.
+  assert.ok(bytes < history * 2.5, `saved ${bytes} for a ${history} character history`);
+  assert.ok(rewritten < 130);
+  // Every omitted step stays reachable by walking the page chain from the head.
+  const steps: string[] = [];
+  for (let page: string | null = head; page;) {
+    const value = JSON.parse([...compressExecutionHistory(messages, 6000).archived].find(entry => entry.sha256 === page)!.message.content) as { previous: string | null; steps: Array<{ sha256: string }> };
+    steps.unshift(...value.steps.map(step => step.sha256)); page = value.previous;
+  }
+  assert.ok(steps.length > 100 && steps.every(sha256 => saved.has(sha256)));
 });
 
 test("conversation compression retains every user constraint and recoverable original replies", () => {
@@ -227,4 +258,10 @@ test("an abbreviated or evicted tool result is not still visible", () => {
   assert.equal(resultStillVisible(output, []), false);
   assert.equal(resultStillVisible(output, [`[Earlier tool content abbreviated. Full saved source: abc]\n${output.slice(0, 1000)}`]), false);
   assert.equal(resultStillVisible("", [""]), false);
+});
+
+test("window budgets reserve a share for output, never the whole ceiling", () => {
+  assert.equal(reservedOutputTokens(65536, 40960), 19660);
+  assert.equal(reservedOutputTokens(65536, 8192), 8192);
+  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - 19660) / 4));
 });

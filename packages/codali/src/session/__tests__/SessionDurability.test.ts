@@ -43,6 +43,38 @@ test("crash-tail repair retains complete records and rejects middle corruption",
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("appends stay cheap in a long session and large records survive a full read", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tail-"));
+  try {
+    const store = new SessionStore({ workspaceRoot: root });
+    await store.createSession({ sessionId: "s", repoRoot: root, task: "Long build" });
+    const transcript = path.join(root, ".mcoda", "codali", "sessions", "s", "transcript.jsonl");
+    // Records larger than the read chunks, with multi-byte text across chunk edges.
+    const big = "çğ—data ".repeat(300_000);
+    for (let n = 0; n < 3; n++) await store.appendTranscript("s", { type: "note", data: { n, big } });
+    const events = await store.readTranscript("s");
+    assert.deepEqual(events.map(event => event.data.n), [0, 1, 2]);
+    assert.ok(events.every(event => event.data.big === big));
+    for (let n = 3; n < 6; n++) await store.appendTranscript("s", { type: "note", data: { n } });
+    assert.deepEqual((await store.readTranscript("s")).map(event => event.data.n), [0, 1, 2, 3, 4, 5]);
+    // A store that already checked the transcript compares only the size it left
+    // behind, so an append costs the same however long the session is. Damage
+    // that keeps the size is found by the next full read, not by every append.
+    const damaged = await fs.open(transcript, "r+");
+    try { await damaged.write("x", 0); } finally { await damaged.close(); }
+    await store.appendTranscript("s", { type: "note", data: { n: 6 } });
+    await assert.rejects(store.readTranscript("s"));
+    await assert.rejects(new SessionStore({ workspaceRoot: root }).appendTranscript("s", { type: "note", data: { n: 7 } }));
+    const repaired = await fs.open(transcript, "r+");
+    try { await repaired.write("{", 0); } finally { await repaired.close(); }
+    // A foreign or future-schema final record is still refused before anything is appended.
+    await fs.appendFile(transcript, `${JSON.stringify({ schemaVersion: 2, sessionId: "s", type: "note", data: {} })}\n`);
+    const before = await fs.readFile(transcript);
+    await assert.rejects(store.appendTranscript("s", { type: "note", data: { n: 8 } }), /Unsupported\/invalid session transcript schema/);
+    assert.deepEqual(await fs.readFile(transcript), before);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("work-state revisions fence concurrent clients and preserve original identity", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-revision-"));
   try {

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, PREFLIGHT_RECOVERY_WAITS_MS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -48,6 +48,39 @@ test("repeated real failures receive metered read-only diagnosis without replayi
   const failures=events.filter(event=>event.type==="tool_receipt" && (event.data.receipt as {tool:string}).tool==="run_shell");
   assert.equal(failures.length,6);
   assert.equal(failures.filter(event=>String((event.data.receipt as {output:string}).output).includes("Recovery diagnosis")).length,2);
+});
+
+test("work that reaches the host deadline ends with a status report instead of an error", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),"codali-deadline-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(),"codali-deadline-state-"));
+  t.after(async()=>{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});});
+  let step=0; const events:SessionEvent[]=[]; const started=Date.now();
+  const controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved,docdex:false,permissions:"workspace",deadlineAt:started+3000,onEvent:event=>events.push(event),provider:{name:"fixture",generate:async request=>{
+    switch(step++) {
+      case 0:return call("work_claim",{taskId:"T1",allowedPaths:["value.mjs"]});
+      case 1:return call("write_file",{path:"value.mjs",content:"export const value = 1;"});
+      // The model is still working when time runs out.
+      default:return new Promise<ProviderResponse>((_,reject)=>request.signal?.addEventListener("abort",()=>reject(request.signal!.reason),{once:true}));
+    }
+  }}});
+  const result=await controller.run("Write the fixture and validate its behavior.");
+  assert.equal(result.completed,false);
+  assert.match(result.content,/time limit was reached/);
+  assert.match(result.content,/not a completion claim/);
+  assert.match(result.content,/value\.mjs/);
+  assert.match(result.content,/No test, build or lint check was recorded/);
+  assert.ok(Date.now()-started<3000,"the report is returned before the host deadline");
+  assert.equal(events.filter(event=>event.type==="turn_stopped_at_deadline").length,1);
+  assert.equal(events.filter(event=>event.type==="turn_failed").length,0);
+  assert.equal(await fs.readFile(path.join(root,"value.mjs"),"utf8"),"export const value = 1;");
+});
+
+test("the outage wait schedule can be bounded by the host", () => {
+  assert.deepEqual(outageWaitsMs(undefined), PREFLIGHT_RECOVERY_WAITS_MS);
+  assert.deepEqual(outageWaitsMs(""), PREFLIGHT_RECOVERY_WAITS_MS);
+  assert.deepEqual(outageWaitsMs("2500"), [500, 2000]);
+  assert.deepEqual(outageWaitsMs("0"), []);
+  assert.deepEqual(outageWaitsMs("not a number"), PREFLIGHT_RECOVERY_WAITS_MS);
 });
 
 test("scope rejection names the missing path and recovery preserves the task contract", async t => {

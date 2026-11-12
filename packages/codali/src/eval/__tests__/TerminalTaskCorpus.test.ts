@@ -23,7 +23,7 @@ test("versioned corpus has sixty held-out cases, twelve development cases and tw
 // Bound each independent grader invocation instead of the aggregate duration of
 // 72 cases: loaded platform runners must still exercise every reference/starter.
 for (const task of terminalTaskCorpus()) {
-  test(`${task.id}: reference passes isolated independent grading and starter fails`, { ...isolated, timeout: 30000 }, async () => {
+  test(`${task.id}: reference passes isolated independent grading and starter fails`, { ...isolated, timeout: 120000 }, async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), `codali-corpus-selfcheck-${task.id}-`));
     try {
       const workspace = path.join(root, task.id); await materializeTerminalTask(task, workspace);

@@ -353,4 +353,9 @@ test("large-backlog context keeps the active contract and leaves every omitted c
   assert.deepEqual(state, before);
   assert.throws(() => completeWorkGoal(state, {}), /Required task work remains/);
   assert.throws(() => activeWorkContext(state, 100), /Active goal.*exceed/);
+  // A caller that owns the real window check gets the whole active contract
+  // back instead of losing a long build to a soft share.
+  const kept = JSON.parse(activeWorkContext(state, 100, true));
+  assert.equal(kept.contextPartial, true); assert.equal(kept.originalObjective, state.originalObjective);
+  assert.ok(kept.activeTask && kept.requirements.length > 0 && kept.otherRequirements.length === 0);
 });

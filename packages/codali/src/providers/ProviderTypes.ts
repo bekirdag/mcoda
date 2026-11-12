@@ -79,6 +79,9 @@ export interface ProviderResponse {
   toolCalls?: ProviderToolCall[];
   usage?: ProviderUsage;
   raw?: unknown;
+  /** The reply used its whole output allowance without tool calls, so it may
+   * have been cut short even though the service reported a normal finish. */
+  outputLimited?: boolean;
   /** Selected configured route; host labels are configuration metadata, not hardware attestation. */
   route?: { id: string; binding: string; configHash: string; modelId: string; catalogId: string; backend?: string; host?: string };
 }

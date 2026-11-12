@@ -92,6 +92,35 @@ test("index ingestion binds relative paths to the client repository, not the dae
   });
 });
 
+test("a repository the daemon unmounted is mounted again and the request resent once", { concurrency: false }, async () => {
+  const original = globalThis.fetch; let mounted = false, initializations = 0, ingests = 0; const repoHeaders: Array<string | null> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/healthz")) return new Response("ok");
+    if (url.endsWith("/v1/initialize")) { initializations++; mounted = true; return Response.json({ repo_id: "remounted", repo_root: "/repo" }); }
+    ingests++; repoHeaders.push(new Headers(init?.headers).get("x-docdex-repo-id"));
+    return mounted ? Response.json({ ok: true }) : Response.json({ error: { code: "unknown_repo", message: "unknown repo" } }, { status: 404 });
+  }) as typeof fetch;
+  try {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "stale", repoRoot: "/repo" });
+    // Concurrent lookups share one remount.
+    await Promise.all([client.indexIngest("src/a.ts"), client.indexIngest("src/b.ts")]);
+    assert.equal(initializations, 1); assert.equal(ingests, 4);
+    assert.deepEqual(repoHeaders.slice(0, 2), ["stale", "stale"]); assert.deepEqual(repoHeaders.slice(2), ["remounted", "remounted"]);
+    assert.equal(client.getRepoId(), "remounted");
+    // A daemon that still refuses after the remount is reported, not retried forever.
+    mounted = false; initializations = 0; ingests = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/healthz")) return new Response("ok");
+      if (url.endsWith("/v1/initialize")) { initializations++; return Response.json({ repo_id: "remounted" }); }
+      ingests++; return Response.json({ error: { code: "unknown_repo" } }, { status: 404 });
+    }) as typeof fetch;
+    await assert.rejects(client.indexIngest("src/a.ts"));
+    assert.equal(initializations, 1); assert.equal(ingests, 2);
+  } finally { globalThis.fetch = original; }
+});
+
 for (const authenticated of [true, false]) test(`MCP initializes once with scoped session (authenticated: ${authenticated})`, { concurrency: false }, async () => {
   let initializations = 0; let invocations = 0;
   await withStubbedFetch((url, init) => {

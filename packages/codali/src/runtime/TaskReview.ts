@@ -35,7 +35,7 @@ export async function runTaskReview(options: {
     if (JSON.stringify(messages).length > options.maxInputChars) {
       return reject("Required review evidence exceeds the configured model context. Split the task or select a larger compatible reviewer context; acceptance is not established.");
     }
-    const response = await options.provider.generate({ messages, signal: options.signal, maxTokens: options.maxOutputTokens ?? 2048 });
+    const response = await options.provider.generate({ messages, signal: options.signal, maxTokens: options.maxOutputTokens ?? 8192 });
     options.signal?.throwIfAborted();
     if (response.toolCalls?.length || response.message.toolCalls?.length) return reject("Review returned an unsupported tool call; only bounded sourceRequests are available.");
     let result: Record<string, unknown>;

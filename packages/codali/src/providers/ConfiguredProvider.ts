@@ -42,6 +42,8 @@ export class NativeReasoningTransportError extends Error {
   constructor(message: string, options?: { cause?: unknown }) { super(message); this.name = "NativeReasoningTransportError"; this.cause = options?.cause; }
 }
 
+const advertisedOutput = (entry: CatalogEntry): number | undefined => typeof entry.raw.max_output_tokens === "number" && entry.raw.max_output_tokens > 0 ? entry.raw.max_output_tokens : undefined;
+
 export const providerCredential = async (provider: OrchestrationProvider): Promise<string | undefined> => {
   if (!provider.credentialRef) return undefined;
   const name = provider.credentialRef.slice(4);
@@ -212,7 +214,13 @@ export class ConfiguredProvider implements Provider {
         // A canonical model alias can identify several pools/backends. Inspect
         // every matching entry, but never widen an explicitly pinned pool ID.
         const exact = catalog.filter(entry => entry.id === model.catalogId);
-        const matches = exact.length ? exact : catalog.filter(entry => entry.aliases.includes(model.catalogId));
+        // An alias can also resolve to a pool that advertises less context or
+        // output than this model is configured for; such a pool cut answers at
+        // 8,192 tokens while 40,960 were requested. Routes that meet the
+        // configured limits go first; the order is otherwise unchanged.
+        const meetsLimits = (entry: CatalogEntry): boolean => (entry.contextWindow ?? Infinity) >= model.contextWindow && (advertisedOutput(entry) ?? Infinity) >= model.maxOutputTokens;
+        const aliased = exact.length ? exact : catalog.filter(entry => entry.aliases.includes(model.catalogId));
+        const matches = [...aliased.filter(meetsLimits), ...aliased.filter(entry => !meetsLimits(entry))];
         let transient = false;
         const failures: string[] = [];
         for (const actual of matches) {
@@ -254,7 +262,9 @@ export class ConfiguredProvider implements Provider {
     const inputEstimate = estimateProviderInputTokens(request);
     const available = Math.floor(Math.min(model.contextWindow, actual.contextWindow ?? model.contextWindow) - inputEstimate);
     if (available < 128) throw new Error("Context budget exceeded; checkpoint and compact before continuing");
-    const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens, available);
+    // Ask only for what the selected route advertises: a larger request is cut
+    // at the route's own limit and still reported as a normal finish.
+    const maxTokens = Math.min(request.maxTokens ?? model.maxOutputTokens, model.maxOutputTokens, available, advertisedOutput(actual) ?? Infinity);
     const bounded = { ...request, requestId, maxTokens, stream: request.stream === true && model.supportsStreaming === true };
     await this.options.beforeRequest?.(invocation, bounded);
     const adapter = new OpenAiCompatibleProvider({
@@ -265,6 +275,8 @@ export class ConfiguredProvider implements Provider {
     });
     const result = await adapter.generate(bounded);
     await this.options.afterRequest?.(invocation, result);
-    return { ...result, route: invocation };
+    const calls = result.toolCalls ?? result.message.toolCalls ?? [];
+    const outputLimited = !calls.length && typeof result.usage?.outputTokens === "number" && result.usage.outputTokens >= maxTokens;
+    return { ...result, ...(outputLimited ? { outputLimited } : {}), route: invocation };
   }
 }

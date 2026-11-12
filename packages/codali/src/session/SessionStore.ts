@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson, withStateLock } from "./AtomicState.js";
 import { createWorkState, validateWorkState } from "./WorkState.js";
@@ -108,27 +109,56 @@ const validateMetadata = (value: CodaliSessionMetadata, sessionId: string): Coda
   return value;
 };
 
-const parseJsonLines = <T>(content: string): T[] => {
-  if (!content.trim()) return [];
-  const lines = content.split("\n");
-  const result: T[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (!line) continue;
-    try { result.push(JSON.parse(line) as T); }
-    catch (error) {
-      // Only an unterminated final record may be a crash tail. Never hide middle corruption.
-      if (index === lines.length - 1 && !content.endsWith("\n")) break;
-      throw error;
-    }
-  }
-  return result;
-};
-
-const parseTranscript = (content: string, sessionId: string): CodaliSessionTranscriptEvent[] => {
-  const events = parseJsonLines<CodaliSessionTranscriptEvent>(content);
+const assertTranscriptEvents = (events: CodaliSessionTranscriptEvent[], sessionId: string): CodaliSessionTranscriptEvent[] => {
   if (events.some(event => !event || event.schemaVersion !== 1 || event.sessionId !== sessionId)) throw new Error("Unsupported/invalid session transcript schema");
   return events;
+};
+
+const NEWLINE = 0x0a;
+const openTranscript = async (file: string): Promise<{ handle: FileHandle; size: number }> => {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session state file");
+      if (stat.nlink === 1) return { handle, size: stat.size };
+    } catch (error) { await handle.close(); throw error; }
+    await handle.close();
+  }
+  throw new Error(`Session state file changed during validation: ${path.basename(file)}`);
+};
+
+/** Check a transcript record by record and report its tail. A long session's
+ * transcript does not fit in one string, so it is never read whole. */
+const scanTranscript = async (file: string, sessionId: string, visit?: (event: CodaliSessionTranscriptEvent) => void): Promise<{ size: number; terminated: boolean; tailStart: number; tailComplete: boolean }> => {
+  const { handle, size } = await openTranscript(file);
+  try {
+    const chunk = Buffer.alloc(1024 * 1024);
+    let pending: Buffer[] = [], position = 0, recordStart = 0, tailComplete = true;
+    const record = (terminated: boolean): void => {
+      const line = Buffer.concat(pending).toString("utf8").trim(); pending = [];
+      if (!line) return;
+      let event: CodaliSessionTranscriptEvent;
+      try { event = JSON.parse(line) as CodaliSessionTranscriptEvent; }
+      // Only an unterminated final record may be a crash tail. Never hide middle corruption.
+      catch (error) { if (terminated) throw error; tailComplete = false; return; }
+      assertTranscriptEvents([event], sessionId); visit?.(event);
+    };
+    while (position < size) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, size - position), position);
+      if (!bytesRead) break;
+      for (let start = 0; start < bytesRead;) {
+        const end = chunk.subarray(start, bytesRead).indexOf(NEWLINE);
+        if (end < 0) { pending.push(Buffer.from(chunk.subarray(start, bytesRead))); break; }
+        pending.push(Buffer.from(chunk.subarray(start, start + end))); record(true);
+        start += end + 1; recordStart = position + start;
+      }
+      position += bytesRead;
+    }
+    const terminated = recordStart === position;
+    if (!terminated) record(false);
+    return { size: position, terminated, tailStart: recordStart, tailComplete };
+  } finally { await handle.close(); }
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -184,6 +214,7 @@ export class SessionStore {
   readonly storageDir: string;
   private lastTimestampMs = 0;
   private readonly allowExternalStorage: boolean;
+  private readonly transcriptSizes = new Map<string, number>();
 
   constructor(options: SessionStoreOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
@@ -334,20 +365,27 @@ export class SessionStore {
     const transcriptPath = await this.checkedPath(this.transcriptPath(sessionId));
     await withStateLock(transcriptPath, async () => {
       try {
-        const contents = await readStateFile(transcriptPath);
-        parseTranscript(contents, sessionId);
-        if (contents && !contents.endsWith("\n")) {
-          const lastNewline = contents.lastIndexOf("\n");
-          let complete = false;
-          try { JSON.parse(contents.slice(lastNewline + 1)); complete = true; } catch { /* Incomplete crash tail. */ }
-          // Windows append-only handles cannot truncate an incomplete record.
-          const repair = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_NOFOLLOW | (complete ? constants.O_APPEND : 0));
-          try { if (complete) await repair.writeFile("\n"); else await repair.truncate(Buffer.byteLength(contents.slice(0, lastNewline + 1))); }
-          finally { await repair.close(); }
+        // Re-reading the transcript for every event made each write cost the
+        // size of the whole session. A transcript is checked in full once; after
+        // that, the size this store left behind identifies content it has seen.
+        const known = this.transcriptSizes.get(transcriptPath);
+        const { handle: probe, size } = await openTranscript(transcriptPath); await probe.close();
+        if (size !== known) {
+          const tail = await scanTranscript(transcriptPath, sessionId);
+          if (!tail.terminated) {
+            // Windows append-only handles cannot truncate an incomplete record.
+            const repair = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_NOFOLLOW | (tail.tailComplete ? constants.O_APPEND : 0));
+            try { if (tail.tailComplete) await repair.writeFile("\n"); else await repair.truncate(tail.tailStart); }
+            finally { await repair.close(); }
+          }
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       const handle = await fs.open(transcriptPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
-      try { await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8"); await handle.sync(); }
+      try {
+        await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8"); await handle.sync();
+        this.transcriptSizes.set(transcriptPath, (await handle.stat()).size);
+      }
+      catch (error) { this.transcriptSizes.delete(transcriptPath); throw error; }
       finally { await handle.close(); }
     });
     await this.updateSession(sessionId, {});
@@ -356,8 +394,9 @@ export class SessionStore {
 
   async readTranscript(sessionId: string): Promise<CodaliSessionTranscriptEvent[]> {
     try {
-      const content = await readStateFile(await this.checkedPath(this.transcriptPath(sessionId)));
-      return parseTranscript(content, sessionId);
+      const events: CodaliSessionTranscriptEvent[] = [];
+      await scanTranscript(await this.checkedPath(this.transcriptPath(sessionId)), sessionId, event => events.push(event));
+      return events;
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
         return [];

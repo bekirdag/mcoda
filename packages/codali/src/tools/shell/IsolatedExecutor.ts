@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync, readdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, statSync, readdirSync, mkdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -60,10 +60,13 @@ const bubblewrapRoot = (): string[] => {
   // User font settings/profiles and the rest of /etc remain inaccessible.
   if (existsSync("/etc/fonts")) args.push("--ro-bind", realpathSync("/etc/fonts"), "/etc/fonts");
   if (existsSync("/etc/alternatives")) for (const name of readdirSync("/etc/alternatives")) {
-    if (!/^lib[^/]+\.so(?:\..+)?$/.test(name)) continue;
+    // Commands such as awk are aliases through /etc/alternatives to a binary
+    // under /usr/bin that is already visible; without the alias the command
+    // is "not found" inside the sandbox.
+    const library = /^lib[^/]+\.so(?:\..+)?$/.test(name);
     try {
       const alias = path.join("/etc/alternatives", name), target = realpathSync(alias);
-      if (!["/usr/lib/", "/usr/lib64/", "/lib/", "/lib64/"].some(prefix => target.startsWith(prefix)) || !statSync(target).isFile()) continue;
+      if (!(library ? ["/usr/lib/", "/usr/lib64/", "/lib/", "/lib64/"] : ["/usr/bin/", "/bin/"]).some(prefix => target.startsWith(prefix)) || !statSync(target).isFile()) continue;
       args.push("--ro-bind", target, alias);
     } catch { /* A broken optional system-library alternative is not mounted. */ }
   }
@@ -134,6 +137,9 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
     const writePaths = (context.allowedWritePaths ?? ["."]).map(file => {
       const requested = path.resolve(root, file);
       if (requested !== root && !requested.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope escapes workspace");
+      // A declared output directory that does not exist yet (dist/, data/) is
+      // created rather than refused; a missing file still has to be written first.
+      if (!existsSync(requested) && (/[\\/]$/.test(file) || !path.extname(requested))) mkdirSync(requested, { recursive: true });
       if (!existsSync(requested)) throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory with create_directory (or file with write_file) before shell execution");
       const real = realpathSync(requested);
       if (real !== root && !real.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope resolves outside workspace");

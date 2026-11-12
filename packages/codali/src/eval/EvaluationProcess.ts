@@ -12,6 +12,8 @@ export function evaluationEnvironment(config: OrchestrationConfig): NodeJS.Proce
     const key = provider.credentialRef.slice(4);
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && process.env[key] !== undefined) env[key] = process.env[key];
   }
+  // Operator settings for the runtime under evaluation; not secrets.
+  for (const key of ["CODALI_MODEL_OUTAGE_WAIT_MS"]) if (process.env[key] !== undefined) env[key] = process.env[key];
   return env;
 }
 

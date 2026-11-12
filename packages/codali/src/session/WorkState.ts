@@ -333,8 +333,11 @@ export const workContext = (state: WorkState): string => JSON.stringify({
   decisions: state.decisions, checkpoint: state.checkpoints.at(-1),
 });
 
-/** Keep the active contract intact while paging unrelated backlog out of context. */
-export const activeWorkContext = (state: WorkState, maxChars: number): string => {
+/** Keep the active contract intact while paging unrelated backlog out of context.
+ * With `keepContract` the active contract is returned whole even past
+ * `maxChars`: the caller owns the real window check and gives up more
+ * expendable context first. */
+export const activeWorkContext = (state: WorkState, maxChars: number, keepContract = false): string => {
   const full = workContext(state);
   if (full.length <= maxChars) return full;
   const active = state.tasks.find(t => ["running", "review_pending"].includes(t.status)) ?? state.tasks.find(t => t.status === "ready");
@@ -360,7 +363,10 @@ export const activeWorkContext = (state: WorkState, maxChars: number): string =>
     continuation: "The complete goal and backlog remain canonical in storage. Use work_status with offset/limit or taskIds/requirementIds to retrieve omitted records. Claiming a task loads its full criteria and relevant decisions. Completion still checks every required criterion.",
   };
   const encode = () => JSON.stringify(view);
-  if (encode().length > maxChars) throw new Error("Active goal, constraints, architecture decisions and criteria exceed the context reservation; use a larger compatible model context or split the active task");
+  if (encode().length > maxChars) {
+    if (keepContract) return encode();
+    throw new Error("Active goal, constraints, architecture decisions and criteria exceed the context reservation; use a larger compatible model context or split the active task");
+  }
   for (const requirement of state.requirements.filter(r => !requiredIds.has(r.id))) {
     view.otherRequirements.push(requirement);
     if (encode().length > maxChars) { view.otherRequirements.pop(); break; }
