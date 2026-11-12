@@ -7090,9 +7090,29 @@ export class SelfHostedNodeRuntime {
     Object.assign(body, nativeReasoningRequest(job.openai_request));
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
-    const response = await this.fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
-    if (!response.ok) throw await readLocalModelResponseError(response);
-    const text = await response.text();
+    /*
+     * The request is not streamed, so the runner sends no response headers
+     * until generation ends. The default fetch gives up after 300 s without
+     * headers, which failed every specialist draft longer than about 4,500
+     * tokens. The job timeout is the only limit that should apply here.
+     */
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.jobTimeoutMs);
+    const dispatcher = this.useDedicatedGenerativeDispatcher
+      ? new Agent({ headersTimeout: 0, bodyTimeout: 0 })
+      : null;
+    let response: Response;
+    let text: string;
+    try {
+      const request = { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal };
+      // The platform fetch accepts the dispatcher; a replaced global fetch ignores it.
+      response = await this.fetchImpl(url, (dispatcher ? { ...request, dispatcher } : request) as RequestInit);
+      if (!response.ok) throw await readLocalModelResponseError(response);
+      text = await response.text();
+    } finally {
+      clearTimeout(timeout);
+      await dispatcher?.close().catch(() => undefined);
+    }
     let payload: unknown = null;
     try {
       payload = text ? JSON.parse(text) : null;
