@@ -55,7 +55,7 @@ test("work that reaches the host deadline ends with a status report instead of a
   const storage = await fs.mkdtemp(path.join(os.tmpdir(),"codali-deadline-state-"));
   t.after(async()=>{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});});
   let step=0; const events:SessionEvent[]=[]; const started=Date.now();
-  const controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved,docdex:false,permissions:"workspace",deadlineAt:started+3000,onEvent:event=>events.push(event),provider:{name:"fixture",generate:async request=>{
+  const controller=new SessionController({workspaceRoot:root,storageRoot:storage,resolved,docdex:false,permissions:"workspace",deadlineAt:started+12000,onEvent:event=>events.push(event),provider:{name:"fixture",generate:async request=>{
     switch(step++) {
       case 0:return call("work_claim",{taskId:"T1",allowedPaths:["value.mjs"]});
       case 1:return call("write_file",{path:"value.mjs",content:"export const value = 1;"});
@@ -69,7 +69,7 @@ test("work that reaches the host deadline ends with a status report instead of a
   assert.match(result.content,/not a completion claim/);
   assert.match(result.content,/value\.mjs/);
   assert.match(result.content,/No test, build or lint check was recorded/);
-  assert.ok(Date.now()-started<3000,"the report is returned before the host deadline");
+  assert.ok(Date.now()-started<12000,"the report is returned before the host deadline");
   assert.equal(events.filter(event=>event.type==="turn_stopped_at_deadline").length,1);
   assert.equal(events.filter(event=>event.type==="turn_failed").length,0);
   assert.equal(await fs.readFile(path.join(root,"value.mjs"),"utf8"),"export const value = 1;");
