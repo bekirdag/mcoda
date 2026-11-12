@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Sandbox: a relocated Python (a CI tool cache or a copied installation, whose
+  binary records the library directory it was built for) finds its interpreter
+  library; the loader path points only at libraries already mounted from the
+  same installation. An interpreter alias is recreated as a link, not mounted
+  as a copy.
 - Long builds: history compaction saves each old step once and pages its
   index, instead of saving the whole earlier history again on every model
   call (452 MB of one 537 MB session log); appending a transcript event no

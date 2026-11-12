@@ -162,7 +162,8 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
           for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ssl/certs"]) if (existsSync(file)) launch.push("--ro-bind", realpathSync(file), file);
         }
         launch.push("--dir", path.dirname(root), "--ro-bind", root, root);
-        for (const runtime of extraRuntimeMounts(runtimes)) launch.push("--dir", path.dirname(runtime.readOnlyRoot), "--ro-bind", runtime.readOnlyRoot, runtime.readOnlyRoot);
+        for (const runtime of extraRuntimeMounts(runtimes)) launch.push("--dir", path.dirname(runtime.readOnlyRoot),
+          ...(runtime.linkTo ? ["--symlink", runtime.linkTo, runtime.readOnlyRoot] : ["--ro-bind", runtime.readOnlyRoot, runtime.readOnlyRoot]));
         for (const runtime of runtimeRoots) launch.push("--dir", path.dirname(runtime), "--ro-bind", runtime, runtime);
         launch.push("--dir", "/tmp/codali-bin");
         for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
@@ -173,6 +174,13 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         launch.push("--chdir", cwd, "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", sessionScratch ? "/tmp/scratch" : "/tmp", "--setenv", "PATH", "/tmp/codali-bin:/usr/local/bin:/usr/bin:/bin");
         for (const [key, value] of Object.entries({ CARGO_HOME: "/tmp/home/cargo", XDG_CACHE_HOME: "/tmp/home/cache", PYTHONPYCACHEPREFIX: "/tmp/home/pycache", PYTHONUSERBASE: "/tmp/home/python", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" })) launch.push("--setenv", key, value);
         if (cacheRoot) for (const [key, value] of Object.entries(packageCacheEnvironment("/tmp/codali-cache"))) launch.push("--setenv", key, value);
+        // A relocated Python (a CI tool cache, a copied installation) records the
+        // library directory it was built for, not the one it lives in, and fails
+        // with "libpython not found". Point the loader at the interpreter
+        // libraries already mounted from the same installation, and nothing else.
+        const interpreterLibraries = [...new Set(runtimes.flatMap(runtime => (runtime.support ?? [])
+          .filter(mount => !mount.directory && /^libpython3\./.test(path.basename(mount.readOnlyRoot))).map(mount => path.dirname(mount.readOnlyRoot))))];
+        if (interpreterLibraries.length) launch.push("--setenv", "LD_LIBRARY_PATH", interpreterLibraries.join(":"));
         // Git hooks/config and private session state are not part of executable workspace access.
         for (const dir of [".git", ".mcoda"]) if (existsSync(path.join(root, dir))) launch.push("--ro-bind", path.join(root, dir), path.join(root, dir));
         for (const file of protectedPaths) launch.push("--ro-bind", realpathSync(file), file);

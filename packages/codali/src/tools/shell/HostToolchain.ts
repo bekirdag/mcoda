@@ -5,7 +5,9 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { discoverDarwinRuntimeLibraries } from "./DarwinRuntimeLibraries.js";
 
-export interface HostRuntimeMount { readOnlyRoot: string; directory: boolean; }
+export interface HostRuntimeMount { readOnlyRoot: string; directory: boolean;
+  /** An alias to recreate as a link to this path instead of mounting a copy. */
+  linkTo?: string; }
 export interface HostRuntime extends HostRuntimeMount {
   name: string; executable: string; support?: HostRuntimeMount[];
   environment?: { SDKROOT: string; DEVELOPER_DIR: string };
@@ -164,7 +166,10 @@ export const discoverHostToolchain = (workspaceRoot: string, searchPath = proces
           if (name !== "python" && name !== "python3") return runtime;
           const alias = path.join(realpathSync.native(path.dirname(candidate)), path.basename(candidate));
           if (alias !== executable && !within(alias, workspace) && realpathSync.native(alias) === executable) {
-            runtime.support = [...runtime.support ?? [], { readOnlyRoot: alias, directory: false }];
+            // Kept as a link: an interpreter finds its own installation by
+            // resolving the path it was started from, and a mounted copy at the
+            // alias path hides where it really lives.
+            runtime.support = [...runtime.support ?? [], { readOnlyRoot: alias, directory: false, linkTo: executable }];
           }
           return runtime;
         };

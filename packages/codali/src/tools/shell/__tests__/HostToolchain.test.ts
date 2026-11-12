@@ -202,6 +202,10 @@ test("a trusted venv retains its environment through an external interpreter ali
   const alias = path.join(hostBin, "python3"); await fs.symlink(python.executable, alias);
   const install = spawnSync(alias, ["-I", "-m", "venv", "--without-pip", runtime], { encoding: "utf8", timeout: 15000 });
   assert.equal(install.status, 0, install.stderr);
+  // A relocated interpreter (a CI tool cache built for another prefix) cannot
+  // serve a venv created through an alias in a different directory, sandbox or
+  // not: it looks for its library beside the alias. That is the host's limit.
+  if (spawnSync(path.join(runtime, "bin", "python"), ["-I", "-c", "pass"], { encoding: "utf8", timeout: 15000 }).status !== 0) { t.skip("This interpreter cannot run a venv created through an external alias"); return; }
   await fs.writeFile(path.join(hostBin, "private.txt"), "must not be mounted");
   process.env.PATH = hostBin;
   const result = await createIsolatedExecutor({ status, readOnlyRuntimeRoots: [runtime] })(path.join(runtime, "bin", "python"),

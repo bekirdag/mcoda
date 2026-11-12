@@ -18,7 +18,7 @@ const registry = () => { const tools = new ToolRegistry(); for (const tool of cr
 const fixture = async (t: { after: (fn: () => Promise<void>) => void }) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-document-test-")); t.after(() => fs.rm(root, { recursive: true, force: true })); return root;
 };
-const python = async (root: string, script: string) => promisify(execFile)(path.join(defaultDocumentPythonRoot(), "bin/python"), ["-I", "-B", "-c", script, root], { timeout: 10000, maxBuffer: 100000, env: { PATH: process.env.PATH } });
+const python = async (root: string, script: string) => promisify(execFile)(path.join(defaultDocumentPythonRoot(), "bin/python"), ["-I", "-B", "-c", script, root], { timeout: 10000, maxBuffer: 100000, env: { PATH: process.env.PATH, ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}) } });
 const blocks = [{ type: "heading", level: 2, text: "Observations" }, { type: "paragraph", text: "Verified value: 42. <not markup>" },
   { type: "table", headers: ["Item", "Count"], rows: [["A", 3], ["B", 5]] }, { type: "bullet", text: "Check the source." }];
 
