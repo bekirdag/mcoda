@@ -81,3 +81,12 @@ test("calculator is pure read permission, honors denial and cancellation, and la
   await assert.rejects(tool.handler({ expression: "1/0" }, { workspaceRoot: "/unused" }), /undefined/);
   await assert.rejects(tool.handler({ expression: "1+2" }, { workspaceRoot: "/unused", signal: AbortSignal.abort(new Error("Stopped")) }), /Stopped/);
 });
+
+test("counting functions give exact binomial coefficients and permutations", () => {
+  assert.equal(evaluateCalculation("C(40,8)"), 76904685);
+  assert.equal(evaluateCalculation("comb(38,7) + nCr(5,6)"), 12620256);
+  assert.equal(evaluateCalculation("perm(5,2)"), 20);
+  assert.equal(evaluateCalculation("factorial(10)"), 3628800);
+  assert.ok(Math.abs(evaluateCalculation("0.3*2*C(38,7)/C(40,8) + 0.2*6*C(34,7)/C(40,8)") - 0.182404) < 1e-6);
+  assert.throws(() => evaluateCalculation("C(4.5,2)"), /non-negative integers/);
+});

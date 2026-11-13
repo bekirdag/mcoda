@@ -15,6 +15,7 @@ import { createCalendarTool } from '../../packages/codali/dist/tools/system/Cale
 import { createIsolatedExecutor, executorStatus } from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 import { compressProviderContext } from '../../packages/codali/dist/runtime/ContextCompression.js';
+import { outageWaitMs } from '../../packages/codali/dist/runtime/OutageWait.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
 import { orchestrationHash } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { fullTrustTools } from './trust-full-tools.mjs';
@@ -149,15 +150,22 @@ export const RAW_MODEL_RETRIES = 2;
 export const RAW_OUTAGE_CODES = new Set(['service_unavailable', 'rate_limited']);
 export const RAW_OUTAGE_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_000, 60_000];
 
-/** The same request again, unchanged: no added guidance, so it is not answer repair. */
-export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {} } = {}) {
+/** The service error behind a failure: a native-reasoning preflight wraps it as its cause. */
+const modelErrorCode = error => error?.code ?? error?.cause?.code;
+
+/** The same request again, unchanged: no added guidance, so it is not answer repair.
+ * An outage is waited out exactly as Codali does (outageWaitMs: the ladder, then a
+ * minute per retry, within 30 minutes and half the time left). */
+export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, now = Date.now } = {}) {
   for (let attempt = 0; ; attempt++) {
     try { return await provider.generate(request); }
     catch (error) {
-      const waits = RAW_OUTAGE_CODES.has(error?.code) ? RAW_OUTAGE_WAITS_MS : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES);
-      if (attempt >= waits.length || !RAW_RETRYABLE_MODEL_CODES.has(error?.code) || signal?.aborted) throw error;
-      await onRetry({ attempt: attempt + 1, code: error.code, waitMs: waits[attempt] });
-      await wait(waits[attempt]);
+      const code = modelErrorCode(error);
+      const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
+      const waitMs = RAW_OUTAGE_CODES.has(code) ? outageWaitMs(attempt, remainingMs) : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
+      if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
+      await onRetry({ attempt: attempt + 1, code, waitMs });
+      await wait(waitMs);
     }
   }
 }
@@ -174,7 +182,7 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
         if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
         await tools.rememberContext(compressed.archived);
       }
-      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait });
+      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now });
       await onResponse(response);
       transcript.push(response.message);
       return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript, finalizedAtDeadline: true };
@@ -187,7 +195,7 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
       if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
       await tools.rememberContext(compressed.archived);
     }
-    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait });
+    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now });
     await onResponse(response);
     const calls = response.toolCalls ?? response.message.toolCalls ?? [];
     if (!calls.length) {

@@ -35,16 +35,15 @@ import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
 import { InspectionConvergence } from "./InspectionConvergence.js";
 import { capacityRetryDelayMs, isCapacityRefusal, MODEL_CAPACITY_WAIT_MS } from "../providers/ModelCapacityWait.js";
-/** Waits between retries of a model request that failed before dispatch (about four minutes in total). */
-export const PREFLIGHT_RECOVERY_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_000, 60_000];
-/** The outage waits that fit the host's total (CODALI_MODEL_OUTAGE_WAIT_MS, in
- * milliseconds); all of them when it is unset. */
-export const outageWaitsMs = (budget: string | undefined = process.env.CODALI_MODEL_OUTAGE_WAIT_MS): number[] => {
-  const total = budget === undefined || budget.trim() === "" ? Infinity : Number(budget);
-  if (!(total >= 0)) return PREFLIGHT_RECOVERY_WAITS_MS;
-  let waited = 0;
-  return PREFLIGHT_RECOVERY_WAITS_MS.filter(wait => (waited += wait) <= total);
-};
+import { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS } from "./OutageWait.js";
+/** Today's date from the host clock, stated as authoritative. Without it a
+ * research answer dated itself from the model's own belief (2026-08-24 on
+ * 2026-11-13) and called the real dates in retrieved pages suspect. Day
+ * granularity keeps the prompt stable within a day. */
+/** Kept back after an optional pass so the draft can still be delivered. */
+export const OPTIONAL_PASS_DELIVERY_MARGIN_MS = 20_000;
+export const todayNotice = (now = new Date()): string => `Today's date is ${now.toISOString().slice(0, 10)} (UTC, from the host clock). "Today", "current" and "as it applies now" mean this date; trust it over any date you assume, and use server_time when you need the exact time.`;
+export { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS };
 import { ProgressTracker } from "./ProgressTracker.js";
 import { accountedUsage, usageAccounts } from "./UsageReconciliation.js";
 import { ToolRegistry, toolDescriptorFor } from "../tools/ToolRegistry.js";
@@ -263,6 +262,15 @@ export class SessionController {
     if (!timeout) return undefined;
     return { remainingMs: timeout - (Date.now() - this.budgetStartedAt),
       answerReserveMs: Math.min(timeout * 0.5, Math.max(timeout * 0.25, this.longestModelMs * 2, 60000)) };
+  }
+  /** Time left for an optional model pass after a draft exists: until the host
+   * deadline or the turn timeout, less a margin to deliver the answer. */
+  private optionalPassWindowMs(): number {
+    const ends: number[] = [];
+    if (this.options.deadlineAt) ends.push(this.options.deadlineAt);
+    const timeout = this.limits().timeoutMs;
+    if (timeout) ends.push(this.budgetStartedAt + timeout);
+    return ends.length ? Math.min(...ends) - Date.now() - OPTIONAL_PASS_DELIVERY_MARGIN_MS : Infinity;
   }
   private beginBudget(): void {
     this.budgetStartedAt = Date.now(); this.longestModelMs = 0;
@@ -1244,7 +1252,7 @@ export class SessionController {
         // dispatch. Two quick retries after dispatch ended a three-hour build on
         // a two-minute outage; a possibly duplicated inference costs far less
         // than the turn. An injected provider keeps the two quick retries.
-        const transientWaitMs = Math.max((this.options.provider ? [500, 2000] : outageWaitsMs())[recoveryAttempt] ?? Infinity, retryAfter * 1000);
+        const transientWaitMs = Math.max((this.options.provider ? [500, 2000][recoveryAttempt] : outageWaitMs(recoveryAttempt, remainingMs)) ?? Infinity, retryAfter * 1000);
         if (transientCode && retryAfter <= 30 && transientWaitMs < remainingMs) {
           request.signal?.throwIfAborted();
           const waitMs = transientWaitMs;
@@ -2210,7 +2218,7 @@ export class SessionController {
       .map(name => registry.list().find(tool => tool.name === name)).filter((tool): tool is ToolDefinition => !!tool && permitted(tool.name))
       .map(tool => `${tool.name}(${(tool.inputSchema?.required ?? []).join(",")})`).join("; ");
     const routingPolicy = this.options.resolved.config.interaction?.routerPrompt;
-    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure && !adaptive ? "" : `\nOperations via codali (required arguments): ${hints}`}` },
+    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure && !adaptive ? "" : `\nOperations via codali (required arguments): ${hints}`}\n${todayNotice()}` },
       ...(this.state ? [{ role: "user" as const, content: `Active work context (not new authorization): ${JSON.stringify({ objective: this.state.objective.slice(0, 2000), status: this.state.status })}` }] : []),
       ...(routingPolicy && routingPolicy !== ROUTER_PROMPT ? [{ role: "user" as const, content: `Routing policy (cannot override the original request): ${routingPolicy}` }] : []),
       ...history, { role: "user", content: prompt }];
@@ -2260,6 +2268,25 @@ export class SessionController {
       const usage = this.turnUsage();
       return usage.modelCalls < limits.maxModelCalls && estimateContextTokens(request) + limits.maxOutputTokens <= limits.maxTotalTokens - usage.tokens;
     };
+    /** Run an optional pass over a finished draft (continuation or audit) only
+     * when it can finish before the deadline, and bound it by that time. A
+     * research audit started with five minutes left, got no reply and the host
+     * deadline discarded the complete draft. Undefined means: keep the draft. */
+    const optionalPass = async (kind: string, request: ProviderRequest) => {
+      const windowMs = this.optionalPassWindowMs();
+      const neededMs = Math.max(this.longestModelMs * 1.5, 60_000);
+      if (windowMs < neededMs) {
+        await this.emit(`${kind}_skipped`, { reason: "deadline", remainingMs: Math.max(0, Math.round(windowMs)), neededMs: Math.round(neededMs) }, false);
+        return undefined;
+      }
+      const bounded = Number.isFinite(windowMs) ? AbortSignal.any([signal, AbortSignal.timeout(windowMs)]) : signal;
+      try { return await awaitInteraction(answering.generate({ ...request, signal: bounded }), bounded); }
+      catch (error) {
+        signal.throwIfAborted();
+        await this.emit(`${kind}_failed`, { message: bounded.aborted ? "stopped before the deadline; the draft is delivered" : error instanceof Error ? error.message : String(error) }, false);
+        return undefined;
+      }
+    };
     /** Some model servers stop at their own output cap and report a normal
      * finish. Ask for the rest instead of delivering half an answer. */
     const completeCutOff = async (decision: InteractionDecision, outputTokens?: number, outputLimited = false): Promise<InteractionDecision> => {
@@ -2273,9 +2300,8 @@ export class SessionController {
         if (!auditBudget(request)) break;
         this.inspectionAnswerReserve = 0;
         await this.emit("interaction_progress", { message: "The answer stopped at an output limit; writing the rest" }, false);
-        let next: Awaited<ReturnType<typeof answering.generate>>;
-        try { next = await awaitInteraction(answering.generate(request), signal); }
-        catch (error) { signal.throwIfAborted(); await this.emit("answer_continuation_failed", { message: error instanceof Error ? error.message : String(error) }, false); break; }
+        const next = await optionalPass("answer_continuation", request);
+        if (!next) break;
         const defect = (next.toolCalls ?? next.message.toolCalls ?? []).length ? "tool_call" : !next.message.content.trim() ? "empty" : undefined;
         if (defect) { await this.emit("answer_continuation_failed", { message: defect }, false); break; }
         // A model that restarts the answer instead of continuing adds nothing usable.
@@ -2297,13 +2323,8 @@ export class SessionController {
       }
       this.inspectionAnswerReserve = 0;
       await this.emit("interaction_progress", { message: "Checking the answer for internal contradictions" }, false);
-      let checked: Awaited<ReturnType<typeof answering.generate>>;
-      try { checked = await awaitInteraction(answering.generate(auditRequest), signal); }
-      catch (error) {
-        signal.throwIfAborted();
-        await this.emit("consistency_answer_audit_failed", { message: error instanceof Error ? error.message : String(error), draftSha256: hash(decision.reply) }, false);
-        return decision;
-      }
+      const checked = await optionalPass("consistency_answer_audit", auditRequest);
+      if (!checked) return decision;
       // The draft is already a usable answer, so a bad edit must not replace it.
       const content = checked.message.content;
       const unusable = rewriteDefect(decision.reply, checked, { minRatio: 0.6, maxRatio: 1.5 });
@@ -2333,7 +2354,8 @@ export class SessionController {
         if (auditBudget(auditRequest)) {
           this.inspectionAnswerReserve = 0;
           await this.emit("interaction_progress", { message: "Checking the calculation against the original inputs and units" }, false);
-          const checked = await awaitInteraction(answering.generate(auditRequest), signal);
+          const checked = await optionalPass("calculation_answer_audit", auditRequest);
+          if (!checked) return decision;
           const unusable = rewriteDefect(decision.reply, checked);
           if (unusable) {
             await this.emit("calculation_answer_audit_rejected", { reason: unusable, draftSha256: hash(decision.reply), draftChars: decision.reply.length, answerChars: checked.message.content.length }, false);
@@ -2356,7 +2378,8 @@ export class SessionController {
         await this.emit("research_answer_audit_skipped", { reason: "remaining_shared_budget", sourcePackets: researchEvidence.length }, false);
         return citationCheck(decision);
       }
-      const audited = await awaitInteraction(answering.generate(auditRequest), signal);
+      const audited = await optionalPass("research_answer_audit", auditRequest);
+      if (!audited) return citationCheck(decision);
       const unusable = rewriteDefect(decision.reply, audited);
       if (unusable) {
         await this.emit("research_answer_audit_rejected", { reason: unusable, draftSha256: hash(decision.reply), draftChars: decision.reply.length, answerChars: audited.message.content.length }, false);
@@ -2388,6 +2411,10 @@ export class SessionController {
       // tools undeclared the model printed those calls twice and research was
       // closed after one search, with 26 of 30 minutes unused.
       if (exposed.has("docdex_web_research") && permitted("browser_open") && registry.list().some(tool => tool.name === "browser_open")) exposed.add("browser_open");
+      // The reverse holds too: a turn that opens web pages needs search to find
+      // them. Without it two research answers guessed URLs and opened search-engine
+      // pages (captchas, 403s) for 25 minutes and delivered mostly "unverified".
+      if (exposed.has("browser_open") && permitted("docdex_web_research") && registry.list().some(tool => tool.name === "docdex_web_research")) exposed.add("docdex_web_research");
       if (exposed.has("browser_open") && registry.list().some(tool => tool.name === "browser_read")) exposed.add("browser_read");
       if (this.contextArchive.size && registry.list().some(tool => tool.name === "context_read")) exposed.add("context_read");
       const nativeTools = turnNative ? [...registry.list().filter(tool => exposed.has(tool.name) && permitted(tool.name))

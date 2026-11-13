@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Model outages: a turn waits out an outage for up to 30 minutes (the retry
+  ladder, then a retry a minute), bounded by half the time it has left; the
+  four-minute ladder alone lost a three-hour build to a nine-minute relay
+  outage. Requests allowed more than 300 s no longer fail at 300 s without
+  response headers (the platform fetch's default).
+- Deadlines: continuation and answer audits start only when they can finish
+  before the deadline and are stopped in time; if one fails or is stopped the
+  finished draft is delivered. A research audit that got no reply had cost a
+  complete answer.
+- Research: web search is declared whenever page tools are, so a turn that
+  opens pages can find them instead of guessing URLs and opening search-engine
+  pages. The prompt states today's date from the host clock; one answer had
+  dated itself months earlier and called the real dates suspect.
+- Calculator: comb/C/nCr, perm/P/nPr and factorial.
+
+## 0.1.135-codali.37 and earlier
+
 - Sandbox: a relocated Python (a CI tool cache or a copied installation, whose
   binary records the library directory it was built for) finds its interpreter
   library; the loader path points only at libraries already mounted from the

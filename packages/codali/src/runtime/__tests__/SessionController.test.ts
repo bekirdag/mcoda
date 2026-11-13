@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, PREFLIGHT_RECOVERY_WAITS_MS, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -81,6 +81,24 @@ test("the outage wait schedule can be bounded by the host", () => {
   assert.deepEqual(outageWaitsMs("2500"), [500, 2000]);
   assert.deepEqual(outageWaitsMs("0"), []);
   assert.deepEqual(outageWaitsMs("not a number"), PREFLIGHT_RECOVERY_WAITS_MS);
+});
+
+test("the prompt states today's date from the host clock as authoritative", () => {
+  const notice = todayNotice(new Date("2026-11-13T08:35:54Z"));
+  assert.match(notice, /Today's date is 2026-11-13/);
+  assert.match(notice, /trust it over any date you assume/);
+});
+
+test("a long turn waits out an outage longer than the ladder, within its remaining time", () => {
+  const total = (remainingMs: number, budget?: string) => { let sum = 0; for (let i = 0; ; i++) { const w = outageWaitMs(i, remainingMs, budget); if (w === undefined) return sum; sum += w; } };
+  // A 24-hour build rides out a nine-minute outage (the ladder alone is ~4 minutes).
+  assert.ok(total(21 * 3_600_000, undefined) >= 25 * 60_000);
+  assert.ok(total(21 * 3_600_000, undefined) <= MODEL_OUTAGE_WAIT_MS);
+  // A short answer keeps half its remaining time for the work itself.
+  assert.ok(total(10 * 60_000, undefined) <= 5 * 60_000);
+  assert.equal(outageWaitMs(0, 21 * 3_600_000, "2500"), 500);
+  assert.equal(outageWaitMs(2, 21 * 3_600_000, "2500"), undefined);
+  assert.equal(outageWaitMs(12, 21 * 3_600_000, undefined), 60_000);
 });
 
 test("scope rejection names the missing path and recovery preserves the task contract", async t => {

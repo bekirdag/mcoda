@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {snapshotWorkflowWorkspace,provisionAppWorkspace} from './appbuild-workspace.mjs';
 import {createWorkflowTools,runRawWorkflow,RAW_FINAL_ANSWER_NOTICE,finalAnswerReserveMs,generateWithRetry,RAW_OUTAGE_WAITS_MS} from './appbuild-tools.mjs';
+import {outageWaitMs} from '../../packages/codali/dist/runtime/OutageWait.js';
 import {estimateContextTokens} from '../../packages/codali/dist/runtime/ContextCompression.js';
 import {createIsolatedExecutor,executorStatus} from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import {readWorkflowCorpus} from './trust-workflow-protocol.mjs';
@@ -140,5 +141,11 @@ test('raw arm waits out a temporary outage on the schedule Codali uses', async (
  const response=await generateWithRetry(provider,request,{wait:async ms=>{waits.push(ms);}});
  assert.equal(response.message.content,'ok');assert.deepEqual(waits,RAW_OUTAGE_WAITS_MS.slice(0,6));
  let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('service_unavailable');}},request,{wait:async()=>{}}),/service_unavailable/);
- assert.equal(m,RAW_OUTAGE_WAITS_MS.length+1);
+ let expected=1;while(outageWaitMs(expected-1)!==undefined)expected++;assert.equal(m,expected);assert.ok(m>RAW_OUTAGE_WAITS_MS.length+1,'a long outage is waited out past the ladder');
+ // A native-reasoning preflight wraps the service error as its cause (cycle 3: a raw build ended on one 502).
+ let p=0;const wrapped=Object.assign(Error('Native reasoning preflight failed before inference: Model service HTTP 502'),{cause:fail('service_unavailable')});
+ const ok=await generateWithRetry({generate:async()=>{if(p++<3)throw wrapped;return {message:{role:'assistant',content:'ok'}};}},request,{wait:async()=>{}});
+ assert.equal(ok.message.content,'ok');
+ // Near the deadline the wait is bounded by half the time left.
+ let d=0;await assert.rejects(generateWithRetry({generate:async()=>{d++;throw fail('service_unavailable');}},request,{wait:async()=>{},deadlineAt:Date.now()+5000}),/service_unavailable/);assert.equal(d,3,"retries fit in half the time left: 500 + 2000 ms");
 });

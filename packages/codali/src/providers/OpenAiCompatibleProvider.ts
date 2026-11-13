@@ -5,6 +5,7 @@ import {
   type LocalRunnerConfigIssue,
   type LocalRunnerResponseFormatStrategy,
 } from "@mcoda/shared";
+import { Agent } from "undici";
 import { ModelServiceError } from "./ModelServiceError.js";
 import type {
   Provider,
@@ -177,6 +178,16 @@ const isTransientNetworkError = (error: unknown): boolean => {
   return error instanceof TypeError && /fetch failed|network|socket/i.test(error.message);
 };
 
+/** The platform fetch gives up after 300 s without response headers, even when
+ * the caller allows longer. A long non-streamed request (an answer audit on a
+ * large draft) then failed at exactly 300 s and the turn lost its finished
+ * answer. Requests allowed more than that use a dispatcher without those
+ * limits; the caller's own timeout still bounds them. */
+export const FETCH_HEADERS_TIMEOUT_MS = 300_000;
+let unboundedDispatcher: Agent | undefined;
+export const dispatcherFor = (timeoutMs: number): Agent | undefined => timeoutMs > FETCH_HEADERS_TIMEOUT_MS
+  ? (unboundedDispatcher ??= new Agent({ headersTimeout: 0, bodyTimeout: 0 })) : undefined;
+
 export const fetchWithTransientRetry = async (
   url: string,
   init: RequestInit,
@@ -332,7 +343,9 @@ export class OpenAiCompatibleProvider implements Provider {
           body: JSON.stringify(body),
           signal: controller.signal,
           redirect: "error",
-        },
+          // The platform fetch accepts an undici dispatcher; RequestInit does not declare it.
+          ...(dispatcherFor(timeoutMs) ? { dispatcher: dispatcherFor(timeoutMs) } : {}),
+        } as RequestInit,
         controller,
       );
 

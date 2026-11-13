@@ -25,6 +25,25 @@ const tokenize = (expression: string): string[] => {
   return tokens;
 };
 
+const countArgs = (n: number, k: number): void => {
+  if (!Number.isInteger(n) || !Number.isInteger(k) || n < 0 || k < 0) throw new Error("Counting functions take non-negative integers");
+};
+/** n choose k, exact while the result is a safe integer (each partial product is). */
+const combinations = (n: number, k: number): number => {
+  countArgs(n, k);
+  if (k > n) return 0;
+  let result = 1;
+  for (let i = 1; i <= Math.min(k, n - k); i++) result = finite(result * (n - Math.min(k, n - k) + i) / i);
+  return Math.round(result);
+};
+const permutations = (n: number, k: number): number => {
+  countArgs(n, k);
+  if (k > n) return 0;
+  let result = 1;
+  for (let i = 0; i < k; i++) result = finite(result * (n - i));
+  return result;
+};
+
 const functions = new Map<string, { min: number; max: number; run: (...args: number[]) => number }>([
   ["abs", { min: 1, max: 1, run: Math.abs }],
   ["sqrt", { min: 1, max: 1, run: Math.sqrt }],
@@ -42,6 +61,11 @@ const functions = new Map<string, { min: number; max: number; run: (...args: num
   ["min", { min: 1, max: 128, run: Math.min }],
   ["max", { min: 1, max: 128, run: Math.max }],
   ["sum", { min: 1, max: 128, run: (...args) => args.reduce((total, value) => finite(total + value), 0) }],
+  // Counting functions: hypergeometric and sampling questions need them, and a
+  // rejected C(40,8) made the model type binomial coefficients from memory.
+  ...["comb", "choose", "nCr", "C"].map(name => [name, { min: 2, max: 2, run: combinations }] as const),
+  ...["perm", "nPr", "P"].map(name => [name, { min: 2, max: 2, run: permutations }] as const),
+  ["factorial", { min: 1, max: 1, run: (n: number) => permutations(n, n) }],
 ]);
 
 /** Bounded Pratt parser; exponentiation is right associative and binds more tightly than unary minus. */
@@ -107,7 +131,7 @@ export const evaluateCalculation = (expression: string): number => {
 
 export const createCalculatorTool = (): ToolDefinition => ({
   name: "calculate", capability: "calculation", readOnly: true,
-  description: "Calculate {expression:'formula'} OR {expressions:{label:'formula'}} (up to16). Supports exp,ln/log(natural),log10,pow,sin/cos/tan(radians),abs,sqrt,floor,ceil,round,min,max,sum; + - * / %, ^ **, pi,e. Math.function aliases accepted only for this allowlist. No variables, assignments or code. IEEE-754 approximate; exact decimals use decimal_calculate. Tool success checks arithmetic, not whether your formula models the request.",
+  description: "Calculate {expression:'formula'} OR {expressions:{label:'formula'}} (up to16). Supports exp,ln/log(natural),log10,pow,sin/cos/tan(radians),abs,sqrt,floor,ceil,round,min,max,sum,comb/C(n,k),perm/P(n,k),factorial; + - * / %, ^ **, pi,e. Math.function aliases accepted only for this allowlist. No variables, assignments or code. IEEE-754 approximate; exact decimals use decimal_calculate. Tool success checks arithmetic, not whether your formula models the request.",
   inputSchema: { type: "object", properties: { expression: { type: "string", description: "One numeric formula, e.g. exp(-2)*3. Supply this OR expressions.", minLength: 1, maxLength: 4096 },
     expressions: { type: "object", description: "Map labels to complete formula STRINGS, e.g. {total:'2*3+4',check:'10'}. Each formula is independent; labels are not variables. Supply this OR expression.", minProperties: 1, maxProperties: 16, propertyNames: { pattern: "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, additionalProperties: true },
   }, oneOf: [{ required: ["expression"] }, { required: ["expressions"] }], additionalProperties: false },
