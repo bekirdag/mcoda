@@ -1,6 +1,10 @@
 // Only app builds may run longer. The deadline is part of the case so each arm
 // sees it from the start, rather than being killed by an outside timer.
 export const MAX_NON_APP_DEADLINE_MS = 30 * 60 * 1000;
+// Research uses nearly all of 30 minutes on both arms (cycle 3: raw median 29),
+// so the limit measured stopping in time; research may run 45 minutes.
+export const MAX_RESEARCH_DEADLINE_MS = 45 * 60 * 1000;
+export const maxDeadlineMs = c => c.domain === 'research' ? MAX_RESEARCH_DEADLINE_MS : MAX_NON_APP_DEADLINE_MS;
 
 // Validate a prospective cohort without silently changing historical defaults.
 export function studyLabels(study) {
@@ -21,6 +25,6 @@ export function validateStudyShape(study, cases) {
     || cases.filter(c => c.comparison === 'implementation').length !== builds) {
     throw Error(`Expected ${count} unique cases including ${builds} builds`);
   }
-  const overLimit = cases.find(c => c.comparison !== 'implementation' && c.execution?.deadlineMs > MAX_NON_APP_DEADLINE_MS);
-  if (overLimit) throw Error(`Case ${overLimit.id} exceeds the 30-minute limit for non-app requests`);
+  const overLimit = cases.find(c => c.comparison !== 'implementation' && c.execution?.deadlineMs > maxDeadlineMs(c));
+  if (overLimit) throw Error(`Case ${overLimit.id} exceeds the ${maxDeadlineMs(overLimit) / 60000}-minute limit for non-app ${overLimit.domain === 'research' ? 'research ' : ''}requests`);
 }
