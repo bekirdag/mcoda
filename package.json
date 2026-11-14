@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.134",
+  "version": "0.1.135-codali.38",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
@@ -68,7 +68,9 @@
       "jest-util>picomatch": "4.0.4",
       "axios": "1.13.5",
       "systeminformation": "5.31.0",
-      "serialize-javascript": "7.0.3"
+      "serialize-javascript": "7.0.3",
+      "playwright": "1.64.1",
+      "playwright-core": "1.64.1"
     }
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 export const GENERATIVE_OPERATIONS = [
   "chat.completions",
+  "embeddings",
   "images.generations",
   "audio.generations",
   "videos.generations",
@@ -7,7 +8,7 @@ export const GENERATIVE_OPERATIONS = [
 
 export type GenerativeOperation = (typeof GENERATIVE_OPERATIONS)[number];
 
-export const GENERATIVE_MODALITIES = ["text", "image", "audio", "video"] as const;
+export const GENERATIVE_MODALITIES = ["text", "embedding", "image", "audio", "video"] as const;
 
 export type GenerativeModality = (typeof GENERATIVE_MODALITIES)[number];
 
@@ -18,12 +19,14 @@ export const GENERATIVE_OPERATION_DEFAULT_PATHS: Readonly<
   Record<GenerativeOperation, GenerativeOperationPath>
 > = {
   "chat.completions": "/v1/chat/completions",
+  embeddings: "/v1/embeddings",
   "images.generations": "/v1/images/generations",
   "audio.generations": "/v1/audio/generations",
   "videos.generations": "/v1/videos/generations",
 };
 
 export const GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS = {
+  embeddings: ["model", "input", "encoding_format", "dimensions"],
   "chat.completions": [
     "model",
     "messages",
@@ -107,6 +110,10 @@ export const GENERATIVE_OPERATION_LIMIT_KEYS = [
   "maxVideoFrames",
   "maxSteps",
   "maxHighNoiseSteps",
+  "maxInputItems",
+  "maxInputChars",
+  "maxTotalInputChars",
+  "embeddingDimensions",
 ] as const;
 
 export type GenerativeOperationLimitKey = (typeof GENERATIVE_OPERATION_LIMIT_KEYS)[number];
@@ -132,6 +139,10 @@ export interface GenerativeOperationLimits {
   maxVideoFrames?: number;
   maxSteps?: number;
   maxHighNoiseSteps?: number;
+  maxInputItems?: number;
+  maxInputChars?: number;
+  maxTotalInputChars?: number;
+  embeddingDimensions?: number;
 }
 
 export interface SelfHostedGenerativeOperation<
@@ -151,6 +162,9 @@ export type GenerativeOperationDescriptor<
 > = SelfHostedGenerativeOperation<Operation>;
 
 const OPERATION_ALIASES: Readonly<Record<string, GenerativeOperation>> = {
+  embedding: "embeddings",
+  embeddings: "embeddings",
+  "/v1/embeddings": "embeddings",
   chat: "chat.completions",
   "chat.completion": "chat.completions",
   "chat.completions": "chat.completions",
@@ -184,6 +198,8 @@ const OPERATION_ALIASES: Readonly<Record<string, GenerativeOperation>> = {
 };
 
 const MODALITY_ALIASES: Readonly<Record<string, GenerativeModality>> = {
+  embedding: "embedding",
+  embeddings: "embedding",
   text: "text",
   chat: "text",
   image: "image",
@@ -194,6 +210,7 @@ const MODALITY_ALIASES: Readonly<Record<string, GenerativeModality>> = {
 };
 
 const REQUEST_PARAMETER_SETS: Readonly<Record<GenerativeOperation, ReadonlySet<string>>> = {
+  embeddings: new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS.embeddings),
   "chat.completions": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["chat.completions"]),
   "images.generations": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["images.generations"]),
   "audio.generations": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["audio.generations"]),

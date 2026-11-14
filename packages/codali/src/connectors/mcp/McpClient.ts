@@ -185,12 +185,12 @@ export interface McpClientOptions {
 export interface McpTransportClient {
   listTools(
     params?: Record<string, unknown>,
-    options?: { timeout?: number },
+    options?: { timeout?: number; signal?: AbortSignal },
   ): Promise<{ tools: unknown[] }>;
   callTool(
     params: { name: string; arguments?: Record<string, unknown> },
     resultSchema?: unknown,
-    options?: { timeout?: number },
+    options?: { timeout?: number; signal?: AbortSignal },
   ): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -303,14 +303,15 @@ export class McpClient {
     return tools;
   }
 
-  async callTool(name: string, args: unknown): Promise<McpCallResult> {
+  async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<McpCallResult> {
+    signal?.throwIfAborted();
     const client = await this.ensureClient();
     let raw: unknown;
     try {
       raw = await client.callTool(
         { name, arguments: isRecord(args) ? args : {} },
         undefined,
-        { timeout: this.timeoutMs },
+        { timeout: this.timeoutMs, ...(signal ? { signal } : {}) },
       );
     } catch (error) {
       throw new McpClientError(

@@ -11,6 +11,7 @@ import {
   type CodaliRuntimeToolManifest,
 } from "./CodaliRuntime.js";
 import type { ProviderMessage, ProviderUsage } from "../providers/ProviderTypes.js";
+import { ConfiguredModelScope, type ScopedModelUsage } from "../providers/ConfiguredModelScope.js";
 
 export type CodaliJobStageKind =
   | "router"
@@ -212,6 +213,7 @@ export interface CodaliJobTelemetry {
 }
 
 export interface CodaliJobRuntimeResult {
+  orchestration?: { configHash: string; usage: ScopedModelUsage; toolCalls: number };
   output: string;
   status: CodaliJobStatus;
   runId: string;
@@ -629,6 +631,30 @@ const pickFinalOutput = (stages: CodaliJobStageResult[]): string => {
 };
 
 export const runCodaliJob = async (input: CodaliJobRuntimeInput): Promise<CodaliJobRuntimeResult> => {
+  if (!input.runtime.orchestration) return runCodaliJobWithinScope(input);
+  if (input.runTask) throw new Error("Configured orchestration cannot accept a task-runner override");
+  if (input.request.agentPolicy?.defaultProvider || Object.keys(input.request.agentPolicy?.stageProviders ?? {}).length || input.request.stages?.some(stage => stage.provider)) throw new Error("Configured orchestration cannot accept stage provider overrides");
+  const configured = input.runtime.orchestration;
+  const scope = configured.scope ?? new ConfiguredModelScope(configured.resolved, { effort: configured.effort, signal: input.runtime.signal, caller: configured.caller });
+  try {
+    if (scope.configHash !== configured.resolved.hash || (configured.effort !== undefined && scope.effort !== configured.effort)) throw new Error("Parent orchestration scope does not match configuration or effort");
+    if (configured.caller && !scope.matchesCaller(configured.caller)) throw new Error("Parent orchestration scope does not match caller identity");
+    const budget = scope.budget();
+    // Validate every binding before any stage starts or external operation occurs.
+    for (const stage of normalizeStages(input.request.stages)) scope.models(stage.role ?? stage.kind);
+    const result = await runCodaliJobWithinScope({ ...input,
+      runtime: { ...input.runtime, signal: input.runtime.signal ? AbortSignal.any([input.runtime.signal, scope.signal]) : scope.signal,
+        orchestration: { ...configured, scope } },
+      request: { ...input.request, budgets: { ...input.request.budgets,
+        maxRuntimeMs: Math.min(input.request.budgets?.maxRuntimeMs ?? input.runtime.policy.timeoutMs, budget.timeoutMs),
+        maxToolCalls: Math.min(input.request.budgets?.maxToolCalls ?? input.runtime.policy.maxToolCalls, budget.maxToolCalls),
+      } },
+    });
+    return { ...result, orchestration: { configHash: scope.configHash, usage: scope.snapshot(), toolCalls: scope.toolsUsed } };
+  } finally { if (!configured.scope) scope.close(); }
+};
+
+const runCodaliJobWithinScope = async (input: CodaliJobRuntimeInput): Promise<CodaliJobRuntimeResult> => {
   const jobId = input.request.id ?? input.runtime.metadata?.jobId ?? randomUUID();
   const jobType = input.request.jobType || DEFAULT_JOB_TYPE;
   const runId = input.runtime.metadata?.requestId ?? jobId;
@@ -703,6 +729,7 @@ export const runCodaliJob = async (input: CodaliJobRuntimeInput): Promise<Codali
     try {
       const runtimeResult = await runTask({
         ...input.runtime,
+        orchestration: input.runtime.orchestration ? { ...input.runtime.orchestration, binding: stage.role ?? stage.kind } : undefined,
         task,
         messages: input.runtime.messages,
         provider: stageProvider,
@@ -753,7 +780,7 @@ export const runCodaliJob = async (input: CodaliJobRuntimeInput): Promise<Codali
         endedAt: new Date(ended).toISOString(),
         durationMs: ended - Date.parse(startedAt),
         agentSlug: stageAgent?.slug,
-        model: stageProvider.model,
+        model: runtimeResult.orchestration?.routes.at(-1)?.catalogId ?? stageProvider.model,
         metadata: stage.metadata,
       };
       await emit({

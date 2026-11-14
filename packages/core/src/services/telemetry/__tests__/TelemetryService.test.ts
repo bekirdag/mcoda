@@ -157,13 +157,38 @@ describe("TelemetryService", () => {
     }
   });
 
-  it("supports grouping by day", async () => {
+  it("groups same-day usage together and separates the UTC midnight boundary", async () => {
+    // Fixed timestamps keep this independent of the runner's clock and timezone.
+    // The shared fixtures use now and now - 2h, which can span two UTC days.
+    for (const timestamp of [
+      "2001-01-01T12:00:00.000Z",
+      "2001-01-01T23:59:59.999Z",
+      "2001-01-02T00:00:00.000Z",
+    ]) {
+      await repo.recordTokenUsage({
+        workspaceId: workspace.workspaceId,
+        jobId: job1,
+        tokensPrompt: 6,
+        tokensCompletion: 4,
+        tokensTotal: 10,
+        timestamp,
+      });
+    }
     const service = await TelemetryService.create(workspace);
     try {
-      const summary = await service.getSummary({ groupBy: ["day"] });
-      assert.equal(summary.length, 1);
-      assert.ok(summary[0].day);
-      assert.equal(summary[0].calls, 2);
+      const summary = await service.getSummary({
+        groupBy: ["day"],
+        since: "2001-01-01T00:00:00.000Z",
+        until: "2001-01-02T23:59:59.999Z",
+      });
+      assert.deepEqual(
+        summary.map(({ day, calls, tokens_total }) => ({ day, calls, tokens_total }))
+          .sort((left, right) => left.day!.localeCompare(right.day!)),
+        [
+          { day: "2001-01-01", calls: 2, tokens_total: 20 },
+          { day: "2001-01-02", calls: 1, tokens_total: 10 },
+        ],
+      );
     } finally {
       await service.close();
     }

@@ -1,0 +1,1496 @@
+[
+  {
+    "id": "unseen-01",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-01-before-d2dd542b-e84f-4c33-bd74-a38660f8cc5f",
+    "sha256": {
+      "result.json": "4b50ed5e7ca74b07797985c0961cd66f639772aeb2bcdf9d46d17cbeb1e1119e",
+      "independent-answer-score.json": "8ea574368e69d5daa26cb1fe8475fafbc9f3d586703ec1150486b1c6873b2192",
+      "independent-narrative-review.json": "b7c3eb3666161c466a6423756f29195dc8274758b70f84f1096c88efa6f86160"
+    }
+  },
+  {
+    "id": "unseen-01",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-01-after-d506d261-a36d-492c-aa08-53f8175533b8",
+    "sha256": {
+      "result.json": "b0d5760da0a5cad9a79b4d201cd2ae0f45c500bde28910c9d4b87d1ed17cf208",
+      "independent-answer-score.json": "8ea574368e69d5daa26cb1fe8475fafbc9f3d586703ec1150486b1c6873b2192",
+      "independent-narrative-review.json": "6e9da1d50129a0ebc6183d739221cec8ec3ad6fbf44fd4467292b101bba6ff15"
+    }
+  },
+  {
+    "id": "unseen-01",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-01-raw_tools-3cfec8ff-cea9-4b2d-bbb1-e3c0f69d3403",
+    "sha256": {
+      "result.json": "e0491a250cb687cc40513a8c465604b512718f6b75b927a0627ecfab31c75f68",
+      "independent-answer-score.json": "8ea574368e69d5daa26cb1fe8475fafbc9f3d586703ec1150486b1c6873b2192",
+      "independent-narrative-review.json": "7c6fe1187b54c35cf9fb07c2ec25dbe227c936bedc5c4091ab01764f8d8e7d3e"
+    }
+  },
+  {
+    "id": "unseen-02",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-02-before-cd0b71cf-14bb-4e44-89db-44d520b9c868",
+    "sha256": {
+      "result.json": "561794b8c6f4516c9feee72d1356a860db3924fcf2616330c3614acfff401a24",
+      "independent-answer-score.json": "7c49105d7c40eea536f8f4e6a2b5223a0ab36b52077aff8a3d3bad2740f3bf2c",
+      "independent-narrative-review.json": "5881aae9ea61f94dad783fdbe55066edd4ffb2360e5ab47da06ffd62541549c6"
+    }
+  },
+  {
+    "id": "unseen-02",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-02-after-a54fa48a-d596-4d9e-9221-05decaf5dafd",
+    "sha256": {
+      "result.json": "01c2a09285658486fd9870b3925cab26a92b1a2c7908231ed9a07b5085bfa990",
+      "independent-answer-score.json": "d9624ae8bea0e161350d905990cf28314b59e001618715164a8cc191248b86a0",
+      "independent-narrative-review.json": "64082e3437178646fb00c25f0c415ce3fd83c3df27d0c47573728d211d269beb"
+    }
+  },
+  {
+    "id": "unseen-02",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-02-raw_tools-8c1c2b7d-5873-42bf-adf9-bcbb20276664",
+    "sha256": {
+      "result.json": "a162c3a37fcc2b5c16559bdc91a133e2cd75c18996e24f556f3b3578398eab84",
+      "independent-answer-score.json": "40f178951e5230e507805949a8e62307258a1e436bffca4064f120ada70e5661",
+      "independent-narrative-review.json": "91ac4615f3db39aebb4abdd77fd7c58e280665389fc9ced073345cd5694918fd"
+    }
+  },
+  {
+    "id": "unseen-03",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-03-before-ae79cb01-4f25-4da5-9e0f-ae1f53296035",
+    "sha256": {
+      "result.json": "698293ca844a1c4e43209e48c383d0973d09280676e0b96d8903c9587b8a4fa6",
+      "independent-answer-score.json": "f1d6a48f88b16d736dee6fd253458c3e9e0188522d2d3ffcc371d041fcc19a59",
+      "independent-narrative-review.json": "b0dd862b169205bb78cb0895e8eb5016c259b146d36915d5a01255fa17898b1d"
+    }
+  },
+  {
+    "id": "unseen-03",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-03-after-dd8192ce-2813-43e5-b598-e7326a9586dc",
+    "sha256": {
+      "result.json": "04bf5fdbaafbe552e8b9d1abca2b5ce9a55834aed1559bd25f77ee53a8299dd2",
+      "independent-answer-score.json": "f1d6a48f88b16d736dee6fd253458c3e9e0188522d2d3ffcc371d041fcc19a59",
+      "independent-narrative-review.json": "929274348ab99181baccbdbbd9fbb4e73d1f6549523ee7793573ddecf037b125"
+    }
+  },
+  {
+    "id": "unseen-03",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-03-raw_tools-56a87428-f4fc-46bc-b06d-e86e7d7a580e",
+    "sha256": {
+      "result.json": "7842a4e2c8ceebc2b8813d78be0a58fa3337527f37d784c9a8473d6d498cb00a",
+      "independent-answer-score.json": "5432011e0f2826c92198027f613fe4147e5868d419a35175383780e6deedc498",
+      "independent-narrative-review.json": "4d37c9a2777b536d51a7a4a50e8914efdf176add287be6eecb8f184349cf786e"
+    }
+  },
+  {
+    "id": "unseen-04",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-04-before-11a2bba5-1322-4ffd-a06e-c43359059e7d",
+    "sha256": {
+      "result.json": "70b0634f6830e3d946299949961fcdbc52ed49cd351df872b9a279d90ae8aa8d",
+      "independent-answer-score.json": "6a62553752dc2d4f726cb76989278baaa3b6dae46444d564a599b05e4c525948",
+      "independent-narrative-review.json": "41e493978e317cda0a434af422080344f0adb69d047e6489f5bac31358d8f20e"
+    }
+  },
+  {
+    "id": "unseen-04",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-04-after-4bc4de06-dc06-4ad2-9cb4-640956ee2d6d",
+    "sha256": {
+      "result.json": "f2309090b14048f5532a19961631fa3f8df6e0334b612e4ec050b34a11a6dc07",
+      "independent-answer-score.json": "6a62553752dc2d4f726cb76989278baaa3b6dae46444d564a599b05e4c525948",
+      "independent-narrative-review.json": "6d1d15690de5d6ca856c42d8ac8888e41637bea27468540ff20ad18e5c60fab9"
+    }
+  },
+  {
+    "id": "unseen-04",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-04-raw_tools-2eb4b69c-bcde-4c3c-b3a4-0b3dbbe7e907",
+    "sha256": {
+      "result.json": "d907c44aaf47850a65b93acd9e57b29fad638e48b95a44a09bdeb5b6ce197208",
+      "independent-answer-score.json": "6a62553752dc2d4f726cb76989278baaa3b6dae46444d564a599b05e4c525948",
+      "independent-narrative-review.json": "1adde0a05a0442f6e239a713e19be1e1dcc19a31e320df147d87be4e2dd33bfb"
+    }
+  },
+  {
+    "id": "unseen-05",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-05-before-90825d38-3cfa-4d02-b835-9e912beb7801",
+    "sha256": {
+      "result.json": "28084fe249aae04488737868987352ee31a72c69b1afc49683fd58f808a7473c",
+      "independent-answer-score.json": "2f443598e286defdac8e0c9e517ceb3f66b70d8fbd77917a0a5d86b1f6c51941",
+      "independent-narrative-review.json": "dbff489ae7101f56a7c70a333f57876bcc393e237c06c1d53512d9fe8cac5023"
+    }
+  },
+  {
+    "id": "unseen-05",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-05-after-d771cdfa-d23d-40f2-b7e5-0189de8f84a3",
+    "sha256": {
+      "result.json": "73fc6f098cce220094a720e01e4f9db002280b7e5c46e84ae5f80a82a0ddd486",
+      "independent-answer-score.json": "2f443598e286defdac8e0c9e517ceb3f66b70d8fbd77917a0a5d86b1f6c51941",
+      "independent-narrative-review.json": "3a7309637f0ea6bbd4717ba1fcc744e0ceec168d34256796ad654a9e2fa7d52f"
+    }
+  },
+  {
+    "id": "unseen-05",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-05-raw_tools-2a1ac708-b5d6-4bb6-b851-fbc7c17b9c24",
+    "sha256": {
+      "result.json": "954f1ff03fb738f7e25b21cc2958f5999038ee91f2d265ca566f3c2a06398f58",
+      "independent-answer-score.json": "7ac91eb7077dc7e649c9b39e0713eb22e8f4b32c8c147716e2b6aeeebc8b19f9",
+      "independent-narrative-review.json": "0dc58387774531c5be132f04599615dd7d7f5f1ff76d906879ed8ae47bfb7486"
+    }
+  },
+  {
+    "id": "unseen-06",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-06-before-11e8fe22-6ba2-4559-84aa-e05035cbb1b6",
+    "sha256": {
+      "result.json": "f610aaec8468ef328496d906d7a20760dbee0a52a5bb76514c51fd4e76688ae9",
+      "independent-answer-score.json": "9d062218129f829a51c17819fd84835f8db1d8294c298044f5c7026b42e15080",
+      "independent-narrative-review.json": "ee56451d74805b958ae9e802eed891105b291fef43cd00ebc2508b25485f0bfa"
+    }
+  },
+  {
+    "id": "unseen-06",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-06-after-46928185-afbe-42e3-8d54-51efee29b950",
+    "sha256": {
+      "result.json": "49b8b23ecf3c8224e460d5a82789e6d521533e931e8549813e367f481f7c7f63",
+      "independent-answer-score.json": "9d062218129f829a51c17819fd84835f8db1d8294c298044f5c7026b42e15080",
+      "independent-narrative-review.json": "5331fc86184da11a7045046a03d63ccc85937fe46c0cf3d7bea917a5fd86588c"
+    }
+  },
+  {
+    "id": "unseen-06",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-06-raw_tools-2e85a46e-3470-4e62-bb42-0e8089e77214",
+    "sha256": {
+      "result.json": "36acff116f8b31a20b505e04e03e08cd44db9d91244efb3beab05165ffb2a7a9",
+      "independent-answer-score.json": "9d062218129f829a51c17819fd84835f8db1d8294c298044f5c7026b42e15080",
+      "independent-narrative-review.json": "f9e2078a724880607ab0c3babb478f2a7344a8f79c0c7758406175d42f5878fa"
+    }
+  },
+  {
+    "id": "unseen-07",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-07-before-4534adc5-8534-4824-8906-23de309f0212",
+    "sha256": {
+      "result.json": "fd6a828c1397d3d04cd369f7428c1d1093834c4d3fedc88ba2fb75865444f4c9",
+      "independent-answer-score.json": "de74d6c2a5e298bd87644ce78540186dd8d1faf6a5cce5532f1535b58a7945ba",
+      "independent-narrative-review.json": "b6164547cd40aab9649d3222e597a26b04f7daa623e4d7a4490ae2a5c23b89c0"
+    }
+  },
+  {
+    "id": "unseen-07",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-07-after-b73a5d22-6bd6-4d59-8b2b-719c0e8dfc4f",
+    "sha256": {
+      "result.json": "5b62256db59f13560345cc5f2702e789dc96b453b02d5c7e265dde03ddb00af9",
+      "independent-answer-score.json": "80ac9eaa098208b894f61da0d8db0e93a325a209f4b2f7e29f7c08fb58005494",
+      "independent-narrative-review.json": "e7f0586666bc922b330023ab83e85df627dddac921c92d1e0a81c3b76013fe08"
+    }
+  },
+  {
+    "id": "unseen-07",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-07-raw_tools-054b1c2f-3f27-455d-bf7f-8978b40d0975",
+    "sha256": {
+      "result.json": "341acd7e406badab904aedfdaaee4bbd4afc1b041ef674ac5d06f75473660583",
+      "independent-answer-score.json": "80ac9eaa098208b894f61da0d8db0e93a325a209f4b2f7e29f7c08fb58005494",
+      "independent-narrative-review.json": "5021dac99d1582df52a19b6986bb868c2aa54a48b8f3f21f783102a07c2a0a19"
+    }
+  },
+  {
+    "id": "unseen-08",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-08-before-6a76c39c-bf90-4056-b594-5593d914c177",
+    "sha256": {
+      "result.json": "60df53dec14c60c519b7c59362545e6092c78a4494b5005cd94ef8a28664b04e",
+      "independent-answer-score.json": "3c62df2054801288b4e75d0e2232652a9be6c0d9d6bc5977abf492b9c111f4bd",
+      "independent-narrative-review.json": "1b658b85933cb218d278f3954ab4f014c414f1063b4b2d5aa39c5d25bda7354e"
+    }
+  },
+  {
+    "id": "unseen-08",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-08-after-30d94237-b1fe-492f-aed4-a456592a7215",
+    "sha256": {
+      "result.json": "96edae46c93c7b7a108e0f64c96a72aab743a2a3ed1d903d12ab3d6d4e4977d6",
+      "independent-answer-score.json": "3c62df2054801288b4e75d0e2232652a9be6c0d9d6bc5977abf492b9c111f4bd",
+      "independent-narrative-review.json": "8ddde004c2ba6013bcfb328c22fe2a0233c42334ddc7fb3ebfdd8e799ad0333e"
+    }
+  },
+  {
+    "id": "unseen-08",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-08-raw_tools-9feddc86-4804-4871-b270-96284f711222",
+    "sha256": {
+      "result.json": "f75a93e79f560041032cfc2b0c32775228ba4fd148d06e0d66a715c1be236c2b",
+      "independent-answer-score.json": "3c62df2054801288b4e75d0e2232652a9be6c0d9d6bc5977abf492b9c111f4bd",
+      "independent-narrative-review.json": "a93c9d821630e1ac0302388ba959026663f6a13316cdd19b5c2127e25f063fb5"
+    }
+  },
+  {
+    "id": "unseen-09",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-09-before-9b22f508-2fc4-4949-bef9-b7d3a56ea96c",
+    "sha256": {
+      "result.json": "403477e6d4dcc7a5c42e4093d72e2eaf1c8eeaa80057d2ca06412cd0b86f80c4",
+      "independent-manual-score.json": "bcb25c06e998b6e5a4320ec3601603f03914a3b3d895647d0dca2167eed441fe",
+      "independent-narrative-review.json": "9ce38ffdb12efc7548c3fb62bab81069cca0f41b2e6c9d26e36092a30a02edbd"
+    }
+  },
+  {
+    "id": "unseen-09",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-09-after-481a248c-1553-492a-a317-3b0455b88193",
+    "sha256": {
+      "result.json": "ce68db030e5bfc0401adbf65ca657569b9667e809941e763ffe1e4c3b8bf3b27",
+      "independent-manual-score.json": "1284f1a4ae8800f8a774d01f86a16b8a34db72aa62e6b47b2c349d82f097fe6c",
+      "independent-narrative-review.json": "31fb10fb4f33c15574076e0807d32ce561fbf60e596b78edbbbf0c1ea3791c8d"
+    }
+  },
+  {
+    "id": "unseen-09",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-09-raw_tools-2042c88f-edf0-4e5b-b237-7b45091ff849",
+    "sha256": {
+      "result.json": "1331d0f98ab2ed0bdfdc75f8d5e3de2d396796e70b6d0d9cf9a877395aec8a83",
+      "independent-manual-score.json": "1c38112a60d6c9c7dc9f5d1a358ef27ea0426f6b2bac5e9103c9c43e6102095b",
+      "independent-narrative-review.json": "14e659aa0e9ce8d774efb83a3430a9832fa3222adc35e6dd20b79339dddd4976"
+    }
+  },
+  {
+    "id": "unseen-10",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-10-before-40670ac2-5211-4c9e-8326-5cf862e58d04",
+    "sha256": {
+      "result.json": "e7a4d2a6ba8942475472976431072fea42c68eb62cf57f2fffb07d02ef065594",
+      "independent-answer-score.json": "f43fbf3aa52eea819019b2c8d2aa264d22c6f2060abee7479a97ff66936edb3e",
+      "independent-narrative-review.json": "3c9a33287947382641cebb7ac093ddae9d9cdc5311e5fe469b99274476b85824"
+    }
+  },
+  {
+    "id": "unseen-10",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-10-after-f3423cdb-4bbb-4de8-95f7-d3cc5808f57b",
+    "sha256": {
+      "result.json": "32cbdfb342b02ee7ebde057b21f5e22689b0fb9a67ccab0b78677342edc01b3e",
+      "independent-answer-score.json": "f16d519f7b61c00d54fd252b6f5c72a8565f47ec7e0984444fe2174721138cad",
+      "independent-narrative-review.json": "0291a00a38f7e11afa7f30a9ccde053edf8032678c672e4919055857e29a077d"
+    }
+  },
+  {
+    "id": "unseen-10",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-10-raw_tools-02415b83-f8a6-41cb-9411-1b1dac55cf30",
+    "sha256": {
+      "result.json": "a0c53a25636d2a8af90098eb9e0b9314715fff137baeec3e5615d93b26375134",
+      "independent-answer-score.json": "f16d519f7b61c00d54fd252b6f5c72a8565f47ec7e0984444fe2174721138cad",
+      "independent-narrative-review.json": "1921d2c0e199fc6d843b5e64f911ed6fc39097810de37043aea530b769ebad16"
+    }
+  },
+  {
+    "id": "unseen-11",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-11-before-e79e9042-08c0-4342-bf59-5161d54d0139",
+    "sha256": {
+      "result.json": "ce198e6902abac540bb0096b8444c0387f110f292b8d0327adfebf849d7470b5",
+      "independent-answer-score.json": "7fdb91e248c8ca8383900b8efe9ec5097c700c764eb491eef5f879ec7c71a2a7",
+      "independent-narrative-review.json": "4294296b449bad78ca2d5ea1758058b7770d5b5fe10bb360ac8ef7c28649bf13"
+    }
+  },
+  {
+    "id": "unseen-11",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-11-after-1d02daa0-8336-480c-9f4f-aedf1e2fb561",
+    "sha256": {
+      "result.json": "293f3edf611371e77c32de6d5d5b89f65ed5f4055f15379bc756a7ecec807430",
+      "independent-answer-score.json": "7fdb91e248c8ca8383900b8efe9ec5097c700c764eb491eef5f879ec7c71a2a7",
+      "independent-narrative-review.json": "a4eaf403729109757bce1a634a9fe9965b80ee494e246a26ba150c391a21b25c"
+    }
+  },
+  {
+    "id": "unseen-11",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-11-raw_tools-447056ef-6837-41f0-b9d2-ebb708ec289b",
+    "sha256": {
+      "result.json": "90f8d82aa24fcf424ca1bbb7bdfdb9ccb4e93f404bddfd1619ebc1389dadb56f",
+      "independent-answer-score.json": "7fdb91e248c8ca8383900b8efe9ec5097c700c764eb491eef5f879ec7c71a2a7",
+      "independent-narrative-review.json": "06223ea4e2c2a148c648ca963b5cc925c05f2e8a31470443719c2897140ec145"
+    }
+  },
+  {
+    "id": "unseen-12",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-12-before-6b85079b-0838-4889-a7a4-3afac495b638",
+    "sha256": {
+      "result.json": "0d5a2a7e5cf25433617d15007e7a5e39db6972387a6eab64b47e78141d8e8006",
+      "independent-answer-score.json": "f0070e383187bcd8f99bfc9cda7033c95750a55dc5fdbc3fa6510f9c482531fa",
+      "independent-narrative-review.json": "d9a7903ebfeb691c04c5be70e5b4b8978aece654f30afb8cfdfad2ce26786f23"
+    }
+  },
+  {
+    "id": "unseen-12",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-12-after-ed18ee55-47ac-4518-b949-121466938e3d",
+    "sha256": {
+      "result.json": "f123e3ebe35db29486b769310a5d6cd7ef9c21356a26f32dffcd7754a8fa0a4a",
+      "independent-answer-score.json": "29ae918817bade85b3758cb001f50d4331fd508eb1fe1fb5244e1a3e807ca9d6",
+      "independent-narrative-review.json": "01b1a6bc0e7c227145f3bfe739e323805f8e340e710ee9df42bb7811f3a85d91"
+    }
+  },
+  {
+    "id": "unseen-12",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-12-raw_tools-bd1bdc8a-bd35-498d-9004-690cf2d767ac",
+    "sha256": {
+      "result.json": "cd61ba7c25f50c9e20a64c91f6a5e68bc5d7bc65e19e556fe24e64daeccb5116",
+      "independent-answer-score.json": "29ae918817bade85b3758cb001f50d4331fd508eb1fe1fb5244e1a3e807ca9d6",
+      "independent-narrative-review.json": "5ae1154556b0ae9af0e11c5b8bbc325abefd9e0de2065269cb3cd06ad1da9604"
+    }
+  },
+  {
+    "id": "unseen-13",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-13-before-4c7f832b-ce42-42ab-b484-2842f627efc0",
+    "sha256": {
+      "result.json": "ca0becb9aa581130fa7c9bc7f78a9e5aef2dc9e46660b75b6f57e5bf324510f2",
+      "independent-answer-score.json": "f83d3f6699aa9cf3070e6e79a2795f7d6c68c8b8a5e9700c67efbf4d4d7a2497",
+      "independent-narrative-review.json": "1ecad60603e84d9719ac2c6c5d37465abd9837cfcd6cd55c39375c949dc26e18"
+    }
+  },
+  {
+    "id": "unseen-13",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-13-after-c561300f-2f82-4d98-89a6-f96e162e578e",
+    "sha256": {
+      "result.json": "ae735d2723351a528f9df0901cdfeec2dd99f1b6e932834931a5dac6feb02683",
+      "independent-answer-score.json": "f83d3f6699aa9cf3070e6e79a2795f7d6c68c8b8a5e9700c67efbf4d4d7a2497",
+      "independent-narrative-review.json": "e410dd4163617834ac844a93b925e5a202a530d77f6098fdb3a228dee4dd5bb7"
+    }
+  },
+  {
+    "id": "unseen-13",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-13-raw_tools-58d4299f-e835-464c-95b2-335d53c51c95",
+    "sha256": {
+      "result.json": "ff7808f072d90a7c63b1963af312720715321692b92eaa464b2912972bdb4ba3",
+      "independent-answer-score.json": "f83d3f6699aa9cf3070e6e79a2795f7d6c68c8b8a5e9700c67efbf4d4d7a2497",
+      "independent-narrative-review.json": "b782f9d36f1a492a6e09cef2776cc443d225e4b237cb58d49f6bdd5afc9dedcd"
+    }
+  },
+  {
+    "id": "unseen-14",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-14-before-24dabc08-259e-437d-bffa-fc3669495f4b",
+    "sha256": {
+      "result.json": "466ff151f748f73e7ca24185d665a29b91b385d8a08b10fff1c2690276a1b52f",
+      "independent-answer-score.json": "f165a448673a5005572428b9ed859bfc44282d0a91a1c6b533d533b54344cbd6",
+      "independent-narrative-review.json": "915cb696e4f88198ad3307c522731aeb5f0fe1f8bae7c15655ce5abe4484c5d6"
+    }
+  },
+  {
+    "id": "unseen-14",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-14-after-ecc5d59f-6a68-4150-808e-8df11983ed37",
+    "sha256": {
+      "result.json": "90d550fd7feae3997f2e870b29c09552ba4e0353a99d76157b532102080bd086",
+      "independent-answer-score.json": "f165a448673a5005572428b9ed859bfc44282d0a91a1c6b533d533b54344cbd6",
+      "independent-narrative-review.json": "f8f156561ec83b53d0bff7a19ca0afe10e4271b03f5caa433fe96edb72bf8c12"
+    }
+  },
+  {
+    "id": "unseen-14",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-14-raw_tools-57eed653-34d1-4943-8d66-4c1ed78add41",
+    "sha256": {
+      "result.json": "2f1af928eba337ba15ff05b8fe757390e70caec4942e7735b36f5fd02f49997f",
+      "independent-answer-score.json": "f165a448673a5005572428b9ed859bfc44282d0a91a1c6b533d533b54344cbd6",
+      "independent-narrative-review.json": "70cf4a64c787a61875212f578ed14137f2ca053c16cc20e28862398d7583052b"
+    }
+  },
+  {
+    "id": "unseen-15",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-15-before-c91e9f79-4d13-443e-af60-d2d40655e9dd",
+    "sha256": {
+      "result.json": "6f3ea3d73d7a49d9624d95b106805a2e3754d755c7577021bd02601583c5f775",
+      "independent-answer-score.json": "0124e9498d53ed9692f40f000ba2de868776910e875581a9ecab7be75d77a172",
+      "independent-narrative-review.json": "1756c5b286953e3761b054c181c06266c98b39a9ff1510b2da585eff2a8b4b59"
+    }
+  },
+  {
+    "id": "unseen-15",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-15-after-bb2bc5fa-8dad-4a97-809b-a2c254ac46e6",
+    "sha256": {
+      "result.json": "a3f3a8b19b4c2872de93b5d3fa263683453cb144ddb053f63bd0b71abc2aa516",
+      "independent-answer-score.json": "0124e9498d53ed9692f40f000ba2de868776910e875581a9ecab7be75d77a172",
+      "independent-narrative-review.json": "30efdc6a6f572d60318f72cb151a55e42ae818720474af5c45fdcfac67811921"
+    }
+  },
+  {
+    "id": "unseen-15",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-15-raw_tools-94b1ac20-26b0-4546-96a0-dd31bcb14b2f",
+    "sha256": {
+      "result.json": "12f5e7171bd485c47775068be2fc221a741cc285241256b42f2112b96d4feacb",
+      "independent-answer-score.json": "0124e9498d53ed9692f40f000ba2de868776910e875581a9ecab7be75d77a172",
+      "independent-narrative-review.json": "9cac23201688602d089f76eee16857645642c93983d96dddfa61b62c3b4bb077"
+    }
+  },
+  {
+    "id": "unseen-16",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-16-before-71fe4b17-e754-4112-8b2a-6f554e3fb7a8",
+    "sha256": {
+      "result.json": "b7c48af95f929cd05b07e6a02ab2b4619bb34cb9b73766a42f3ab90179c9aea4",
+      "independent-answer-score.json": "4048ea8d30a931e8eaefff32de3e18f9d378fcc3c59b265315535b95d7232735",
+      "independent-narrative-review.json": "d785ffc0da43cc606a39ef8765da1d6b0ed93878c36389ce64779e220f4e9938"
+    }
+  },
+  {
+    "id": "unseen-16",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-16-after-1263dde1-4ccb-44f4-9ae6-f70ce6d111c1",
+    "sha256": {
+      "result.json": "7ec8b842e994575f747f5cbc36fafa5660e5744d3c30c7d0d0d97d176ad7b585",
+      "independent-answer-score.json": "4048ea8d30a931e8eaefff32de3e18f9d378fcc3c59b265315535b95d7232735",
+      "independent-narrative-review.json": "40ec928b74014138883e38338af6cc10b7acb58d4b7f047adff70f9b9f57b1b3"
+    }
+  },
+  {
+    "id": "unseen-16",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-16-raw_tools-af25bf53-169a-4cf2-87d3-c9ce3ee5375e",
+    "sha256": {
+      "result.json": "2ea911d176bb4011d2b3d65a6e6d69061e5dacb0a098bffb3fd0bfc2ee4eb835",
+      "independent-answer-score.json": "4048ea8d30a931e8eaefff32de3e18f9d378fcc3c59b265315535b95d7232735",
+      "independent-narrative-review.json": "ba3c4a31b878b0fddc3fe7999f9a600dd7765c1851019f0f25c1cb57e2003380"
+    }
+  },
+  {
+    "id": "unseen-17",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-17-before-0d45d074-1e5a-4a56-a2fb-92fae7fd399c",
+    "sha256": {
+      "result.json": "c34a9d8e860a17d17b4a1af98aa78e653f33fe53b207fa2e37aaa8af1a01b865",
+      "independent-answer-score.json": "466bba0b77c5675d2d68223f2b93b8bf67985389c0d4e4b17641de269624312a",
+      "independent-narrative-review.json": "a70e0d64cd8111902d9a7fc33893b26ba1b6b4b285deb6e9e00d66784d44c352"
+    }
+  },
+  {
+    "id": "unseen-17",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-17-after-deb32a6f-751a-48a5-a19c-daf40a122e4d",
+    "sha256": {
+      "result.json": "145e9acdf73b1c6bfe1603c60009760849c9dde7c4efffac5944c88f180afc80",
+      "independent-answer-score.json": "466bba0b77c5675d2d68223f2b93b8bf67985389c0d4e4b17641de269624312a",
+      "independent-narrative-review.json": "d0aea6e9ce4c299a84e1a7bbdd119c0daff3a0095a44c7fe2395ece59c3cb3ca"
+    }
+  },
+  {
+    "id": "unseen-17",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-17-raw_tools-76119dcd-686b-4354-b8c1-934908dbfd8b",
+    "sha256": {
+      "result.json": "0944bb04da7cc51e856ca6680d176f071989b460cbddba9ec0d1dade487a7dae",
+      "independent-answer-score.json": "466bba0b77c5675d2d68223f2b93b8bf67985389c0d4e4b17641de269624312a",
+      "independent-narrative-review.json": "3dc7efb429ed04f9f303028d277c0bb69d2fef564f9c539a38c5a40ccb4796f7"
+    }
+  },
+  {
+    "id": "unseen-18",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-18-before-eaae449d-2aa3-4fba-9ffa-1a64d6c30af9",
+    "sha256": {
+      "result.json": "2056c92466a9172d3aa0354681f275311035d855e6929569500acfeb7b0e0ce5",
+      "independent-answer-score.json": "23e59a8ab9299e81da19de9930316f3c66578a237e4a1c79efe22057ec7258a1",
+      "independent-narrative-review.json": "d3978427378db7bb94bc87dc800e20d76ae4598f7cb84b5f236d7acd9515d033"
+    }
+  },
+  {
+    "id": "unseen-18",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-18-after-10a1c04e-15c7-47da-8f60-d37e2ceefe4d",
+    "sha256": {
+      "result.json": "a20b01462d6c5212268111587302e6d7dd17caa4fa663b277b2ee0aab886bb17",
+      "independent-answer-score.json": "23e59a8ab9299e81da19de9930316f3c66578a237e4a1c79efe22057ec7258a1",
+      "independent-narrative-review.json": "d7c147632843998149cc9238feeabceab4de8952c4d8945fa5a90b61fbafe52e"
+    }
+  },
+  {
+    "id": "unseen-18",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-18-raw_tools-69a205ee-f7d2-4e0e-94c7-ca0e6137f76e",
+    "sha256": {
+      "result.json": "cc478120445ec8bd1b8b634f22fcaa490c6321d2f87b06caba026b7ec2a94096",
+      "independent-answer-score.json": "23e59a8ab9299e81da19de9930316f3c66578a237e4a1c79efe22057ec7258a1",
+      "independent-narrative-review.json": "3c5bb38c9c4bed66d9cd5d5a6a397a64d02ee8bab9887d430179efe8f672a287"
+    }
+  },
+  {
+    "id": "unseen-19",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-19-before-cfddd8d1-a70d-487a-8007-4c6c61faebde",
+    "sha256": {
+      "result.json": "c12f5feba51fd2691242c154d93d974087bd1f1a1a852addefc2d7c917014bd2",
+      "independent-answer-score.json": "86649d3cbbb6317523703d79fdd2df049d07d36ff6b1cb89631bbe75a981e2fb",
+      "independent-narrative-review.json": "9ada9754735af25c2d084c557249cc9b291e9d6b09ee8937700d41524644e245"
+    }
+  },
+  {
+    "id": "unseen-19",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-19-after-f3153831-75ad-4803-a37b-753899d7e2c2",
+    "sha256": {
+      "result.json": "0091ad6256664089162d99a5c36840372bf5230137b2ecc9f8518d0f43c4d0b1",
+      "independent-answer-score.json": "86649d3cbbb6317523703d79fdd2df049d07d36ff6b1cb89631bbe75a981e2fb",
+      "independent-narrative-review.json": "e36fdbe2526eb1ae68cd2cf42911c1dfa0ee501157406658176a4c84d8357302"
+    }
+  },
+  {
+    "id": "unseen-19",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-19-raw_tools-6d38b390-e818-4a01-bcc4-de5fe4a38678",
+    "sha256": {
+      "result.json": "2bba75f645f104d8f45789975ba68cab586aad4414e6a1e19a72fb36e917e384",
+      "independent-answer-score.json": "86649d3cbbb6317523703d79fdd2df049d07d36ff6b1cb89631bbe75a981e2fb",
+      "independent-narrative-review.json": "a98d83943af38e32dd4908239e206ae7f8e8648d209febb89681ac177a6df0b5"
+    }
+  },
+  {
+    "id": "unseen-20",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-20-before-ea35d652-b2a3-4274-8a44-8b56aa2cfce6",
+    "sha256": {
+      "result.json": "28a6f92b45fb81e5f6533ec02f4f08cfd2dac885ff33c5a5365ad40e9a66c1f2",
+      "independent-answer-score.json": "25914096a8f4d8f9712fe8681db4ddbcc8f5f14be2b2d8179abd0f5eda610675",
+      "independent-narrative-review.json": "e816d4d17cfb43624874e66ac8c8b10a2e9425320657c32962a31fec000b55a2"
+    }
+  },
+  {
+    "id": "unseen-20",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-20-after-2c8e177c-aa2b-4caf-9f63-00b98dcb8387",
+    "sha256": {
+      "result.json": "b200f66e704a4d0b426e35148b5a653d6cc6868e7a9b917d9551f02bfcbb2f35",
+      "independent-answer-score.json": "25914096a8f4d8f9712fe8681db4ddbcc8f5f14be2b2d8179abd0f5eda610675",
+      "independent-narrative-review.json": "3ba65d0f2f67dfc73e23a04767f9af3a359d4fbaea0e4dd4772cd1158c632989"
+    }
+  },
+  {
+    "id": "unseen-20",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-20-raw_tools-17e30ee1-822c-4519-9cf6-104df494fd20",
+    "sha256": {
+      "result.json": "845a7ada2bf9a7c1d35ad1c63e2107519105559ebc09e34f02422e301b3bd774",
+      "independent-answer-score.json": "25914096a8f4d8f9712fe8681db4ddbcc8f5f14be2b2d8179abd0f5eda610675",
+      "independent-narrative-review.json": "00d2170d85c89fdf95649ed12eafd8754a7a8ce2ed9b4b6c3efea7f60654b1f0"
+    }
+  },
+  {
+    "id": "unseen-21",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-21-before-69afea3e-95b9-4ff2-b01e-30df149866f5",
+    "sha256": {
+      "result.json": "4f9c7bc13361872f24a181481d9eb093c3907237f8ffa6c9a7384c064461fcce",
+      "independent-answer-score.json": "66b96f9db2604234b65f5be7957d6a8e966bee1d39f7f3bf4e4d7b6ed7ba253c",
+      "independent-code-review.json": "01f52e8441c966ed975c8c033fedd4ad0a47c1b257c33efacc501737dbb4642e"
+    }
+  },
+  {
+    "id": "unseen-21",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-21-after-3506f706-a0e0-475b-b1a9-48d9ded081ed",
+    "sha256": {
+      "result.json": "a4b94953a1d2e4c792159c1ff5066f76d204d9f40f44a660a59eeda4712bb8ca",
+      "independent-answer-score.json": "353d227d9bad7b7ba6a61a7db365210ebb2c7490379f766a369a7625467728f5",
+      "independent-code-review.json": "b36cf44957b5b01926363e6e74ef0734ba8fdc249afff632ef2eed0919904236"
+    }
+  },
+  {
+    "id": "unseen-21",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-21-raw_tools-89bd2c50-4054-4719-a55a-15bc84d18afe",
+    "sha256": {
+      "result.json": "09a32cba875db4930b861b7dad53e39bc31f76e066121f11bc4cc6608fc89488",
+      "independent-answer-score.json": "d5c48616a358798e163ce81a7e9cc807f31e9148c68c194d6dc13f19b7c5e605",
+      "independent-code-review.json": "eb6aa99ea7b31b21a60842f0e91a7750a124c9d73caa36d9b6bea5b30a497fac"
+    }
+  },
+  {
+    "id": "unseen-22",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-22-before-de518a2e-b9c6-4b68-af57-25b8321e2a9d",
+    "sha256": {
+      "result.json": "0099fa50522ebf4a3c3cae880f469a6b8756467afb1eabcc21c399d0b73fb039",
+      "independent-answer-score.json": "db8e820384860d011c111281f0c801400debf89c30273db5824fcee97231f318",
+      "independent-code-review.json": "66d4f3051fe8930ce9634064459617dde0fd1e674421747b3660eaee8bd0cb98"
+    }
+  },
+  {
+    "id": "unseen-22",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-22-after-c10a71fa-fe93-44c0-9c6b-46c9cc5fece4",
+    "sha256": {
+      "result.json": "79bd2e80bf4951b1cd2b0f928c3eed845bb0a15395b6fae4ca6f7e28d83c85aa",
+      "independent-answer-score.json": "c43e3d9587f557980e714a12a0b762fb10d3872e48c11de3348e1b348ba5a8df",
+      "independent-code-review.json": "9df8f2670bb66d0d0f1bc824c7ab7b40bda4cea1d8245a534cc4980c29dab1cd"
+    }
+  },
+  {
+    "id": "unseen-22",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-22-raw_tools-87df93dc-fb15-4dff-ba42-1d08652b8363",
+    "sha256": {
+      "result.json": "4b781baa723f541699609427681a08b52567ff36050149f251749553d5048158",
+      "independent-answer-score.json": "86d113cabd41300145d0891fece76fe4b33c2c40d00e7120910b3b951d573745",
+      "independent-code-review.json": "6a3078fc96d192d8fbd89699fe3b6314c683d36a3765a94d29c7b1fea18dc0de"
+    }
+  },
+  {
+    "id": "unseen-23",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-23-before-942e4efb-c772-491e-9ea2-915a07dd8736",
+    "sha256": {
+      "result.json": "528dbb1056e07432e8138e6e47ac921540101add63341deb9f80522ad4f59565",
+      "independent-answer-score.json": "7cceec60c820d27b7fda87771f6929a1f1911986c1efbc821a726881a0721546",
+      "independent-code-review.json": "e20fd885d3d177349badec781deb475b6f2dfe817466b0457a3fb602025eb3bb"
+    }
+  },
+  {
+    "id": "unseen-23",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-23-after-1ae86bb8-b719-40a8-b6a6-34950e181795",
+    "sha256": {
+      "result.json": "3f041f7b9102889bffe48d049417461d457b0303af4ffb7309f7c175ab9d5b65",
+      "independent-answer-score.json": "306a99f9470c4bdc0468a1c7484d86f46438cfa8685d0e06c983d18d547c5042",
+      "independent-code-review.json": "ed45bbb08ac2126dd04a7ec69cce8fdec7a1fc52778b32b437fb5df228fdc703"
+    }
+  },
+  {
+    "id": "unseen-23",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-23-raw_tools-94af35e1-d4ed-4b94-aaf0-1244bcbc0d79",
+    "sha256": {
+      "result.json": "d60cf08c8ff35adb9054cca2c2bdb10e46857d7732224340da5ca77316a34fe7",
+      "independent-answer-score.json": "d2a4b909e0bf6c3e24f64f8094f15bde93078b294844934f573523928dddc5d4",
+      "independent-code-review.json": "6bc60702c5dbe15d86d2860c71ee9910ebc66246f0dcaa19056401ea44a403e3"
+    }
+  },
+  {
+    "id": "unseen-24",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-24-before-a022a1cd-bd5d-49a5-a83e-de3cf43fd55a",
+    "sha256": {
+      "result.json": "526a4e5d02f2a8f30cf0824a21396c7d8755d8ea16ea8951808886738cefef26",
+      "independent-answer-score.json": "f1ab548ae1b09168500ba04095049abf84f2558f100abc37fc641d2aa611cb13",
+      "independent-code-review.json": "e1111a5f8659e237a0d0f44f3ab6f17b6f12ea09a7152ec13000f04546d53dab"
+    }
+  },
+  {
+    "id": "unseen-24",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-24-after-5eee30e3-8ee3-47bd-b689-62f4006faa27",
+    "sha256": {
+      "result.json": "4dcbf597e828ba65ca9a2a172a45b05b0b46b441c31b774df51baa020c05efbc",
+      "independent-answer-score.json": "f1b03dd9745e25a7cb3e269c2ebf0193a10a01a34f8d9d9629e7d65f1e4e74ed",
+      "independent-code-review.json": "2cf4cf37284120a1a69a89512bd60d91de4dd9d9f101416370f255c5cf6a2b60"
+    }
+  },
+  {
+    "id": "unseen-24",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-24-raw_tools-81856375-3fdc-4f75-bec4-1aaf445279f6",
+    "sha256": {
+      "result.json": "b5bda05f56c7634f81c2fb602e18d87dcce87ab96c66b65855e5b41b7e4bb614",
+      "independent-answer-score.json": "d29d1b42723a0c1a33edd77354ac8a051c20a614d5a370e6c528dfa5b58a01cd",
+      "independent-code-review.json": "6122a2b793d3be9cad8b5319bdb5f6da596df1390f8aea8ec377f26c4561ffc2"
+    }
+  },
+  {
+    "id": "unseen-25",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-25-before-02644f41-1e28-4bd5-bbb8-3ec0f0a67d53",
+    "sha256": {
+      "result.json": "8cb348a6b0c985aac059ec54b0dd6ece83b093e009a5986cdc6ea9ff789a3265",
+      "independent-answer-score.json": "5dd577c6f4d31596341244c38c75901e05d09cec395e4d929ef2484abfaf373a",
+      "independent-code-review.json": "8fb932d22b2cb8e5ff2deb930ebf3de777ca6415a184b3647b4ac4a8d455c77c"
+    }
+  },
+  {
+    "id": "unseen-25",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-25-after-6992dc4e-8720-4300-b147-29f80ec7f356",
+    "sha256": {
+      "result.json": "e20a5973d76bb6bf6452bd72d1fb7fafd726a2db96b9bf8f4134ff09e0e350cf",
+      "independent-answer-score.json": "de0fc1c34ad81091eb31d8db85099de546fc674d7c0b9933d64c85fa5c2fa95b",
+      "independent-code-review.json": "b1b47e9ce9f551926f53f1310231395cc3d3fc8987362c608a1e65a8a790180e"
+    }
+  },
+  {
+    "id": "unseen-25",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-25-raw_tools-12619615-a5b7-4ec1-b4a2-cc301355f33c",
+    "sha256": {
+      "result.json": "69e0abfc5346da07a34dc17ff42bc26f66aed0bc4d81b659220e77b183f52479",
+      "independent-answer-score.json": "daf1acb1a830f364649532aaa283d0a4c0ce5991a6946d9b6ee24f8bb208cfc6",
+      "independent-code-review.json": "72f2fe24490223aead5f149bd7fe0bfb8c808e823831b078ee3df687f86dc6a6"
+    }
+  },
+  {
+    "id": "unseen-26",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-26-before-17f49a40-6c37-43ad-a1c2-ffe97667306b",
+    "sha256": {
+      "result.json": "9b1347203e0f1df2cbeb46e2236bf5e33ef3bd3ae0110c6177c611370d24b420",
+      "independent-answer-score.json": "78d6f1fc2406ff17acd63e17e297c6b8fb95357b0b837b85016c1a86ee3b9dfd",
+      "independent-code-review.json": "ea827c6f9d0deccc48d3e57eb6227644732b33db04ea7dd3818c5ce4f92ee46b"
+    }
+  },
+  {
+    "id": "unseen-26",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-26-after-4ea194fb-8151-4b78-ae1c-1242465e6263",
+    "sha256": {
+      "result.json": "5629201816c81b391fddc4429790bbc5ff752776470f31e726abf006daf4f4f2",
+      "independent-answer-score.json": "afc04a969fb70d05f9c8859be9c886bf132d42d6da82db85340acd6d8e0ede0a",
+      "independent-code-review.json": "8514482ecf6507d1ef0793a8441b25808812d6ed8701a6452de5099deff9e30b"
+    }
+  },
+  {
+    "id": "unseen-26",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-26-raw_tools-2e53801a-fdaa-42a6-a8f4-cb8522ffa3d3",
+    "sha256": {
+      "result.json": "a3bcc520d36e4aa882b0c5f0792f8b4bb0936eebbbd66adfdd3d81206d982106",
+      "independent-answer-score.json": "86b3c4f69575c5f615134a74cec85d4b73b06834389d7d4462944e798e6609e4",
+      "independent-code-review.json": "28ae382efb55d3c4224856ded652dcb4e2d4d05cb85ff8402bfd5231fb2c79a2"
+    }
+  },
+  {
+    "id": "unseen-27",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-27-before-4a129771-d2f0-4153-add6-a4b6f80e5175",
+    "sha256": {
+      "result.json": "f14505e3b127d98c56b8765c0a27d3a52f5a0172488b39534884bc1f54b11248",
+      "independent-answer-score.json": "389cbc7e3f896d48985279044fa0fbdad501ab142accf5e4026d3060f688ac0f",
+      "independent-code-review.json": "fbe265064ed108a934c07503b028d8da99a135e990d915adcebd0cd4c8358004"
+    }
+  },
+  {
+    "id": "unseen-27",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-27-after-a4b82017-ca22-4ab7-83c2-9dc5c96b634b",
+    "sha256": {
+      "result.json": "edbdf3641aa52ea4fb5af9b7d4fd032fbe06bc8145011f95c4d401258f78a5c0",
+      "independent-answer-score.json": "3f7e638741b82e62292948bcde57e11441c0ade89cd19d6b92e0edc7afc241af",
+      "independent-code-review.json": "4c91c966700104526365963f247704e8c0ec6628b6e6a5b4d3b1a12f6e0c6fab"
+    }
+  },
+  {
+    "id": "unseen-27",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-27-raw_tools-680e602d-2b71-4a99-920f-073230cab794",
+    "sha256": {
+      "result.json": "68a03e67f81910ac2c24e6e437c8cb9f7702d6a23453afbb3effd3d3b27c2be1",
+      "independent-answer-score.json": "8ba6634e2bb0dea4d9d0a5bd335d47c658bd2c331024ff5158dd4fcdd015879f",
+      "independent-code-review.json": "ce605bb59168f26c246ac34823268eeb4bc62adc837c8ea7a93d39fe079323ea"
+    }
+  },
+  {
+    "id": "unseen-28",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-28-before-4fe1159d-f91f-40f7-9705-d2df3f895281",
+    "sha256": {
+      "result.json": "5f876a6ba00641f5eb25330ef6303c4f0c57088b2ea48f5def8bef0e5f0ab735",
+      "independent-answer-score.json": "f3305c1eefff7fb3189e5bd4b8956f4949e899ee1b307e796b76c3ae9b51715e",
+      "independent-code-review.json": "8b0ebdd86e0effc0f18b12677c5920407f11c43be2433d51180c8dde780033ad"
+    }
+  },
+  {
+    "id": "unseen-28",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-28-after-e306c3f7-4c62-4ea2-8e0a-13f44d53efe7",
+    "sha256": {
+      "result.json": "8889c13e3b5c32c3a34c0345f45baefe216c5466891e2d652bd432b65bb57dc4",
+      "independent-answer-score.json": "4b838aee5f8347e2af42acded95c1f72ce98ffda55fb31f70766e9a41ef264e7",
+      "independent-code-review.json": "3c7a54d67af4f076b42c48d84704f4ac3cae49d4d41dbe79fe85f6a8b73fcd1f"
+    }
+  },
+  {
+    "id": "unseen-28",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-28-raw_tools-2e8668c7-4845-47fb-a149-9b0849d07870",
+    "sha256": {
+      "result.json": "a970fe2a810a66e3aa930a9bd51400a7b1d445f7cc7dbcd343d607eec5ec016b",
+      "independent-answer-score.json": "cd395699685216d9ab864de903979da24eeac96d0391e0a33cbb5912a9dbb659",
+      "independent-code-review.json": "2c0983bd3fb6990db88c51804db6e628666fda50047dbd720d44c79474894c41"
+    }
+  },
+  {
+    "id": "unseen-29",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-29-before-db8f83c2-c77c-43f8-9ed7-8c4b83f3ab31",
+    "sha256": {
+      "result.json": "5f279c8afd1c7dec52633983c3698c07811816d55ddee8d642887593812d1c2f",
+      "independent-answer-score.json": "29c24bfe2b66f4019144a07e5db8ce137f0187612991fa019a68d21b0d1bc888",
+      "independent-code-review.json": "1e32155a73416ade622b2fc72694d15a4884f410be566830a30bec7263f51905"
+    }
+  },
+  {
+    "id": "unseen-29",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-29-after-19979f1b-c077-4fcd-8f85-da2ce64c9333",
+    "sha256": {
+      "result.json": "964ee99e51734524615dc97ee102d4b02bac951e5469e71adac7afcb6a487f38",
+      "independent-answer-score.json": "5664b217d43d464d5bcee40a09a4140822991927745773d584c03594aa8d0ab0",
+      "independent-code-review.json": "808bf9bdc310ad8bfe8ee8cfb7bb7390938c2a3929fb783a219d12af5caec43d"
+    }
+  },
+  {
+    "id": "unseen-29",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-29-raw_tools-8eff320f-49ce-4055-a17f-fc0a0480c2ee",
+    "sha256": {
+      "result.json": "bf1ff717980176779e5b8d251e23c23d4b1e31fa37084fd419c1bd349d3fab8b",
+      "independent-answer-score.json": "37d52c0ef166abf95746bc9b8bcbd2f5c886b0555ffeafaf8e1e7af82f1c1298",
+      "independent-code-review.json": "449cc56bc5015581d1bfef0b31693511b4bde539dfa01ee4fff34b78061543cd"
+    }
+  },
+  {
+    "id": "unseen-30",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-30-before-58eef7cf-916b-416a-9074-76c12fe5e54d",
+    "sha256": {
+      "result.json": "a2086457ebc1929ab58f625f96f88799710d2b2c2ab86d8837cec6de31ac31b4",
+      "independent-answer-score.json": "d9397e24d27ee3bd71482a5e95cb542c8443013bf4915443fd301baa7c149296",
+      "independent-code-review.json": "edcd7756dea55843edc90ceaafa212253461d8a7cf5393a25e9fedc4f4eb28a4"
+    }
+  },
+  {
+    "id": "unseen-30",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-30-after-fee8a602-7a66-416a-82af-57d8ceed91b1",
+    "sha256": {
+      "result.json": "7692aa27c00a98d13dd4a82eeb72467b36c4f5eeea566d4a24615cd63c89e51c",
+      "independent-answer-score.json": "c410f02794e7555cc1eb8e04800466e0f672c482cf9bc912996666d994d74d26",
+      "independent-code-review.json": "9f7da1a14dce0b3a274c55922268959542be1d85cb8ec393754fbd11dc162349"
+    }
+  },
+  {
+    "id": "unseen-30",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-30-raw_tools-f9274236-fe40-412a-b09a-356a7798394c",
+    "sha256": {
+      "result.json": "48abb26f50f2e2114ec94aab1db09c552689eccfcd8442390139d6f3c67e8be8",
+      "independent-answer-score.json": "a5e60b1b076dfe685ebb27f2a0b5c16d58b9c16d59fcb40fe3b4893ba61cb21d",
+      "independent-code-review.json": "9388d294adc11f659b7ba1b461a0866e94655344b468847459e5c52a9e6199b2"
+    }
+  },
+  {
+    "id": "unseen-31",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-31-before-9377d7d5-ac35-49e2-b251-48dc98cddb6f",
+    "sha256": {
+      "result.json": "e0bd1d76d97afafebc5ec7cf042a53b722da0d78111e4816b5c33020d61c85d6",
+      "independent-manual-score.json": "60862f794834672d0c4121e933813d102380277f946acf4c35a3af1586923b48"
+    }
+  },
+  {
+    "id": "unseen-31",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-31-after-ae4155ee-cbf7-41a2-8302-a8b7f1d7abc0",
+    "sha256": {
+      "result.json": "bd669b0a06b0aba80729fa19d3381f646256f1860d14abc10afe855bbf73f9b5",
+      "independent-manual-score.json": "78e8b245a932077c8689e169e5d70549bbbd87259b675e275f7952c97c0e0cec"
+    }
+  },
+  {
+    "id": "unseen-31",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-31-raw_tools-3b4366db-8408-4f8d-a35a-93dc4523155d",
+    "sha256": {
+      "result.json": "3da537f031246afb037168d0b4555dde0714227426622127fecf587de64e67f7",
+      "independent-manual-score.json": "f8fa302039ebb729344d38a29e8a10ace34c63ae61d7d0429ff5c619925ccdee"
+    }
+  },
+  {
+    "id": "unseen-32",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-32-before-5d2c37a2-1f03-439e-86c8-7835c0c82f2c",
+    "sha256": {
+      "result.json": "150daec8143a0424a9fd992c99106ddab4ca3cd09246b765c47c6e88bed9db63",
+      "independent-manual-score.json": "45008fda8af06289e46bb3ec71fa5e31f88d73127db56cc51d057e644717ace1"
+    }
+  },
+  {
+    "id": "unseen-32",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-32-after-9df8ce4c-77b8-4dce-a34c-105368fd601f",
+    "sha256": {
+      "result.json": "9b9084047907c08e5d638b0e1bd6bc53e041c7d790e4c7d11af227d2098d4a2d",
+      "independent-manual-score.json": "ad3b637d77024c8ea4e0b49fa8a710e2bc880796981e0188b42293f34deaa3e3"
+    }
+  },
+  {
+    "id": "unseen-32",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-32-raw_tools-fe67eeb9-35bb-41f7-a1b8-8316204f41d7",
+    "sha256": {
+      "result.json": "e00cc5f7cc1143dc42f3d29a704749daa0f99ebb603d9e5699f0159cb01c2b5b",
+      "independent-manual-score.json": "966a49050e9d6ed1ce19e35180927fb65c2cd06390489f4c7f498e93b4fd00ed"
+    }
+  },
+  {
+    "id": "unseen-33",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-33-before-31a4f527-3a77-41d5-bfeb-4fd9345febdb",
+    "sha256": {
+      "result.json": "771884606753cf1daaf467d182106c6e7468025558d3b8e6628287e0404c1614",
+      "independent-manual-score.json": "6ff14f6bfd0c69229c32f0e6729e8f1511fb8991cf8ae36c0510ffb9294f5c00"
+    }
+  },
+  {
+    "id": "unseen-33",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-33-after-5a96252a-45a4-4085-83a0-187822714eb8",
+    "sha256": {
+      "result.json": "1e1218614a817dc59e6b7f20267c635f7b4a45686725f452b26fdc151020b14d",
+      "independent-manual-score.json": "2fb3d97bdcb7918af9c9f3ea2ae0f31bd855d0280af141269e077551062c6207"
+    }
+  },
+  {
+    "id": "unseen-33",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-33-raw_tools-4c237e6e-26cf-4894-90ad-09e7d1815a8a",
+    "sha256": {
+      "result.json": "fca45a3936ff60a5fa98bd87b88503737b871db6208dfe6f0a4e46507c3afc37",
+      "independent-manual-score.json": "5d0add44c4521a6da957e6c6854c048beeec9edc9e7fee6142c4bcd7ea78b2f5"
+    }
+  },
+  {
+    "id": "unseen-34",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-34-before-a2076505-d321-4c2c-8a4c-da25e340dd81",
+    "sha256": {
+      "result.json": "8b99b80dd3e7e41bf2d400ee08794f4fecfaf0d79e32086769c744e8935caa46",
+      "independent-manual-score.json": "2c056d9edb809eab527b53b877f3029d49357777c0aeaeafe6a2bcf693ee638a"
+    }
+  },
+  {
+    "id": "unseen-34",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-34-after-3253906c-d3e8-4bfa-addf-2a2f0dbf2f46",
+    "sha256": {
+      "result.json": "97e548c9046d9d666ca1a93a404744769b5ab7c4a74b3d563cfd2678f280fead",
+      "independent-manual-score.json": "6fb1347cde861ce3a89904b7520eff95fce484fe55fa6eaeeef1cb69af029a56"
+    }
+  },
+  {
+    "id": "unseen-34",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-34-raw_tools-24597677-9c3a-4fbc-b433-12731a6c14d4",
+    "sha256": {
+      "result.json": "1c5139814d3ae6ee0dd71ddadb5393f41544f0103cb95a4e953f8439ec2588b2",
+      "independent-manual-score.json": "6d1c8f9c8e7d5f30af19bf3e0a6add830defba1a8e6205e8f1c14a6707ea1e05"
+    }
+  },
+  {
+    "id": "unseen-35",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-35-before-29c01f10-bf90-41f2-9f74-091874ceb8fc",
+    "sha256": {
+      "result.json": "c292c14724575cf026ff98d08223eadbee49df875bd997e2189c6e509a2f7fed",
+      "independent-manual-score.json": "3a6f46c719e60d7e3b64b51911cb3c90152c596a5b9123b200ad44338f6d18d4"
+    }
+  },
+  {
+    "id": "unseen-35",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-35-after-a1abb182-162c-4f85-820b-2a7adaae59ee",
+    "sha256": {
+      "result.json": "2abeb929efbf965344b43121f1366579a804a49e01b4b3fbed0b7b5c713e55d5",
+      "independent-manual-score.json": "54517cf289e6590dbfa2fb288ecfca753ad224b7f34c6e2c2e8ac5f38430ae8f"
+    }
+  },
+  {
+    "id": "unseen-35",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-35-raw_tools-73ce7cf5-8c63-41fc-8741-a62407d06569",
+    "sha256": {
+      "result.json": "0610ab035d73710b12e6b8499a8f8a70d5cbc724bfa1bd1a12b8bc1784ff01ea",
+      "independent-manual-score.json": "aab58e845db19097e2296c69b24f9e15e5c57f5636618716d969d2d09b82728c"
+    }
+  },
+  {
+    "id": "unseen-36",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-36-before-7eb529c7-f342-4c01-b282-16648c0f2311",
+    "sha256": {
+      "result.json": "8cbe9cb01a9559aec3e9bfb7c0c58e54fb9984a548a1c1ee2d878ed379166d50",
+      "independent-manual-score.json": "e8e3bfff5efa2fc0dda2e4f12c29b8a8af6724ec30fb7390e625c73774463f54"
+    }
+  },
+  {
+    "id": "unseen-36",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-36-after-c2647ed5-033d-4277-a735-23a4b0abfbf5",
+    "sha256": {
+      "result.json": "dd42709a5e646966c5279f508e78f1f7766e80b4b0c9f528d8d24cbd9a0e01dd",
+      "independent-manual-score.json": "493d43ff120a651fce9e0bfcd72c7f5c582b12fb9f66ed5f2bf8f10d3fb3cfb7"
+    }
+  },
+  {
+    "id": "unseen-36",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-36-raw_tools-4cd22691-de0a-497b-841a-98c095a92ece",
+    "sha256": {
+      "result.json": "5c156db36954ca6e8114eea87e864ce2591c58d283425c3e5d33236a947227ac",
+      "independent-manual-score.json": "2fadb7b10c0cf79591e7e786b6c31950fa9f76059fc6ad0936286501cbd20269"
+    }
+  },
+  {
+    "id": "unseen-37",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-37-before-31e6bc90-9664-4a94-ac1e-6a66a678541e",
+    "sha256": {
+      "result.json": "9e85747716e373ff428c6df45dbafe5b14b08024419e2b2a83d4afe6abae1adb",
+      "independent-manual-score.json": "fcc1e241da974e7a6f0752e823c3670ccd7f3e404a8805d82096a24257733ee5"
+    }
+  },
+  {
+    "id": "unseen-37",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-37-after-e3df9753-7550-40f2-bb6f-a21f290503e0",
+    "sha256": {
+      "result.json": "fa0822804a597eb91d43914f91d4016a16ea4eab67a99b70a53cd716341a612a",
+      "independent-manual-score.json": "3704c6bf73220e9a732178b5c0e5f35621e2a81d93c0e1a583a959481b82d7b9"
+    }
+  },
+  {
+    "id": "unseen-37",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-37-raw_tools-cab2861b-df69-4a45-ada0-1023bde5d59d",
+    "sha256": {
+      "result.json": "577e889b45952aee878c990a8e3832b1606e4b5899d040f0c99be133ad80cac9",
+      "independent-manual-score.json": "2101710aae9287d52945424b517406af4222c665df4596c41c4cb2698849b242"
+    }
+  },
+  {
+    "id": "unseen-38",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-38-before-043d7783-b49f-47a9-a3d3-0e90822fbb3c",
+    "sha256": {
+      "result.json": "1c007aa71ee4e2d2b18d32142d4d217c4eb16c72705d7e9952b6bae3100ddfde",
+      "independent-manual-score.json": "7e5952db0a17f380677182d0c8b7e6a1765aeeda832674c97ae9ba234176635e"
+    }
+  },
+  {
+    "id": "unseen-38",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-38-after-67bfb537-f3a8-4ddc-acac-25b3bb3facb9",
+    "sha256": {
+      "result.json": "a954377d9ab472a14ae157c41a7d1aa391dd8e057df69b23a89a85e61e41e770",
+      "independent-manual-score.json": "04fa7d4beebc6fa03318c3a66088c40c17a0c3be9828c51e7665cfde0971c5e2"
+    }
+  },
+  {
+    "id": "unseen-38",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-38-raw_tools-7384af6a-5a85-4673-9ed2-01b6d6befb24",
+    "sha256": {
+      "result.json": "1799be487a5c1a906aa6611bdb01feae062aef959433be85a03d0b4e20d55f1a",
+      "independent-manual-score.json": "252a8117636ef2856e5c0ad410c740c0e62ca721700c1c6f76fffc2d67a1b725"
+    }
+  },
+  {
+    "id": "unseen-39",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-39-before-fcc8e9ac-c0d0-41bf-b605-b396aaefdb2c",
+    "sha256": {
+      "result.json": "d82c416ecc597f6565f4b717df229a8c955851b2d12b424b0fab59e222cb6d9f",
+      "independent-manual-score.json": "5d0940113a3a3ea37dd7733727bc553acd72fae0a26aca4449bce361ef8b0f89"
+    }
+  },
+  {
+    "id": "unseen-39",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-39-after-9f12971f-a613-41df-87d3-073413376891",
+    "sha256": {
+      "result.json": "32aeb5c600a7113a238908e4db3eda0e3ce3d8161dc00b84b35f08bef802809f",
+      "independent-manual-score.json": "949a341540fbc67ae58da98f9e655dda67470ec9f08046cbe2b71e8272b60234"
+    }
+  },
+  {
+    "id": "unseen-39",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-39-raw_tools-832565f9-9752-45d5-b0d5-57db10b7e936",
+    "sha256": {
+      "result.json": "f81e019e08e6c521e8b0286c92d1674bb0d6e00f36bcfd61e00ca19c329b1f50",
+      "independent-manual-score.json": "e8584f2160539f010407a8dd4314f9c3a146c037cdd2193bc7b8f1b24ab4d550"
+    }
+  },
+  {
+    "id": "unseen-40",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-40-before-8f4a411f-5e41-4cab-9bee-e2f19ff3d958",
+    "sha256": {
+      "result.json": "b23a50b4c824fba81507212a71b70a7a4525f9fe654708be99e516adaf6227d0",
+      "independent-manual-score.json": "9985b507e96d30ac34f9dffc9d951a857175113fc38fdb2aaea6db04708b9b25"
+    }
+  },
+  {
+    "id": "unseen-40",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-40-after-91dc0616-9f0a-42a4-ae29-47eac69456a5",
+    "sha256": {
+      "result.json": "c298586f1832cfde6b89f1965f8e6f3b34fe95223f87c3968fa4036e56ade2c1",
+      "independent-manual-score.json": "aa24baa8afdca31b757ad38d0fe26acf03455d87f1713660bb63658682245b38"
+    }
+  },
+  {
+    "id": "unseen-40",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-40-raw_tools-6d8d6f32-e5e6-4318-922f-78bac323c626",
+    "sha256": {
+      "result.json": "4870f0cf6a1724da62e5bb2578362e0d1c291beb371fb4d3a5fc64fe9c5d984d",
+      "independent-manual-score.json": "8988167c4eab28b232a3c7ef50b3df4528a928091639a356663ad9a7ab5d2c13"
+    }
+  },
+  {
+    "id": "unseen-41",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-41-before-df7f11d0-4bef-4046-85ad-6f02d2ebf788",
+    "sha256": {
+      "result.json": "8f6cd7b58d53ea1bf77d78e0a27b3b35667c68e955360626932ff42bc5c83328",
+      "independent-manual-score.json": "81436b0c57e02042574e41affff332d2223b438ef9036214bedb1588a1b60137"
+    }
+  },
+  {
+    "id": "unseen-41",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-41-after-57f24d15-d41b-46b8-a38e-ae92170c0f4f",
+    "sha256": {
+      "result.json": "ea2c0d8f511d39a3ef47e461df469601eeae528adddc6031bbd64a4c3c8b1fb5",
+      "independent-manual-score.json": "acf0121725e469a33cc857d4e3f37efa67f1923128edfa5d981ee67e89e3ff98"
+    }
+  },
+  {
+    "id": "unseen-41",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-41-raw_tools-7c58acc1-9025-4d5e-871c-9780a337c936",
+    "sha256": {
+      "result.json": "c91f665d09c5ebd09443c4fab13caa005b12afc7876432805a07f63cab7deeb5",
+      "independent-manual-score.json": "d47c7dd5dc3c8bff9f0e188c33decf1a7f149e70d14fa8bc033746bb2eec0991"
+    }
+  },
+  {
+    "id": "unseen-42",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-42-before-5fecd364-985c-4ac1-892e-b936d2e3e2ce",
+    "sha256": {
+      "result.json": "0e57ea0559e9f6c7a212e10ff9be06be2a37d2f0605a3fcc1dd26058d58bfd66",
+      "independent-manual-score.json": "03512fc3b91289ab9a906d43b39e4ae32bc40bd8696a71e4d8d8e1da479d30cd"
+    }
+  },
+  {
+    "id": "unseen-42",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-42-after-5e51a735-19ce-41f5-95e5-35140f996325",
+    "sha256": {
+      "result.json": "cd0bd05c434b379b9bc0b044b9ccc2992ce23624795bbf189cef2720e74fdd33",
+      "independent-manual-score.json": "b9b19330ae976d206ea8498831aaad2fac16f5397035db5a0955c8196db26ea2"
+    }
+  },
+  {
+    "id": "unseen-42",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-42-raw_tools-7f22a759-cfd5-4b3e-bdeb-9978fa80e1d9",
+    "sha256": {
+      "result.json": "a4172c7b22ab2222e8f06079026dcb692e3355d3d944c6148c83a9025ce12c04",
+      "independent-manual-score.json": "d21da26e6dd0c9604295a23176b7e4fd8084a0610d02436a7eb7d224c9649127"
+    }
+  },
+  {
+    "id": "unseen-43",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-43-before-4b2b8aa1-b2ba-4f00-b5b7-0fd837c0a823",
+    "sha256": {
+      "result.json": "2aee774c82aee9fb92269d162841dcc039137d3be9918011d544b6623ceb05e8",
+      "independent-manual-score.json": "7679e87ef17139b53dcc59e0a9a1063482263962f29810272a16387cee1344f2"
+    }
+  },
+  {
+    "id": "unseen-43",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-43-after-76328a5d-3655-42e2-a1c4-46998dcb8b42",
+    "sha256": {
+      "result.json": "44ec234f9ec4cadc4f425beb5cd00fa16d6282691e46b4d21c5426247f06b4df",
+      "independent-manual-score.json": "d1e97d580b2dc5d2b59c12a6745c2d1f9666d0b220bfd01771e957af3e3d47ff"
+    }
+  },
+  {
+    "id": "unseen-43",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-43-raw_tools-8e9e0fd9-bb8b-47ca-a1db-9721cd32aeb5",
+    "sha256": {
+      "result.json": "2d66233d4c5d1811f5b6cff754f2ca2360ff4634388ab4e789d3c8a550b57177",
+      "independent-manual-score.json": "f8d220eb095ee37055590777c31fc03402b4ec872a7af9ac7b2e53cc3e4983ff"
+    }
+  },
+  {
+    "id": "unseen-44",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-44-before-2d3aab79-4e8f-405a-a041-77d3c0630f6e",
+    "sha256": {
+      "result.json": "0593422523644ba3d68af890bda93e3718c416113187d4c287d8a8add2aeaa15",
+      "independent-manual-score.json": "3295a5d296dc53141dc9da4b410037586029321c39321a53955f4abe138ddc3a"
+    }
+  },
+  {
+    "id": "unseen-44",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-44-after-e99d7dc6-2e5e-4966-b54a-65df2c6fa59c",
+    "sha256": {
+      "result.json": "337ed60f28d0d2e7c19a7fc7d974029d14086efc8f7523fa561c47107e1fd1e1",
+      "independent-manual-score.json": "0798d36447dec539019ac6827278df7330725a6fd1ce7498785f46998a0fecae"
+    }
+  },
+  {
+    "id": "unseen-44",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-44-raw_tools-3c3c30d1-8fb0-4447-a16e-7eefae5c838b",
+    "sha256": {
+      "result.json": "771b3183ca82e2c642eb9551991a3002af47020a6bac3073f4755b18b338794d",
+      "independent-manual-score.json": "51068aad01679fddcdad6f63e8504835061122e08a531c864f1520492ecc8918"
+    }
+  },
+  {
+    "id": "unseen-45",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-45-before-da07527f-e17a-4a21-a62d-b193e6a2af9a",
+    "sha256": {
+      "result.json": "eca2fb05d8f3c5ea5532c7dd34dfb201b9fac5dd0165cc56374d12c511a509ab",
+      "independent-manual-score.json": "fb0520bff6465cb97f9b34ad5c9df87b5290bd30fbf9743a7fa10a1af33a73a1"
+    }
+  },
+  {
+    "id": "unseen-45",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-45-after-1293fc4b-b3a6-4e97-be40-688988e6a0b5",
+    "sha256": {
+      "result.json": "dc2293afb29d3a9213b8bef07dae98950869c7c1befda412ec7b240474d7d629",
+      "independent-manual-score.json": "86b918713503e7a1b4496e1ff3ca2412d308a2c4cdced85dfad2dbb12a5287ed"
+    }
+  },
+  {
+    "id": "unseen-45",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-45-raw_tools-0d0e207b-338a-43aa-838a-b6ec8c8517a9",
+    "sha256": {
+      "result.json": "6fb57a0f102d41e0986844bfaf3c3990a38af9be7edaa1ac6a268dd17dcf3877",
+      "independent-manual-score.json": "958b8231d8569d362e20ff2ea3da7af7ac7df8cfcfbf826d00453714868b7f92"
+    }
+  },
+  {
+    "id": "unseen-46",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-46-before-ff96222f-e075-4cd4-a262-ec54873777ab",
+    "sha256": {
+      "result.json": "2b5fac70d24219be9e34edde7ac24cb66270b051b23fc902884b56718b40c6af",
+      "independent-manual-score.json": "f72db5dd6f2b39da109f589fb9db24748ff8d945aceeffb894e2d941b967f445"
+    }
+  },
+  {
+    "id": "unseen-46",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-46-after-bf9d8553-201d-412e-a791-5a4dd2d97fb4",
+    "sha256": {
+      "result.json": "fb258fbec4ae9bc9ea96ff9f895874354404f4d449ca2b016ebe643b5c3873fa",
+      "independent-manual-score.json": "82a47842ad5428e13059bbcf34dd1e6725e2bb9e273c3c5e989c3ea36dd63ea2"
+    }
+  },
+  {
+    "id": "unseen-46",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-46-raw_tools-e6312a59-d10f-46a6-8799-d809f22f7712",
+    "sha256": {
+      "result.json": "4807b8b44799b07f92c0c355f166f42e20a142f376f506a06ca0dfbb190c5acf",
+      "independent-manual-score.json": "43573aaf6605a6f5ccf70be98c6b633b744bcdf5be621ebed68200787a2fb8b2"
+    }
+  },
+  {
+    "id": "unseen-47",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-47-before-53a43527-72c6-43ae-a7a6-ebaa668a026e",
+    "sha256": {
+      "result.json": "2bbcd6c6e0fbc2019a32c7bc814cff543728cd80e1fceddc6a7147eb0374ae63",
+      "independent-manual-score.json": "4eaf0b876f798315ed4c46c1f06b57703a0f62bf619b46c9fcf201cee427a729"
+    }
+  },
+  {
+    "id": "unseen-47",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-47-after-c5a72069-6767-4533-93c8-0f17bd217b63",
+    "sha256": {
+      "result.json": "69511e49bc9f81dc3f1b5975766fb207b052135c7588afe049c0fbfea1d8bf91",
+      "independent-manual-score.json": "18385ef129934a0f03f8f4d5e3e091e267b4a97cdec2c16ee04acaafc62b8aa4"
+    }
+  },
+  {
+    "id": "unseen-47",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-47-raw_tools-fee0f1ac-d6a6-4812-bc5d-88b47f21b298",
+    "sha256": {
+      "result.json": "53d68685d063de8330badd8eb0cfa5c2d485ce122437beca5ed3bbb92c1aabf6",
+      "independent-manual-score.json": "879d8161bccb6d31cab87a80b4f5d5180ef51271eef3ce6c9ae6ea00a7ab1cee"
+    }
+  },
+  {
+    "id": "unseen-48",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-48-before-37ee2f98-edbd-49d5-b9d6-521019c5379f",
+    "sha256": {
+      "result.json": "ecd6c948307343b8d71b141e01f07e11fb60ab5bc7fbef06217da12366e832db",
+      "independent-manual-score.json": "f6f3561cb304975321b62fed21f3d4eb1a01c25f4d4177a6e1a88db6d3b2e9c2"
+    }
+  },
+  {
+    "id": "unseen-48",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-48-after-ff375e8f-4c6b-4f7a-81ed-295d4de90f1d",
+    "sha256": {
+      "result.json": "620a19458ba3d34447f8ac26bc2a3ad1515bf1b5f5495c3bd99efffe6345e0cc",
+      "independent-manual-score.json": "73f9c8aec068c4624f704c3519c2bf6b968af6c7c277c3015664820f768c4f1c"
+    }
+  },
+  {
+    "id": "unseen-48",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-48-raw_tools-2c81ee08-9cc8-4a91-aa97-4f3d4b48b7cf",
+    "sha256": {
+      "result.json": "49164f1a982f07329f43c35bf0a2551dbc638fd44feebfcbeca13916ff096680",
+      "independent-manual-score.json": "3366543aa6a80b582fa01d9acc18ef103c932c169ffa15c83be7017966118642"
+    }
+  },
+  {
+    "id": "unseen-49",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-49-before-cd9d7146-84e2-4f5a-8e25-8037fec3ab69",
+    "sha256": {
+      "result.json": "8acbb7d44f505eeb8a999e57079d3b4522cab81060e205f35da1ed2d5c60824a",
+      "independent-manual-score.json": "9595fe8fa8bb8337d8fb7a6a703f01b9be82f374f7e9ceda4dc2bb32178b0ebc"
+    }
+  },
+  {
+    "id": "unseen-49",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-49-after-d2c3b4b1-f069-4f5d-a439-49eb66fecd59",
+    "sha256": {
+      "result.json": "479db012b9237901de870e62872c6ef1baba9a8ebcf66d1d83e3b3d8248436a0",
+      "independent-manual-score.json": "ee6a17af79dfbbb50e0bd243b08bea5bf9985d9911d068c93697ea4da4613a70"
+    }
+  },
+  {
+    "id": "unseen-49",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-49-raw_tools-eeebdd5a-02d4-494f-91a4-0520a48af262",
+    "sha256": {
+      "result.json": "0f5181f347eec0f9a54b3ff55b66bdcbc8cf038dbab44e239f56c2a7e2102997",
+      "independent-manual-score.json": "c3dc84d529f43a99615ff8a855f6ac98b16c6e77a6ed6cf180da1a2279cdd14d"
+    }
+  },
+  {
+    "id": "unseen-50",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-50-before-4dbf6f04-bb57-47cb-9516-9be1bd80cc4a",
+    "sha256": {
+      "result.json": "22e28f929499ed041fdeb9c10547e72464e51d700b2cf3f86c81a034b895d716",
+      "independent-manual-score.json": "f88955a40b13cba39697df7843aa67a27021160b62ce8a3665ecc40d4a172fbf"
+    }
+  },
+  {
+    "id": "unseen-50",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-50-after-14ee6bd1-b0f3-4681-b942-4f2a16458331",
+    "sha256": {
+      "result.json": "8232ec250e0f6a78b538a82361e270d1735c4fc80543aee6023d8da027f699d0",
+      "independent-manual-score.json": "56c1843b8fa65d545f068661015e174a96cfe1eb6200180aeea8333806c69a24"
+    }
+  },
+  {
+    "id": "unseen-50",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-50-raw_tools-43968564-880b-485c-878b-6319d23203d4",
+    "sha256": {
+      "result.json": "a4eaed7401730311de3c9aa1f6ba76ce521c6c11433a39bce8aaff079a8b0063",
+      "independent-manual-score.json": "a3263f7d8b4269cc1370ee66d5a7b11e89cbaef7a74150ae0808b046fe224c3b"
+    }
+  },
+  {
+    "id": "unseen-51",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-before-801a2d2b-10fe-486c-a9ce-f762a1d68c53",
+    "sha256": {
+      "result.json": "be8e855b4142fdba319cf50fcb25ccf85c08f5de6e1828d3da2b3e4ec2a92bfc",
+      "independent-app-score.json": "991d918eccccacba9bd7c6b235e12265217b50a733b09bade79be1147e5e9638"
+    }
+  },
+  {
+    "id": "unseen-51",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-after-b2b0bfb6-d8ed-4883-8ad0-43f927b6faf1",
+    "sha256": {
+      "result.json": "db3f8a21fb3602d90bc014fadeb4550ad2e7dba36db51df0a96ee35c13d7f153",
+      "independent-app-score.json": "2355ba42333a1e629961f7c4f3220dd2e9ae5e8433bc12c6f725f51990319dee"
+    }
+  },
+  {
+    "id": "unseen-51",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-raw_tools-f6d9db45-ccae-484f-a2bc-ca029100e23b",
+    "sha256": {
+      "result.json": "1094d656471cac7f064dc659a4052bd62a64c26a53fb9686f2a1987896a47dcf",
+      "independent-app-score.json": "cc19a574891129ed5552a98e5aaa91f2fffb2cf3644488fdd84a637333b6c181"
+    }
+  },
+  {
+    "id": "unseen-52",
+    "arm": "before",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-before-49c59819-88df-456f-9ae5-8e8139c4a068",
+    "sha256": {
+      "result.json": "9533958d546f695bf8c5dcb7f284857cabea71cdb388b428fb51b87df2399ed0",
+      "independent-app-score.json": "a4d2761a98f4b178c8f77275819f79501f44356f63f35b96aae8588f926f7d52"
+    }
+  },
+  {
+    "id": "unseen-52",
+    "arm": "after",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-after-6278ca53-6b14-4496-9e23-c340fcfca43e",
+    "sha256": {
+      "result.json": "ac3eed03f6009b6378e58cbc6a805a7ed286a6ea7a71737be8efad4c625d639d",
+      "independent-app-score.json": "9c4a350a50f2f09dec1a1ef5b18486b82dec657cec6323da4c55c081779cff7b"
+    }
+  },
+  {
+    "id": "unseen-52",
+    "arm": "raw_tools",
+    "directory": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-raw_tools-49e2c502-9876-4ff2-ba57-b64bb96ae834",
+    "sha256": {
+      "result.json": "114cd1e58a35d775c74c78b9530f36ec555b1c79df9482077865d91989737093",
+      "independent-app-score.json": "e4db0620bacb68aad77a3c3c8d7c0802304d3a294ad7984bb968d254234dc5d0"
+    }
+  }
+]

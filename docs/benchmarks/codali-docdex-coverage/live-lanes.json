@@ -1,0 +1,26 @@
+[
+  {
+    "name": "docdex_get_profile",
+    "ok": true
+  },
+  {
+    "name": "docdex_memory_recall",
+    "ok": true
+  },
+  {
+    "name": "docdex_conversation_list",
+    "ok": true
+  },
+  {
+    "name": "docdex_diary_read",
+    "ok": true
+  },
+  {
+    "name": "docdex_kg_search_nodes",
+    "ok": true
+  },
+  {
+    "name": "docdex_personal_preferences_status",
+    "ok": true
+  }
+]

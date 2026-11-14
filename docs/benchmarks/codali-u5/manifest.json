@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-29T08:19:30.384841+00:00",
+  "count": 32,
+  "promptsSha256": "b4aac4413920fc88afe6367e6ec71b43214bc3607e6acd375c146e4b36e9d2b8",
+  "gradingSha256": "f929a197457076c279f7ca5200588feb6272c0247270dc90c6fdd9e3bf892c59",
+  "limitations": [
+    "Fresh fixed regression sample, not the original 1000 or R1 held-out study.",
+    "Architecture questions test constrained decisions, not open-ended design quality.",
+    "Small sample cannot establish statistical superiority; no tuning or automatic retries based on these outcomes.",
+    "Same Qwen lead/config and shared limits for both arms; report latency, tokens, errors and every first attempt."
+  ],
+  "validationContract": {
+    "count": 32,
+    "families": 32,
+    "splits": {
+      "development": 0,
+      "validation": 32,
+      "held_out": 0
+    }
+  }
+}

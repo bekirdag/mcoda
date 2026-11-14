@@ -1,0 +1,53 @@
+cohort,caseId,title,codaliScorePercent,rawToolsScorePercent
+tasks,complex-01,Bitemporal settlement reconciliation,70,0
+tasks,complex-02,FIFO inventory with traceable returns,70,100
+tasks,complex-03,Censored reliability comparison,80,0
+tasks,complex-04,Simpson allocation reversal,0,90
+tasks,complex-05,Lease-versus-buy discounted cash flow,100,100
+tasks,complex-06,Queue-capacity admission,0,100
+tasks,complex-07,Dependency scheduling with a shared resource,100,0
+tasks,complex-08,Battery dispatch under export prohibition,100,0
+tasks,complex-09,Correlated measurement uncertainty,100,0
+tasks,complex-10,Sequential diagnostic evidence,0,100
+tasks,complex-11,Temporal SQL price intervals,90,80
+tasks,complex-12,Late-event materialized balance,0,90
+tasks,complex-13,Bounded asynchronous mapping,0,80
+tasks,complex-14,CSV invoice parser adversarial fields,0,0
+tasks,complex-15,Reservation race without global locking,0,60
+tasks,complex-16,Shortest paths and negative cycles,80,80
+tasks,complex-17,Interval coverage property testing,90,100
+tasks,complex-18,Zero-downtime uniqueness migration,0,0
+tasks,complex-19,DST scheduling semantics,80,80
+tasks,complex-20,Conditional HTTP state changes,80,0
+tasks,complex-21,Tenant-bound object authorization,0,0
+tasks,complex-22,SSRF-resistant evidence fetcher,0,0
+tasks,complex-23,Spreadsheet export threat model,90,90
+tasks,complex-24,Password-reset race and privacy,0,0
+tasks,complex-25,Webhook ordering and replay,0,0
+tasks,complex-26,RAG evidence conflict and prompt injection,90,90
+tasks,complex-27,Offline sync architecture with conflicts,0,0
+tasks,complex-28,Cross-service migration cutover,0,0
+tasks,complex-29,Incident timeline under clock skew,70,90
+tasks,complex-30,Restore evidence versus backup success,100,70
+tasks,complex-31,Difference-in-differences caveats,80,90
+tasks,complex-32,Calorimetry with phase transition,90,100
+tasks,complex-33,Genetic counseling probability model,90,100
+tasks,complex-34,Blend feasibility and dual bottleneck,0,0
+tasks,complex-35,Constraint schedule with conditional obligation,100,90
+tasks,complex-36,Supplier acceptance sampling,100,90
+tasks,complex-37,Privacy suppression differencing,80,0
+tasks,complex-38,Contract evidence conflict,100,100
+tasks,complex-39,Accessible asynchronous form review,90,0
+tasks,complex-40,Intent and irreversible ambiguity,90,90
+tasks,complex-41,Database isolation decision,70,0
+tasks,complex-42,Post-quantum migration evidence,90,0
+tasks,complex-43,Grid storage lifecycle decision,40,0
+tasks,complex-44,Clinical evidence versus surrogate endpoints,40,0
+tasks,complex-45,Inflation and real-wage comparison,40,0
+tasks,complex-46,Climate attribution communication,50,0
+tasks,complex-47,Accessible authentication requirements,70,0
+tasks,complex-48,Open-source distribution compliance,50,0
+tasks,complex-49,Space telescope detection claims,60,0
+tasks,complex-50,Sovereign debt data reconciliation,0,0
+apps,build-01-custody,FrostLedger,10,0
+apps,build-02-workshop,BenchHarbor,8,6

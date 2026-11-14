@@ -15,6 +15,30 @@ import {
 
 process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
 
+test("relay preserves bounded PNG image blocks and rejects unsupported image locations", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  let captured: CodaliRuntimeInput | undefined;
+  const invoke = (url: string, role = "user") => executor.invoke({
+    jobId: "vision-test", requestId: "vision-request", model: "vision",
+    messages: [{ role, content: [{ type: "text", text: "Inspect layout" }, { type: "image_url", image_url: { url } }] }],
+    agent: { slug: "vision", adapter: "llama-cpp-local", model: "vision", baseUrl: "http://127.0.0.1:11460/v1" },
+    policy: { allowTools: false },
+    runCodali: async input => {
+      captured = input;
+      return { finalMessage: "seen", messages: [], toolCallsExecuted: 0, touchedFiles: [], warnings: [], events: [], runId: "vision-run" };
+    },
+  });
+  await invoke(png);
+  assert.equal(captured?.messages?.[0].content, "Inspect layout");
+  assert.deepEqual(captured?.messages?.[0].images, [{ dataUrl: png }]);
+  captured = undefined;
+  for (const [url, role] of [["https://example.com/image.png", "user"], [png, "assistant"], ["data:image/jpeg;base64,AAAA", "user"]]) {
+    await assert.rejects(() => invoke(url, role), /PNG data URL/);
+    assert.equal(captured, undefined);
+  }
+});
+
 test("MswarmCodaliExecutor maps jobs to Codali and emits OpenAI stream chunks", async () => {
   const executor = new MswarmCodaliExecutor();
   const chunks: Record<string, unknown>[] = [];
@@ -745,7 +769,7 @@ test("MswarmCodaliExecutor rejects failed gateway results before streaming outpu
           consideredTools: ["docdex_search"],
           calledTools: [],
           warnings: [],
-          errors: ["GATEWAY_REQUIRED_TOOL_NOT_CALLED:docdex_search"],
+          errors: ["worker-1:GATEWAY_WORKER_FAILED", "GATEWAY_REQUIRED_TOOL_NOT_CALLED:docdex_search"],
           toolCalls: [],
           modelCalls: [],
           events: [],
@@ -763,6 +787,7 @@ test("MswarmCodaliExecutor rejects failed gateway results before streaming outpu
       assert.equal(failure.gatewayFailureCode, "GATEWAY_REQUIRED_TOOL_NOT_CALLED");
       assert.equal(failure.retryable, false);
       assert.match(failure.message, /GATEWAY_REQUIRED_TOOL_NOT_CALLED/);
+      assert.match(failure.message, /docdex_search/);
       return true;
     },
   );

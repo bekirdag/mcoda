@@ -1,0 +1,135 @@
+{
+  "projects": 10,
+  "eventLines": 8360,
+  "toolReceipts": 777,
+  "failedReceipts": 207,
+  "failureGroups": 133,
+  "systemEntries": 31,
+  "importedIssueRecords": 47,
+  "additionalReviewEntries": 21,
+  "totalEntries": 99,
+  "projectsStats": [
+    {
+      "project": "app-01-web-codali_candidate",
+      "events": 1486,
+      "receipts": 104,
+      "failures": 25,
+      "stalled": 0,
+      "modelRequests": 84
+    },
+    {
+      "project": "app-01-web-raw_tools",
+      "events": 192,
+      "receipts": 50,
+      "failures": 8,
+      "stalled": 0,
+      "modelRequests": 44
+    },
+    {
+      "project": "app-02-desktop-codali_candidate",
+      "events": 1621,
+      "receipts": 112,
+      "failures": 52,
+      "stalled": 0,
+      "modelRequests": 97
+    },
+    {
+      "project": "app-02-desktop-raw_tools",
+      "events": 116,
+      "receipts": 35,
+      "failures": 7,
+      "stalled": 0,
+      "modelRequests": 21
+    },
+    {
+      "project": "app-03-ios-codali_candidate",
+      "events": 1536,
+      "receipts": 123,
+      "failures": 25,
+      "stalled": 5,
+      "modelRequests": 81
+    },
+    {
+      "project": "app-03-ios-raw_tools",
+      "events": 231,
+      "receipts": 59,
+      "failures": 23,
+      "stalled": 0,
+      "modelRequests": 54
+    },
+    {
+      "project": "app-04-ios-game-codali_candidate",
+      "events": 1757,
+      "receipts": 111,
+      "failures": 29,
+      "stalled": 5,
+      "modelRequests": 97
+    },
+    {
+      "project": "app-04-ios-game-raw_tools",
+      "events": 185,
+      "receipts": 47,
+      "failures": 7,
+      "stalled": 0,
+      "modelRequests": 43
+    },
+    {
+      "project": "app-05-android-codali_candidate",
+      "events": 1075,
+      "receipts": 73,
+      "failures": 23,
+      "stalled": 0,
+      "modelRequests": 63
+    },
+    {
+      "project": "app-05-android-raw_tools",
+      "events": 161,
+      "receipts": 43,
+      "failures": 8,
+      "stalled": 0,
+      "modelRequests": 35
+    }
+  ],
+  "sourceFingerprints": {
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-codali_candidate/receipts/events.jsonl": "c87251673af0236d6272116267b87165e624cc1259f7c20456d22d790f59b9a9",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-codali_candidate/receipts/result.json": "aa7958a879f733e6b19c4b6e19ae4cd88bd62392ec14de7e6c0cc744a6f6e98d",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-codali_candidate/REVIEW.md": "94f26abca4a2f8230754141e816b816b11aab3200f4d32ade3341b41b1073dce",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-codali_candidate/issues.json": "45e9c8a20fb3fe8fab541829f62787230735f006a56318145bdbe8ef35280b71",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-raw_tools/receipts/events.jsonl": "642eefa1233f591ebe8966d57b5bf62773cb1588ef250533b1e3b6b65183fa04",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-raw_tools/receipts/result.json": "236b644a41cacd7df67482a71806ae8108088a6bc442a8e2615b2105517ac330",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-raw_tools/REVIEW.md": "adcc3bd472909ed937a689b2eb9f5fe6bb799cd13243e7c27ec334796b1c6880",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-01-web-raw_tools/issues.json": "e3127eec367136a274a25a163827c7c1648c5410ce7d21cb780ffb278bdb6ebe",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-codali_candidate/receipts/events.jsonl": "f817128939deed5b31b8c5da15feb31e7c6c9a477363e63bb190c90de3446903",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-codali_candidate/receipts/result.json": "6f1f38f610dc3f413f7579d0f1c93f0aad5aeb988fda8fe37754eb04ef6553a5",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-codali_candidate/REVIEW.md": "8cb513ee2a92af5faa6f89d8ef1fb38776a5f202f8ecb4944d0aca49cff8d54c",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-codali_candidate/issues.json": "e191810ec35fdd6556e11de8271542b0e6393b537819b4c50b87160f65021bbe",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-raw_tools/receipts/events.jsonl": "4fa2e70f4ebbbfd52cc296e6e89db602b6546cc077106d4c03f99c377ceb7111",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-raw_tools/receipts/result.json": "70233a8a99bd88348c6192afa64725a5dee5861709cb59b2a91e1e3e70f311bc",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-raw_tools/REVIEW.md": "109cb5720a416b16f1d791f72a6f860ecdfc08d39ab36706ba4ccb30993cfa6b",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-02-desktop-raw_tools/issues.json": "aee65e632b66e61e5a14c0eb94575177530822df4612acabbfd30deb8049e46b",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-codali_candidate/receipts/events.jsonl": "01ed7053688880eda15483d0832631cc6d3ffb922ebca0bc8e0f00e7f43ca501",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-codali_candidate/receipts/result.json": "98217c6e84754de4993527a459605ebf73623bcee98c2d79e8c55c2bf454093e",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-codali_candidate/REVIEW.md": "ac7c8a19e3dfe660727b1d8cf4daba2474f948e7549e80142babb0de87da83c2",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-codali_candidate/issues.json": "2de43934b3fcd3e087638fd700db5e6b898ef4a171e3e625298b0f073b89d3f4",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-raw_tools/receipts/events.jsonl": "74368d0d0877b7f2b065be87a64cf1bbfedb2201c82ad52b414fd8536047fcb7",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-raw_tools/receipts/result.json": "c66ccf3fdad2b443f01e55a92fb53b3a3085706cf862003885d35fe37652471b",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-raw_tools/REVIEW.md": "6fa522dabcbbdee2a0a59f9edfae5a21f7d2bd71ba16b03302e9e76d6bd4da7c",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-03-ios-raw_tools/issues.json": "fb88afcc7dc78272178e19d5f2e6c8f2f33464aac0e1aaffb09405368c719bf1",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-codali_candidate/receipts/events.jsonl": "66c14d2a8aacfb0a30d9a07ac18f1e4de6ee36c2ce789e19cad9d155bce57a2d",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-codali_candidate/receipts/result.json": "a4fa8918bb0dc2cb46f1a88285ae1262f7c7b69a0aea20418ae47744190e935b",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-codali_candidate/REVIEW.md": "6c35be1409eb912e8fbbb725753eb7a26f2921853cda524b164c72c122bc2455",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-codali_candidate/issues.json": "85215847e69c7ccef425d1805efa1fc61d7686e4b79f381013212f43f91c72f4",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-raw_tools/receipts/events.jsonl": "5bba661f2eaaa22a96f74a517c7a6324eae13cae87ca41c1ebc9343e50af5989",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-raw_tools/receipts/result.json": "cff33076dea864ff2947a10f8455f1cb9c48ac7b57d93f8266497f962e16dd62",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-raw_tools/REVIEW.md": "6c9cedbfacf0033901882e9ac262c8ea019ba131b6dc115ad82f717c47b5abc5",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-04-ios-game-raw_tools/issues.json": "03ce1135032269cb8ddb52fcb7e6048409c8ae33409e62e2269028d6c9789745",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-codali_candidate/receipts/events.jsonl": "ed285bb2efa0a7f5cab8dae5b3ba3e4e2dacb9e2aab7fd1868a5d324c08e2251",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-codali_candidate/receipts/result.json": "e3aeeb43ee0152c87f3a257f25afc65ef3dc349076179cf06c5fefb0fbc7febe",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-codali_candidate/REVIEW.md": "250bc22a6af66dfe9e70cdc34b2077e52fdb9a090f1c242cd595f534901c7ad4",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-codali_candidate/issues.json": "0227c54e576f7ebcffa2d13fee8b0e59aa3144843836f5d48f1042177c23b1c2",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-raw_tools/receipts/events.jsonl": "8837eb2ef1fb91c3a2b033c0dce5706f643763ab602960c555595fbe0dae4fe5",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-raw_tools/receipts/result.json": "8ec33f49438efd90e51cd5de7bb72dbe7cdbbaa3c3e5f056846c0cd81af31dc0",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-raw_tools/REVIEW.md": "5a191c1798d2939b70a6e87ff4d29ebcfbf996d87c79d67257efefe2cc3f237b",
+    "/home/wodo/apps/codali-appbuild-results/2026-11-04/app-05-android-raw_tools/issues.json": "01da34aa1e515edb50c513237add259d365f14bb7bbb7dbcd32c9cc5198bd278"
+  }
+}

@@ -12,6 +12,9 @@
  * routinely carry tokens and paths that must not reach a log.
  */
 
+import { redactSecretValues } from "../runtime/SecretRedaction.js";
+export { redactSecretValues } from "../runtime/SecretRedaction.js";
+
 export interface GatewayTraceRecord {
   runId?: string;
   query: string;
@@ -37,35 +40,6 @@ export interface GatewayTraceRecord {
 
 const SENSITIVE_KEY_PATTERN =
   /(?:authorization|api[_-]?key|bearer|credential|password|secret|signature|token)/i;
-
-/**
- * Secret shapes redacted from *values*, not just from suspiciously named keys.
- *
- * A connector routinely returns a token inside an innocuously named field, and
- * an MCP tool's arguments are model-generated, so key-name matching alone is
- * not enough. These mirror the dataset privacy engine's patterns; both must
- * catch a leak, because the trace is what gets printed to a terminal and pasted
- * into an issue.
- */
-const SENSITIVE_VALUE_PATTERNS: readonly RegExp[] = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,
-  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
-  /\bsk_[A-Za-z0-9]+_[A-Za-z0-9_]{8,}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
-  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bAIza[0-9A-Za-z_-]{30,}\b/g,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-];
-
-export const redactSecretValues = (value: string): string => {
-  let output = value;
-  for (const pattern of SENSITIVE_VALUE_PATTERNS) {
-    output = output.replace(pattern, "[redacted]");
-  }
-  return output;
-};
 
 const MAX_ARG_STRING = 200;
 

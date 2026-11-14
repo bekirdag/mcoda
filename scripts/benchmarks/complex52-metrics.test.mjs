@@ -1,0 +1,5 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {summarizePairs} from './complex52-metrics.mjs';
+const pair=(id='a')=>[{id,arm:'codali_candidate',score:50,tokens:30,elapsedMs:40,error:'failure retained'},{id,arm:'raw_tools',score:100,tokens:20,elapsedMs:20}];
+test('includes failures and correct arm denominators',()=>{const r=summarizePairs(pair());assert.equal(r.count,1);assert.equal(r.scoreDifferencePoints,-50);assert.equal(r.relativeScoreGain,-.5);assert.equal(r.tokenRatio,1.5);assert.equal(r.timeRatio,2);assert.equal(r.arms.codali_candidate.failures,1);});
+test('rejects missing/duplicate/invalid usage and empty studies',()=>{for(const rows of [[],pair().slice(0,1),[...pair(),pair()[0]],pair().map(r=>({...r,tokens:-1})),pair().map(r=>({...r,elapsedMs:undefined}))])assert.throws(()=>summarizePairs(rows));});
+test('unknown totals remain unknown and prototype-like IDs are ordinary IDs',()=>{const rows=pair('__proto__');rows[0].tokens=null;const r=summarizePairs(rows);assert.equal(r.arms.codali_candidate.totalTokens,null);assert.equal(r.tokenRatio,null);assert.equal(r.arms.raw_tools.totalTokens,20);});

@@ -1,0 +1,2628 @@
+{
+  "finalizedDate": "2026-11-05",
+  "metrics": {
+    "tasks": {
+      "codali_candidate": {
+        "attempts": 50,
+        "meanScore": 54.4,
+        "tokens": 1653083,
+        "elapsedMs": 8031191,
+        "nonemptyAnswers": 34
+      },
+      "raw_tools": {
+        "attempts": 50,
+        "meanScore": 41.2,
+        "tokens": 1250124,
+        "elapsedMs": 8746907,
+        "nonemptyAnswers": 23
+      },
+      "ratios": {
+        "tokens": 1.322335224345745,
+        "elapsed": 0.9181749617321872
+      }
+    },
+    "apps": {
+      "codali_candidate": {
+        "attempts": 2,
+        "meanScore": 9,
+        "tokens": 1929083,
+        "elapsedMs": 2427282,
+        "nonemptyAnswers": 0
+      },
+      "raw_tools": {
+        "attempts": 2,
+        "meanScore": 3,
+        "tokens": 985085,
+        "elapsedMs": 821972,
+        "nonemptyAnswers": 1
+      },
+      "ratios": {
+        "tokens": 1.958290908906338,
+        "elapsed": 2.9529983989722277
+      }
+    },
+    "paired": {
+      "codaliWins": 21,
+      "ties": 17,
+      "rawWins": 12
+    },
+    "overall": {
+      "codali_candidate": {
+        "tokens": 3582166,
+        "elapsedMs": 10458473
+      },
+      "raw_tools": {
+        "tokens": 2235209,
+        "elapsedMs": 9568879
+      }
+    }
+  },
+  "tasks": [
+    {
+      "caseId": "complex-01",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 70,
+      "notes": "Correct financial totals. Note-event classification is ambiguous (partial credit); executable SQL fails DuckDB syntax/function checks. Python lacks earlier-reference and once-only reversal guards, explicitly assumes repeat reversals restore amount again. SQL diagnostic in independent-code/complex-01-duckdb.json.",
+      "outputSha256": "4eb2c6dd9e7d44f421cf0dc057c228f69c44475e5ef8cec2e61cc8965902fe3c",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-01-codali_candidate"
+    },
+    {
+      "caseId": "complex-01",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-01-raw_tools"
+    },
+    {
+      "caseId": "complex-02",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 0,
+        "C5": 10
+      },
+      "score": 70,
+      "notes": "Misses valid return A3 correction and incorrectly declares all lot-attribution corrections unable to support scrap A2.",
+      "outputSha256": "cee48b955f8484e40abdccdffebc91fefba37220af9d1a68b912438c1fee99c7",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-02-codali_candidate"
+    },
+    {
+      "caseId": "complex-02",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct earliest invalid event, both correction branches, lot invariant, end B2 valued326.",
+      "outputSha256": "df62f3c7acdbc08b5be6338e284606070d001f9a6fda800fc5a1a70fc075b95c",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-02-raw_tools"
+    },
+    {
+      "caseId": "complex-03",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Correct manual KM headline, but executing supplied code gives custom A survival0.2083 versus5/12; claimed logrank .1875/.6651 differs from actual .2636/.6076. Independent execution receipt retained.",
+      "outputSha256": "548aac6307dcb4198d70cfbbed5af3cd919e526cdb9c807f9da975a0538aa715",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-03-codali_candidate"
+    },
+    {
+      "caseId": "complex-03",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-03-raw_tools"
+    },
+    {
+      "caseId": "complex-04",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-04-codali_candidate"
+    },
+    {
+      "caseId": "complex-04",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Correct Simpson arithmetic and causal caveats. Proposed ITT denominator contradicts itself by requiring at least1day exposure while forbidding post-exposure filtering. Optional CI figures also inconsistent with supplied formulas.",
+      "outputSha256": "62af388b453dd5fa1f4dfd984c32e0af604a17cf40ec186989b0c79fd670a046",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-04-raw_tools"
+    },
+    {
+      "caseId": "complex-05",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "PV, break-even, zero-rate and deposit treatment match independent oracle.",
+      "outputSha256": "c81c0f841a11b9ee20f47694ddfe30db538c86b50706f70c016d5e91955d3b1c",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-05-codali_candidate"
+    },
+    {
+      "caseId": "complex-05",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "PV, break-even, zero-rate and deposit treatment match independent oracle.",
+      "outputSha256": "74d75cbb5801a1cf2ed1477a8c1b6a8188114ec2f31c2920ef594f32c951f772",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-05-raw_tools"
+    },
+    {
+      "caseId": "complex-06",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-06-codali_candidate"
+    },
+    {
+      "caseId": "complex-06",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Erlang C values, tail probabilities, stability and assumptions match oracle.",
+      "outputSha256": "04fee2dce6ba690fa96678264dd85e20f2bb3cc6bf8e726126d932eddeb3471e",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-06-raw_tools"
+    },
+    {
+      "caseId": "complex-07",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Final schedules and lower bounds are correct (10h/14h), despite lengthy rejected intermediate schedules.",
+      "outputSha256": "c732232e47d793af418025d4b3bfa315db9b6b53e5eed3f66b05dcd87c886085",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-07-codali_candidate"
+    },
+    {
+      "caseId": "complex-07",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-07-raw_tools"
+    },
+    {
+      "caseId": "complex-08",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct 190-cent dispatch, efficiency and optimization proof; PV inequality permits implicit unreported curtailment but does not change this optimum.",
+      "outputSha256": "ae0b746c43c28357f975d9808051975a5395ec47766d936ee897f1cbf9b200e0",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-08-codali_candidate"
+    },
+    {
+      "caseId": "complex-08",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-08-raw_tools"
+    },
+    {
+      "caseId": "complex-09",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct covariance propagation and conditional uncertainty conclusions.",
+      "outputSha256": "b2b3240e4b9183384b02e3ff060f42e549c388d8d189cc960644f620806c09be",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-09-codali_candidate"
+    },
+    {
+      "caseId": "complex-09",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-09-raw_tools"
+    },
+    {
+      "caseId": "complex-10",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-10-codali_candidate"
+    },
+    {
+      "caseId": "complex-10",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct posterior arithmetic and blinded validation design. Extra audit-code odds expression divides by zero at the displayed zero-false-positive bound; not a required scoring criterion.",
+      "outputSha256": "e981c5147af44965e8701115901caad744289bc6a057c089c9b532e08b458663",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-10-raw_tools"
+    },
+    {
+      "caseId": "complex-11",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Missing strict valid_to > valid_from check; empty price intervals accepted.",
+      "outputSha256": "667aedbeabd63d4a6c4aa9a3c26babce8f6007db2bed40a499c9ff4c296e7971",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-11-codali_candidate"
+    },
+    {
+      "caseId": "complex-11",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Missing positive interval check; incorrect claim that READ COMMITTED permits overlap despite exclusion constraint.",
+      "outputSha256": "b809cc718873b0ee0c4cb320f13a9b39986313276103395efe2467d86aa4c9e9",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-11-raw_tools"
+    },
+    {
+      "caseId": "complex-12",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-12-codali_candidate"
+    },
+    {
+      "caseId": "complex-12",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 10,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Correct revision replacement/validation; recomputes full account sum instead of maintaining delta balance. Single-writer/persistence caveats explicit.",
+      "outputSha256": "b846db8cc92e937d1f109fa175701cf37cfcdd39bbc691cc7da85335f3e3e562",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-12-raw_tools"
+    },
+    {
+      "caseId": "complex-13",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-13-codali_candidate"
+    },
+    {
+      "caseId": "complex-13",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Null rejection is swallowed by firstError sentinel; waits indefinitely for noncooperative pending worker. Invalid-limit test incorrectly uses assert.throws on async function.",
+      "outputSha256": "35f72b3b2f6883218e07f4de601f8ddcfa2643c10be6d761403ef122f356526d",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-13-raw_tools"
+    },
+    {
+      "caseId": "complex-14",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-14-codali_candidate"
+    },
+    {
+      "caseId": "complex-14",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-14-raw_tools"
+    },
+    {
+      "caseId": "complex-15",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-15-codali_candidate"
+    },
+    {
+      "caseId": "complex-15",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 10,
+        "C2": 10,
+        "C3": 20,
+        "C4": 0,
+        "C5": 20
+      },
+      "score": 60,
+      "notes": "Reservation version is incremented but never checked or bound to purchase. Late webhook can sell a different reservation. Idempotency key not scoped to user and failed/expired key reused.",
+      "outputSha256": "eea823f7351e33be64d187641ada5cdf53b407272cf4d2f65097ad2bbc49b7da",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-15-raw_tools"
+    },
+    {
+      "caseId": "complex-16",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Core Bellman-Ford correct. Demonstration with absent target z raises KeyError instead of graceful handling; executable presentation interrupted.",
+      "outputSha256": "275ef1b5908b64f6f6376652928a8532588316e087c09cf80b03e75c38820f12",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-16-codali_candidate"
+    },
+    {
+      "caseId": "complex-16",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Core algorithm correct. Simple-path test expects s-b-t weight5 while asserting distance4 (actual s-a-t). Missing source/empty validation.",
+      "outputSha256": "f9e12b5e2d79e0aea1f8a4eb974e15c63b2826350cadb2817a9eca9936ed244f",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-16-raw_tools"
+    },
+    {
+      "caseId": "complex-17",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Rejects empty intervals although requested to ignore them; main union algorithm and metamorphic tests sound.",
+      "outputSha256": "b1d08a3061730a9bc15c83296e71262e1b4d64973b1ea6d5ba39d0dad54502a0",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-17-codali_candidate"
+    },
+    {
+      "caseId": "complex-17",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct sweep, empty/reversed policies, no mutation and substantial unit/metamorphic tests. Some mutation-test descriptions overclaim coverage.",
+      "outputSha256": "bb2256451a8d700b658235bca8bef0fcc6b6f7959ffd7cb0539de5f83672315c",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-17-raw_tools"
+    },
+    {
+      "caseId": "complex-18",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-18-codali_candidate"
+    },
+    {
+      "caseId": "complex-18",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-18-raw_tools"
+    },
+    {
+      "caseId": "complex-19",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Correct offsets and fold/gap policies; lacks holiday-calendar versioning and idempotent emission tests. next_instant skips same-day upcoming occurrence.",
+      "outputSha256": "8232bb5af58e2b75eae7f604a96ae35cd5cd7d7c5fca8d866314d8a9f055a82a",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-19-codali_candidate"
+    },
+    {
+      "caseId": "complex-19",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Correct recurrence and policies; no holiday versioning or idempotent emission test.",
+      "outputSha256": "70bfb0ef84b2bb759224cce95ad80fa78b796fb2f61e62deaab569917e223d80",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-19-raw_tools"
+    },
+    {
+      "caseId": "complex-20",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "CAS result ignored; response cache lacks payload hash, user/resource scope and transactional persistence. Incorrect RFC6571 attribution for428.",
+      "outputSha256": "701ebb9be62ec2e046aff144c87adeaa9447f8874fbe177a97124909cf0020a8",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-20-codali_candidate"
+    },
+    {
+      "caseId": "complex-20",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-20-raw_tools"
+    },
+    {
+      "caseId": "complex-21",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-21-codali_candidate"
+    },
+    {
+      "caseId": "complex-21",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-21-raw_tools"
+    },
+    {
+      "caseId": "complex-22",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-22-codali_candidate"
+    },
+    {
+      "caseId": "complex-22",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-22-raw_tools"
+    },
+    {
+      "caseId": "complex-23",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "CSV escaping and export-only prefixing supplied; no typed-text XLSX alternative and unsupported consumer-specific assurances.",
+      "outputSha256": "7fad865cbeb63c1b52c620cbd34f56876b0169ba5a2ff84f7f19e94311f96808",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-23-codali_candidate"
+    },
+    {
+      "caseId": "complex-23",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "CSV escaping and prefix detection supplied; unsupported claims about Sheets/Numbers safety and LibreOffice functions; lacks typed-text XLSX alternative.",
+      "outputSha256": "db3a75232504e5a96da0d5d4ed04c40a418b62a8bbcb41bcc513b9ab3d904199",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-23-raw_tools"
+    },
+    {
+      "caseId": "complex-24",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-24-codali_candidate"
+    },
+    {
+      "caseId": "complex-24",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-24-raw_tools"
+    },
+    {
+      "caseId": "complex-25",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-25-codali_candidate"
+    },
+    {
+      "caseId": "complex-25",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-25-raw_tools"
+    },
+    {
+      "caseId": "complex-26",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Correct uncertainty/provenance and injection rejection; verification omits key availability/restore test, openssl enc -list does not inspect artifact encryption.",
+      "outputSha256": "aacf479598c5e8b5e4c44c60aa0026a5ab92491309f2f9ff56e93e895be822a6",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-26-codali_candidate"
+    },
+    {
+      "caseId": "complex-26",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Correct bounded answer and provenance; metadata inspection alone cannot verify encryption/key recovery; no restore/key validation.",
+      "outputSha256": "5884801302b7a113e12c00abb18875e3bfa46e9cdad4e37d951c1e964eb9db6f",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-26-raw_tools"
+    },
+    {
+      "caseId": "complex-27",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-27-codali_candidate"
+    },
+    {
+      "caseId": "complex-27",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-27-raw_tools"
+    },
+    {
+      "caseId": "complex-28",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-28-codali_candidate"
+    },
+    {
+      "caseId": "complex-28",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-28-raw_tools"
+    },
+    {
+      "caseId": "complex-29",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 0,
+        "C5": 20
+      },
+      "score": 70,
+      "notes": "Correct normalized timestamps but forces speculative root-cause narrative; recommends compensation simply on timeout, unsafe without reconciliation.",
+      "outputSha256": "7eef0126d3dd738cfc76a94e37bd6929e8d844c80239d8e0b1965063dc556570",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-29-codali_candidate"
+    },
+    {
+      "caseId": "complex-29",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Correct time/skew and ambiguity; freezes unsafe retries but recommends reversal before verifying provider transaction evidence.",
+      "outputSha256": "4bb2f5cde6f9fdb08c7fe184b0bf280a56f7a67ccd168b5c6d76ed0cd8809a9b",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-29-raw_tools"
+    },
+    {
+      "caseId": "complex-30",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct12minRPO and64min chained restore including Monday; conditional differential alternative. Extra optimization estimates are speculative.",
+      "outputSha256": "2dea2ac93aac0312c9d85be739d37860dda2b92674a3bc6806c37a6a6e48eb54",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-30-codali_candidate"
+    },
+    {
+      "caseId": "complex-30",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 0,
+        "C3": 20,
+        "C4": 10,
+        "C5": 20
+      },
+      "score": 70,
+      "notes": "Incorrect60minRTO skips Monday incremental; acknowledges dependency formats but presents wrong chain as demonstrated.",
+      "outputSha256": "544184ec6647b322646dd90eac8b15ec53c0d38a80ce6fada865d1a6df849ed3",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-30-raw_tools"
+    },
+    {
+      "caseId": "complex-31",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Correct rates/counts; says confounded count DiD answers prevented-incidents question, and sensitivity calculation -2.36 should be -3.64.",
+      "outputSha256": "f8a4d04f8b6540741c5612e59d0df18ae56cd0fcde9f607c47343a520ef605c9",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-31-codali_candidate"
+    },
+    {
+      "caseId": "complex-31",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Correct primary analysis; invented rounding range too narrow and missing-hours sensitivity has reversed direction.",
+      "outputSha256": "60a212bd46aea9d8531b534fe968b293d4ec5bf8f49e614365e16257542efade",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-31-raw_tools"
+    },
+    {
+      "caseId": "complex-32",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Correct phase energy result and melt threshold; displayed mass-weighted18/.7 incorrectly evaluated31.67 instead25.71.",
+      "outputSha256": "757854f0354532f3340b1e32f57b3feeb245bc8a3353ff35d473c7d45e5170ff",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-32-codali_candidate"
+    },
+    {
+      "caseId": "complex-32",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Required phase/melt calculations and averaging explanation correct. Generalized below-zero branch omits freezing original water; not exercised by requested input.",
+      "outputSha256": "528849e23e14d2c5020b6643a3330b3e1442ea817a44304be5510040f2710de6",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-32-raw_tools"
+    },
+    {
+      "caseId": "complex-33",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "All required probabilities correct; false caveat suggests date phenotype confirmed affects whether genotype is fixed.",
+      "outputSha256": "d866bf5d7e7863b263a31680a6261bb8ded819133914ee712c30512e4a6e5983",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-33-codali_candidate"
+    },
+    {
+      "caseId": "complex-33",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct conditioning, shared-parent dependence and assumptions.",
+      "outputSha256": "78333d02d5703f1118204a652d9f0e47c0220cc4ad0f812b50d3604e92b372a6",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-33-raw_tools"
+    },
+    {
+      "caseId": "complex-34",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-34-codali_candidate"
+    },
+    {
+      "caseId": "complex-34",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-34-raw_tools"
+    },
+    {
+      "caseId": "complex-35",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct exhaustive two-solution enumeration and unique added constraint.",
+      "outputSha256": "e28e44c92de430c782a75bff6f0885a88af35a2b90546323b79ab8da9897030c",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-35-codali_candidate"
+    },
+    {
+      "caseId": "complex-35",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 90,
+      "notes": "Python enumeration correct; extra Z3 code assigns constants A=0 instead of symbolic variables and asserts A!=0, hence unsatisfiable, contradicting reported outputs.",
+      "outputSha256": "db892f2b4c1633825ca76cbdd7d12b3d0da9a7d5542398afb8defc553b8f327b",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-35-raw_tools"
+    },
+    {
+      "caseId": "complex-36",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Exact acceptance probability and binomial distinction match oracle; posterior and risk caveats correct.",
+      "outputSha256": "7552381f77434ba55d540ae80853e213a911046ca1686776e709732ffe83bf6d",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-36-codali_candidate"
+    },
+    {
+      "caseId": "complex-36",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Primary acceptance correct; fabricated P(X=5)=.330476 contradicts P(X>=2)=.076857. Correct tail is choose95,5/choose100,10.",
+      "outputSha256": "1af68770683c349c6d1e98b959b9144bd9e0094c1d10513e1bc6cac6e62c1c1e",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-36-raw_tools"
+    },
+    {
+      "caseId": "complex-37",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 10
+      },
+      "score": 80,
+      "notes": "Reconstruction and rounding bound correct; suppression claimed information-theoretically safe too broadly; DP example treats sensitive changing n as public and omits operational budget/auth controls.",
+      "outputSha256": "4710ebcfd4a9d2d4e3d317b299890e320b5124a7baf7cabf258c3e34daba9fa2",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-37-codali_candidate"
+    },
+    {
+      "caseId": "complex-37",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-37-raw_tools"
+    },
+    {
+      "caseId": "complex-38",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct signed/unsigned VAT branches, unapproved hours and qualified payment/date questions.",
+      "outputSha256": "8c45db0bed846d7908fa3096c6dac66f03c762f7b78b75dc89e330b6832b0802",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-38-codali_candidate"
+    },
+    {
+      "caseId": "complex-38",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 100,
+      "notes": "Correct conditional invoice branches and unresolved authority, late fee and time basis.",
+      "outputSha256": "cc73fb65f5f72425810ce50016fd981803414784deb391a42ffe2368e798a396",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-38-raw_tools"
+    },
+    {
+      "caseId": "complex-39",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Useful labels/status/table/manual testing patterns; custom focus trap includes disabled/hidden controls and does not inert background, though recommends robust library.",
+      "outputSha256": "bfb7dc602dd74535edf74ff855170047ad7ae30ee8bd00978e8847e793140bed",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-39-codali_candidate"
+    },
+    {
+      "caseId": "complex-39",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-39-raw_tools"
+    },
+    {
+      "caseId": "complex-40",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Appropriate ambiguity/public-data gate; read-only plan omits build/license verification.",
+      "outputSha256": "76c7f94b1c019dc17fa19f68192d7a24ece0473e1bf36323243e4e19cda5b9d8",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-40-codali_candidate"
+    },
+    {
+      "caseId": "complex-40",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 20,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Correct clarification and disclosure limits; no build/license checks; many approvals but concrete safe plan.",
+      "outputSha256": "4b6bdb671cc3ec4a09fb8fc6a0626be3ec7554dda415b8d0a5579998838da7bd",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-40-raw_tools"
+    },
+    {
+      "caseId": "complex-41",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 10,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 70,
+      "notes": "Two retrieved primary pages only; same-host WAL rule correct. No explicit one-writer explanation, idempotent external-effects design absent; unsafe topology test wrongly expects deterministic corruption/busy. Sources verified against PG/SQLite docs.",
+      "outputSha256": "3d1c9cfba1a46479583800e5cdff1ff114ada9f17af346479c7c718f2d954dbe",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-41-codali_candidate"
+    },
+    {
+      "caseId": "complex-41",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-41-raw_tools"
+    },
+    {
+      "caseId": "complex-42",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 20
+      },
+      "score": 90,
+      "notes": "Primary NIST/IETF receipts verified; correct standards/draft distinctions. Migration lacks concrete rollback gate and invents10-15year classical-signature horizon.",
+      "outputSha256": "cfe5493e00f2a4c1259e0984fc61dc44a763575c19c153a060edd1322dc54d2d",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-42-codali_candidate"
+    },
+    {
+      "caseId": "complex-42",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-42-raw_tools"
+    },
+    {
+      "caseId": "complex-43",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 0,
+        "C3": 10,
+        "C4": 20,
+        "C5": 0
+      },
+      "score": 40,
+      "notes": "Admits no substantive storage documents retrieved. Efficiency/lifecycle numbers not sourced; seasonal-only maturity claim overbroad. Correctly refuses incomparable cost ranking.",
+      "outputSha256": "f2c28a890789704820e472d1ad5651e9d710162dd24ce000655f40ed36d6b6ce",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-43-codali_candidate"
+    },
+    {
+      "caseId": "complex-43",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-43-raw_tools"
+    },
+    {
+      "caseId": "complex-44",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 0,
+        "C4": 10,
+        "C5": 0
+      },
+      "score": 40,
+      "notes": "Regulatory framework partly sourced; product marketing date is not approval verification. Misnames ALFA-0701 as0101, wrong endpoint/publication and original application number; FDA statistical review contradicts CR claim. No trial paper retrieved.",
+      "outputSha256": "f478e2688f0de646b2cb3583508ed1c7d57fbaedfc844145812217d66753f2a5",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-44-codali_candidate"
+    },
+    {
+      "caseId": "complex-44",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-44-raw_tools"
+    },
+    {
+      "caseId": "complex-45",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 0,
+        "C3": 20,
+        "C4": 10,
+        "C5": 0
+      },
+      "score": 40,
+      "notes": "Exact real wage correct; one BLS page only. HICP1/12OOH cap/user-cost claims unsupported and wrong; net-acquisition vs rental equivalence confused, chained CPI incorrectly called Fisher.",
+      "outputSha256": "f30e59d5b0e02fdcf69081ad91e2c0548d954b71f29cf53bbfe7accdc5d21b84",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-45-codali_candidate"
+    },
+    {
+      "caseId": "complex-45",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-45-raw_tools"
+    },
+    {
+      "caseId": "complex-46",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 10,
+        "C4": 10,
+        "C5": 0
+      },
+      "score": 50,
+      "notes": "Two WWA pages only, no second authority. Sound general distinction; missing FAR explanation and actual UK effect estimate; correction mixes150x/2C illustration with UK study.",
+      "outputSha256": "790dc5c90858fb38c73c755d66c5946d52dab348c85fd138f716022ac44bebc7",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-46-codali_candidate"
+    },
+    {
+      "caseId": "complex-46",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-46-raw_tools"
+    },
+    {
+      "caseId": "complex-47",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 20,
+        "C2": 10,
+        "C3": 20,
+        "C4": 10,
+        "C5": 10
+      },
+      "score": 70,
+      "notes": "W3C criteria verified; later recommendation treats keyboard as alternative to required single-pointer operation. NIST only navigation/TOC, checkbox accessibility not established.",
+      "outputSha256": "7d9a6064873fec2df5ccfa45b01d45826efd12e6055192c5e0b90e29e5c6be91",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-47-codali_candidate"
+    },
+    {
+      "caseId": "complex-47",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-47-raw_tools"
+    },
+    {
+      "caseId": "complex-48",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 10,
+        "C3": 20,
+        "C4": 10,
+        "C5": 0
+      },
+      "score": 50,
+      "notes": "Honest retrieval failure; only LGPLdefinitions/SFCcontext read, no AGPLtext. General source duties partly correct but relinking/installation conditions incomplete and LGPLsection6 attribution wrong.",
+      "outputSha256": "362e1b6100e15cdd987822a28f35b81df2f21fd6a732987eaf15b9ddcdf3a5fe",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-48-codali_candidate"
+    },
+    {
+      "caseId": "complex-48",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-48-raw_tools"
+    },
+    {
+      "caseId": "complex-49",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 10,
+        "C2": 20,
+        "C3": 20,
+        "C4": 10,
+        "C5": 0
+      },
+      "score": 60,
+      "notes": "Verified reanalysis abstracts but not original JWST paper/second publisher. Confuses2020pre-JWST paper and2023journal. No full papers opened; API search abstracts insufficient for requested deep comparison.",
+      "outputSha256": "c1a5e8f227ce2aca324b6743dba892def547237719749655d0a239a42ec3cafa",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-49-codali_candidate"
+    },
+    {
+      "caseId": "complex-49",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-49-raw_tools"
+    },
+    {
+      "caseId": "complex-50",
+      "arm": "codali_candidate",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-50-codali_candidate"
+    },
+    {
+      "caseId": "complex-50",
+      "arm": "raw_tools",
+      "criteria": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "score": 0,
+      "notes": "No delivered final answer; retained failure, no retry.",
+      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reviewStatus": "independent-reviewed",
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/tasks/complex-50-raw_tools"
+    }
+  ],
+  "apps": [
+    {
+      "caseId": "build-01-custody",
+      "arm": "codali_candidate",
+      "score": 10,
+      "ready": false,
+      "criteria": [
+        {
+          "id": "F01",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Two seeded organizations North and South; hashed-password login/logout with server-side session cookies; viewer/operator/admin roles.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F02",
+          "category": "features",
+          "weight": 4,
+          "requirement": "All shipment, reading, incident and export routes enforce tenant membership from the session; reject guessed cross-tenant IDs.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F03",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Create shipments with unique tenant-local reference, origin,destination and integer min/max temperature in tenths Celsius; require min<max.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F04",
+          "category": "features",
+          "weight": 4,
+          "requirement": "List shipments with reference search,status filter,stable pagination and meaningful empty states.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F05",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Append custody transitions created->in_transit->delivered, with actor,time and location; reject backwards or skipped transitions.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F06",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Import JSON temperature readings with immutable eventId,timestamp and integer temperature; duplicate identical events are no-ops; conflicting duplicate payload returns409 atomically.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F07",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Accept out-of-order timestamps; recompute excursions as consecutive out-of-range samples in timestamp order; readings exactly at min/max are in-range.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F08",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Show a timeline/chart and an accessible equivalent table; each excursion indicates start/end and maximum deviation without inventing continuous measurements.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F09",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Operators open and resolve incidents with a required resolution note; retain chronological audit history.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F10",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Viewer can read but cannot mutate; admin can manage local users without removing the final admin.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F11",
+          "category": "features",
+          "weight": 4,
+          "requirement": "CSV export obeys current filters, quotes correctly and neutralizes formula-leading customer text; no password/session fields.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F12",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Dashboard counts derive from current tenant data; data survives server restart; invalid batches leave no partial writes.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build1",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Clean dependency install/setup/build succeeds",
+          "points": 2,
+          "evidence": "Install/build commands run, but setup is a no-op and DB imports missing seed.js."
+        },
+        {
+          "id": "build2",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Server health and real UI launch",
+          "points": 2,
+          "evidence": "Health endpoint runs; screenshot is only UI build pending, not a usable UI."
+        },
+        {
+          "id": "build3",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Documented commands and delivery claims accurate",
+          "points": 2,
+          "evidence": "Commands and incomplete delivery manifest exist; README claims unimplemented sessions and request protections."
+        },
+        {
+          "id": "security1",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Negative tenant/role/session tests pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security2",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Validation,SQL/HTML/CSV andrequest-size protections",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security3",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Race/idempotency/transactional invariants hold",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests1",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Meaningful automated domain tests execute and pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests2",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Restart persistence and error paths verified",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux1",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Coherent visual hierarchy/readability atdesktop",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux2",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Mobile390px preservescontent/actions",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux3",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Keyboard labels/focus/accessibility",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux4",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Clear error/empty/loading/success states",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality1",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Maintainable domain/storage/UI separation",
+          "points": 1,
+          "evidence": "Some server/storage/config separation; domain/UI absent."
+        },
+        {
+          "id": "code_quality2",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Explicit errors/types/validation",
+          "points": 1,
+          "evidence": "Explicit 404/path guards and password helper; domain validation missing."
+        },
+        {
+          "id": "code_quality3",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "No core stubs/TODO orduplicatedunsafe logic",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality4",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Clean source/config andno secrets",
+          "points": 2,
+          "evidence": "Clean config and no credential secrets identified; demo passwords are fixture data."
+        },
+        {
+          "id": "delivery",
+          "category": "build",
+          "weight": 2,
+          "requirement": "All source and required assets present; no externally dependent missing component",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        }
+      ],
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/apps/build-01-custody-codali_candidate"
+    },
+    {
+      "caseId": "build-01-custody",
+      "arm": "raw_tools",
+      "score": 0,
+      "ready": false,
+      "criteria": [
+        {
+          "id": "F01",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Two seeded organizations North and South; hashed-password login/logout with server-side session cookies; viewer/operator/admin roles.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F02",
+          "category": "features",
+          "weight": 4,
+          "requirement": "All shipment, reading, incident and export routes enforce tenant membership from the session; reject guessed cross-tenant IDs.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F03",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Create shipments with unique tenant-local reference, origin,destination and integer min/max temperature in tenths Celsius; require min<max.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F04",
+          "category": "features",
+          "weight": 4,
+          "requirement": "List shipments with reference search,status filter,stable pagination and meaningful empty states.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F05",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Append custody transitions created->in_transit->delivered, with actor,time and location; reject backwards or skipped transitions.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F06",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Import JSON temperature readings with immutable eventId,timestamp and integer temperature; duplicate identical events are no-ops; conflicting duplicate payload returns409 atomically.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F07",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Accept out-of-order timestamps; recompute excursions as consecutive out-of-range samples in timestamp order; readings exactly at min/max are in-range.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F08",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Show a timeline/chart and an accessible equivalent table; each excursion indicates start/end and maximum deviation without inventing continuous measurements.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F09",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Operators open and resolve incidents with a required resolution note; retain chronological audit history.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F10",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Viewer can read but cannot mutate; admin can manage local users without removing the final admin.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F11",
+          "category": "features",
+          "weight": 4,
+          "requirement": "CSV export obeys current filters, quotes correctly and neutralizes formula-leading customer text; no password/session fields.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F12",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Dashboard counts derive from current tenant data; data survives server restart; invalid batches leave no partial writes.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build1",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Clean dependency install/setup/build succeeds",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build2",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Server health and real UI launch",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build3",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Documented commands and delivery claims accurate",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security1",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Negative tenant/role/session tests pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security2",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Validation,SQL/HTML/CSV andrequest-size protections",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security3",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Race/idempotency/transactional invariants hold",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests1",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Meaningful automated domain tests execute and pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests2",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Restart persistence and error paths verified",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux1",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Coherent visual hierarchy/readability atdesktop",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux2",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Mobile390px preservescontent/actions",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux3",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Keyboard labels/focus/accessibility",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux4",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Clear error/empty/loading/success states",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality1",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Maintainable domain/storage/UI separation",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality2",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Explicit errors/types/validation",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality3",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "No core stubs/TODO orduplicatedunsafe logic",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality4",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Clean source/config andno secrets",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "delivery",
+          "category": "build",
+          "weight": 2,
+          "requirement": "All source and required assets present; no externally dependent missing component",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        }
+      ],
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/apps/build-01-custody-raw_tools"
+    },
+    {
+      "caseId": "build-02-workshop",
+      "arm": "codali_candidate",
+      "score": 8,
+      "ready": false,
+      "criteria": [
+        {
+          "id": "F01",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Two seeded organizations Birch and Pine; hashed-password session login/logout and member/manager roles.",
+          "points": 2,
+          "evidence": "Setup actually seeds organizations and hashed users; login/session routes absent."
+        },
+        {
+          "id": "F02",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Server-enforced tenant scoping on resources,bookings,maintenance,inventory and CSV; never trust client role/tenant fields.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F03",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Managers create resources with name and positive integer capacity; list/search/archive without deleting booking history.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F04",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Members book a resource over half-open UTC intervals [start,end); duration15minutes..8hours, integer seats1..capacity, nonempty purpose.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F05",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Concurrent reservations must not exceed capacity at ANY instant; touching endpoints do not overlap; enforce transactionally.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F06",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Idempotency-Key is required for booking creation, scoped to user: same payload replays same booking, changed payload returns409.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F07",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Members cancel own future bookings; managers cancel any with an audit note; cancellations release capacity.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F08",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Managers add maintenance blocks that reject overlaps with active bookings; blocks prevent future bookings, with clear conflict feedback.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F09",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Manager-only consumable stock adjustments use signed integers and immutable movement IDs; duplicates no-op, conflicts409, stock cannot become negative.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F10",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Calendar and accessible list views share the same data; filters by resource/date/status and mobile layout preserve actions.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F11",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Member cannot edit capacity,maintenance or inventory; all sensitive operations have actor/time audit entries.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F12",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Dashboard uses persisted counts/stock; safe filtered CSV export, clear invalid/loading/empty/success states, restart persistence.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build1",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Clean dependency install/setup/build succeeds",
+          "points": 2,
+          "evidence": "Install and setup succeed; build entry is missing."
+        },
+        {
+          "id": "build2",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Server health and real UI launch",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build3",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Documented commands and delivery claims accurate",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security1",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Negative tenant/role/session tests pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security2",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Validation,SQL/HTML/CSV andrequest-size protections",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security3",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Race/idempotency/transactional invariants hold",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests1",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Meaningful automated domain tests execute and pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests2",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Restart persistence and error paths verified",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux1",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Coherent visual hierarchy/readability atdesktop",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux2",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Mobile390px preservescontent/actions",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux3",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Keyboard labels/focus/accessibility",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux4",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Clear error/empty/loading/success states",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality1",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Maintainable domain/storage/UI separation",
+          "points": 1,
+          "evidence": "Database, seed and clock separation; server/UI absent."
+        },
+        {
+          "id": "code_quality2",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Explicit errors/types/validation",
+          "points": 1,
+          "evidence": "Schema constraints and password validation; domain operations missing."
+        },
+        {
+          "id": "code_quality3",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "No core stubs/TODO orduplicatedunsafe logic",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality4",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Clean source/config andno secrets",
+          "points": 2,
+          "evidence": "Clean config; fictional demo password is not a credential secret."
+        },
+        {
+          "id": "delivery",
+          "category": "build",
+          "weight": 2,
+          "requirement": "All source and required assets present; no externally dependent missing component",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        }
+      ],
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/apps/build-02-workshop-codali_candidate"
+    },
+    {
+      "caseId": "build-02-workshop",
+      "arm": "raw_tools",
+      "score": 6,
+      "ready": false,
+      "criteria": [
+        {
+          "id": "F01",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Two seeded organizations Birch and Pine; hashed-password session login/logout and member/manager roles.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F02",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Server-enforced tenant scoping on resources,bookings,maintenance,inventory and CSV; never trust client role/tenant fields.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F03",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Managers create resources with name and positive integer capacity; list/search/archive without deleting booking history.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F04",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Members book a resource over half-open UTC intervals [start,end); duration15minutes..8hours, integer seats1..capacity, nonempty purpose.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F05",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Concurrent reservations must not exceed capacity at ANY instant; touching endpoints do not overlap; enforce transactionally.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F06",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Idempotency-Key is required for booking creation, scoped to user: same payload replays same booking, changed payload returns409.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F07",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Members cancel own future bookings; managers cancel any with an audit note; cancellations release capacity.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F08",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Managers add maintenance blocks that reject overlaps with active bookings; blocks prevent future bookings, with clear conflict feedback.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F09",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Manager-only consumable stock adjustments use signed integers and immutable movement IDs; duplicates no-op, conflicts409, stock cannot become negative.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F10",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Calendar and accessible list views share the same data; filters by resource/date/status and mobile layout preserve actions.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F11",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Member cannot edit capacity,maintenance or inventory; all sensitive operations have actor/time audit entries.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "F12",
+          "category": "features",
+          "weight": 4,
+          "requirement": "Dashboard uses persisted counts/stock; safe filtered CSV export, clear invalid/loading/empty/success states, restart persistence.",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build1",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Clean dependency install/setup/build succeeds",
+          "points": 2,
+          "evidence": "Dependencies install; setup and build fail on absent entry files."
+        },
+        {
+          "id": "build2",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Server health and real UI launch",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "build3",
+          "category": "build",
+          "weight": 4,
+          "requirement": "Documented commands and delivery claims accurate",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security1",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Negative tenant/role/session tests pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security2",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Validation,SQL/HTML/CSV andrequest-size protections",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "security3",
+          "category": "security",
+          "weight": 4,
+          "requirement": "Race/idempotency/transactional invariants hold",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests1",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Meaningful automated domain tests execute and pass",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "tests2",
+          "category": "tests",
+          "weight": 3,
+          "requirement": "Restart persistence and error paths verified",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux1",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Coherent visual hierarchy/readability atdesktop",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux2",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Mobile390px preservescontent/actions",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux3",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Keyboard labels/focus/accessibility",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "ui_ux4",
+          "category": "ui_ux",
+          "weight": 3,
+          "requirement": "Clear error/empty/loading/success states",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality1",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Maintainable domain/storage/UI separation",
+          "points": 1,
+          "evidence": "Database and validation modules separated; application absent."
+        },
+        {
+          "id": "code_quality2",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Explicit errors/types/validation",
+          "points": 1,
+          "evidence": "Explicit error and input-validation helpers; schema contains invalid ON DROP RESTRICT clauses."
+        },
+        {
+          "id": "code_quality3",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "No core stubs/TODO orduplicatedunsafe logic",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        },
+        {
+          "id": "code_quality4",
+          "category": "code_quality",
+          "weight": 2,
+          "requirement": "Clean source/config andno secrets",
+          "points": 2,
+          "evidence": "No credential secrets identified in delivered source/config."
+        },
+        {
+          "id": "delivery",
+          "category": "build",
+          "weight": 2,
+          "requirement": "All source and required assets present; no externally dependent missing component",
+          "points": 0,
+          "evidence": "Not implemented or not demonstrated in submitted incomplete application; no credit for schema declarations alone."
+        }
+      ],
+      "evidence": "/home/wodo/apps/codali-complex52-results/2026-11-05/apps/build-02-workshop-raw_tools"
+    }
+  ]
+}

@@ -44,6 +44,8 @@ export interface ProviderResponseFormat {
 export interface ProviderMessage {
   role: ProviderRole;
   content: string;
+  /** Host-read bounded PNG screenshots; never arbitrary URLs fetched by the model service. */
+  images?: Array<{ dataUrl: string }>;
   name?: string;
   toolCallId?: string;
   /** Assistant calls retained alongside the matching tool result messages. */
@@ -57,6 +59,9 @@ export interface ProviderUsage {
 }
 
 export interface ProviderRequest {
+  /** Unique UUID for this inference attempt, retained by the caller for accounting. */
+  requestId?: string;
+  signal?: AbortSignal;
   messages: ProviderMessage[];
   tools?: ProviderToolDefinition[];
   toolChoice?: "auto" | "none" | { name: string };
@@ -74,9 +79,15 @@ export interface ProviderResponse {
   toolCalls?: ProviderToolCall[];
   usage?: ProviderUsage;
   raw?: unknown;
+  /** The reply used its whole output allowance without tool calls, so it may
+   * have been cut short even though the service reported a normal finish. */
+  outputLimited?: boolean;
+  /** Selected configured route; host labels are configuration metadata, not hardware attestation. */
+  route?: { id: string; binding: string; configHash: string; modelId: string; catalogId: string; backend?: string; host?: string };
 }
 
 export interface ProviderConfig {
+  retryTransient?: boolean;
   model: string;
   /** Agent this provider serves, so failures can name it. */
   agentSlug?: string;

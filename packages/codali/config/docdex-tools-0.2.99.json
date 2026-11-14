@@ -1,0 +1,3977 @@
+{
+  "serverInfo": {
+    "name": "docdex-mcp",
+    "version": "0.2.99"
+  },
+  "tools": [
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.8999999761581421
+      },
+      "description": "Search repo docs/code and return hits with rel_path/path, summary, snippet, and doc_id.",
+      "inputSchema": {
+        "properties": {
+          "async_web": {
+            "description": "When true, return local results immediately and defer web research to a background task",
+            "type": "boolean"
+          },
+          "dag_session_id": {
+            "description": "Optional DAG session id for reasoning traces (falls back to request id if omitted)",
+            "type": "string"
+          },
+          "diff": {
+            "description": "Optional diff-aware context inputs",
+            "properties": {
+              "base": {
+                "description": "Base ref for range diffs",
+                "type": "string"
+              },
+              "head": {
+                "description": "Head ref for range diffs",
+                "type": "string"
+              },
+              "mode": {
+                "description": "Diff scope (working tree, staged, or range)",
+                "enum": [
+                  "working_tree",
+                  "working",
+                  "staged",
+                  "range"
+                ],
+                "type": "string"
+              },
+              "paths": {
+                "description": "Limit diff to specific paths",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "force_web": {
+            "description": "When true, bypasses the Tier 2 gate and runs web research",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 8,
+            "description": "Max results to return (clamped to server max)",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Concise search query (will be rejected if empty)",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_search",
+      "title": "Search Repo"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.800000011920929
+      },
+      "description": "Return the Docdex optional-feature capability contract for Codali integration.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_capabilities",
+      "title": "Docdex Capabilities"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Rerank candidate hits with transparent score updates and deterministic fallback behavior.",
+      "inputSchema": {
+        "properties": {
+          "candidates": {
+            "description": "Candidate hit set to rerank",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "type": "array"
+          },
+          "limit": {
+            "description": "Max reranked hits to return",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query used for reranking",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "candidates"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_rerank",
+      "title": "Rerank Candidates"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Run batched search queries with deterministic truncation and per-query responses.",
+      "inputSchema": {
+        "properties": {
+          "include_libs": {
+            "description": "Include libs index hits when available",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Max hits per query",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "queries": {
+            "description": "List of queries to execute",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "queries"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_batch_search",
+      "title": "Batch Search"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Run local search plus web discovery/fetch and return the combined response (requires web enabled).",
+      "inputSchema": {
+        "properties": {
+          "dag_session_id": {
+            "description": "Optional DAG session id for reasoning traces (falls back to request id if omitted)",
+            "type": "string"
+          },
+          "force_web": {
+            "description": "When true, bypasses the Tier 2 gate and runs web research",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 8,
+            "description": "Max local hits to return (clamped to server max)",
+            "maximum": 8,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "llm_agent": {
+            "description": "Override the LLM agent slug for local result filtering",
+            "type": "string"
+          },
+          "llm_filter_local_results": {
+            "description": "Use the LLM to filter local search results before scoring",
+            "type": "boolean"
+          },
+          "llm_model": {
+            "description": "Override the LLM model for local result filtering",
+            "type": "string"
+          },
+          "no_cache": {
+            "description": "Disable web cache reads/writes for this query",
+            "type": "boolean"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Concise search query (will be rejected if empty)",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_only": {
+            "description": "Only search the repo index (ignore repo-scoped libs index, if present)",
+            "type": "boolean"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "skip_local_search": {
+            "description": "When true, skip local search and only use web results",
+            "type": "boolean"
+          },
+          "web_limit": {
+            "description": "Optional max web hits to fetch (clamped by DOCDEX_WEB_MAX_HITS)",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_web_research",
+      "title": "Web Research"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Rebuild the index (or ingest specific files) for the current repo root; use after large changes or stale results.",
+      "inputSchema": {
+        "properties": {
+          "paths": {
+            "description": "Optional list of files to ingest; empty => full reindex",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_index",
+      "title": "Index Repo"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "List indexed documents (rel_path/doc_id/token_estimate) for the current repo.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 200,
+            "description": "Max documents to return (clamped)",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Number of docs to skip before listing (clamped)",
+            "maximum": 50000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_files",
+      "title": "List Files"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Read a file from the repo (optional line window); rejects paths outside the repo.",
+      "inputSchema": {
+        "properties": {
+          "clamp": {
+            "description": "Clamp start/end to file bounds instead of raising invalid_range",
+            "type": "boolean"
+          },
+          "end_line": {
+            "description": "Optional end line (1-based, inclusive)",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "head": {
+            "description": "Optional convenience: read the first N lines (clamped to file length)",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Relative path under the repo",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "Optional start line (1-based, inclusive)",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_open",
+      "title": "Open File"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Render a folder tree with standard excludes (git, node_modules, build artifacts).",
+      "inputSchema": {
+        "properties": {
+          "dirs_only": {
+            "description": "When true, only include directories",
+            "type": "boolean"
+          },
+          "extra_excludes": {
+            "description": "Extra names to exclude (exact basename match)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_hidden": {
+            "description": "When true, include dotfiles and dot directories",
+            "type": "boolean"
+          },
+          "max_depth": {
+            "description": "Max depth (0 returns only the root label)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Repo-relative path to render (defaults to repo root)",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_tree",
+      "title": "Render Repo Tree"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
+      "inputSchema": {
+        "properties": {
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_stats",
+      "title": "Repo Stats"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Inspect how Docdex resolves repo identity (normalized path, fingerprint, and any shared-state mapping).",
+      "inputSchema": {
+        "properties": {
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_repo_inspect",
+      "title": "Repo Inspect"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Relative path under the repo",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_symbols",
+      "title": "Symbols"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Read Tree-sitter AST nodes for a file, including per-file outcome (ok/skipped/failed).",
+      "inputSchema": {
+        "properties": {
+          "max_nodes": {
+            "description": "Maximum nodes to return (default 20000)",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Relative path under the repo",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_ast",
+      "title": "AST"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "List unresolved dynamic import diagnostics by file.",
+      "inputSchema": {
+        "properties": {
+          "file": {
+            "description": "Optional repo-relative file path to filter diagnostics",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max entries to return (default 200)",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Offset into the diagnostics list (default 0)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_impact_diagnostics",
+      "title": "Impact Diagnostics"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.699999988079071
+      },
+      "description": "Fetch impact graph traversal for a repo-relative file.",
+      "inputSchema": {
+        "properties": {
+          "edge_types": {
+            "description": "Optional list of edge types to include",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "file": {
+            "description": "Repo-relative file path to analyze",
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Optional max traversal depth (default 10)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_edges": {
+            "description": "Optional max edges to return (default 1000)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_impact_graph",
+      "title": "Impact Graph"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Export a DAG session for a given session_id (json/text/dot).",
+      "inputSchema": {
+        "properties": {
+          "dag_session_id": {
+            "description": "Alias for session_id (use the dag_session_id returned by search/web_research)",
+            "minLength": 1,
+            "type": "string"
+          },
+          "format": {
+            "description": "Output format: json, text, or dot (default json)",
+            "type": "string"
+          },
+          "max_nodes": {
+            "description": "Optional max nodes to include",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "DAG session id to export",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_dag_export",
+      "title": "DAG Export"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+      "inputSchema": {
+        "properties": {
+          "metadata": {
+            "additionalProperties": true,
+            "description": "Optional metadata object",
+            "type": "object"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "text": {
+            "description": "Memory text to store",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_memory_save",
+      "title": "Save Memory"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+      "inputSchema": {
+        "properties": {
+          "metadata": {
+            "additionalProperties": true,
+            "description": "Optional metadata object",
+            "type": "object"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "text": {
+            "description": "Memory text to store",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_memory_store",
+      "title": "Store Memory"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
+      "inputSchema": {
+        "properties": {
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Query text to embed",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "description": "Max results to return",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_memory_recall",
+      "title": "Recall Memory"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Import a normalized conversation session, plain-text transcript, or native export format into repo-scoped conversation memory or an explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "ended_at_ms": {
+            "type": "integer"
+          },
+          "format": {
+            "description": "Optional transcript format hint for transcript_text parsing",
+            "enum": [
+              "auto",
+              "plain_text",
+              "generic_json",
+              "codex_jsonl",
+              "claude_jsonl",
+              "chatgpt_export"
+            ],
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "properties": {
+                "author": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "created_at_ms": {
+                  "type": "integer"
+                },
+                "metadata": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "role": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "role",
+                "content"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "source": {
+            "description": "Optional source label (defaults to manual)",
+            "type": "string"
+          },
+          "source_session_id": {
+            "description": "Optional source-side session id for dedupe",
+            "type": "string"
+          },
+          "started_at_ms": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "transcript_text": {
+            "description": "Alternative transcript payload for auto/plain-text/native import parsing",
+            "type": "string"
+          },
+          "transport": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_conversation_import",
+      "title": "Import Conversation"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Search conversation archive summaries and raw message snippets for a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Optional agent id filter",
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_search",
+      "title": "Search Conversations"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "List conversation sessions with summaries and metadata for a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Optional agent id filter",
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_conversation_list",
+      "title": "List Conversations"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Read a conversation session with ordered messages and derived artifacts from a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Conversation session id",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_read",
+      "title": "Read Conversation"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Delete a conversation session and its derived artifacts from a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Conversation session id",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_delete",
+      "title": "Delete Conversation"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Export one conversation session with any linked diary entries from a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Conversation session id",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_export",
+      "title": "Export Conversation"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Redact one conversation session and clear its derived wake-up artifacts in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Conversation session id",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_redact",
+      "title": "Redact Conversation"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Preview or apply conversation retention cleanup for a repo or explicit global conversation namespace using current config or explicit overrides.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "description": "When false, return a dry-run count only",
+            "type": "boolean"
+          },
+          "auto_capture_retention_days": {
+            "description": "Retention window for auto-captured sessions; 0 disables pruning",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "diary_retention_days": {
+            "description": "Retention window for diary entries; 0 keeps them forever",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodic_rollup_retention_days": {
+            "description": "Retention window for stored episodic rollups; 0 keeps them forever",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hook_event_retention_days": {
+            "description": "Retention window for hook event records; 0 disables pruning",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "manual_retention_days": {
+            "description": "Retention window for manual imports; 0 keeps them forever",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "working_memory_retention_days": {
+            "description": "Retention window for working-memory records; 0 keeps them forever",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_conversation_prune",
+      "title": "Prune Conversation Retention"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Write one diary entry for an agent in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Optional agent id filter",
+            "type": "string"
+          },
+          "content": {
+            "description": "Diary entry content",
+            "minLength": 1,
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "entry_type": {
+            "description": "Entry type label (defaults to note)",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "source_session_id": {
+            "description": "Optional related conversation session id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_diary_write",
+      "title": "Write Diary Entry"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Read diary entries for an optional agent in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Optional agent id filter",
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_diary_read",
+      "title": "Read Diary Entries"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Enqueue or synchronously process a conversation-memory hook action for a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "periodic_memory_save",
+              "pre_compaction_summarization",
+              "session_close_summarization"
+            ],
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "ended_at_ms": {
+            "type": "integer"
+          },
+          "format": {
+            "enum": [
+              "auto",
+              "plain_text",
+              "generic_json",
+              "codex_jsonl",
+              "claude_jsonl",
+              "chatgpt_export"
+            ],
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "properties": {
+                "author": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "created_at_ms": {
+                  "type": "integer"
+                },
+                "metadata": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "role": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "role",
+                "content"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_session_id": {
+            "type": "string"
+          },
+          "started_at_ms": {
+            "type": "integer"
+          },
+          "summary_text": {
+            "description": "Optional diary summary/note to persist alongside the hook action",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "transcript_text": {
+            "description": "Transcript payload for queued import",
+            "type": "string"
+          },
+          "transport": {
+            "type": "string"
+          },
+          "wait_for_processing": {
+            "default": false,
+            "description": "When true, wait for async processing before returning",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_conversation_hook",
+      "title": "Conversation Hook"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Assemble bounded startup memory from conversation history in a repo or explicit global conversation namespace for the active agent/query.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Optional agent id to scope working memory",
+            "type": "string"
+          },
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "max_tokens": {
+            "description": "Optional render budget; capped by server config",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Optional current task/query for transcript snippet recall",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_wakeup",
+      "title": "Wake-up Context"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Query temporal knowledge facts extracted from conversation memory in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Entity, decision, or fact query",
+            "minLength": 1,
+            "type": "string"
+          },
+          "relation": {
+            "description": "Optional relation filter",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_query",
+      "title": "Query Knowledge Graph"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Search canonical graph entities extracted from conversation memory in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "entity_type": {
+            "description": "Optional entity type filter",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Entity query",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_search_nodes",
+      "title": "Search Knowledge Nodes"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Search graph-native edges extracted from conversation memory in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Edge query across subject, object, and summary text",
+            "minLength": 1,
+            "type": "string"
+          },
+          "relation": {
+            "description": "Optional relation filter",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_search_edges",
+      "title": "Search Knowledge Edges"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Read the temporal timeline for one entity or decision topic in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "entity": {
+            "description": "Entity or topic to inspect",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "relation": {
+            "description": "Optional relation filter",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_timeline",
+      "title": "Entity Timeline"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Search provenance episodes extracted from conversation memory in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "query": {
+            "description": "Episode query across source ids, summaries, and metadata",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          },
+          "source_type": {
+            "description": "Optional episode source type filter",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_search_episodes",
+      "title": "Search Knowledge Episodes"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Inspect graph edges adjacent to one entity or topic in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "entity": {
+            "description": "Entity or topic to inspect",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "relation": {
+            "description": "Optional relation filter",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_neighborhood",
+      "title": "Entity Neighborhood"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Fetch code-facing links recorded for one graph entity in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "entity": {
+            "description": "Entity or topic to inspect",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "link_type": {
+            "description": "Optional link type filter such as file, symbol, or repo",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_entity_links",
+      "title": "Entity Code Links"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Fetch one provenance episode together with its graph edges and evidence in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "episode_id": {
+            "description": "Episode id to fetch",
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "description": "Alias for episode_id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_kg_episode",
+      "title": "Get Knowledge Episode"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.3499999940395355
+      },
+      "description": "Delete one graph edge together with its fact projection and evidence in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "edge_id": {
+            "description": "Edge id to delete",
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "description": "Alias for edge_id",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_delete_edge",
+      "title": "Delete Knowledge Edge"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.3499999940395355
+      },
+      "description": "Delete one provenance episode and its graph edges/facts in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "episode_id": {
+            "description": "Episode id to delete",
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "description": "Alias for episode_id",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "episode_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_kg_delete_episode",
+      "title": "Delete Knowledge Episode"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.3499999940395355
+      },
+      "description": "Rebuild graph-side link projections and reindex SQLite structures for conversation knowledge in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_kg_rebuild",
+      "title": "Rebuild Knowledge Graph Projections"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.30000001192092896
+      },
+      "description": "Delete all conversation knowledge graph data in a repo or explicit global conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Explicit global conversation namespace to use instead of project_root/repo_path",
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_kg_clear",
+      "title": "Clear Knowledge Graph"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Offload a small local task to a local model and return the draft output.",
+      "inputSchema": {
+        "properties": {
+          "agent": {
+            "description": "Optional mcoda agent id or slug override",
+            "type": "string"
+          },
+          "caller_agent_id": {
+            "description": "Optional calling agent id/slug for avoided-cost attribution; defaults from MCP initialize when available",
+            "type": "string"
+          },
+          "caller_model": {
+            "description": "Optional calling model name for avoided-cost attribution when agent metadata is unavailable",
+            "type": "string"
+          },
+          "context": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "instruction": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_context_chars": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Optional max tokens override",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "draft_only",
+              "draft_then_refine"
+            ],
+            "type": "string"
+          },
+          "primary_cost_per_million": {
+            "description": "Optional explicit avoided primary cost per 1M tokens",
+            "minimum": 0,
+            "type": "number"
+          },
+          "project_root": {
+            "description": "Optional repo root (ignored if not provided)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (optional)",
+            "type": "string"
+          },
+          "task_type": {
+            "enum": [
+              "generate_tests",
+              "write_docstring",
+              "scaffold_boilerplate",
+              "refactor_simple",
+              "format_code",
+              "general_question"
+            ],
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Optional timeout in milliseconds",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_type",
+          "instruction",
+          "context"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_local_completion",
+      "title": "Local Completion"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Return local LLM service detection/default-selection diagnostics and status messages.",
+      "inputSchema": {
+        "properties": {
+          "project_root": {
+            "description": "Repo root; must match the MCP server repo (required unless initialize set a default)",
+            "type": "string"
+          },
+          "refresh": {
+            "description": "When true or omitted, refresh the cached local LLM library if it is stale without starting installers",
+            "type": "boolean"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (same rules)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_llm_diagnostics",
+      "title": "LLM Diagnostics"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Show personal-preferences storage and queue status.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_status",
+      "title": "Personal Preferences Status"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List personal-preferences categories and context policy.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_categories",
+      "title": "Personal Preferences Categories"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List personal-preferences retention policies by memory lane.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_retention_policies",
+      "title": "Personal Preferences Retention Policies"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List captured personal-preferences sessions.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_list",
+      "title": "List Personal Preference Captures"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Read one captured personal-preferences session.",
+      "inputSchema": {
+        "properties": {
+          "capture_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_read",
+      "title": "Read Personal Preference Capture"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Search derived personal-preferences records.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "q": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_search",
+      "title": "Search Personal Preferences"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List derived personal-preferences records by review status.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_reviews",
+      "title": "List Personal Preference Reviews"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Approve, reject, or re-queue one derived personal-preferences record.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "record_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "approved",
+              "pending_review",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_review",
+      "title": "Review Personal Preference Record"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Manually process queued captures with a local mcoda agent.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "retry_failed": {
+            "type": "boolean"
+          },
+          "retry_stale_processing_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_process",
+      "title": "Process Personal Preference Captures"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Scan supported local AI-client transcript roots and queue new personal-preferences captures.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_scan",
+      "title": "Scan Personal Preference Transcripts"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Export one capture or the whole personal-preferences store to JSON.",
+      "inputSchema": {
+        "properties": {
+          "capture_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_export",
+      "title": "Export Personal Preferences"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Redact raw transcript content for one captured session.",
+      "inputSchema": {
+        "properties": {
+          "capture_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_redact",
+      "title": "Redact Personal Preference Capture"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Delete one captured personal-preferences session and its derived records.",
+      "inputSchema": {
+        "properties": {
+          "capture_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_delete",
+      "title": "Delete Personal Preference Capture"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Preview or apply personal-preferences retention pruning.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "type": "boolean"
+          },
+          "derived_retention_days": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "raw_retention_days": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_prune",
+      "title": "Prune Personal Preferences"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Purge all personal-preferences captures and derived records.",
+      "inputSchema": {
+        "properties": {
+          "include_exports": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_purge",
+      "title": "Purge Personal Preferences"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List extracted personal-preference claims with truth/origin filters.",
+      "inputSchema": {
+        "properties": {
+          "claim_origin": {
+            "type": "string"
+          },
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "q": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "truth_status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_claims",
+      "title": "List Personal Preference Claims"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Read one extracted personal-preference claim.",
+      "inputSchema": {
+        "properties": {
+          "claim_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_claim_read",
+      "title": "Read Personal Preference Claim"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Approve, reject, or re-queue one extracted claim.",
+      "inputSchema": {
+        "properties": {
+          "claim_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "approved",
+              "pending_review",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_claim_review",
+      "title": "Review Personal Preference Claim"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Override one claim with an explicit corrected value.",
+      "inputSchema": {
+        "properties": {
+          "claim_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "value": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_claim_override",
+      "title": "Override Personal Preference Claim"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Forget one claim, redact its usable content, and rebuild snapshots.",
+      "inputSchema": {
+        "properties": {
+          "claim_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_claim_forget",
+      "title": "Forget Personal Preference Claim"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Add a feedback event that influences future mind-clone context.",
+      "inputSchema": {
+        "properties": {
+          "attribute": {
+            "type": "string"
+          },
+          "capture_id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "claim_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_feedback",
+      "title": "Add Personal Preference Feedback"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "List first-class operator events captured from commands, approvals, and planning artifacts.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "event_kind": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repo_root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_operator_events",
+      "title": "List Personal Preference Operator Events"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Record one manual operator event such as a git/test/deploy/approval/action step.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "artifact_path": {
+            "type": "string"
+          },
+          "capture_id": {
+            "type": "string"
+          },
+          "command_text": {
+            "type": "string"
+          },
+          "event_kind": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "occurred_at_ms": {
+            "type": "integer"
+          },
+          "repo_id": {
+            "type": "string"
+          },
+          "repo_root": {
+            "type": "string"
+          },
+          "source_session_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_operator_event_record",
+      "title": "Record Personal Preference Operator Event"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Scan repo planning/progress/SDS markdown artifacts into first-class operator events.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repo_root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_operator_events_scan_artifacts",
+      "title": "Scan Operator Planning Artifacts"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "List temporal identity snapshots compiled from claims.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_snapshots",
+      "title": "List Personal Preference Snapshots"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Read one temporal identity snapshot.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "snapshot_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_snapshot_read",
+      "title": "Read Personal Preference Snapshot"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Rebuild temporal identity snapshots from the current claim set.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_snapshots_rebuild",
+      "title": "Rebuild Personal Preference Snapshots"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "List synthesized operator routines compiled from repeated personal-preference claims.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_routines",
+      "title": "List Personal Preference Routines"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Read one synthesized operator routine by id or routine key.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "routine_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "routine_key": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_routine_read",
+      "title": "Read Personal Preference Routine"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Explain one synthesized operator routine with source claims grouped by step.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "routine_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "routine_key": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_routine_explain",
+      "title": "Explain Personal Preference Routine"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.44999998807907104
+      },
+      "description": "Rebuild synthesized operator routines from the current claim set.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_routines_rebuild",
+      "title": "Rebuild Personal Preference Routines"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Compile a queryable operator mind map from approved claims and synthesized routines.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 4,
+            "type": "integer"
+          },
+          "q": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_mind_map",
+      "title": "Compile Personal Preference Mind Map"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Compile stable operator routines into SKILL.md-compatible playbook artifacts.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_playbooks",
+      "title": "Compile Personal Preference Playbooks"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "List configured AI-terminal integrations for automatic capture, generated-skill sync, and activation.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_integrations",
+      "title": "List AI Terminal Integrations"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Detect supported AI-terminal generated-skill targets without persisting integration records.",
+      "inputSchema": {
+        "properties": {
+          "terminals": {
+            "description": "Terminal targets such as codex, claude, or generic_mcp. Empty defaults to Codex and Claude.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_detect",
+      "title": "Detect AI Terminal Integrations"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Show AI-terminal capture and generated-skill sync status.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_status",
+      "title": "AI Terminal Status"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "List normalized AI-terminal capture events.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_events",
+      "title": "List AI Terminal Events"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Create or update Docdex-owned generated-skill roots for supported AI terminals.",
+      "inputSchema": {
+        "properties": {
+          "terminals": {
+            "description": "Terminal targets such as codex, claude, or generic_mcp. Empty defaults to Codex and Claude.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_integrations_bootstrap",
+      "title": "Bootstrap AI Terminal Integrations"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Record a normalized AI-terminal session summary into personal preferences and mind-clone inputs.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "event_kind": {
+            "type": "string"
+          },
+          "integration_id": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "repo_scope": {
+            "type": "string"
+          },
+          "source_session_id": {
+            "type": "string"
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "terminal": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "transcript_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "terminal",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_capture",
+      "title": "Capture AI Terminal Session"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Promote stable mind-clone playbooks into generated skills and install low-risk validated skills into enabled AI terminals.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "install": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_ai_terminal_sync_skills",
+      "title": "Sync AI Terminal Generated Skills"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "List generated skills derived from personal preferences and mind-clone operator routines.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skills",
+      "title": "List Generated Skills"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Read one generated skill by skill id, slug, or portable skill name.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "skill_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill",
+      "title": "Read Generated Skill"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "List registry audit events for generated skills.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill_events",
+      "title": "List Generated Skill Events"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Promote stable operator playbooks into versioned generated skills and optionally install them to terminal integrations.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "install": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skills_sync",
+      "title": "Sync Generated Skills"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Render registry-backed generated-skill candidates without installing them.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skills_preview",
+      "title": "Preview Generated Skills"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Render registry-backed generated-skill candidates without installing them.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skills_render",
+      "title": "Render Generated Skills"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Run one generated-skills autopilot pass through registry, validation, and install policy.",
+      "inputSchema": {
+        "properties": {
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "install": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "maximum": 0.99,
+            "minimum": 0,
+            "type": "number"
+          },
+          "min_support_count": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skills_autopilot",
+      "title": "Run Generated Skills Autopilot"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Validate one generated skill's current version and persist the result.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "skill_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill_validate",
+      "title": "Validate Generated Skill"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.550000011920929
+      },
+      "description": "Install one generated skill into enabled Docdex-owned terminal roots.",
+      "inputSchema": {
+        "properties": {
+          "skill_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill_install",
+      "title": "Install Generated Skill"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Disable one generated skill while preserving registry provenance.",
+      "inputSchema": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "skill_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill_disable",
+      "title": "Disable Generated Skill"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Roll back one generated skill to the previous rendered version when available.",
+      "inputSchema": {
+        "properties": {
+          "skill_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "terminals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_personal_preferences_generated_skill_rollback",
+      "title": "Rollback Generated Skill"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Compile a bounded personal-preferences clone context pack for a query.",
+      "inputSchema": {
+        "properties": {
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_clone_context",
+      "title": "Build Mind Clone Context"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Compile an auditable operator-clone directive checklist for an agent task.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "current_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_plan_path": {
+            "type": "string"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "enforcement_level": {
+            "type": "string"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "risk_level": {
+            "type": "string"
+          },
+          "task_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_clone_directive",
+      "title": "Build Mind Clone Directive"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Explain the evidence trace for a bounded clone context pack.",
+      "inputSchema": {
+        "properties": {
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_clone_explain",
+      "title": "Explain Mind Clone Context"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Score clone-pack fidelity heuristics for a query.",
+      "inputSchema": {
+        "properties": {
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_clone_evaluate",
+      "title": "Evaluate Mind Clone Context"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Score whether a clone context pack predicts expected operator next-step categories.",
+      "inputSchema": {
+        "properties": {
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "expected_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_clone_replay_evaluate",
+      "title": "Replay-Evaluate Mind Clone Context"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Generate replay dataset cases from executable operator routines for clone-prediction evaluation.",
+      "inputSchema": {
+        "properties": {
+          "ci_subset": {
+            "type": "boolean"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_clone_replay_dataset",
+      "title": "Build Mind Clone Replay Dataset"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Run replay cases through clone directives and report aggregate category, routine, step, and approval metrics.",
+      "inputSchema": {
+        "properties": {
+          "allow_sensitive": {
+            "type": "boolean"
+          },
+          "budget_tokens": {
+            "minimum": 32,
+            "type": "integer"
+          },
+          "ci_subset": {
+            "type": "boolean"
+          },
+          "current_repo_root": {
+            "type": "string"
+          },
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_records": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "threshold": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_clone_replay_suite",
+      "title": "Run Mind Clone Replay Suite"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.5
+      },
+      "description": "Describe the six Docdex memory layers, their scope, storage, and recommended agent usage for the current repo or conversation namespace.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Optional explicit conversation namespace instead of repo scope.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Optional repo root for repo-scoped memory layers.",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_memory_layers",
+      "title": "Inspect Memory Layers"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.6000000238418579
+      },
+      "description": "Recommend which Docdex memory lanes to consult first or write to for a specific query, including core versus retrievable memory.",
+      "inputSchema": {
+        "properties": {
+          "conversation_namespace": {
+            "description": "Optional explicit conversation namespace instead of repo scope.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "intent": {
+            "description": "Optional routing intent override.",
+            "enum": [
+              "read",
+              "write",
+              "auto"
+            ],
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Optional repo root for repo-scoped routing.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Task or question to route across Docdex memory lanes.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_memory_route",
+      "title": "Route Memory Usage"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Store a global profile preference for an agent (profile memory, async evolution).",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Profile agent id",
+            "minLength": 1,
+            "type": "string"
+          },
+          "category": {
+            "description": "Preference category",
+            "enum": [
+              "style",
+              "tooling",
+              "constraint",
+              "workflow"
+            ],
+            "type": "string"
+          },
+          "content": {
+            "description": "Preference content",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Optional repo root (ignored for global profile tools)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (ignored)",
+            "type": "string"
+          },
+          "role": {
+            "description": "Optional agent role (used when creating a new agent)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "category"
+        ],
+        "type": "object"
+      },
+      "name": "docdex_save_preference",
+      "title": "Save Preference"
+    },
+    {
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.4000000059604645
+      },
+      "description": "Fetch profile preferences for an agent (profile memory).",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "description": "Profile agent id",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "description": "Optional repo root (ignored for global profile tools)",
+            "type": "string"
+          },
+          "repo_path": {
+            "description": "Alias for project_root (ignored)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "docdex_get_profile",
+      "title": "Get Profile"
+    }
+  ]
+}

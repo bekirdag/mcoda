@@ -1,0 +1,151 @@
+case,arm,score,tokens,elapsed_ms,error,directory
+fresh-01,before,100,14971,54652,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-01-before-d35b0ec9-1c97-42f5-af36-3b4da911096f
+fresh-01,after,80,9787,45400,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-01-after-07d8d9e1-0324-42fe-a86c-6156a46234db
+fresh-01,raw_tools,100,4110,10863,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-01-raw_tools-fac8dd9c-ca80-43fb-b799-5702f0660940
+fresh-02,after,100,9889,19404,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-02-after-524649ed-121d-4b6d-99ef-bf50f829246f
+fresh-02,raw_tools,0,2153,8627,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-02-raw_tools-393c2b84-324c-4237-a33f-f7d7ffedc96c
+fresh-02,before,100,9371,25841,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-02-before-e5e9e962-150e-4249-bfdc-0ac1a713fa24
+fresh-03,raw_tools,0,1679,5048,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-03-raw_tools-7b7a7b6a-a3d9-4744-9c23-18ca52d8b6c6
+fresh-03,before,100,1999,10837,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-03-before-7c99bbe9-5f39-4c79-a392-0b923d2e411c
+fresh-03,after,100,8899,21885,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-03-after-db1dfbdf-4494-403a-9627-90bc27bd215c
+fresh-04,raw_tools,100,1841,7084,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-04-raw_tools-59a29318-fff0-43ad-9b9f-b3dc067de451
+fresh-04,after,100,2211,8764,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-04-after-d832fc77-ff54-4762-beb0-035967b6ab2e
+fresh-04,before,100,1910,8677,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-04-before-53b01652-b7a4-4358-98d3-88659ea352a5
+fresh-05,before,100,10011,29431,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-05-before-60845ad6-44e7-45a1-a5de-b39d46efc67e
+fresh-05,raw_tools,0,1736,5737,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-05-raw_tools-f92787cd-5a4a-44ba-a2ea-c754e50cff34
+fresh-05,after,100,9152,21462,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-05-after-12c6a8fd-23df-4692-82b6-82b7186c2c42
+fresh-06,after,0,2359,14507,Error: Repeated calculate failure without progress; checkpoint retained,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-06-after-bc82a0f9-e394-4a18-acdb-3760176296bf
+fresh-06,before,60,8836,24836,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-06-before-0764b470-3039-4210-8773-20911099b354
+fresh-06,raw_tools,80,3654,9221,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-06-raw_tools-cd87ecaf-6706-4b4c-baba-e33b74fbe66b
+fresh-07,before,100,9183,18004,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-07-before-f0267752-fe22-4a2f-a7b2-636eb90b7d61
+fresh-07,after,0,9783,18071,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-07-after-6b31e047-331d-46b7-b009-77b056e1754a
+fresh-07,raw_tools,100,1898,6644,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-07-raw_tools-aeaeceb2-943d-4736-9778-44697c6a5613
+fresh-08,after,100,10307,21494,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-08-after-0f1e0848-7fd2-46ce-8300-8b9221d293e9
+fresh-08,raw_tools,0,3962,11309,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-08-raw_tools-2429e713-92e7-4662-9068-87e1ca17fa45
+fresh-08,before,100,9393,22643,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-08-before-f995a21f-387e-44e0-aebb-bc216f5d814f
+fresh-09,raw_tools,100,2427,15939,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-09-raw_tools-379edc9a-dfae-4994-98d5-af5ff1badf64
+fresh-09,before,100,15084,31759,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-09-before-e0549dc3-7af7-43fa-b1db-0305a5fd5342
+fresh-09,after,100,14307,35242,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-09-after-38c4496e-eb66-41f7-a61e-91628948086d
+fresh-10,raw_tools,100,3888,10984,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-10-raw_tools-a5e0c0c0-6339-4aa3-bdc9-92f29292cf82
+fresh-10,after,0,10091,19570,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-10-after-ae7273c9-9225-442d-95c5-68fbc2c37303
+fresh-10,before,100,21132,34963,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-10-before-ece00675-29b0-41a0-92d2-af5871b04fa0
+fresh-11,before,100,8660,17424,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-11-before-210fb9c8-5ca0-4c25-a78b-49b14babfffa
+fresh-11,raw_tools,100,3679,8810,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-11-raw_tools-b7a71cc7-844b-4676-a0b4-ef26a37ec754
+fresh-11,after,100,10465,30403,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-11-after-5a1a0338-2fb8-4aff-9f16-305b2b4285e4
+fresh-12,after,100,15986,36810,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-12-after-d56ed87e-fccb-4f8c-b9a2-1bb1603e4ef7
+fresh-12,before,100,11228,38859,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-12-before-f4c591f6-9e46-467d-b9b9-49dd22dd6dbd
+fresh-12,raw_tools,100,2236,13736,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-12-raw_tools-eb5ecf74-60cf-4335-b5a3-c05d2963377a
+fresh-13,before,100,18130,40813,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-13-before-cba6bdcb-130f-4cb3-86d3-7836800a30b9
+fresh-13,after,100,15169,56609,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-13-after-13ff9268-be81-49ad-bdb1-ef038dc2f96d
+fresh-13,raw_tools,0,5183,22963,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-13-raw_tools-90a11207-43e6-441b-b74c-66b5db944f8f
+fresh-14,after,100,10852,48012,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-14-after-2e0b34a6-9b1f-4777-9a82-3431db5c46df
+fresh-14,raw_tools,100,1835,32209,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-14-raw_tools-c3cfa301-ff46-4b66-accd-b981b8dfde5f
+fresh-14,before,100,1930,12623,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-14-before-134f9053-fac6-4a9a-8a5e-6658a3d6887a
+fresh-15,raw_tools,100,4307,26631,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-15-raw_tools-39d93050-eb0c-4371-a9cd-c7e24aa42f9e
+fresh-15,before,100,9861,23674,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-15-before-83d63e7e-32d3-41a5-95d5-9090d690f896
+fresh-15,after,100,10428,26533,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-15-after-9325026f-19b2-44c9-a0ba-51b13483823e
+fresh-16,raw_tools,40,3503,8100,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-16-raw_tools-793ac35f-80aa-496e-924a-aa52f0ec6ff2
+fresh-16,after,100,9684,24461,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-16-after-f08fd6ff-4da7-42e3-b8eb-d879670ff003
+fresh-16,before,40,9108,24016,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-16-before-9137ffb6-43b9-4f96-9f24-a12e6c428ea7
+fresh-17,before,0,9972,27416,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-17-before-8a27dfe0-8e12-4819-a82e-ad143ca837d2
+fresh-17,raw_tools,0,4070,12679,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-17-raw_tools-d936a3c5-4d47-4bbe-9e16-d50b5dc9df22
+fresh-17,after,100,16231,53853,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-17-after-fa00c803-9bff-4535-9b4d-fc8dece960a4
+fresh-18,after,0,8836,18326,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-18-after-b0771915-59cb-4873-9f44-4c96e7435fb1
+fresh-18,before,100,8341,23691,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-18-before-c688d6e8-e992-4779-ad1f-864fd3b8d262
+fresh-18,raw_tools,100,1691,16625,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-18-raw_tools-9b2b3822-f256-49e1-aeb0-99ceda2b300f
+fresh-19,before,100,8897,18306,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-19-before-a6e5a5c8-5951-4534-8f7a-3ed42e12befe
+fresh-19,after,100,9560,22875,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-19-after-279b3056-6f57-4b65-88e8-0a9ed45c954c
+fresh-19,raw_tools,100,1768,7934,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-19-raw_tools-8fd06564-8c5e-4f0f-b5ca-fc224df4e8e4
+fresh-20,after,100,9904,21308,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-20-after-bd0df062-5c48-4871-92ba-589be267d2ae
+fresh-20,raw_tools,100,3891,14120,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-20-raw_tools-084c8a04-c9cf-42b1-84b8-529b809beb1d
+fresh-20,before,100,9065,25428,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-20-before-76c3d6cf-785e-42a1-91ae-7312c56e4cc6
+fresh-21,raw_tools,0,4443,36142,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-21-raw_tools-34d74abd-9512-4cb9-943f-f341f59a0a21
+fresh-21,before,100,35292,131630,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-21-before-f061b197-91f7-4598-8292-dd7eca3a2451
+fresh-21,after,0,63930,180392,"Error: This turn reached its model/token limit. Your progress is saved; inspect /usage and /status, then use /continue when ready.",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-21-after-82beeb53-4974-4503-8bdb-7819a86b58b1
+fresh-22,raw_tools,100,29652,105884,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-22-raw_tools-6c0c8934-b610-47f9-b393-6992e208b941
+fresh-22,after,100,34095,148211,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-22-after-7097ed44-016f-4883-87f3-7ce91fd6c5af
+fresh-22,before,80,31143,155212,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-22-before-a92422b3-85fc-4609-8833-17cbb3f02a0e
+fresh-23,before,100,24035,125648,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-23-before-e31941b9-0e67-475c-9997-71bd682fba70
+fresh-23,raw_tools,100,4458,32640,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-23-raw_tools-f86f132e-3e8f-4172-8f42-87fc9c26841d
+fresh-23,after,0,71192,134075,"Error: This turn reached its model/token limit. Your progress is saved; inspect /usage and /status, then use /continue when ready.",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-23-after-d116f210-cb80-459c-9274-2196ca829486
+fresh-24,after,100,22803,107845,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-24-after-a318cc68-92e8-4015-80f5-64b893949d53
+fresh-24,before,100,30224,125466,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-24-before-d326c55f-6823-4e2d-95d4-3adbe246c22c
+fresh-24,raw_tools,100,20379,99588,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-24-raw_tools-c74d99ab-2316-46e1-a880-c229eebedb91
+fresh-25,before,100,30704,114933,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-25-before-8f4d9d6d-36ed-4aee-911b-454094f9c61a
+fresh-25,after,100,29410,106253,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-25-after-60b60a9e-906f-4a05-b01c-32fc1897a900
+fresh-25,raw_tools,100,40472,125091,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-25-raw_tools-88b5ad4b-2744-4a20-9d8b-9eda65754cb8
+fresh-26,after,0,72236,151503,"Error: This turn reached its model/token limit. Your progress is saved; inspect /usage and /status, then use /continue when ready.",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-26-after-a3407c9d-d2de-4c2e-885a-372fb46431e4
+fresh-26,raw_tools,80,3999,45500,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-26-raw_tools-90600a66-564f-4d9b-92c5-46d815f79905
+fresh-26,before,80,5197,39247,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-26-before-872f8c1d-9696-4152-b4c9-0bdaef2f6c83
+fresh-27,raw_tools,100,10408,66256,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-27-raw_tools-6c890810-b98c-4855-a6bd-44f81acfe409
+fresh-27,before,100,25111,97359,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-27-before-fd57691d-ef62-4b4c-b973-553851c7e216
+fresh-27,after,0,15595,82076,ModelServiceError: Model service HTTP 502: service_unavailable,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-27-after-42495778-15a1-4545-8cf9-55ffaff46852
+fresh-28,raw_tools,0,0,1187,ModelServiceError: Model service HTTP 502: service_unavailable,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-28-raw_tools-13409bd7-f5df-4bee-bc83-514847b178fd
+fresh-28,after,0,0,7589,ModelServiceError: Model service HTTP 502: service_unavailable,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-28-after-cdc8a8e6-77e8-46c6-8109-8da2231281c8
+fresh-28,before,0,0,6140,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-28-before-c98bab0f-0bc3-4ca8-9665-76a3c3b5c16f
+fresh-29,before,0,0,1459,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-29-before-5b984ca5-bf23-4cd0-9f9f-b2b67c958463
+fresh-29,raw_tools,0,0,183,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-29-raw_tools-2c29b567-dd88-4a9b-898c-fef922206350
+fresh-29,after,0,0,2909,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-29-after-c56b03ed-3df0-48a1-b0c4-91095dd9e9e1
+fresh-30,after,0,0,1220,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-30-after-8f048c65-a3fa-4fee-adda-8cb134881d31
+fresh-30,before,0,0,1040,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-30-before-2a20b093-dc3c-45bf-b3d3-93a069f8bebb
+fresh-30,raw_tools,0,0,257,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-30-raw_tools-c05f94ff-3b70-4a52-8497-4b08de22e1a7
+fresh-31,before,0,0,1213,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-31-before-c8c20fa5-d51e-4e88-904f-7e7e00930e63
+fresh-31,after,0,0,1066,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-31-after-8e62b763-4707-4d7d-b6c8-0d4bc3b0c755
+fresh-31,raw_tools,0,0,263,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-31-raw_tools-8f333154-52fb-46a7-b2d9-a29b006291cb
+fresh-32,after,0,0,1216,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-32-after-8a0a27e3-119b-4d7a-8ad9-79cfe4424163
+fresh-32,raw_tools,0,0,205,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-32-raw_tools-39dc6a48-add6-4dbc-be4c-7eeffb9ca2c7
+fresh-32,before,0,0,985,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-32-before-efba86ea-8937-457e-8373-c95b61d6c52d
+fresh-33,raw_tools,0,0,208,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-33-raw_tools-baf01182-0500-444a-8524-25f3af4e07c9
+fresh-33,before,0,0,1082,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-33-before-fc88d818-a9b4-4f16-a592-a4e46e400d8c
+fresh-33,after,0,0,1053,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-33-after-6bcf7f0d-f03a-4a20-88d1-f02bc65f6ecd
+fresh-34,raw_tools,0,0,241,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-34-raw_tools-f7058646-c2a8-4118-8cbd-f381a38d24cf
+fresh-34,after,0,0,1103,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-34-after-42f3e008-0427-44c3-9f0d-da41da46e301
+fresh-34,before,0,0,2528,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-34-before-182e8523-409a-429b-b4e0-a0d7a0439e6b
+fresh-35,before,0,0,1217,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-35-before-6125c87b-c3e1-4a95-840c-c490845358c7
+fresh-35,raw_tools,0,0,211,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-35-raw_tools-0db9edac-7025-4f19-a2af-8227a95f77ce
+fresh-35,after,0,0,1131,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-35-after-b495efd7-6386-47ab-884d-3419d896f9da
+fresh-36,after,0,0,1289,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-36-after-d8289bdc-eae2-4d3b-a1c3-0dbc7c704a92
+fresh-36,before,0,0,4775,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-36-before-1670c20e-4a66-4e9f-b362-de592ca3fb97
+fresh-36,raw_tools,0,0,176,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-36-raw_tools-7419954f-57fd-4dc7-b611-c7ce54e0690d
+fresh-37,before,0,0,4532,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-37-before-e30a0a1e-70b2-4d06-b763-c0b79a66e466
+fresh-37,after,0,0,5563,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-37-after-703b7c4c-1635-4ded-aedd-a65ade237a48
+fresh-37,raw_tools,0,0,187,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-37-raw_tools-072b82b7-f370-4498-a70c-2cc822d0f48b
+fresh-38,after,0,0,2250,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-38-after-2c16548d-3402-4918-b314-090cb228f859
+fresh-38,raw_tools,0,0,190,ModelServiceError: Model service HTTP 429: rate_limited,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-38-raw_tools-3862eee4-3530-48bc-9b31-dd7ded1a87c6
+fresh-38,before,0,0,1170,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-38-before-869603bf-75fa-4292-9143-9c7891739c6f
+fresh-39,raw_tools,0,0,245,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-39-raw_tools-9187b50c-9c91-4f1e-b3ae-25fc07c763a8
+fresh-39,before,0,0,4906,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-39-before-c1da4632-c4e2-4dfe-b3e7-085a32918a76
+fresh-39,after,0,0,1132,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-39-after-ef2370a1-69df-4168-a143-55b7504597ae
+fresh-40,raw_tools,0,0,216,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-40-raw_tools-ebcd9ed0-d2a6-45f4-90ed-5efe74535994
+fresh-40,after,0,0,2021,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-40-after-d493c8a8-6a69-4b87-b27b-cf4e607ff9bc
+fresh-40,before,0,0,1129,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-40-before-415006fd-e457-4314-b047-182b7f38c50a
+fresh-41,before,0,0,2855,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-41-before-c8a5122f-fdf8-4388-920b-ec2dc42fcb18
+fresh-41,raw_tools,0,0,204,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-41-raw_tools-f2d4f2a7-bb33-4c9e-afa4-63065553d70b
+fresh-41,after,0,0,1096,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-41-after-1d52808f-c3e6-4ca3-b83d-c20ff4e08fbd
+fresh-42,after,0,9602,31994,"Error: No eligible configured lead route: benchmark-qwen: unreachable, backend identity not verified",/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-42-after-4894b420-140c-41c4-a269-6b08ebd382a8
+fresh-42,before,0,43226,2941,ModelServiceError: Model service HTTP 404: model_unavailable,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-42-before-72862c6c-d3ba-4b5e-a1c7-2a8e4c3c628b
+fresh-42,raw_tools,0,66902,212729,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-42-raw_tools-38234fbb-29d5-4eb4-8ba3-5621dfd09fd7
+fresh-43,before,0,15592,104188,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-43-before-13d9067f-8681-404c-9ee3-4675c91e31e5
+fresh-43,after,90,36619,147688,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-43-after-0670bc76-14bf-450e-b506-a4cef014199a
+fresh-43,raw_tools,0,30463,111578,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-43-raw_tools-0dc8c8b9-b42d-42ef-b59d-1c56b3b846b1
+fresh-44,after,100,35550,135255,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-44-after-cec3bbcb-15a4-49f6-8c25-5e1c25de2b63
+fresh-44,raw_tools,0,69566,86727,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-44-raw_tools-81131e4e-5866-4987-8252-c3ab961a0c45
+fresh-44,before,100,15979,84136,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-44-before-a013ec02-67af-4f79-bfd3-2fad2d87b250
+fresh-45,raw_tools,0,64175,121386,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-45-raw_tools-9c5d5756-b641-4006-bc16-2d9a38842a25
+fresh-45,before,60,15074,87644,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-45-before-01188b8e-5ac3-4c11-81c2-506bed5749e0
+fresh-45,after,70,39413,109984,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-45-after-b55a2669-55b0-49a2-83fe-f755ae6e13eb
+fresh-46,raw_tools,0,72477,92350,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-46-raw_tools-ecc490b2-94b7-4a9d-81e7-d3a932b466bf
+fresh-46,after,100,34525,112674,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-46-after-d9654c4a-566a-42b6-89a8-0ddc03f93b8d
+fresh-46,before,90,16086,102709,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-46-before-f5deff3f-5304-4404-a790-e5f14bd6a0b5
+fresh-47,before,100,16160,94207,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-47-before-853f4238-a715-4fec-9b2b-a026ade7460d
+fresh-47,raw_tools,0,74522,57718,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-47-raw_tools-cbfecd12-b33b-4093-b3c3-d56f12f77fba
+fresh-47,after,100,40549,110214,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-47-after-238ad435-9194-4267-a149-50a2f9b4af79
+fresh-48,after,100,38596,194281,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-48-after-eb58b4b9-9545-47cd-abeb-e7237aa7cd1f
+fresh-48,before,100,16154,82767,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-48-before-b0b67535-36f4-4558-a943-9c1d2e83d75f
+fresh-48,raw_tools,0,65438,239749,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-48-raw_tools-1c5a8d34-a428-47bc-bf57-f52c677522cc
+fresh-49,before,100,20047,142719,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-49-before-ae01acbb-84cd-46d2-ad4f-7189d710d6f4
+fresh-49,after,90,34714,105521,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-49-after-e08d0568-f370-4fcb-a7ea-18727b71fe29
+fresh-49,raw_tools,0,73005,204075,Error: Common aggregate workflow model/token budget exhausted,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-49-raw_tools-d9c23cd7-c08d-44c0-b966-0868c8205791
+fresh-50,after,100,38380,128808,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-50-after-d9e8daf4-d5b2-4666-8e8b-f34085e45cf9
+fresh-50,raw_tools,70,32791,76731,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-50-raw_tools-8357ddc3-6331-4e40-a5a6-157454c96be8
+fresh-50,before,0,14567,76617,,/home/wodo/.local/state/codali-remediation-20261107/fresh-results/fresh-50-before-a0db6ea2-cbd9-4dc1-8813-fcf8b67ac335
