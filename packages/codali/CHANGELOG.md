@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.135-codali.39
 
 - Calculations: an answer whose every number came from a passing
   verify_javascript run is no longer rewritten by the tool-less equation
