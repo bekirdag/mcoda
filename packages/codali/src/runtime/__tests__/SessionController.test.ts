@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -87,6 +87,24 @@ test("the prompt states today's date from the host clock as authoritative", () =
   const notice = todayNotice(new Date("2026-11-13T08:35:54Z"));
   assert.match(notice, /Today's date is 2026-11-13/);
   assert.match(notice, /trust it over any date you assume/);
+});
+
+test("the answer reserve follows the slowest model call instead of a quarter of the timeout", () => {
+  // 45-minute research turn whose slowest call took 135 s: finalize with ~6.6 minutes left, not 11.25.
+  assert.equal(answerReserveMs(45 * 60_000, 135_000), 135_000 * 2.5 + 60_000);
+  // Fast calls still keep a tenth of the timeout, and never more than half of it.
+  assert.equal(answerReserveMs(45 * 60_000, 10_000), 270_000);
+  assert.equal(answerReserveMs(4 * 60_000, 200_000), 120_000);
+  assert.equal(answerReserveMs(5 * 60_000, 0), 60_000);
+});
+
+test("a draft whose numbers a passing code run returned is backed by executed code", () => {
+  const verified = [{ avgTurnaround: 19.4, avgWaiting: 13.8, avgResponse: 4.6, contextSwitches: 10 }, { turnaroundWithSwitchCost: 26.8, completions: { P1: 31 } }];
+  assert.equal(draftBackedByVerifiedRun('{"averageTurnaround":19.4,"averageWaiting":13.8,"averageResponse":4.6,"contextSwitches":10,"turnaroundWithSwitchCost":26.8}', verified), true);
+  // The audit's hand trace that replaced it in cycle 4 is not backed.
+  assert.equal(draftBackedByVerifiedRun('{"averageTurnaround":19.6,"averageWaiting":14.2,"averageResponse":5.8,"contextSwitches":9,"turnaroundWithSwitchCost":23.0}', verified), false);
+  assert.equal(draftBackedByVerifiedRun("19.4", []), false);
+  assert.equal(draftBackedByVerifiedRun("no figures here", verified), false);
 });
 
 test("a long turn waits out an outage longer than the ladder, within its remaining time", () => {

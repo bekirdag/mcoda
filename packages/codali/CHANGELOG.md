@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Calculations: an answer whose every number came from a passing
+  verify_javascript run is no longer rewritten by the tool-less equation
+  review; one replaced a verified simulation with a wrong hand trace.
+- Time: an answer keeps back time sized from its slowest model call (2.5x plus
+  a minute, at least a tenth and at most half of the timeout) instead of a
+  quarter of the timeout, which left 45-minute research turns idle for their
+  last eight minutes.
+
+## 0.1.135-codali.38
+
 - Model outages: a turn waits out an outage for up to 30 minutes (the retry
   ladder, then a retry a minute), bounded by half the time it has left; the
   four-minute ladder alone lost a three-hour build to a nine-minute relay
