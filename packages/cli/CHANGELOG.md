@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.135-codali.40
 
 - Remove forced mswarm telemetry consent and data collection. mcoda now works
   right after `npm install`: no postinstall consent prompt, no consent gate on

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.135-codali.40
 
 - Routing: a session that can neither write to the workspace nor run commands
   (no writing permission profile and no approver) no longer switches into

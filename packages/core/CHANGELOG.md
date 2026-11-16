@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.135-codali.40
 
 - Initial public packaging for @mcoda/core.
 - Add self-hosted mswarm client identity headers, query params, sync metadata,
