@@ -147,5 +147,5 @@ test('raw arm waits out a temporary outage on the schedule Codali uses', async (
  const ok=await generateWithRetry({generate:async()=>{if(p++<3)throw wrapped;return {message:{role:'assistant',content:'ok'}};}},request,{wait:async()=>{}});
  assert.equal(ok.message.content,'ok');
  // Near the deadline the wait is bounded by half the time left.
- let d=0;await assert.rejects(generateWithRetry({generate:async()=>{d++;throw fail('service_unavailable');}},request,{wait:async()=>{},deadlineAt:Date.now()+5000}),/service_unavailable/);assert.equal(d,3,"retries fit in half the time left: 500 + 2000 ms");
+ let d=0;await assert.rejects(generateWithRetry({generate:async()=>{d++;throw fail('service_unavailable');}},request,{wait:async()=>{},deadlineAt:1_000_000+5000,now:()=>1_000_000}),/service_unavailable/);assert.equal(d,3,"retries fit in half the time left: 500 + 2000 ms");
 });
