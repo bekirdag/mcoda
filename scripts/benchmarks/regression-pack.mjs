@@ -2,7 +2,7 @@
 // passes on a candidate build, before publishing it. Gold stays in the private
 // cycle directories and the pack directory, never in this repository.
 //
-//   node regression-pack.mjs build  --out DIR --cycle DIR [--cycle DIR ...] [--sample N] [--seed S] [--include-reviewed]
+//   node regression-pack.mjs build  --out DIR --cycle DIR [--cycle DIR ...] [--sample N] [--seed S] [--include-reviewed] [--only id,id]
 //     (lost blind reviews are opt-in: they cannot be re-graded automatically and research runs 45 minutes)
 //   node regression-pack.mjs freeze --out DIR --config after.json --raw-config raw.json [--repo PATH]
 //   node scripts/benchmarks/run-generalization-study.mjs DIR/study.json   (runs the Codali side only)
@@ -84,14 +84,15 @@ const insideRepo = async target => {
   return resolved === repo || resolved.startsWith(repo + path.sep);
 };
 
-const build = async ({ out, cycles, sample, seed, includeReviewed }) => {
+const build = async ({ out, cycles, sample, seed, includeReviewed, only }) => {
   if (await insideRepo(out)) throw Error('The pack holds private gold; put it outside the repository');
   await fs.mkdir(out, { recursive: false, mode: 0o700 });
   const selection = [], allCases = [], allGold = [];
   for (const directory of cycles) {
     const cycle = await loadCycle(directory);
-    const { failures, passes } = selectFromCycle(cycle, { includeReviewed });
-    const sampled = seededShuffle(passes, `${seed}:${directory}`).slice(0, sample);
+    let { failures, passes } = selectFromCycle(cycle, { includeReviewed: includeReviewed || Boolean(only) });
+    let sampled = seededShuffle(passes, `${seed}:${directory}`).slice(0, sample);
+    if (only) { failures = failures.filter(item => only.has(item.id)); sampled = passes.filter(item => only.has(item.id)); }
     for (const [kind, list] of [['failure', failures], ['sample', sampled]]) for (const entry of list) {
       selection.push({ cycle: path.basename(directory), kind, ...entry });
       allCases.push(cycle.cases.find(task => task.id === entry.id));
@@ -135,7 +136,9 @@ const report = async ({ out, grader }) => {
     const high = findings.filter(finding => finding.key === `${item.id}:after` && finding.severity === 'high').map(finding => finding.code);
     const score = scores.get(item.id);
     const ok = high.length === 0 && (score === undefined || score === 100);
-    const status = item.kind === 'sample' ? (ok ? 'still passing' : 'REGRESSED') : (ok ? 'fixed' : 'still failing');
+    // A failure that now scores lower than before, or loses its answer, also regressed.
+    const worse = item.kind !== 'sample' && !ok && ((score ?? 100) < (item.previousScore ?? 0) || (high.length && !item.reasons.some(reason => !/^scored/.test(reason))));
+    const status = item.kind === 'sample' ? (ok ? 'still passing' : 'REGRESSED') : ok ? 'fixed' : worse ? 'REGRESSED' : 'still failing';
     return { ...item, score, flags: high, status };
   });
   const summary = Object.fromEntries(['fixed', 'still failing', 'still passing', 'REGRESSED'].map(status => [status, rows.filter(row => row.status === status).length]));
@@ -151,7 +154,7 @@ const main = async () => {
   const values = name => rest.flatMap((arg, index) => arg === name ? [rest[index + 1]] : []);
   const out = value('--out') && path.resolve(value('--out'));
   if (!out) throw Error('--out is required');
-  if (command === 'build') return build({ out, cycles: values('--cycle').map(dir => path.resolve(dir)), sample: Number(value('--sample') ?? 2), seed: value('--seed') ?? 'pack', includeReviewed: rest.includes('--include-reviewed') });
+  if (command === 'build') return build({ out, cycles: values('--cycle').map(dir => path.resolve(dir)), sample: Number(value('--sample') ?? 2), seed: value('--seed') ?? 'pack', includeReviewed: rest.includes('--include-reviewed'), only: value('--only') ? new Set(value('--only').split(',')) : undefined });
   if (command === 'freeze') return freeze({ out, config: value('--config'), rawConfig: value('--raw-config'), repo: path.resolve(value('--repo') ?? path.join(here, '../..')) });
   if (command === 'report') { if (!(await report({ out, grader: path.resolve(value('--grader')) }))) process.exitCode = 1; return; }
   throw Error('Usage: regression-pack.mjs build|freeze|report --out DIR ...');
