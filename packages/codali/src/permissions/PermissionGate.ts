@@ -64,6 +64,12 @@ export class PermissionGate {
     this.profile = profile; this.revision += 1;
   }
 
+  /** Whether workspace writes or commands can ever be authorized in this
+   * session: by profile, or by asking someone who can approve them. */
+  canChangeWorkspace(): boolean {
+    return this.profile === "full" || this.profile === "workspace" || (this.profile !== "plan" && this.prompt !== undefined);
+  }
+
   clearGrants(): void { this.grants.clear(); this.denials.clear(); this.revision += 1; }
 
   exportGrants(): PermissionGrants { return { schemaVersion: 1, grants: [...this.grants], denials: [...this.denials] }; }

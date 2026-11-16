@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Routing: a session that can neither write to the workspace nor run commands
+  (no writing permission profile and no approver) no longer switches into
+  execute mode; the model is told to deliver the answer directly. Four
+  answer-only code requests had gone there and returned no code.
+- mcoda no longer asks for telemetry consent or registers with mswarm at
+  install or first use, and collects no usage data (see the cli changelog).
+
 ## 0.1.135-codali.39
 
 - Calculations: an answer whose every number came from a passing

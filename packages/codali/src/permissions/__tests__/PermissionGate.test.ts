@@ -82,3 +82,12 @@ test("persisted session grants remain exact and cannot bypass a stronger current
   resumed.setProfile("plan");
   await assert.rejects(resumed.authorize(tool("write_file"), { path: "a", content: "approved" }), /Planning mode/);
 });
+
+test("workspace changes are possible only with a writing profile or an approver", () => {
+  const approve = async () => ({ allow: true });
+  assert.equal(new PermissionGate("ask").canChangeWorkspace(), false);
+  assert.equal(new PermissionGate("plan", approve).canChangeWorkspace(), false);
+  assert.equal(new PermissionGate("ask", approve).canChangeWorkspace(), true);
+  assert.equal(new PermissionGate("workspace").canChangeWorkspace(), true);
+  assert.equal(new PermissionGate("full").canChangeWorkspace(), true);
+});

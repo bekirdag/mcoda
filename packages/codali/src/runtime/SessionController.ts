@@ -2531,6 +2531,13 @@ export class SessionController {
           try {
             if (budgeted.finalizing && (args.checks !== undefined || args.compute !== undefined)) throw new Error("Final delivery must use existing evidence; no new computation or checks remain available.");
             if (Object.keys(args).some(key => !(request.name === "start_work" ? ["task", "output"] : ["text", "output", "checks", "compute"]).includes(key))) throw new Error("Unexpected control argument");
+            // Execute mode exists to change the workspace. Without any way to
+            // authorize a write or command it can only report that it could
+            // not: in cycle 5 four code answers went there and delivered no code.
+            if (request.name === "start_work" && !this.gate.canChangeWorkspace()) {
+              await this.emit("execution_unavailable", { reason: "no_write_or_command_authorization", profile: this.gate.profile }, false);
+              throw new Error("Workspace work cannot be authorized in this session (no write or command permission and no approver). Answer directly with final_answer and put the complete deliverable, such as the requested code block, in its text; verify code with the sandboxed verification tools.");
+            }
             if (verificationPending && (request.name !== "final_answer" || args.checks === undefined)) throw new Error("The pending code verification must be resolved before finalizing");
             if (requiredChecks && (request.name !== "final_answer" || JSON.stringify(args.checks) !== JSON.stringify(requiredChecks))) throw new Error("Repair the code using the same supplied checks; failed checks cannot be dropped or changed");
             let reply = args.task ?? args.text;

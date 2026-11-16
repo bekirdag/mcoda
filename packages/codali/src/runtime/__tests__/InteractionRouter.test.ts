@@ -829,7 +829,7 @@ test("gateway authorized work transitions retain the durable completion gate", a
   const config = structuredClone(base); config.interaction = { strategy: "gateway" };
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ({ ...reply(""),
     toolCalls: [{ id: "work", name: "codali", args: { name: "start_work", args: { task: "Create the requested file." } } }],
-  }) }, config);
+  }) }, config, undefined, false, { permissions: "workspace" });
   t.mock.method(controller, "run", async () => ({ content: "Work is still open.", completed: false }));
   const result = await controller.interact("Create a file named hello.txt.");
   assert.equal(result.mode, "execute"); assert.equal(result.completed, false); assert.notEqual(controller.state?.status, "completed");
@@ -843,7 +843,7 @@ test("gateway hands complete observation groups and retrievable long requirement
   const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
     if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "rfp", name: "codali", args: { name: "read_file", args: { path: "RFP.md" } } }] };
     return { ...reply(""), toolCalls: [{ id: "work", name: "codali", args: { name: "start_work", args: { task: "Build the requested app." } } }] };
-  } }, config);
+  } }, config, undefined, false, { permissions: "workspace" });
   await fs.writeFile(path.join(root, "RFP.md"), requirements);
   t.mock.method(controller, "run", async () => {
     const snapshot = events.filter(event => event.type === "conversation_state").at(-1)!.data.messages as ProviderMessage[];
@@ -1812,7 +1812,7 @@ for (const strategy of ["adaptive", "gateway"] as const) test(`${strategy} inspe
     calls++;
     assert.deepEqual(request.tools?.map(tool => tool.name), ["start_work", "final_answer"]);
     return { ...reply(""), toolCalls: [{ id: "handoff", name: "start_work", args: { task: "Implement the requested app" } }] };
-  } }, config);
+  } }, config, undefined, false, { permissions: "workspace" });
   t.mock.method(controller, "run", async () => ({ content: "Execution remains open", completed: false }));
   const result = await controller.interact("Build the inventory app. Never deploy it.");
   assert.equal(result.mode, "execute"); assert.equal(result.completed, false); assert.equal(calls, 1);
@@ -2038,4 +2038,20 @@ test('inspection finalization can deliver requested code without creating a dura
   assert.equal((await controller.interact('Return only a Python function in a fenced code block.')).content, source);
   assert.equal(controller.state, undefined);
   assert.equal(events.filter(event => event.type === 'tool_receipt').length, 0);
+});
+
+test("without write or command authorization, start_work is refused and the answer is delivered directly", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
+  let calls = 0; let refusal = "";
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "w", name: "codali", args: { name: "start_work", args: { task: "Write and verify module m.py" } } }] };
+    refusal = request.messages.filter(message => message.role === "tool").map(message => message.content).join("\n");
+    return reply("```python\ndef f():\n    return 1\n```");
+  } }, config);
+  const result = await controller.interact("Write a Python module f() returning 1. Return exactly one fenced python code block.");
+  assert.match(result.content, /def f\(\)/);
+  assert.match(refusal, /final_answer/);
+  assert.ok(events.some(event => event.type === "execution_unavailable"));
+  assert.ok(!events.some(event => event.type === "interaction_handoff"));
+  assert.equal(controller.state, undefined);
 });
