@@ -6,6 +6,10 @@
   (no writing permission profile and no approver) no longer switches into
   execute mode; the model is told to deliver the answer directly. Four
   answer-only code requests had gone there and returned no code.
+- Deadlines: when another model call cannot finish before the deadline, a
+  finished code answer is delivered instead of being sent back for a
+  code-drift repair or a test run; one such repair at 27 of 30 minutes had
+  cost a complete answer.
 - mcoda no longer asks for telemetry consent or registers with mswarm at
   install or first use, and collects no usage data (see the cli changelog).
 

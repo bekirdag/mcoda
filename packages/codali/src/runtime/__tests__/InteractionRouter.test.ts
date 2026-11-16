@@ -2055,3 +2055,21 @@ test("without write or command authorization, start_work is refused and the answ
   assert.ok(!events.some(event => event.type === "interaction_handoff"));
   assert.equal(controller.state, undefined);
 });
+
+test("near the deadline a finished answer is delivered instead of a code-drift repair call", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 6, maxTotalTokens: 32000 };
+  let calls = 0;
+  const answer = "```sql\nSELECT 2 AS v;\n```";
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "discover", name: "codali", args: { name: "tools_describe", args: { query: "SQL duckdb query data" } } }] };
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "q", name: "query_data", args: { sql: "SELECT 1 AS v", tables: [] } }] };
+    return reply(answer);
+  } }, config, undefined, false, { deadlineAt: Date.now() + 45_000 });
+  const result = await controller.interact("Give a SQL query that returns one row. Return one fenced sql block.");
+  const ran = events.some(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string; status: string }).tool === "query_data" && (event.data.receipt as { status: string }).status === "success");
+  if (!ran) { t.skip("query_data is unavailable on this host"); return; }
+  assert.equal(result.content, answer);
+  assert.equal(calls, 3, "no extra repair call after the answer");
+  assert.ok(events.some(event => event.type === "code_drift_reminder_skipped"));
+});
