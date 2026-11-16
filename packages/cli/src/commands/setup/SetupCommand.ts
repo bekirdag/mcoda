@@ -1,90 +1,64 @@
-import { runMswarmConsentBootstrap } from '../../install/MswarmConsentBootstrap.js';
+import { CONSENT_NOT_REQUIRED_MESSAGE } from '../consent/ConsentCommands.js';
 
 const USAGE = `
-Usage: mcoda setup [options]
+Usage: mcoda setup [--json]
 
-Runs the interactive mcoda setup flow for mandatory mswarm telemetry consent.
+mcoda works right after installation; there is no mandatory setup step and no
+telemetry consent. This command only prints optional next steps. It never
+contacts mswarm.
 
-Options:
-  --policy-version <VER>   Override the consent policy version
-  --json                   Emit JSON output
-  --help                   Show this help
+Optional:
+  mcoda config set mswarm-api-key <KEY>   Use mswarm cloud agents, workers and routing
+  mcoda set-workspace                     Initialize a workspace in the current repo
 `.trim();
 
-type ParsedSetupArgs = {
-  json: boolean;
-  policyVersion?: string;
+export type SetupCommandResult = {
+  status: 'ready';
+  consentRequired: false;
+  message: string;
 };
 
 export class SetupCommand {
-  static async run(argv: string[]): Promise<void> {
-    const parsed = parseSetupArgs(argv);
+  static async run(argv: string[]): Promise<SetupCommandResult | undefined> {
     if (argv.includes('--help') || argv.includes('-h')) {
       // eslint-disable-next-line no-console
       console.log(USAGE);
-      return;
+      return undefined;
     }
-    const result = await runMswarmConsentBootstrap({
-      mode: 'setup',
-      onDeferred: 'error',
-      policyVersion: parsed.policyVersion,
-      logger: parsed.json ? defaultErrorLogger : defaultLogger,
-    });
-    if (parsed.json) {
+    parseSetupArgs(argv);
+    const result: SetupCommandResult = {
+      status: 'ready',
+      consentRequired: false,
+      message: `mcoda is ready to use. ${CONSENT_NOT_REQUIRED_MESSAGE}`,
+    };
+    if (argv.includes('--json')) {
       // eslint-disable-next-line no-console
       console.log(JSON.stringify(result, null, 2));
-      return;
+      return result;
     }
     // eslint-disable-next-line no-console
+    console.log(result.message);
+    // eslint-disable-next-line no-console
     console.log(
-      [
-        `status=${result.status}`,
-        `consentAccepted=${String(result.consentAccepted)}`,
-        `consentTokenSet=${String(result.consentTokenSet)}`,
-        result.clientId ? `clientId=${result.clientId}` : undefined,
-        result.clientType ? `clientType=${result.clientType}` : undefined,
-        result.policyVersion ? `policyVersion=${result.policyVersion}` : undefined,
-      ]
-        .filter(Boolean)
-        .join(' ')
+      'Optional: run `mcoda config set mswarm-api-key <KEY>` to use mswarm cloud agents, workers and routing.'
     );
+    return result;
   }
 }
 
-export function parseSetupArgs(argv: string[]): ParsedSetupArgs {
-  const parsed: ParsedSetupArgs = { json: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
+export function parseSetupArgs(argv: string[]): { json: boolean } {
+  const parsed = { json: false };
+  for (const value of argv) {
     if (value === '--json') {
       parsed.json = true;
       continue;
     }
-    if (value === '--policy-version') {
-      const next = argv[index + 1];
-      if (!next?.trim()) {
-        throw new Error('--policy-version requires a value');
-      }
-      parsed.policyVersion = next.trim();
-      index += 1;
-      continue;
-    }
-    if (value === '--help' || value === '-h') {
-      continue;
-    }
+    if (value === '--help' || value === '-h') continue;
+    // Accepted for backward compatibility with older consent-based setup.
+    if (value === '--policy-version' || value.startsWith('--policy-version=')) continue;
     if (value.startsWith('--')) {
       throw new Error(`Unknown setup flag: ${value}`);
     }
-    throw new Error(`Unknown setup argument: ${value}`);
   }
   return parsed;
-}
-
-function defaultLogger(line: string): void {
-  // eslint-disable-next-line no-console
-  console.log(line);
-}
-
-function defaultErrorLogger(line: string): void {
-  // eslint-disable-next-line no-console
-  console.error(line);
 }

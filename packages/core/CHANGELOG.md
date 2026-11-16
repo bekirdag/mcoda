@@ -5,6 +5,13 @@
 - Initial public packaging for @mcoda/core.
 - Add self-hosted mswarm client identity headers, query params, sync metadata,
   and node allowlist normalization to `MswarmApi`.
+- Remove mswarm telemetry consent and data collection: drop
+  `MswarmApi.issuePaidConsent`, `registerFreeMcodaClient`, `revokeConsent`,
+  `requestDataDeletion`, `MSWARM_CONSENT_POLICY_VERSION`,
+  `MCODA_FREE_CLIENT_TYPE` and the consent response types. `MswarmConfigStore`
+  no longer reads or writes consent tokens, client ids or upload signing
+  secrets; `clearLegacyConsentState()` removes those values left by older
+  releases (local only).
 
 ## 0.1.132 - 2026-10-16
 

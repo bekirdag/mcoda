@@ -31,16 +31,20 @@ const captureLogs = async (
   return logs;
 };
 
-const withConsentState = async (
-  state: Record<string, unknown>,
-  fn: () => Promise<void>
-): Promise<void> => {
+// Simulates a fresh install: no API key, no consent token, nothing configured.
+// Any network call during routing fails the test.
+const withFreshInstall = async (fn: () => Promise<void>): Promise<void> => {
   const originalReadState = MswarmConfigStore.prototype.readState;
-  (MswarmConfigStore.prototype as any).readState = async () => state;
+  const originalFetch = globalThis.fetch;
+  (MswarmConfigStore.prototype as any).readState = async () => ({});
+  (globalThis as any).fetch = async (input: unknown) => {
+    throw new Error(`unexpected network call: ${String(input)}`);
+  };
   try {
     await fn();
   } finally {
     (MswarmConfigStore.prototype as any).readState = originalReadState;
+    globalThis.fetch = originalFetch;
   }
 };
 
@@ -61,12 +65,12 @@ test('McodaEntrypoint no-command usage mentions self-hosted setup', async () => 
 });
 
 test(
-  'McodaEntrypoint top-level help aliases print usage before consent checks',
+  'McodaEntrypoint top-level help aliases print usage without reading config',
   { concurrency: false },
   async () => {
     const originalReadState = MswarmConfigStore.prototype.readState;
     (MswarmConfigStore.prototype as any).readState = async () => {
-      throw new Error('consent should not be read for help');
+      throw new Error('config should not be read for help');
     };
     try {
       for (const alias of ['--help', '-h', '-H', 'help']) {
@@ -106,8 +110,7 @@ test(
   { concurrency: false },
   async () => {
     const logs = await captureLogs(() =>
-      withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      withFreshInstall(
         () => McodaEntrypoint.run(['qa-tasks', '--help'])
       )
     );
@@ -120,8 +123,7 @@ test(
   { concurrency: false },
   async () => {
     const logs = await captureLogs(() =>
-      withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      withFreshInstall(
         () => McodaEntrypoint.run(['project-guidance', '--help'])
       )
     );
@@ -133,8 +135,7 @@ test(
   'McodaEntrypoint rejects unknown commands',
   { concurrency: false },
   async () => {
-    await withConsentState(
-      { consentAccepted: true, consentToken: 'token-123' },
+    await withFreshInstall(
       async () => {
         await assert.rejects(
           () => McodaEntrypoint.run(['totally-unknown']),
@@ -156,8 +157,7 @@ test(
       assert.deepEqual(argv, ['--json']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['sds-preflight', '--json'])
       );
       assert.equal(called, true);
@@ -178,8 +178,7 @@ test(
       assert.deepEqual(argv, ['agent', 'list', '--json']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['cloud', 'agent', 'list', '--json'])
       );
       assert.equal(called, true);
@@ -200,8 +199,7 @@ test(
       assert.deepEqual(argv, ['agent', 'sync', '--json']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['self-hosted', 'agent', 'sync', '--json'])
       );
       assert.equal(called, true);
@@ -222,8 +220,7 @@ test(
       assert.deepEqual(argv, ['list', '--json']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['workers', 'list', '--json'])
       );
       assert.equal(called, true);
@@ -244,8 +241,7 @@ test(
       assert.deepEqual(argv, ['list', '--json']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['gpu', 'list', '--json'])
       );
       assert.equal(called, true);
@@ -280,7 +276,7 @@ test(
 );
 
 test(
-  'McodaEntrypoint routes consent commands without prior consent',
+  'McodaEntrypoint routes legacy consent command',
   { concurrency: false },
   async () => {
     const originalRun = ConsentCommands.run;
@@ -299,7 +295,7 @@ test(
 );
 
 test(
-  'McodaEntrypoint routes setup without prior consent',
+  'McodaEntrypoint routes setup',
   { concurrency: false },
   async () => {
     const originalRun = SetupCommand.run;
@@ -318,20 +314,45 @@ test(
 );
 
 test(
-  'McodaEntrypoint blocks non-exempt commands until consent is accepted',
+  'McodaEntrypoint never gates commands on telemetry consent',
   { concurrency: false },
   async () => {
-    await withConsentState(
-      { consentAccepted: false, consentToken: undefined },
-      async () => {
-        await assert.rejects(
-          () => McodaEntrypoint.run(['cloud', 'agent', 'list', '--json']),
-          /Telemetry consent is required before using mcoda/
-        );
-      }
-    );
+    const originalRun = CloudCommands.run;
+    let called = false;
+    (CloudCommands as any).run = async () => {
+      called = true;
+    };
+    const originalReadState = MswarmConfigStore.prototype.readState;
+    let configRead = false;
+    (MswarmConfigStore.prototype as any).readState = async () => {
+      configRead = true;
+      return { consentAccepted: false, consentToken: undefined };
+    };
+    try {
+      await McodaEntrypoint.run(['cloud', 'agent', 'list', '--json']);
+      assert.equal(called, true);
+      assert.equal(configRead, false, 'entrypoint must not read consent state');
+    } finally {
+      (CloudCommands as any).run = originalRun;
+      (MswarmConfigStore.prototype as any).readState = originalReadState;
+    }
   }
 );
+
+test('McodaEntrypoint usage no longer mentions mandatory consent', async () => {
+  const logs = await captureLogs(() => McodaEntrypoint.run(['--help']));
+  const output = logs.join('\n');
+  assert.doesNotMatch(output, /consent is required|mandatory mswarm telemetry consent|consent accept/i);
+  assert.match(output, /Setup: none required/);
+});
+
+test('mcoda package has no install-time consent hook', () => {
+  const pkg = packageJson as { scripts?: Record<string, string>; files?: string[] };
+  assert.equal(pkg.scripts?.postinstall, undefined);
+  assert.equal(pkg.scripts?.preinstall, undefined);
+  assert.equal(pkg.scripts?.install, undefined);
+  assert.ok(!(pkg.files ?? []).includes('MSWARM_DATA_COLLECTION_TERMS.md'));
+});
 
 test(
   'McodaEntrypoint routes sds suggestions subcommand',
@@ -344,8 +365,7 @@ test(
       assert.deepEqual(argv, ['sds', 'suggestions', '--project', 'ABC']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['sds', 'suggestions', '--project', 'ABC'])
       );
       assert.equal(called, true);
@@ -366,8 +386,7 @@ test(
       assert.deepEqual(argv, ['sds', 'generate', '--project', 'ABC']);
     };
     try {
-      await withConsentState(
-        { consentAccepted: true, consentToken: 'token-123' },
+      await withFreshInstall(
         () => McodaEntrypoint.run(['sds', '--project', 'ABC'])
       );
       assert.equal(called, true);

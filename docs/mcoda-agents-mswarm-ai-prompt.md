@@ -54,7 +54,6 @@ Install the packages and confirm mcoda can see healthy local agents:
 
 ```bash
 npm install -g mcoda @mcoda/mswarm
-mcoda setup
 mcoda agent list --json --refresh-health
 ```
 

@@ -19,6 +19,9 @@ const bannedMatchers = [
   { pattern: /(^|\/)\.docdex(\/|$)/, reason: 'docdex state' },
   { pattern: /(^|\/)dist\/__tests__\//, reason: 'compiled tests' },
   { pattern: /\.test\.[cm]?js$/i, reason: 'test artifacts' },
+  { pattern: /MSWARM_DATA_COLLECTION_TERMS/, reason: 'removed consent terms' },
+  { pattern: /(^|\/)scripts\/postinstall\.js$/, reason: 'removed consent postinstall' },
+  { pattern: /MswarmConsentBootstrap/, reason: 'removed consent bootstrap' },
 ];
 
 const requiredPaths = [
@@ -26,10 +29,7 @@ const requiredPaths = [
   'README.md',
   'CHANGELOG.md',
   'LICENSE',
-  'MSWARM_DATA_COLLECTION_TERMS.md',
-  'scripts/postinstall.js',
   'dist/bin/McodaEntrypoint.js',
-  'dist/install/MswarmConsentBootstrap.js',
 ];
 
 const getPackList = () => {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Remove forced mswarm telemetry consent and data collection. mcoda now works
+  right after `npm install`: no postinstall consent prompt, no consent gate on
+  any command, and no free-client/consent registration with mswarm. The bundled
+  `MSWARM_DATA_COLLECTION_TERMS.md` and the postinstall script are gone.
+  `mcoda setup` only prints optional next steps; `mcoda consent` is a local
+  no-op that removes consent tokens left by older releases. `mcoda telemetry`
+  now controls local token recording only (nothing is ever uploaded).
+
 ## 0.1.132 - 2026-10-16
 
 - Fix `mcoda setup` failing with `SQLITE_READONLY` after consent acceptance by
