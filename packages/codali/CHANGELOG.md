@@ -10,6 +10,12 @@
   finished code answer is delivered instead of being sent back for a
   code-drift repair or a test run; one such repair at 27 of 30 minutes had
   cost a complete answer.
+- Research: web search and page tools now tell the model, within the 140
+  characters it sees, to search first with one short query per sub-question
+  and to open only URLs from results or page links; the browser's own "search
+  first" advice was being cut off. A search-engine results page opened in the
+  browser runs as a web search instead (cycle 4: 108 searches against the raw
+  arm's 353, and 72 search-engine pages opened, often captchas or 403s).
 - mcoda no longer asks for telemetry consent or registers with mswarm at
   install or first use, and collects no usage data (see the cli changelog).
 

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -2312,4 +2312,16 @@ test("a specialist draft is saved by draftId, a large direct write is accepted, 
   await assert.rejects(controller.run("Create the source modules under src."), /cancel/i);
   assert.equal(specialistCalls, 1);
   assert.match(await fs.readFile(path.join(root, "src/big.js"), "utf8"), /^\/\/ revised module/);
+});
+
+test("search-engine result URLs are recognised and research tool hints fit the 140-character cut", () => {
+  assert.equal(searchEngineQuery("https://html.duckduckgo.com/html/?q=%22stop+the+clock%22+CSRD"), '"stop the clock" CSRD');
+  assert.equal(searchEngineQuery("https://www.bing.com/search?q=penny+treasury"), "penny treasury");
+  assert.equal(searchEngineQuery("https://www.google.co.uk/search?q=jdk+28"), "jdk 28");
+  assert.equal(searchEngineQuery("https://search.brave.com/search?q=x"), "x");
+  assert.equal(searchEngineQuery("https://www.google.com/maps?q=x"), undefined);
+  assert.equal(searchEngineQuery("https://home.treasury.gov/search?query=penny"), undefined);
+  assert.equal(searchEngineQuery("https://duckduckgo.com/"), undefined);
+  assert.equal(searchEngineQuery("not a url"), undefined);
+  for (const text of Object.values(RESEARCH_TOOL_DESCRIPTIONS)) assert.ok(text.length <= 140, text);
 });

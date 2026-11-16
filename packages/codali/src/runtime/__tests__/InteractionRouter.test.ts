@@ -2073,3 +2073,20 @@ test("near the deadline a finished answer is delivered instead of a code-drift r
   assert.equal(calls, 3, "no extra repair call after the answer");
   assert.ok(events.some(event => event.type === "code_drift_reminder_skipped"));
 });
+
+test("a search-engine page opened in the browser runs as a web search instead", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 160000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  const queries: string[] = [];
+  t.mock.method(DocdexClient.prototype, "webResearch", async (query: string) => { queries.push(query); return { web_context: [{ url: "https://example.org/primary", content: "One experiment measured 27." }] }; });
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "engine", name: "codali", args: { name: "browser_open", args: { url: "https://html.duckduckgo.com/html/?q=experiment+measured+value" } } }] };
+    return reply("One experiment measured 27.");
+  } }, config, undefined, true, { allowWeb: true });
+  await controller.interact("Research the measured value.");
+  assert.deepEqual(queries, ["experiment measured value"]);
+  assert.equal(events.find(event => event.type === "search_page_redirected")?.data.query, "experiment measured value");
+  assert.ok(!events.some(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "browser_open"));
+});

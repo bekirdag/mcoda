@@ -148,6 +148,25 @@ export const looksCutOff = (text: string, outputTokens?: number): boolean => {
   const roundCap = Number.isSafeInteger(outputTokens) && outputTokens! >= 2048 && outputTokens! % 1024 === 0;
   return roundCap && endsMidSentence(trimmed);
 };
+/** Native tool descriptions are cut to 140 characters, which removed the
+ * browser's "search first" advice. In cycle 4 Codali ran 108 web searches to
+ * the raw arm's 353 and opened 443 pages, many guessed or search-engine URLs. */
+export const RESEARCH_TOOL_DESCRIPTIONS: Record<string, string> = {
+  docdex_web_research: "Web search. Use first and often: one short query per sub-question, several phrasings; returns sourced page text and URLs.",
+  browser_open: "Open a URL from search results or a page link to read it in full. Never guess URLs or open search-engine pages; search instead.",
+};
+/** Search-engine result pages opened in the browser: run the query as a web search instead. */
+export const searchEngineQuery = (url: unknown): string | undefined => {
+  if (typeof url !== "string") return undefined;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return undefined; }
+  const host = parsed.hostname.replace(/^www\./, "");
+  const engine = /^(html\.|lite\.)?duckduckgo\.com$/.test(host) || /^(bing\.com|search\.brave\.com|mojeek\.com|ecosia\.org|startpage\.com|search\.yahoo\.com|yandex\.[a-z]+)$/.test(host)
+    || /^google\.[a-z.]+$/.test(host) && parsed.pathname.startsWith("/search");
+  if (!engine) return undefined;
+  const query = parsed.searchParams.get("q") ?? parsed.searchParams.get("query") ?? parsed.searchParams.get("p") ?? parsed.searchParams.get("text");
+  return query?.trim() ? query.trim().slice(0, 400) : undefined;
+};
 /** Time an interactive turn keeps back to write its answer and audit it. Sized
  * from the slowest model call seen: a fixed quarter of the timeout left 45-minute
  * research turns idle for their last 8 minutes while drafting took about 3. */
@@ -2446,7 +2465,7 @@ export class SessionController {
       if (exposed.has("browser_open") && registry.list().some(tool => tool.name === "browser_read")) exposed.add("browser_read");
       if (this.contextArchive.size && registry.list().some(tool => tool.name === "context_read")) exposed.add("context_read");
       const nativeTools = turnNative ? [...registry.list().filter(tool => exposed.has(tool.name) && permitted(tool.name))
-        .map(tool => ({ name: tool.name, description: tool.description.slice(0, 140), inputSchema: compactToolSchema(tool.inputSchema) as Record<string, unknown> })), nativeFinalAnswerTool, nativeStartWorkTool] : [interactionGatewayTool, nativeStartWorkTool];
+        .map(tool => ({ name: tool.name, description: (RESEARCH_TOOL_DESCRIPTIONS[tool.name] ?? tool.description).slice(0, 140), inputSchema: compactToolSchema(tool.inputSchema) as Record<string, unknown> })), nativeFinalAnswerTool, nativeStartWorkTool] : [interactionGatewayTool, nativeStartWorkTool];
       // Adaptive starts with the compact gateway. Keep it callable after native
       // discovery; removing a previously used schema makes some tool parsers
       // render subsequent valid gateway calls as unexecuted text.
@@ -2528,7 +2547,7 @@ export class SessionController {
       const requestFor = (call: typeof calls[number]) => call.name === "start_work" || (turnNative || budgeted.finalizing) && call.name !== interactionGatewayTool.name ? { name: call.name, args: call.args } : normalizeGatewayRequest(call.args);
       const controlBatch = calls.some(call => ["final_answer", "start_work"].includes(String(requestFor(call).name)));
       for (const call of calls) {
-        const request = requestFor(call);
+        let request = requestFor(call);
         let result: ToolExecutionResult | undefined;
         if (!(budgeted.finalizing ? ["start_work", "final_answer"].includes(call.name) : nativeTools.some(tool => tool.name === call.name)) || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)
           || Object.keys(request).some(key => !["name", "args"].includes(key)) || controlBatch && calls.length !== 1) {
@@ -2614,7 +2633,14 @@ export class SessionController {
             return args.checks !== undefined || args.compute !== undefined ? control : auditAnswer(control);
           }
         } else {
-          result = await execute(request.name, request.args);
+          // A search-engine page opened in the browser is a captcha or a 403 as
+          // often as a result list (cycle 4: 72 such opens); run it as a search.
+          const engineQuery = request.name === "browser_open" ? searchEngineQuery((request.args as { url?: unknown }).url) : undefined;
+          if (engineQuery && permitted("docdex_web_research") && registry.list().some(tool => tool.name === "docdex_web_research")) {
+            await this.emit("search_page_redirected", { url: String((request.args as { url?: unknown }).url).slice(0, 300), query: engineQuery }, false);
+            request = { name: "docdex_web_research", args: { query: engineQuery, forceWeb: true } };
+          }
+          result = await execute(request.name as string, request.args);
         }
         signal.throwIfAborted();
         if (!result) throw new Error("The tool call did not produce a result");
