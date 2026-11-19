@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.135-codali.41
+
+- Output: a request that explicitly asks for only JSON ("return only JSON",
+  "respond with JSON only") now always gets bare JSON; a ```json fence around
+  the answer is removed even when the extracted output contract said text.
+- Research: the final evidence audit is shown the source passages behind each
+  quote and specific figure in the draft first (budget 48,000 characters, up
+  from 24,000), so verbatim, sourced claims are no longer relabelled as
+  unverified because their passage was left out.
+- Long answers: high and max effort allow 65,536 output tokens (was 8,192), so
+  the consistency audit of a long design is no longer cut off and discarded.
+- Long answers: derived figures in a long answer are listed as arithmetic
+  expressions and evaluated by the calculator; the consistency audit gets the
+  mismatches to correct, instead of rereading its own arithmetic.
+- App builds: browser journeys must check the server state after each action
+  (including logout), treat unexpected 4xx/5xx responses and console errors as
+  failures, check that table rows match their headers and that every role
+  action has a control; delivery notes may claim only checks that passed.
+- Code answers: when the final code differs from the code of the session's
+  last verify_tests run, the runtime runs the final code against that run's
+  tests itself; if they fail, the model gets one repair round with the
+  failures, or, without time for one, the answer states that the tests failed.
+- Deadlines: the final answer call is bounded to half of the remaining window
+  when a retry fits, so one stalled request no longer loses a finished
+  investigation at the deadline.
+
 ## 0.1.135-codali.40
 
 - Routing: a session that can neither write to the workspace nor run commands

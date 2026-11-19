@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.135-codali.41
+
+- Ships with @mcoda/codali 0.1.135-codali.41 (no other changes in this package).
+
 ## 0.1.135-codali.40
 
 - Initial public packaging for @mcoda/core.
