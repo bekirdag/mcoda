@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "scope": "observed cases, not inferred universal causes",
+  "items": [
+    {
+      "id": "native-tool-finalization",
+      "labels": [
+        "transport",
+        "evidence-preservation"
+      ],
+      "evidence": "Final tool-history turns without declarations entered another orchestrator; baseline regression called codaliExecutor and dropped tool-call IDs. Fixed regression and live control now preserve native path.",
+      "status": "fixed and live verified"
+    },
+    {
+      "id": "dispatcher-contract-v1",
+      "labels": [
+        "intent-contract"
+      ],
+      "evidence": "Small dispatchers commonly returned tools as an array; large model also returned a tool name. Native-schema requests improved syntactic compliance but did not guarantee correct intent.",
+      "status": "single versioned contract; failed variants retained"
+    },
+    {
+      "id": "dispatcher-code-followup",
+      "labels": [
+        "intent",
+        "code-correctness"
+      ],
+      "evidence": "Earlier large-model dispatcher answered a code-shortening request directly with changed semantics. Shorter capability prompt routes the exposed development follow-up correctly.",
+      "status": "development regression fixed; generalization unproven"
+    },
+    {
+      "id": "invented-output-constraints",
+      "labels": [
+        "constraint-extraction"
+      ],
+      "evidence": "Smaller models invented word bounds or copied dispatcher-schema field names into required final JSON keys, including unconstrained greetings.",
+      "status": "small models not selected; future distillation is separate work"
+    },
+    {
+      "id": "word-limit-305",
+      "labels": [
+        "output-contract"
+      ],
+      "evidence": "Installed .24 returned305 words for250..300. .25 rejected a303-word result after one repair, preserving both drafts; the missing answer prevented compression/resume fixture conditions. .26 adds interior-target guidance without another retry or weaker validation.",
+      "status": ".26 fresh word-limit/context cases passed; original310-word draft controlled replay repaired to253words in one live call/1505tokens. Original failures unchanged."
+    },
+    {
+      "id": "dependency-readiness",
+      "labels": [
+        "reasoning"
+      ],
+      "evidence": "No-reasoning Codali, reviewed Codali and raw failed; Codali/raw with low/512 native reasoning passed on the exposed development case.",
+      "status": "Development improvement with native reasoning; no generalization claim"
+    },
+    {
+      "id": "pantry-arithmetic",
+      "labels": [
+        "reasoning"
+      ],
+      "evidence": "No-reasoning Codali and reviewed Codali failed. Native-reasoning Codali/raw direct passed; native-reasoning raw-tools was semantically correct but violated JSON-only format.",
+      "status": "Measured reasoning and presentation errors separated"
+    },
+    {
+      "id": "u5-quoted-types",
+      "labels": [
+        "prompt-ambiguity",
+        "grader-design"
+      ],
+      "evidence": "Eight earlier general-knowledge templates had ambiguous quoted type placeholders. Original scores retained; whole-family exclusion is separately labeled post-hoc sensitivity.",
+      "status": "historical erratum; no retrospective primary-score replacement"
+    },
+    {
+      "id": "v3-eval-harness",
+      "labels": [
+        "harness",
+        "logging"
+      ],
+      "evidence": "A shadowed output-path variable prevented storing two attempted greeting results after inference. Costs remain unknown, not zero. Corrected harness writes request intents before inference and passed20 paired stub checks.",
+      "status": "fixed; failed attempt artifacts retained"
+    },
+    {
+      "id": "review-and-cost",
+      "labels": [
+        "orchestration-efficiency",
+        "measurement"
+      ],
+      "evidence": "Of17 same-model reviewed drafts,0 were corrected,1 correct packing answer was damaged,12 remained correct and4 remained wrong. Review-on final15/20 used88581tokens versus review-off17/20 and67830tokens.",
+      "status": "Routine review disabled in selected experimental setting"
+    },
+    {
+      "id": "architecture-safeguards",
+      "labels": [
+        "design-correctness",
+        "rubric-review"
+      ],
+      "evidence": "All five queue-design outputs failed at least one safeguard criterion. Schema-migration answers included dropped-column feature-flag rollback and unsafe concurrent-backfill sequencing. Two of ten architecture answers passed all criteria. Reviewed without arm/config labels; agent-authored/agent-reviewed synthetic limits remain.",
+      "status": "Unresolved substantive model/design weakness"
+    },
+    {
+      "id": "merge-intervals-low",
+      "labels": [
+        "code-correctness"
+      ],
+      "evidence": "Native-reasoning Codali failed two independent merge-interval inputs; raw native-reasoning answer passed. Format passed, so presentation repair cannot detect this.",
+      "status": "Unresolved; isolated code verification needed for actual coding workflows"
+    },
+    {
+      "id": "raw-tools-budget",
+      "labels": [
+        "operational",
+        "bounded-recovery"
+      ],
+      "evidence": "One raw-tools no-reasoning repo attempt exhausted six inspection steps. All request responses were accounted; failure stays in denominator.",
+      "status": "Bounded failure retained, not silently retried"
+    },
+    {
+      "id": "web-primary-discovery",
+      "labels": [
+        "retrieval",
+        "task-completion"
+      ],
+      "evidence": "Fresh .26 open-ended search returned third-party material and a related but wrong specification. Codali disclosed inability to verify the primary source. Direct requested-primary-URL case passed.",
+      "status": "Unresolved retrieval reliability; failed strict case retained"
+    }
+  ]
+}

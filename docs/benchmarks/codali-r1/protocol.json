@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "study": "codali-r1",
+  "frozenAt": "2026-10-29T02:13:45.642756+00:00",
+  "corpusHash": "63999299eb0926a879a45a04784c40fefc59d84c5da7dcc2a8ac9496fb2f0d69",
+  "gradingHash": "a6c737e6f9f4a6caf89ca52831922566048a3cc9b272bf5ac987b273dd1b4d40",
+  "candidates": [
+    {
+      "id": "r1-a-calculator-review",
+      "base": "c6-flash-v9-review",
+      "changes": {
+        "interaction.calculator": true
+      }
+    },
+    {
+      "id": "r1-b-calculator",
+      "base": "c4-flash-v9",
+      "changes": {
+        "interaction.calculator": true
+      }
+    }
+  ],
+  "maximumCandidates": 3,
+  "plannedCandidates": 2,
+  "additionalCandidates": "None planned; any third configuration requires a separately recorded development-only proposal before fresh validation. No further candidates after validation begins.",
+  "developmentScreen": {
+    "source": "original development partition only",
+    "ids": [
+      "code_generation.balanced_brackets.01",
+      "code_generation.dedupe_records.01",
+      "code_generation.dot_path.01",
+      "code_generation.group_totals.01",
+      "daily_assistance.email_extraction.01",
+      "daily_assistance.meeting_slots.01",
+      "daily_assistance.packing_constraints.01",
+      "daily_assistance.policy_application.01",
+      "debugging_and_tests.clamp_bounds.01",
+      "debugging_and_tests.empty_max.01",
+      "debugging_and_tests.filter_zero.01",
+      "debugging_and_tests.inclusive_range.01",
+      "general_knowledge.astronomy.01",
+      "general_knowledge.biology.01",
+      "general_knowledge.chemical_symbols.01",
+      "general_knowledge.computing_concepts.01",
+      "history_and_ambiguity.conversational_followup.01",
+      "history_and_ambiguity.conversational_followup.02",
+      "history_and_ambiguity.correction.01",
+      "history_and_ambiguity.correction.02",
+      "math_and_data.base_conversion.01",
+      "math_and_data.compound_growth.01",
+      "math_and_data.linear_equations.01",
+      "math_and_data.median.01",
+      "repository_and_docdex.bug_behavior.01",
+      "repository_and_docdex.dependency_chain.01",
+      "repository_and_docdex.hostile_document.01",
+      "repository_and_docdex.missing_evidence.01",
+      "security_and_evidence.unknown_source.01",
+      "security_and_evidence.unknown_source.02",
+      "security_and_evidence.untrusted_quote.01",
+      "security_and_evidence.untrusted_quote.02",
+      "software_architecture.audit_log.01",
+      "software_architecture.data_ownership.01",
+      "software_architecture.observability.01",
+      "software_architecture.queue_delivery.01",
+      "writing_and_communication.constructive_feedback.01",
+      "writing_and_communication.meeting_summary.01",
+      "writing_and_communication.polite_decline.01",
+      "writing_and_communication.requirements_rewrite.01"
+    ],
+    "countPerCandidate": 40
+  },
+  "validation": {
+    "freshCases": 100,
+    "evaluate": "Both declared candidates, all cases; no early stopping on apparent quality."
+  },
+  "selection": {
+    "order": [
+      "fewest critical failures",
+      "highest strict passes",
+      "fewest runtime errors",
+      "lowest median tokens",
+      "lowest median answer latency",
+      "candidate ID lexicographic"
+    ],
+    "incompleteReviews": "Selection prohibited with pending rubric or critical reviews.",
+    "qualification": "Winner is experimental unless promotion gates pass; selection does not waive any failure."
+  },
+  "heldOut": {
+    "freshCases": 200,
+    "startGate": "Original B5 full comparison and reviews complete; selected configuration, runtime fingerprint and host assignment frozen.",
+    "arms": [
+      "raw_direct",
+      "codali_selected",
+      "raw_tools"
+    ],
+    "rawTools": "Only 20 repository cases and 30 calculation cases; same permissions, tool implementations and aggregate ceilings.",
+    "scope": "All 200 fresh cases in primary comparison; no reuse of original exposed held-out evidence."
+  },
+  "promotion": {
+    "primary": "Held-out strict correctness exceeds raw_direct by at least5 percentage points and paired95% lower confidence bound is above0.",
+    "toolSubset": "Demonstrate positive tool-parity subset gain or explicitly report no demonstrated orchestration advantage.",
+    "criticalErrors": "No critical permission/secret/evidence-fabrication regressions; no critical domain regression hidden by aggregate gains.",
+    "speed": "Compare p50/p95 latency and tokens after correctness gating; prefer cheaper/faster candidates only among quality-qualified configurations.",
+    "failurePolicy": "Do not weaken target, relabel incorrect answers or train on held-out outcomes to force a win. A failed final test needs a new independently frozen test extension before a new generalization claim."
+  },
+  "controls": {
+    "temperature": 0,
+    "maxTotalTokens": 16000,
+    "maxModelCalls": 8,
+    "maxToolCalls": 12,
+    "maxInspectionSteps": 6,
+    "timeoutMs": 300000,
+    "reasonAnswerMaxTokens": 2048,
+    "pacing": "At least 12 seconds between attempt launches on each host; retain 429s and explicit retries separately.",
+    "availableModelsOnly": true,
+    "paidFallback": false
+  },
+  "review": "Primary Codex agent reviews masked queues with frozen criteria. Not human or externally independent review. All outputs and failures retained.",
+  "limitations": [
+    "Agent-authored synthetic tasks, not real user traffic or independent human assessment.",
+    "Ten correlated variants per family; cluster uncertainty by family.",
+    "New family names and no exact duplicates are mechanically checked; conceptual overlap with the original domains remains.",
+    "Code reference tests do not prove every non-functional implementation requirement.",
+    "Calculation tool baseline covers the explicitly marked numeric subset; correctness does not require gratuitous tool use.",
+    "Rubric and critical reviews require explicit output-hash-bound assessment; unreviewed answers cannot pass.",
+    "Follow-up evidence stays separate from the original study; no weight training."
+  ]
+}

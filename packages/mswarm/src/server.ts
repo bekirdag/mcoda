@@ -52,6 +52,7 @@ import {
   genericJobCapabilityMismatch,
   type SelfHostedGenericNodeJob,
   type SelfHostedNodeConfig,
+  type SelfHostedNodeDaemonHandle,
   type SelfHostedNodeInvocationJob,
   type SelfHostedNodeServiceControlResult
 } from "./runtime.js";
@@ -1207,7 +1208,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
       node_id: this.config.nodeId,
       job: entry.record.job
     };
-    const result = await this.runtime.executeGenericJob(envelope, {
+    const result = await this.runtime.executePreviouslyAdmittedGenericJob(envelope, {
       signal: controller.signal,
       onEvent: async (event) => {
         this.recordEvent(entry, event);
@@ -1387,8 +1388,21 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
   const activeGenericJobs = new Map<string, ActiveGenericJob>();
   const lifecycle = new OwnerLocalGenericJobLifecycleScheduler(runtime, config);
 
+  app.addHook("preHandler", async (request, reply) => {
+    const route = request.routeOptions.url ?? "";
+    const newWork = request.method === "POST" && (
+      route === "/v1/swarm/self-hosted/node/jobs" ||
+      route === "/v1/swarm/self-hosted/node/generic-jobs" ||
+      route === "/v1/swarm/self-hosted/node/generic-job-control/jobs" ||
+      route === "/v1/swarm/self-hosted/node/generic-job-control/jobs/:job_id/retry"
+    );
+    if (newWork && runtime.isDraining) {
+      return reply.status(503).send({ error: "service_unavailable", code: "node_draining", message: "Node is draining; no new work was admitted." });
+    }
+  });
+
   app.get("/healthz", async (_request, reply) => {
-    reply.send({ service: "mswarm-self-hosted-node", status: "ok", node_id: config.nodeId });
+    reply.send({ service: "mswarm-self-hosted-node", status: "ok", node_id: config.nodeId, drain_mode: runtime.isDraining });
   });
 
   app.get("/v1/swarm/self-hosted/node/capabilities", async (request, reply) => {
@@ -2312,6 +2326,43 @@ export function formatNodeUninstallSummary(
   return lines.join("\n");
 }
 
+/** Signals are handled only by a foreground entry point, never by SDK imports. */
+export function waitForNodeShutdown(
+  runtime: SelfHostedNodeRuntime,
+  daemon: SelfHostedNodeDaemonHandle,
+  closeServer: () => Promise<unknown> = async () => undefined
+): Promise<void> {
+  return new Promise((resolveShutdown) => {
+    let shuttingDown = false;
+    const cleanup = () => {
+      process.off("SIGTERM", shutdown); process.off("SIGINT", shutdown); process.off("SIGUSR2", drainOnly);
+    };
+    const drainOnly = () => {
+      runtime.beginDrain();
+      void daemon.drain().then(drained => {
+        console.log(drained ? "[mswarm] node drained; admission remains closed until restart." : "[mswarm] drain incomplete; admission remains closed.");
+      }).catch(error => console.error(`[mswarm] drain failed: ${error instanceof Error ? error.message : String(error)}`));
+    };
+    const shutdown = () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      runtime.beginDrain();
+      console.log("[mswarm] draining accepted jobs and result uploads before shutdown.");
+      void Promise.all([daemon.drain(), closeServer()]).then(([drained]) => {
+        if (!drained) throw new Error("accepted work has not been confirmed settled");
+        daemon.stop(); cleanup(); resolveShutdown();
+      }).catch(error => {
+        // Keep the process and its work alive if graceful shutdown cannot be
+        // confirmed. A later signal may retry; never turn an error into a kill.
+        shuttingDown = false;
+        console.error(`[mswarm] graceful shutdown incomplete: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    };
+    process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
+    if (process.platform !== "win32") process.on("SIGUSR2", drainOnly);
+  });
+}
+
 async function runNodeForeground(label = "run"): Promise<void> {
   applySelfHostedNodeProcessTitle();
   const { config, runtime } = await loadNodeRuntime();
@@ -2319,15 +2370,15 @@ async function runNodeForeground(label = "run"): Promise<void> {
     if (!config.invocationSigningSecret) {
       throw new Error("MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET is required for direct start");
     }
-    runtime.startDaemon();
+    const daemon = runtime.startDaemon();
     const app = buildSelfHostedNodeApp(runtime, config);
     await app.listen({ host: config.listenHost, port: config.listenPort });
     console.log(`mswarm self-hosted node serving direct jobs for ${config.nodeId} on ${config.listenHost}:${config.listenPort}`);
-    return new Promise(() => undefined);
+    return waitForNodeShutdown(runtime, daemon, () => app.close());
   }
-  runtime.startDaemon();
+  const daemon = runtime.startDaemon();
   console.log(`mswarm self-hosted node ${label === "daemon" ? "daemon" : "foreground run"} active for ${config.nodeId}`);
-  return new Promise(() => undefined);
+  return waitForNodeShutdown(runtime, daemon);
 }
 
 async function runNodeServerOnly(): Promise<void> {
@@ -2336,11 +2387,11 @@ async function runNodeServerOnly(): Promise<void> {
   if (!config.invocationSigningSecret) {
     throw new Error("MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET is required for serve");
   }
-  runtime.startDaemon();
+  const daemon = runtime.startDaemon();
   const app = buildSelfHostedNodeApp(runtime, config);
   await app.listen({ host: config.listenHost, port: config.listenPort });
   console.log(`mswarm self-hosted node serving direct jobs for ${config.nodeId} on ${config.listenHost}:${config.listenPort}`);
-  return new Promise(() => undefined);
+  return waitForNodeShutdown(runtime, daemon, () => app.close());
 }
 
 async function handleNodeCommand(command: string, args: string[], argv: string[]): Promise<void> {

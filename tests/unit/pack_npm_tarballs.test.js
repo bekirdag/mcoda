@@ -1,15 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PACKAGE_DIRS,
   assertPackedManifestPortable,
+  canonicalJson,
   expectedPackedWorkspaceRange,
   findWorkspaceProtocolPaths,
   getPnpmCandidates,
+  loadPackedTarballs,
+  normalizePackedManifestArchive,
   packTarballs,
   packageTarballFilename,
   resolvePnpmCommand,
@@ -76,6 +80,14 @@ test('tarball names follow npm package naming', () => {
     packageTarballFilename({ name: 'mcoda', version: '1.2.3' }),
     'mcoda-1.2.3.tgz'
   );
+});
+
+test('canonical manifest JSON retains arrays, primitives and own prototype-named keys', () => {
+  const value = JSON.parse('{"z":[2,1,null,true],"__proto__":{"z":2,"a":1},"a":"text"}');
+  const reversed = Object.fromEntries(Object.entries(value).reverse());
+  assert.equal(canonicalJson(value), canonicalJson(reversed));
+  assert.deepEqual(JSON.parse(canonicalJson(value)), value);
+  assert.deepEqual(JSON.parse(canonicalJson(value)).z, [2, 1, null, true]);
 });
 
 test('workspace protocol validation reports exact manifest paths', () => {
@@ -149,6 +161,37 @@ test('pnpm packs portable Agent Setup and CLI manifests', () => {
       cli.manifest.dependencies['@mcoda/shared'],
       cli.manifest.version
     );
+
+    const loaded = loadPackedTarballs({ root, dest, packageDirs: ['packages/agent-setup', 'packages/cli'] });
+    assert.deepEqual(loaded.map(pkg => pkg.tarballPath), results.map(pkg => pkg.tarballPath));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'], expectedRevision: 'wrong-source-revision' }), /source revision/);
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/codali'] }), /Missing\/mismatched/);
+    const untouched = readFileSync(cli.tarballPath);
+    writeFileSync(cli.tarballPath, Buffer.concat([untouched, Buffer.from('tampered')]));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'] }), /checksum mismatch/);
+    writeFileSync(cli.tarballPath, untouched);
+    const metadataPath = path.join(dest, 'package-artifacts.json');
+    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    metadata.packages.push(metadata.packages[0]); writeFileSync(metadataPath, JSON.stringify(metadata));
+    assert.throws(() => loadPackedTarballs({ root, dest, packageDirs: ['packages/cli'] }), /duplicate/);
+    metadata.packages.pop(); writeFileSync(metadataPath, JSON.stringify(metadata));
+
+    // Reproduce pnpm's nondeterministic workspace dependency insertion order
+    // without relying on the race occurring during this particular test run.
+    const original = readFileSync(cli.tarballPath);
+    const tar = gunzipSync(original);
+    const marker = tar.indexOf(Buffer.from('package/package.json\0'));
+    assert.ok(marker >= 0 && marker % 512 === 0);
+    const length = Number.parseInt(tar.subarray(marker + 124, marker + 136).toString().replaceAll('\0', '').trim(), 8);
+    const manifest = JSON.parse(tar.subarray(marker + 512, marker + 512 + length).toString());
+    manifest.dependencies = Object.fromEntries(Object.entries(manifest.dependencies).reverse());
+    const altered = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+    assert.equal(altered.length, length);
+    altered.copy(tar, marker + 512);
+    assert.deepEqual(normalizePackedManifestArchive(gzipSync(tar)), original);
+    assert.deepEqual(normalizePackedManifestArchive(original), original, 'normalization is idempotent');
+    assert.throws(() => normalizePackedManifestArchive(gzipSync(tar.subarray(0, marker + 513))), /Truncated/);
+    assert.throws(() => normalizePackedManifestArchive(gzipSync(Buffer.alloc(1024))), /no package.json/);
   } finally {
     rmSync(dest, { recursive: true, force: true });
   }

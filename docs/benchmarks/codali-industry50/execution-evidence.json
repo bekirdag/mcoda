@@ -1,0 +1,29 @@
+{
+  "startedAt": "2026-11-04T20:44:06.178Z",
+  "completedAt": "2026-11-04T21:03:31.734Z",
+  "runComplete": true,
+  "attempts": 100,
+  "modelCalls": {
+    "raw_direct": 50,
+    "codali_selected": 129
+  },
+  "toolCalls": {
+    "raw_direct": 0,
+    "codali_selected": 52
+  },
+  "toolReceipts": {
+    "calculate": 35,
+    "read_file": 17
+  },
+  "unsuccessfulToolReceipts": [
+    {
+      "case": "industry-42",
+      "tool": "calculate",
+      "status": "failed"
+    }
+  ],
+  "allUsageReported": true,
+  "allWorkspacesPreserved": true,
+  "ledgerSha256": "ac2cc4439566863b14a21e2c1b964fe9fb32d9b917ba2f7daf2fd3de59c51165",
+  "originalLogs": "/home/wodo/.local/state/codali-industry50/run"
+}

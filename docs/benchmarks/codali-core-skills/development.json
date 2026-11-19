@@ -1,0 +1,713 @@
+{
+  "kind": "bounded skill selection and behavior probes; manual semantic review required",
+  "at": "2026-11-04T18:18:52.580Z",
+  "promptChars": 2858,
+  "results": [
+    {
+      "id": "architecture",
+      "skill": "architecture-design",
+      "request": "Design a small invoice ingestion service for one server and two developers, about 2000 invoices/day. Clients retry submissions after timeouts. Keep existing SQLite storage. No implementation requested. Give components, data ownership, failure handling and one alternative with tradeoffs.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:architecture-design:e8c59e0f"
+          }
+        }
+      ],
+      "rawAnswer": "{\"summary\":\"Design-only answer. Assumptions labeled; no implementation, no benchmarks invented.\",\"assumptions\":[\"~2000 invoices/day = ~0.023/s average, bursty (batch uploads at month end). SQLite is not a throughput constraint at this scale; the real constraints are duplicate delivery from client retries, crash recovery, and 2-developer maintainability.\",\"'Keep existing SQLite storage' means one file on the same server; no Postgres, no external broker.\",\"Clients can be asked to send an idempotency key; if they cannot, content-hash fallback is used (labeled weaker).\",\"No compliance/PII constraints stated; if invoices contain PII, add encryption-at-rest and retention decisions.\"],\"components\":[{\"name\":\"Ingest API (thin, synchronous)\",\"responsibility\":\"Auth, schema validation, idempotency-key resolution, one fast SQLite write, return 202 + submission_id. Target <50 ms so client timeouts are rare. No parsing, no business rules, no network calls to third parties on the request path.\"},{\"name\":\"Processor (worker)\",\"responsibility\":\"Claims pending submissions, parses/normalizes invoice, applies business validation, writes the invoice record, marks status. Runs as an in-process background task (or a second systemd unit if you prefer isolation). Retries with exponential backoff, dead-letters after N attempts.\"},{\"name\":\"SQLite (WAL)\",\"responsibility\":\"Single source of durable truth. journal_mode=WAL, busy_timeout, synchronous=NORMAL, one writer connection (or one writer process), foreign_keys=ON. WAL lets readers (status queries, reporting) run concurrently with the writer.\"},{\"name\":\"Status/ops surface\",\"responsibility\":\"GET /submissions/{id} for clients to resolve timeout ambiguity; /healthz; counters (accepted, duplicate, processed, failed, dead-lettered, queue depth); systemd restart; nightly `VACUUM INTO`/`.backup` file copy; log rotation.\"}],\"data_ownership\":{\"invoice_submissions\":\"Owned by Ingest API. Append-only intake ledger: submission_id, idempotency_key (UNIQUE), payload or payload_hash, received_at, status(pending|processing|done|failed|dead), attempts, claimed_at/lease_expires, last_error. API is the only writer of new rows.\",\"invoices\":\"Owned by Processor. Normalized, business-validated output; FK to submission_id. API never writes here.\",\"idempotency ledger\":\"Same table as submissions via UNIQUE(idempotency_key); API owns conflict resolution.\",\"audit/events\":\"Owned by Processor (state transitions), for replay and debugging.\",\"Rule: exactly one writer process against the SQLite file at a time. If the worker is a separate process, serialize writes through a single connection or a claim-then-write protocol; SQLite tolerates one writer plus many readers, not two concurrent writers.\"],\"request_flow_representative_case\":[\"Client POSTs invoice with Idempotency-Key: abc. API validates, INSERTs submission (status=pending) in one transaction, returns 202 + submission_id.\",\"Client times out before receiving the response and retries with the same key. INSERT hits UNIQUE conflict; API returns the existing submission_id with 200 and its current status. No duplicate invoice is possible.\",\"Processor claims the row via an atomic status transition (pending -> processing with lease), parses, validates, writes invoice, sets status=done.\",\"If the client still needs certainty, it polls GET /submissions/{id} until done or failed.\"],\"failure_handling\":{\"duplicate_retry\":\"UNIQUE(idempotency_key) + INSERT ... ON CONFLICT DO NOTHING/RETURNING existing row. Key reuse with a different payload_hash returns 409 rather than silently accepting.\",\"timeout_mid_write\":\"SQLite transactions are atomic: the submission row either exists or does not. Retry is always safe; the idempotency key is the dedupe boundary, not the HTTP response.\",\"worker_crash\":\"Lease columns (claimed_at, lease_expires). A reaper resets expired leases back to pending. Processing must be idempotent per submission_id (delete-or-upsert invoice for that submission_id) so a re-run after a partial write is safe.\",\"poison_invoice\":\"Bounded attempts (e.g. 5) with exponential backoff, then status=dead with last_error and an alert. Manual replay endpoint re-queues it after a fix. Never an infinite retry loop that starves the queue.\",\"disk_full_or_locked\":\"busy_timeout plus explicit SQLITE_BUSY handling -> 503 with Retry-After; healthcheck fails on write probe so systemd/monitoring reacts.\",\"backup_recovery\":\"Nightly online backup to a separate file, retained N days; restore is copy-file + restart. Test the restore once per quarter.\"],\"observability_and_test_hooks\":[\"Queue depth (pending count) and oldest-pending age are the two alerts that matter at this scale.\",\"Duplicate rate metric tells you whether client timeouts are actually happening.\",\"Test the important assumption cheaply: replay the same idempotency key 1000x concurrently and assert exactly one invoice row; kill -9 the worker mid-claim and assert the row is re-processed exactly once.\"],\"recommended_design\":\"Single deployable process (or two systemd units) on one server: thin ingest + in-process worker + SQLite WAL + submission ledger. Simplest thing that makes retries safe and recovery automatic; one codebase, one language, one deploy artifact for two developers.\",\"alternative\":{\"name\":\"File-drop / spool directory instead of a queue table\",\"description\":\"Ingest API writes each submission to an append-only spool file (or accepts uploads into an inbox directory); a worker consumes files in order and records results in SQLite. SQLite then stores only final invoices plus a processed-keys index.\",\"pros\":[\"Removes SQLite write contention entirely; the filesystem is the durable queue and is trivially inspectable with ls.\",\"Crash-safe by construction (write temp file, atomic rename); easy manual replay by re-dropping a file.\",\"Backpressure is visible on disk; no lease/reaper code.\"],\"cons\":[\"Two durable stores (files + SQLite) that can disagree; you need a reconciliation pass to detect 'file consumed but DB write failed'.\",\"Ordering, partial files, and cross-device rename semantics are subtle; no transactional atomicity between 'file consumed' and 'invoice inserted'.\",\"Harder to query state ('what is pending right now?') without scanning the directory; status endpoint needs the processed-keys index.\",\"More moving parts to reason about for two developers than a single queue table.\"],\"verdict\":\"Prefer the SQLite submission ledger: it keeps one durable store, gives transactional atomicity between intake and dedupe, and makes status queries trivial. Choose the spool variant only if you observe real write contention or need operator-visible replay files.\"],\"open_decisions\":[\"Can clients send an Idempotency-Key header? If not, content-hash dedupe is the fallback and it cannot distinguish two legitimately identical invoices.\",\"Do clients need synchronous acceptance confirmation (invoice stored) or is 202 + polling acceptable? This decides whether the worker must run inline on the request path.\",\"Payload retention: store raw invoice bytes in SQLite (audit-friendly, larger DB) or discard after processing (smaller, weaker audit).\",\"Is there a second environment (staging) or is this single-server production only? Affects how much backup/restore ceremony is warranted.\"],\"limitations\":[\"No throughput numbers are claimed; the scale assumption (2000/day) is from the request, not measured.\",\"No repository inspection was performed (no codebase supplied), so component boundaries are conceptual and must be reconciled with the existing SQLite schema and any existing client contract.\",\"Design only: no implementation, migration, or deployment was performed or authorized.\"]}",
+      "outputFormat": "json",
+      "error": "SyntaxError: Expected ':' after property name in JSON at position 2734 (line 1 column 2735)",
+      "routes": [
+        {
+          "id": "4fbae55a-bf17-420c-a9e2-22febbcac398",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "eb041337-f63a-4238-9a30-4707499f2d65",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3048,
+        "outputTokens": 2214,
+        "totalTokens": 5262,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 29559
+    },
+    {
+      "id": "implementation",
+      "skill": "code-implementation",
+      "request": "Propose a minimal repair of this JavaScript helper; the public contract is an inclusive integer range and an empty array when start > end. Existing function: function range(start,end){return Array.from({length:Math.max(0,end-start)},(_,i)=>start+i)}. Return the replacement function in a code field and representative checks. Do not claim files were edited or tests executed.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:code-implementation:24817430"
+          }
+        }
+      ],
+      "answer": {
+        "diagnosis": "Off-by-one: `end - start` undercounts by one for an inclusive range, so range(1,3) yields [1,2] instead of [1,2,3]. The `Math.max(0, ...)` guard already satisfies the empty-array-when-start>end contract, so the minimal fix is to add `+ 1` to the length expression.",
+        "code": "function range(start, end) {\n  return Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => start + i)\n}",
+        "diffSummary": "Single-token change: `Math.max(0, end - start)` -> `Math.max(0, end - start + 1)`. Signature, name, return type (Array of numbers), and the start > end -> [] behavior are unchanged; no new dependencies or abstractions.",
+        "checks": [
+          {
+            "expr": "range(1, 3)",
+            "expected": "[1, 2, 3]",
+            "covers": "inclusive upper bound (the regression)"
+          },
+          {
+            "expr": "range(5, 5)",
+            "expected": "[5]",
+            "covers": "single-element boundary; old code returned []"
+          },
+          {
+            "expr": "range(3, 2)",
+            "expected": "[]",
+            "covers": "start > end contract"
+          },
+          {
+            "expr": "range(0, 0)",
+            "expected": "[0]",
+            "covers": "zero boundary"
+          },
+          {
+            "expr": "range(-2, 1)",
+            "expected": "[-2, -1, 0, 1]",
+            "covers": "negative-to-positive crossing"
+          },
+          {
+            "expr": "range(1, 3).length",
+            "expected": "3",
+            "covers": "length === end - start + 1"
+          },
+          {
+            "expr": "range(10, 1).length",
+            "expected": "0",
+            "covers": "guard prevents negative Array.from length (which would throw RangeError)"
+          }
+        ],
+        "verificationStatus": "Not executed. No files were edited and no tests were run in this environment; the checks above are proposed assertions derived from the stated contract, intended to be run with the project's existing test runner (or a plain `node -e` / console.assert smoke check).",
+        "limitationsAndOptions": "The contract specifies an integer range, so non-integer inputs (e.g. range(0, 2.5) -> [0,1,2]) and non-numeric inputs (NaN -> []) are out of scope for a minimal repair. If callers may pass floats or non-numbers, add validation at this owning layer (e.g. Number.isSafeInteger checks or a `throw new TypeError`) as a separate, explicitly scoped change rather than folding it into this fix. Also note the function allocates the full array eagerly; for very large ranges a generator/iterator would be preferable, but that changes the public contract and is therefore out of scope here."
+      },
+      "rawAnswer": "{\n  \"diagnosis\": \"Off-by-one: `end - start` undercounts by one for an inclusive range, so range(1,3) yields [1,2] instead of [1,2,3]. The `Math.max(0, ...)` guard already satisfies the empty-array-when-start>end contract, so the minimal fix is to add `+ 1` to the length expression.\",\n  \"code\": \"function range(start, end) {\\n  return Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => start + i)\\n}\",\n  \"diffSummary\": \"Single-token change: `Math.max(0, end - start)` -> `Math.max(0, end - start + 1)`. Signature, name, return type (Array of numbers), and the start > end -> [] behavior are unchanged; no new dependencies or abstractions.\",\n  \"checks\": [\n    { \"expr\": \"range(1, 3)\", \"expected\": \"[1, 2, 3]\", \"covers\": \"inclusive upper bound (the regression)\" },\n    { \"expr\": \"range(5, 5)\", \"expected\": \"[5]\", \"covers\": \"single-element boundary; old code returned []\" },\n    { \"expr\": \"range(3, 2)\", \"expected\": \"[]\", \"covers\": \"start > end contract\" },\n    { \"expr\": \"range(0, 0)\", \"expected\": \"[0]\", \"covers\": \"zero boundary\" },\n    { \"expr\": \"range(-2, 1)\", \"expected\": \"[-2, -1, 0, 1]\", \"covers\": \"negative-to-positive crossing\" },\n    { \"expr\": \"range(1, 3).length\", \"expected\": \"3\", \"covers\": \"length === end - start + 1\" },\n    { \"expr\": \"range(10, 1).length\", \"expected\": \"0\", \"covers\": \"guard prevents negative Array.from length (which would throw RangeError)\" }\n  ],\n  \"verificationStatus\": \"Not executed. No files were edited and no tests were run in this environment; the checks above are proposed assertions derived from the stated contract, intended to be run with the project's existing test runner (or a plain `node -e` / console.assert smoke check).\",\n  \"limitationsAndOptions\": \"The contract specifies an integer range, so non-integer inputs (e.g. range(0, 2.5) -> [0,1,2]) and non-numeric inputs (NaN -> []) are out of scope for a minimal repair. If callers may pass floats or non-numbers, add validation at this owning layer (e.g. Number.isSafeInteger checks or a `throw new TypeError`) as a separate, explicitly scoped change rather than folding it into this fix. Also note the function allocates the full array eagerly; for very large ranges a generator/iterator would be preferable, but that changes the public contract and is therefore out of scope here.\"\n}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "3841e40b-62e1-4f95-8314-d6f219b9ee71",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "d9254a6b-127f-4b82-97ce-b07e3deb588a",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3190,
+        "outputTokens": 1211,
+        "totalTokens": 4401,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 23789
+    },
+    {
+      "id": "review",
+      "skill": "code-review",
+      "request": "Review only this profile endpoint. Every database query applies the authenticated tenant filter. const cache=new Map(); async function profile(req){const key=req.params.id;if(cache.has(key))return cache.get(key);const row=await db.profile.findFirst({where:{id:key,tenantId:req.auth.tenantId}});cache.set(key,row);return row;} File api/profile.js line1. Give actionable findings, if any, with triggering conditions and consequences. No code edits.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:code-review:a9e2fca2"
+          }
+        }
+      ],
+      "rawAnswer": "{\n  \"scope\": \"api/profile.js line 1 — `profile(req)` handler and its module-level `cache` Map. Reviewed the supplied snippet only; no repository files, tests, or `db.profile` schema were available to verify, so DB-layer and caller assumptions are flagged as such.\",\n  \"findings\": [\n    {\n      \"severity\": \"critical\",\n      \"location\": \"api/profile.js:1 (`const key=req.params.id` / `cache.has(key)`)\",\n      \"issue\": \"Cache key is not tenant-scoped, so the tenant filter on the DB query is bypassed on cache hits.\",\n      \"trigger\": \"Tenant A requests profile id=X (miss) → row cached under key `X`. Tenant B then requests id=X → `cache.has(key)` is true and tenant A's row is returned without any DB call, so `tenantId` is never checked.\",\n      \"consequence\": \"Cross-tenant data exposure (IDOR). The stated invariant 'every query applies the tenant filter' is true for the DB but not for the response path; the cache becomes an unauthenticated cross-tenant read channel.\",\n      \"remedy\": \"Include the tenant in the key (e.g. `${req.auth.tenantId}:${id}`) or namespace per-tenant caches; never key on a client-supplied id alone.\"\n    },\n    {\n      \"severity\": \"high\",\n      \"location\": \"api/profile.js:1 (`cache.set(key,row)` when `findFirst` returns null)\",\n      \"issue\": \"Misses/negatives are cached and never expire, and are also shared across tenants.\",\n      \"trigger\": \"Tenant B requests id=X that exists only in tenant A → `findFirst` returns null → null cached under `X`. Tenant A later requests id=X → served the cached null. Separately, a row created after a first miss is permanently invisible.\",\n      \"consequence\": \"Permanent false 'not found' for legitimate rows, plus a cross-tenant existence oracle (an attacker can probe which ids other tenants have already cached as null).\",\n      \"remedy\": \"Do not cache nulls, or cache them with a short TTL and tenant-scoped key.\"\n    },\n    {\n      \"severity\": \"high\",\n      \"location\": \"api/profile.js:1 (`const cache=new Map()`)\",\n      \"issue\": \"Unbounded, never-invalidated, process-local cache.\",\n      \"trigger\": \"Many distinct `req.params.id` values over the process lifetime; or a profile row is updated/deleted with no cache invalidation hook.\",\n      \"consequence\": \"Unbounded memory growth (potential OOM) and indefinitely stale profile data served to clients. In multi-instance deployments each process holds divergent copies, so invalidation cannot be coordinated.\",\n      \"remedy\": \"Add a size cap and TTL (or move to a shared store with explicit invalidation on profile writes).\"\n    },\n    {\n      \"severity\": \"low\",\n      \"location\": \"api/profile.js:1 (`if(cache.has(key)) ... cache.get(key)`)\",\n      \"issue\": \"No in-flight request coalescing.\",\n      \"trigger\": \"N concurrent requests for the same cold key.\",\n      \"consequence\": \"Thundering herd: N identical DB queries instead of one. Not a correctness defect.\",\n      \"remedy\": \"Cache the in-flight Promise rather than the resolved value.\"\n    }\n  ],\n  \"assumptions_unverified\": [\n    \"`req.params.id` is attacker-controlled and not guaranteed unique across tenants (standard for tenant-scoped ids).\",\n    \"`req.auth.tenantId` is always populated; if auth middleware can leave it undefined, `findFirst` may match on `id` with an undefined tenant filter — needs verification against the auth layer.\",\n    \"`db.profile` update/delete paths have no cache invalidation (none visible in scope).\"\n  ],\n  \"validation_gaps\": \"No tests were available in scope. A test that would catch finding 1 is a two-tenant sequence: tenant A GET id=X, then tenant B GET id=X, asserting B does not receive A's row. The current code passes a single-tenant test suite while failing this.\",\n  \"checks_run\": \"None executed; review is static analysis of the supplied snippet only.\"\n}\n</parameter>",
+      "outputFormat": "json",
+      "error": "SyntaxError: Unexpected non-whitespace character after JSON at position 3792 (line 45 column 1)",
+      "routes": [
+        {
+          "id": "f0bea107-d6c3-4ead-a028-fa198a2ffd18",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "eba8b742-d614-49f4-ba82-d816d8b1d3e2",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3137,
+        "outputTokens": 1959,
+        "totalTokens": 5096,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 24240
+    },
+    {
+      "id": "testing",
+      "skill": "testing-and-verification",
+      "request": "Choose tests for a worker that retries a timed-out payment provider request. The provider may have accepted the first attempt, and two workers can process the same order concurrently. Existing tests only mock a single successful call. Give meaningful unit/integration checks and distinguish planned checks from executed evidence; no tests have run here.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:testing-and-verification:bca4e225"
+          }
+        }
+      ],
+      "answer": {
+        "status": "planning_only",
+        "executedEvidence": {
+          "commandsRun": [],
+          "testsRun": 0,
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "note": "No test runner was invoked in this probe; only the testing-and-verification skill guidance was loaded. Every item below is a PLANNED check, not observed evidence. Existing suite (single mocked successful call) covers only the happy path and proves nothing about timeout retry, duplicate capture, or concurrency."
+        },
+        "assumptionsToConfirm": [
+          "provider exposes an idempotency key or client-side request reference",
+          "order row has a state column and/or unique constraint usable for fencing",
+          "worker retry policy: attempt count, backoff, and whether retry reuses the same idempotency key",
+          "what 'timed out' means locally: connect/read timeout vs provider 408/5xx vs ambiguous no-response"
+        ],
+        "plannedChecks": [
+          {
+            "id": "U1",
+            "layer": "unit",
+            "name": "timeout_is_not_treated_as_failure_terminal",
+            "setup": "fake provider raises read-timeout on attempt 1, succeeds on attempt 2",
+            "assert": "worker returns success, provider called exactly 2 times, same idempotency key on both calls",
+            "why": "pins retry-on-timeout and key reuse; current mock never fails"
+          },
+          {
+            "id": "U2",
+            "layer": "unit",
+            "name": "ambiguous_timeout_requires_reconcile_not_blind_retry",
+            "setup": "provider times out with no response body",
+            "assert": "worker marks order RECONCILE_PENDING (or queries status endpoint) before charging again; no second charge without confirmation",
+            "why": "the core money-safety rule: timeout means 'unknown', not 'not charged'"
+          },
+          {
+            "id": "U3",
+            "layer": "unit",
+            "name": "retry_budget_and_backoff",
+            "setup": "provider times out N+1 times",
+            "assert": "exactly N attempts, bounded backoff, terminal state FAILED_WITH_RECONCILE, no infinite loop",
+            "why": "prevents retry storms and duplicate exposure"
+          },
+          {
+            "id": "U4",
+            "layer": "unit",
+            "name": "non_retryable_error_not_retried",
+            "setup": "provider returns 4xx card_declined",
+            "assert": "single call, no retry, no reconcile",
+            "why": "guards against retrying deterministic failures"
+          },
+          {
+            "id": "U5",
+            "layer": "unit",
+            "name": "provider_accepted_first_attempt_visible_via_status_lookup",
+            "setup": "attempt 1 times out; status endpoint reports CAPTURED",
+            "assert": "worker records success from lookup, never re-charges",
+            "why": "covers the exact stated hazard"
+          },
+          {
+            "id": "I1",
+            "layer": "integration",
+            "name": "duplicate_delivery_single_charge",
+            "setup": "real DB + fake provider; same order dispatched to two workers concurrently (barrier start)",
+            "assert": "provider charge endpoint invoked exactly once; order row terminal state unique; second worker observes in-flight/claimed state and exits",
+            "why": "directly tests the two-worker race the current suite cannot see"
+          },
+          {
+            "id": "I2",
+            "layer": "integration",
+            "name": "db_level_idempotency_guard",
+            "setup": "force both workers past the app-level check (e.g. injected sleep after read)",
+            "assert": "unique index on (order_id, idempotency_key) or atomic state transition (UPDATE ... WHERE status='PENDING') admits exactly one winner; second insert raises and is handled",
+            "why": "proves the invariant is enforced by storage, not only by application logic"
+          },
+          {
+            "id": "I3",
+            "layer": "integration",
+            "name": "crash_between_charge_and_record",
+            "setup": "worker charges, then dies before persisting; restart re-runs",
+            "assert": "reconcile path finds the capture and completes the order without a second charge",
+            "why": "timeout + crash is the realistic duplicate-capture path"
+          },
+          {
+            "id": "I4",
+            "layer": "integration",
+            "name": "stale_worker_fencing",
+            "setup": "worker A stalls, times out its lease, worker B completes; A resumes and writes",
+            "assert": "A's write is rejected (lease/version token), final state remains B's",
+            "why": "concurrent processing with clock skew"
+          },
+          {
+            "id": "C1",
+            "layer": "contract",
+            "name": "provider_idempotency_semantics",
+            "setup": "recorded/replayed provider fixture (WireMock/VCR)",
+            "assert": "same key twice returns the original capture, not a new one; timeout fixture returns no body",
+            "why": "our safety depends on provider behaviour; verify, don't assume"
+          },
+          {
+            "id": "E1",
+            "layer": "e2e",
+            "name": "user_sees_one_charge_after_timeout",
+            "setup": "full stack, injected timeout",
+            "assert": "one ledger entry, one provider capture, order marked paid",
+            "why": "money-visible end state"
+          }
+        ],
+        "plannedCommandsNotRun": [
+          "<repo test runner> --filter <unit ids>",
+          "<repo test runner> --tags integration (ephemeral DB, no production credentials)"
+        ],
+        "blockers": [
+          "No repository, test runner, or provider fixture was supplied, so commands and schemas are unverified placeholders",
+          "Concurrency tests need a deterministic barrier and a real (not mocked) datastore; a single-call mock cannot exercise I1-I4"
+        ],
+        "definitionOfDone": "U1-U5, I1-I3, C1 pass with recorded runner output; I4/E1 run if fencing/ledger exist. Until then all acceptance criteria remain unverified."
+      },
+      "rawAnswer": "{\"status\":\"planning_only\",\"executedEvidence\":{\"commandsRun\":[],\"testsRun\":0,\"passed\":0,\"failed\":0,\"skipped\":0,\"note\":\"No test runner was invoked in this probe; only the testing-and-verification skill guidance was loaded. Every item below is a PLANNED check, not observed evidence. Existing suite (single mocked successful call) covers only the happy path and proves nothing about timeout retry, duplicate capture, or concurrency.\"},\"assumptionsToConfirm\":[\"provider exposes an idempotency key or client-side request reference\",\"order row has a state column and/or unique constraint usable for fencing\",\"worker retry policy: attempt count, backoff, and whether retry reuses the same idempotency key\",\"what 'timed out' means locally: connect/read timeout vs provider 408/5xx vs ambiguous no-response\"],\"plannedChecks\":[{\"id\":\"U1\",\"layer\":\"unit\",\"name\":\"timeout_is_not_treated_as_failure_terminal\",\"setup\":\"fake provider raises read-timeout on attempt 1, succeeds on attempt 2\",\"assert\":\"worker returns success, provider called exactly 2 times, same idempotency key on both calls\",\"why\":\"pins retry-on-timeout and key reuse; current mock never fails\"},\n{\"id\":\"U2\",\"layer\":\"unit\",\"name\":\"ambiguous_timeout_requires_reconcile_not_blind_retry\",\"setup\":\"provider times out with no response body\",\"assert\":\"worker marks order RECONCILE_PENDING (or queries status endpoint) before charging again; no second charge without confirmation\",\"why\":\"the core money-safety rule: timeout means 'unknown', not 'not charged'\"},\n{\"id\":\"U3\",\"layer\":\"unit\",\"name\":\"retry_budget_and_backoff\",\"setup\":\"provider times out N+1 times\",\"assert\":\"exactly N attempts, bounded backoff, terminal state FAILED_WITH_RECONCILE, no infinite loop\",\"why\":\"prevents retry storms and duplicate exposure\"},\n{\"id\":\"U4\",\"layer\":\"unit\",\"name\":\"non_retryable_error_not_retried\",\"setup\":\"provider returns 4xx card_declined\",\"assert\":\"single call, no retry, no reconcile\",\"why\":\"guards against retrying deterministic failures\"},\n{\"id\":\"U5\",\"layer\":\"unit\",\"name\":\"provider_accepted_first_attempt_visible_via_status_lookup\",\"setup\":\"attempt 1 times out; status endpoint reports CAPTURED\",\"assert\":\"worker records success from lookup, never re-charges\",\"why\":\"covers the exact stated hazard\"},\n{\"id\":\"I1\",\"layer\":\"integration\",\"name\":\"duplicate_delivery_single_charge\",\"setup\":\"real DB + fake provider; same order dispatched to two workers concurrently (barrier start)\",\"assert\":\"provider charge endpoint invoked exactly once; order row terminal state unique; second worker observes in-flight/claimed state and exits\",\"why\":\"directly tests the two-worker race the current suite cannot see\"},\n{\"id\":\"I2\",\"layer\":\"integration\",\"name\":\"db_level_idempotency_guard\",\"setup\":\"force both workers past the app-level check (e.g. injected sleep after read)\",\"assert\":\"unique index on (order_id, idempotency_key) or atomic state transition (UPDATE ... WHERE status='PENDING') admits exactly one winner; second insert raises and is handled\",\"why\":\"proves the invariant is enforced by storage, not only by application logic\"},\n{\"id\":\"I3\",\"layer\":\"integration\",\"name\":\"crash_between_charge_and_record\",\"setup\":\"worker charges, then dies before persisting; restart re-runs\",\"assert\":\"reconcile path finds the capture and completes the order without a second charge\",\"why\":\"timeout + crash is the realistic duplicate-capture path\"},\n{\"id\":\"I4\",\"layer\":\"integration\",\"name\":\"stale_worker_fencing\",\"setup\":\"worker A stalls, times out its lease, worker B completes; A resumes and writes\",\"assert\":\"A's write is rejected (lease/version token), final state remains B's\",\"why\":\"concurrent processing with clock skew\"},\n{\"id\":\"C1\",\"layer\":\"contract\",\"name\":\"provider_idempotency_semantics\",\"setup\":\"recorded/replayed provider fixture (WireMock/VCR)\",\"assert\":\"same key twice returns the original capture, not a new one; timeout fixture returns no body\",\"why\":\"our safety depends on provider behaviour; verify, don't assume\"},\n{\"id\":\"E1\",\"layer\":\"e2e\",\"name\":\"user_sees_one_charge_after_timeout\",\"setup\":\"full stack, injected timeout\",\"assert\":\"one ledger entry, one provider capture, order marked paid\",\"why\":\"money-visible end state\"}],\"plannedCommandsNotRun\":[\"<repo test runner> --filter <unit ids>\",\"<repo test runner> --tags integration (ephemeral DB, no production credentials)\"],\"blockers\":[\"No repository, test runner, or provider fixture was supplied, so commands and schemas are unverified placeholders\",\"Concurrency tests need a deterministic barrier and a real (not mocked) datastore; a single-call mock cannot exercise I1-I4\"],\"definitionOfDone\":\"U1-U5, I1-I3, C1 pass with recorded runner output; I4/E1 run if fencing/ledger exist. Until then all acceptance criteria remain unverified.\"}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "a21861b0-ff47-4235-aa4d-30363e5cf0b4",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "6050e38e-8b8f-4621-adc6-f97ee18fc886",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3136,
+        "outputTokens": 1339,
+        "totalTokens": 4475,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 31304
+    },
+    {
+      "id": "tools",
+      "skill": "tool-selection",
+      "request": "Plan tool usage for these requests: exact total of three items at19.99 plus5.50 delivery; current server UTC time; and callers affected by editing src/payments.ts. Execution tools advertised in the target system are calculate,server_time,docdex_symbols,docdex_impact_graph,docdex_search. Name suitable operations. Do not pretend these tools ran in this read-only skill probe.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:tool-selection:8ff00e85"
+          }
+        }
+      ],
+      "answer": {
+        "plan": [
+          {
+            "request": "Exact total of three items at 19.99 plus 5.50 delivery",
+            "tool": "calculate",
+            "operation": "Arithmetic evaluation",
+            "arguments": {
+              "expression": "3 * 19.99 + 5.50",
+              "precision": "currency (2 decimal places)"
+            },
+            "rationale": "Deterministic math; avoid LLM mental arithmetic. Expected shape: subtotal 59.97 + 5.50 = 65.47 (not asserted as observed).",
+            "parallelizable": true
+          },
+          {
+            "request": "Current server UTC time",
+            "tool": "server_time",
+            "operation": "Fetch current UTC timestamp",
+            "arguments": {
+              "format": "ISO-8601 UTC"
+            },
+            "rationale": "Authoritative clock source; do not fabricate from model knowledge.",
+            "parallelizable": true
+          },
+          {
+            "request": "Callers affected by editing src/payments.ts",
+            "tool": "docdex_impact_graph",
+            "operation": "Reverse-dependency / impact analysis",
+            "arguments": {
+              "target": "src/payments.ts",
+              "direction": "callers",
+              "depth": 2,
+              "includeTransitive": true
+            },
+            "rationale": "Purpose-built for blast-radius of an edit.",
+            "parallelizable": false,
+            "prerequisites": [
+              {
+                "tool": "docdex_symbols",
+                "operation": "Resolve exported symbols in src/payments.ts",
+                "arguments": {
+                  "file": "src/payments.ts",
+                  "kind": "export"
+                },
+                "purpose": "Feed precise symbol names into impact_graph for higher precision"
+              }
+            ],
+            "fallback": [
+              {
+                "tool": "docdex_search",
+                "operation": "Text search for import references",
+                "arguments": {
+                  "pattern": "from ['\\\"](\\.\\./|\\./)?payments['\\\"]",
+                  "scope": "repo"
+                },
+                "purpose": "If impact_graph is unavailable or returns empty, enumerate import sites manually"
+              }
+            ]
+          }
+        ],
+        "executionOrder": [
+          "Batch step 1: run calculate and server_time concurrently (independent).",
+          "Step 2: docdex_symbols on src/payments.ts to enumerate exports.",
+          "Step 3: docdex_impact_graph per export (or per file) to collect callers.",
+          "Step 4: If step 3 is inconclusive, docdex_search for import patterns and cross-check."
+        ],
+        "notes": [
+          "No tools were executed in this read-only skill probe; the operations above are proposed calls only.",
+          "Preserve units (currency) and timezone (UTC) in returned evidence.",
+          "If calculate rejects the expression, retry with explicit numeric literals and no formatting characters.",
+          "If docdex_impact_graph is not connected, report the missing capability rather than substituting a guess."
+        ]
+      },
+      "rawAnswer": "{\"plan\":[{\"request\":\"Exact total of three items at 19.99 plus 5.50 delivery\",\"tool\":\"calculate\",\"operation\":\"Arithmetic evaluation\",\"arguments\":{\"expression\":\"3 * 19.99 + 5.50\",\"precision\":\"currency (2 decimal places)\"},\"rationale\":\"Deterministic math; avoid LLM mental arithmetic. Expected shape: subtotal 59.97 + 5.50 = 65.47 (not asserted as observed).\",\"parallelizable\":true},{\"request\":\"Current server UTC time\",\"tool\":\"server_time\",\"operation\":\"Fetch current UTC timestamp\",\"arguments\":{\"format\":\"ISO-8601 UTC\"},\"rationale\":\"Authoritative clock source; do not fabricate from model knowledge.\",\"parallelizable\":true},{\"request\":\"Callers affected by editing src/payments.ts\",\"tool\":\"docdex_impact_graph\",\"operation\":\"Reverse-dependency / impact analysis\",\"arguments\":{\"target\":\"src/payments.ts\",\"direction\":\"callers\",\"depth\":2,\"includeTransitive\":true},\"rationale\":\"Purpose-built for blast-radius of an edit.\",\"parallelizable\":false,\"prerequisites\":[{\"tool\":\"docdex_symbols\",\"operation\":\"Resolve exported symbols in src/payments.ts\",\"arguments\":{\"file\":\"src/payments.ts\",\"kind\":\"export\"},\"purpose\":\"Feed precise symbol names into impact_graph for higher precision\"}],\"fallback\":[{\"tool\":\"docdex_search\",\"operation\":\"Text search for import references\",\"arguments\":{\"pattern\":\"from ['\\\\\\\"](\\\\.\\\\./|\\\\./)?payments['\\\\\\\"]\",\"scope\":\"repo\"},\"purpose\":\"If impact_graph is unavailable or returns empty, enumerate import sites manually\"}]}],\"executionOrder\":[\"Batch step 1: run calculate and server_time concurrently (independent).\",\"Step 2: docdex_symbols on src/payments.ts to enumerate exports.\",\"Step 3: docdex_impact_graph per export (or per file) to collect callers.\",\"Step 4: If step 3 is inconclusive, docdex_search for import patterns and cross-check.\"],\"notes\":[\"No tools were executed in this read-only skill probe; the operations above are proposed calls only.\",\"Preserve units (currency) and timezone (UTC) in returned evidence.\",\"If calculate rejects the expression, retry with explicit numeric literals and no formatting characters.\",\"If docdex_impact_graph is not connected, report the missing capability rather than substituting a guess.\"]}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "2ab018db-785f-4b68-a1a9-dcde6b43f9ce",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "339b2bb3-1fe8-43da-a598-1f3680ca9b74",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3183,
+        "outputTokens": 841,
+        "totalTokens": 4024,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 34077
+    },
+    {
+      "id": "services",
+      "skill": "system-services",
+      "request": "The user asks to start their Node API as a persistent host service. Environment: Linux, full Codali permission, only sandboxed run_shell and browser_session are available for execution; no host-management connector. package.json starts node server.js on port3000. Explain what can actually be done now and what remains blocked. No commands have run.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:system-services:43697232"
+          }
+        },
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:tool-selection:8ff00e85"
+          }
+        },
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:browser-session:4cd6f484"
+          }
+        }
+      ],
+      "answer": {
+        "status": "no_actions_taken",
+        "summary": "Nothing has been executed yet, so there is no service state to report. A persistent host service cannot be created with the tools currently exposed; only sandbox-scoped work and prepared host-side artifacts are possible now.",
+        "blocked": [
+          {
+            "item": "Registering/starting a persistent service on the Linux host (systemd unit, host process, restart-on-boot, crash restart)",
+            "reason": "No host-management connector is advertised. The system-services skill requires a discovered, authorized host connector for systemd/launchd/Docker operations; none exists here."
+          },
+          {
+            "item": "Keeping `node server.js` alive on port 3000 via run_shell",
+            "reason": "run_shell is workspace-scoped with an isolated PID namespace that is destroyed when the call returns. nohup, setsid, tmux, disown and cron cannot repair that lifecycle; full Codali permission does not remove the sandbox boundary, and sandbox-escape attempts are out of scope."
+          },
+          {
+            "item": "Proving host reachability of port 3000",
+            "reason": "No host network access or tunnel has been established; a localhost response inside a sandbox would not prove access from the host or another machine."
+          }
+        ],
+        "possibleNow": [
+          {
+            "action": "Inspect the project with sandboxed run_shell (read-only): package.json scripts, server.js entrypoint, required env vars, bind address, port 3000 assumptions, dependency install state",
+            "caveat": "Gives facts and readiness evidence only; it does not start anything persistent."
+          },
+          {
+            "action": "Author host-side deployment artifacts for the user to apply: a systemd unit (ExecStart=/usr/bin/node server.js, WorkingDirectory, EnvironmentFile, Restart=always, User=, port 3000), an install/rollback script, and/or a Dockerfile + compose service with a healthcheck",
+            "caveat": "These are text deliverables; applying them requires the user or a host connector."
+          },
+          {
+            "action": "Start a browser_session (noVNC desktop, 8-hour expiry) and, if Docker is available, a static preview on port 8000 for UI inspection",
+            "caveat": "The session is container-scoped and expires; a static preview does not execute backend Node code. The returned previewUrl is for the host/Mac only through an SSH forwarding tunnel with the real user/server substituted — never claim it is reachable before the tunnel exists."
+          },
+          {
+            "action": "Run bounded foreground verification inside a single run_shell call (e.g. start server, curl localhost:3000, capture output, exit)",
+            "caveat": "Proves the app boots and answers in-process; the process dies when the call returns, so it is not a service."
+          }
+        ],
+        "recommendedSequence": [
+          "1. Read package.json/server.js and confirm entrypoint, port, bind host and env needs.",
+          "2. One bounded foreground smoke test to confirm the app actually listens on 3000.",
+          "3. Write the systemd unit (or Docker/Compose service) plus install and rollback steps into the workspace.",
+          "4. Hand those to the user to run on the host, or wait for a host-management connector to be enabled and then apply, verify state, check readiness and recent logs separately."
+        ],
+        "neededToUnblock": [
+          "An authorized host-management connector (systemd) on this Linux host, or the user executing the prepared unit themselves",
+          "Docker/Compose on the host if container deployment is preferred",
+          "Explicit confirmation of the intended service owner, working directory and environment source before any config change"
+        ],
+        "verificationLimits": "No commands have run, so all statements above are capability claims, not observed results. After any real change, service state, application readiness and continued availability must be re-checked in a separate call; 'running' is not 'ready', and loopback success is not remote reachability."
+      },
+      "rawAnswer": "{\"status\": \"no_actions_taken\", \"summary\": \"Nothing has been executed yet, so there is no service state to report. A persistent host service cannot be created with the tools currently exposed; only sandbox-scoped work and prepared host-side artifacts are possible now.\", \"blocked\": [{\"item\": \"Registering/starting a persistent service on the Linux host (systemd unit, host process, restart-on-boot, crash restart)\", \"reason\": \"No host-management connector is advertised. The system-services skill requires a discovered, authorized host connector for systemd/launchd/Docker operations; none exists here.\"}, {\"item\": \"Keeping `node server.js` alive on port 3000 via run_shell\", \"reason\": \"run_shell is workspace-scoped with an isolated PID namespace that is destroyed when the call returns. nohup, setsid, tmux, disown and cron cannot repair that lifecycle; full Codali permission does not remove the sandbox boundary, and sandbox-escape attempts are out of scope.\"}, {\"item\": \"Proving host reachability of port 3000\", \"reason\": \"No host network access or tunnel has been established; a localhost response inside a sandbox would not prove access from the host or another machine.\"}], \"possibleNow\": [{\"action\": \"Inspect the project with sandboxed run_shell (read-only): package.json scripts, server.js entrypoint, required env vars, bind address, port 3000 assumptions, dependency install state\", \"caveat\": \"Gives facts and readiness evidence only; it does not start anything persistent.\"}, {\"action\": \"Author host-side deployment artifacts for the user to apply: a systemd unit (ExecStart=/usr/bin/node server.js, WorkingDirectory, EnvironmentFile, Restart=always, User=, port 3000), an install/rollback script, and/or a Dockerfile + compose service with a healthcheck\", \"caveat\": \"These are text deliverables; applying them requires the user or a host connector.\"}, {\"action\": \"Start a browser_session (noVNC desktop, 8-hour expiry) and, if Docker is available, a static preview on port 8000 for UI inspection\", \"caveat\": \"The session is container-scoped and expires; a static preview does not execute backend Node code. The returned previewUrl is for the host/Mac only through an SSH forwarding tunnel with the real user/server substituted — never claim it is reachable before the tunnel exists.\"}, {\"action\": \"Run bounded foreground verification inside a single run_shell call (e.g. start server, curl localhost:3000, capture output, exit)\", \"caveat\": \"Proves the app boots and answers in-process; the process dies when the call returns, so it is not a service.\"}], \"recommendedSequence\": [\"1. Read package.json/server.js and confirm entrypoint, port, bind host and env needs.\", \"2. One bounded foreground smoke test to confirm the app actually listens on 3000.\", \"3. Write the systemd unit (or Docker/Compose service) plus install and rollback steps into the workspace.\", \"4. Hand those to the user to run on the host, or wait for a host-management connector to be enabled and then apply, verify state, check readiness and recent logs separately.\"], \"neededToUnblock\": [\"An authorized host-management connector (systemd) on this Linux host, or the user executing the prepared unit themselves\", \"Docker/Compose on the host if container deployment is preferred\", \"Explicit confirmation of the intended service owner, working directory and environment source before any config change\"], \"verificationLimits\": \"No commands have run, so all statements above are capability claims, not observed results. After any real change, service state, application readiness and continued availability must be re-checked in a separate call; 'running' is not 'ready', and loopback success is not remote reachability.\"}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "65743056-cffa-43c8-85fb-72438301b171",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "963655e4-042a-44fc-921a-ed5ffeac542e",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "b81a8699-6f8c-4829-8b4d-40a8aeabdd28",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 3,
+        "inputTokens": 6632,
+        "outputTokens": 1573,
+        "totalTokens": 8205,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 60013
+    },
+    {
+      "id": "diagnostics",
+      "skill": "system-diagnostics",
+      "request": "User reports host CPU saturation. The only observation is ps inside Codali sandbox showing two processes. There is no host diagnostic connector. Explain what this evidence establishes, whether it disproves host saturation, and the next useful evidence to request. Do not invent host metrics.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:system-diagnostics:e9d0c1ba"
+          }
+        }
+      ],
+      "answer": {
+        "question": "Does a sandbox `ps` showing two processes bear on the reported host CPU saturation?",
+        "scope_of_observation": {
+          "what_was_run": "ps inside the Codali sandbox (isolated run_shell)",
+          "observed": "two processes visible at one instant",
+          "namespace": "sandbox PID namespace / cgroup, not the host",
+          "connector_status": "no host diagnostic connector available — this capability is missing, not negative evidence"
+        },
+        "what_the_evidence_establishes": [
+          "The sandbox's own process table contained two entries at that timestamp.",
+          "The observation boundary is the sandbox, so any conclusion drawn from it is limited to the sandbox view.",
+          "The sandbox is not itself running a large number of visible userland processes at that moment, so the sandbox is an unlikely sole source of a sustained CPU storm (weak, not conclusive: thread count, CPU time and cgroup quota were not measured).",
+          "A single `ps` snapshot is a point-in-time listing, not a rate; it carries no utilization, load, or duration information."
+        ],
+        "what_it_does_not_establish": [
+          "It does not disprove host CPU saturation. It is non-discriminating: the same two-process output is equally consistent with an idle host and with a host pegged at 100%.",
+          "Host processes, threads, kernel time, soft/hard IRQ, and other containers are outside this PID namespace and cgroup view, so their absence from the output is an artifact of scope, not proof of absence.",
+          "A snapshot cannot show sustained saturation; saturation is a rate over a time window.",
+          "It does not distinguish CPU utilization from load average (run-queue depth can be high while per-CPU percent looks moderate, or vice versa), nor user CPU from iowait/steal.",
+          "It says nothing about whether the sandbox itself is CPU-quota-throttled, which would further distort any sandbox-local view."
+        ],
+        "next_useful_evidence_to_request": {
+          "prerequisite": "A host-scoped measurement path: a host diagnostic connector, a host shell, or the user running commands on the affected machine themselves.",
+          "confirm_the_boundary_first": [
+            "systemd-detect-virt; cat /proc/1/cgroup — prove the command is executing on the host, not in a container.",
+            "uptime / server_time — anchor the timestamp to the reported symptom window."
+          ],
+          "measure_the_rate_over_an_interval": [
+            "vmstat 1 10 or mpstat -P ALL 1 5 — per-CPU user/system/iowait/steal over a window, not one sample.",
+            "sar -u 1 5 if sysstat is installed.",
+            "cat /proc/pressure/cpu twice ~5s apart — direct CPU-pressure stall evidence.",
+            "uptime — 1/5/15-minute load average versus core count (nproc)."
+          ],
+          "identify_the_consumers": [
+            "ps -eo pid,ppid,pcpu,pmem,nlwp,etime,comm --sort=-pcpu | head -20 — top CPU consumers including thread counts.",
+            "systemd-cgtop -m cpu or cgroup v2 cpu.stat — attribute burn to a service/container rather than a single process.",
+            "top -b -n 1 with per-CPU lines, or btop, for a visual breakdown."
+          ],
+          "rule_out_adjacent_causes": [
+            "iostat -x 1 5 / vmstat wa column — iowait masquerading as CPU pressure.",
+            "dmesg --ctime | tail, or journalctl -k — thermal throttling, frequency limits, OOM/soft lockups.",
+            "lscpu / cat /sys/fs/cgroup/**/cpu.max — host core count and any quota or steal from a hypervisor."
+          ],
+          "define_the_symptom": [
+            "Which application or endpoint, what latency/error signature, exact start time, and whether it is continuous or bursty — so the measurement window can be aligned to the event."
+          ]
+        },
+        "method_note": "Per the system-diagnostics workflow: state observations, likely causes, and the next discriminating check separately; do not treat one snapshot as proof of sustained performance; do not infer host state from a sandbox view; do not change service or cgroup configuration to collect data. No host metrics have been measured or asserted here.",
+        "conclusion": "The two-process sandbox `ps` establishes only the sandbox's own process visibility at one instant. It neither confirms nor refutes host CPU saturation. The decisive next step is obtaining host-scoped, interval-based CPU measurements (vmstat/mpstat/sar, PSI, load average vs core count) plus top-consumer and cgroup attribution, after verifying the command actually runs on the host."
+      },
+      "rawAnswer": "{\"question\": \"Does a sandbox `ps` showing two processes bear on the reported host CPU saturation?\", \"scope_of_observation\": {\"what_was_run\": \"ps inside the Codali sandbox (isolated run_shell)\", \"observed\": \"two processes visible at one instant\", \"namespace\": \"sandbox PID namespace / cgroup, not the host\", \"connector_status\": \"no host diagnostic connector available — this capability is missing, not negative evidence\"} , \"what_the_evidence_establishes\": [\"The sandbox's own process table contained two entries at that timestamp.\", \"The observation boundary is the sandbox, so any conclusion drawn from it is limited to the sandbox view.\", \"The sandbox is not itself running a large number of visible userland processes at that moment, so the sandbox is an unlikely sole source of a sustained CPU storm (weak, not conclusive: thread count, CPU time and cgroup quota were not measured).\", \"A single `ps` snapshot is a point-in-time listing, not a rate; it carries no utilization, load, or duration information.\"], \"what_it_does_not_establish\": [\"It does not disprove host CPU saturation. It is non-discriminating: the same two-process output is equally consistent with an idle host and with a host pegged at 100%.\", \"Host processes, threads, kernel time, soft/hard IRQ, and other containers are outside this PID namespace and cgroup view, so their absence from the output is an artifact of scope, not proof of absence.\", \"A snapshot cannot show sustained saturation; saturation is a rate over a time window.\", \"It does not distinguish CPU utilization from load average (run-queue depth can be high while per-CPU percent looks moderate, or vice versa), nor user CPU from iowait/steal.\", \"It says nothing about whether the sandbox itself is CPU-quota-throttled, which would further distort any sandbox-local view.\"], \"next_useful_evidence_to_request\": {\"prerequisite\": \"A host-scoped measurement path: a host diagnostic connector, a host shell, or the user running commands on the affected machine themselves.\", \"confirm_the_boundary_first\": [\"systemd-detect-virt; cat /proc/1/cgroup — prove the command is executing on the host, not in a container.\", \"uptime / server_time — anchor the timestamp to the reported symptom window.\"], \"measure_the_rate_over_an_interval\": [\"vmstat 1 10 or mpstat -P ALL 1 5 — per-CPU user/system/iowait/steal over a window, not one sample.\", \"sar -u 1 5 if sysstat is installed.\", \"cat /proc/pressure/cpu twice ~5s apart — direct CPU-pressure stall evidence.\", \"uptime — 1/5/15-minute load average versus core count (nproc).\"], \"identify_the_consumers\": [\"ps -eo pid,ppid,pcpu,pmem,nlwp,etime,comm --sort=-pcpu | head -20 — top CPU consumers including thread counts.\", \"systemd-cgtop -m cpu or cgroup v2 cpu.stat — attribute burn to a service/container rather than a single process.\", \"top -b -n 1 with per-CPU lines, or btop, for a visual breakdown.\"], \"rule_out_adjacent_causes\": [\"iostat -x 1 5 / vmstat wa column — iowait masquerading as CPU pressure.\", \"dmesg --ctime | tail, or journalctl -k — thermal throttling, frequency limits, OOM/soft lockups.\", \"lscpu / cat /sys/fs/cgroup/**/cpu.max — host core count and any quota or steal from a hypervisor.\"], \"define_the_symptom\": [\"Which application or endpoint, what latency/error signature, exact start time, and whether it is continuous or bursty — so the measurement window can be aligned to the event.\"]}, \"method_note\": \"Per the system-diagnostics workflow: state observations, likely causes, and the next discriminating check separately; do not treat one snapshot as proof of sustained performance; do not infer host state from a sandbox view; do not change service or cgroup configuration to collect data. No host metrics have been measured or asserted here.\", \"conclusion\": \"The two-process sandbox `ps` establishes only the sandbox's own process visibility at one instant. It neither confirms nor refutes host CPU saturation. The decisive next step is obtaining host-scoped, interval-based CPU measurements (vmstat/mpstat/sar, PSI, load average vs core count) plus top-consumer and cgroup attribution, after verifying the command actually runs on the host.\"}",
+      "outputFormat": "json",
+      "routes": [
+        {
+          "id": "c98a334a-aa9a-4243-8d12-11b4ce24f9ba",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "1f2681f9-0c57-481f-b938-996944dc535c",
+          "binding": "lead",
+          "configHash": "778651751637f23b9152f6f6d2da43d9857fcfc12aaeb0fe9e237f768e87bdef",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3102,
+        "outputTokens": 1550,
+        "totalTokens": 4652,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 41233
+    }
+  ]
+}

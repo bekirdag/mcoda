@@ -108,6 +108,16 @@ test("ValidationRunner classifies timed-out checks", { concurrency: false }, asy
   assert.ok(result.reason_codes.includes("verification_command_timeout"));
 });
 
+test("ValidationRunner cancellation interrupts the process without blocking the event loop", async () => {
+  const abort = new AbortController(); let ticked = false;
+  const runner = new ValidationRunner({ allowShell: true, shellAllowlist: [process.execPath], workspaceRoot: process.cwd(), signal: abort.signal, shellTimeoutMs: 10000 });
+  const timer = setTimeout(() => { ticked = true; abort.abort(new Error("Validation cancelled")); }, 100);
+  try {
+    await assert.rejects(runner.run([`${process.execPath} -e setInterval(()=>{},1000)`]), /Validation cancelled/);
+    assert.equal(ticked, true);
+  } finally { clearTimeout(timer); }
+});
+
 test("ValidationRunner resolves deterministic derived verification plans", { concurrency: false }, async () => {
   const runner = new ValidationRunner({
     allowShell: false,

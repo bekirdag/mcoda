@@ -1,4 +1,5 @@
 import test from "node:test";
+import { configureMediaBridgeEnvironment } from "../helpers/media-bridge-environment.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
@@ -14,9 +15,11 @@ const serverScript = path.join(
   "wan22-openai-server.py",
 );
 
+configureMediaBridgeEnvironment(test, path.dirname(serverScript));
+
 function resolvePython() {
   for (const candidate of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
-    const probe = spawnSync(candidate, ["-c", "import sys; print(sys.executable)"], {
+    const probe = spawnSync(candidate, ["-c", "import sys, fcntl; print(sys.executable)"], {
       encoding: "utf8",
     });
     if (probe.status === 0 && probe.stdout.trim()) return probe.stdout.trim();
@@ -120,13 +123,14 @@ server.server_close()
 test("Wan bridge maps bounded OpenAI video requests to native async jobs", { timeout: 20_000 }, async (t) => {
   const python = resolvePython();
   if (!python) {
-    t.skip("Python is unavailable");
+    t.skip("Python with POSIX file locking is unavailable");
     return;
   }
 
   let nativeRequest;
   let submissionCount = 0;
   let cancelCount = 0;
+  let nativeMayFinish = false;
   const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from("mock-webm")]);
   const native = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/sdcpp/v1/capabilities") {
@@ -149,7 +153,7 @@ test("Wan bridge maps bounded OpenAI video requests to native async jobs", { tim
       return;
     }
     if (request.method === "GET" && request.url === "/sdcpp/v1/jobs/job_video_1") {
-      if (nativeRequest?.prompt === "poll failure") {
+      if (nativeRequest?.prompt === "poll failure" || nativeRequest?.prompt === "uncancellable poll failure" && !nativeMayFinish) {
         sendJson(response, 500, { error: "mock poll failure" });
         return;
       }
@@ -161,7 +165,7 @@ test("Wan bridge maps bounded OpenAI video requests to native async jobs", { tim
           output_format: "webm",
           mime_type: nativeRequest?.prompt === "bad mime" ? "video/mp4" : "video/webm",
           fps: nativeRequest?.fps,
-          frame_count: 29,
+          frame_count: Math.floor((nativeRequest.video_frames - 1) / 4) * 4 + 1,
           b64_json: webm.toString("base64"),
         },
         error: null,
@@ -171,7 +175,7 @@ test("Wan bridge maps bounded OpenAI video requests to native async jobs", { tim
     if (request.method === "POST" && request.url === "/sdcpp/v1/jobs/job_video_1/cancel") {
       await readJsonBody(request);
       cancelCount += 1;
-      sendJson(response, 200, { id: "job_video_1", status: "cancelled" });
+      sendJson(response, 200, { id: "job_video_1", status: nativeRequest?.prompt === "uncancellable poll failure" ? "generating" : "cancelled" });
       return;
     }
     sendJson(response, 404, { error: "not found" });
@@ -191,6 +195,8 @@ test("Wan bridge maps bounded OpenAI video requests to native async jobs", { tim
       `http://127.0.0.1:${nativeAddress.port}`,
       "--poll-interval-seconds",
       "0.01",
+      "--inference-timeout-seconds",
+      "1",
     ],
     {
       cwd: repoRoot,
@@ -297,4 +303,31 @@ test("Wan bridge maps bounded OpenAI video requests to native async jobs", { tim
   assert.equal(pollFailure.status, 502);
   assert.equal((await pollFailure.json()).error.code, "upstream_generation_failed");
   assert.equal(cancelCount, 1);
+
+  const generate = prompt => fetch(`${baseUrl}/v1/videos/generations`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "wan2.2-t2v-a14b-q4-k-m-local", prompt, video_frames: 33 }),
+  });
+  const started = Date.now();
+  const uncertain = await generate("uncancellable poll failure");
+  assert.equal(uncertain.status, 504); assert.ok(Date.now() - started < 3000);
+  const before = submissionCount;
+  assert.equal((await generate("overlap must not start")).status, 429);
+  assert.equal(submissionCount, before);
+  const lockProbe = spawnSync(python, ["-c", `
+from media_gpu_lock import media_gpu_slot, MediaGpuBusy
+try:
+    with media_gpu_slot('probe'): raise AssertionError('released while native job active')
+except MediaGpuBusy: pass
+`], { env: { ...process.env, MCODA_MEDIA_GPU_WAIT_SECONDS: "0.01" }, encoding: "utf8", timeout: 3000 });
+  assert.equal(lockProbe.status, 0, lockProbe.stderr);
+  nativeMayFinish = true;
+  let recovered;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    recovered = await generate("after confirmed native completion");
+    if (recovered.status !== 429) break;
+  }
+  assert.equal(recovered.status, 200);
+  assert.equal(submissionCount, before + 1);
 });

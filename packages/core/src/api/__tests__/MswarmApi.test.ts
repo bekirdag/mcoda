@@ -601,156 +601,65 @@ test('signMswarmGenericJobOpsToken creates bearer-compatible JWT-like tokens', (
   assert.match(token, /^[^.]+\.[^.]+\.[^.]+$/);
 });
 
-test(
-  'MswarmApi.registerFreeMcodaClient posts the free-client consent payload',
-  { concurrency: false },
-  async () => {
-    await withTempHome(async () => {
-      await withStubServer(
-        (req, res) => {
-          assert.equal(req.method, 'POST');
-          assert.equal(req.url, '/v1/swarm/mcoda/free-client/register');
-          assert.equal(req.headers['x-api-key'], undefined);
-          let body = '';
-          req.setEncoding('utf8');
-          req.on('data', (chunk) => {
-            body += chunk;
-          });
-          req.on('end', () => {
-            const payload = JSON.parse(body) as Record<string, unknown>;
-            assert.equal(payload.product, 'mcoda');
-            assert.equal(payload.product_version, '1.2.3');
-            assert.equal(payload.policy_version, '2026-03-18');
-            assert.deepEqual(payload.consent_types, [
-              'anonymous',
-              'non_anonymous',
-            ]);
-            res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                client_id: 'free-client-123',
-                client_type: 'free_mcoda_client',
-                consent_token: 'consent-token-123',
-                consent_types: ['anonymous', 'non_anonymous'],
-                issued_at_ms: 123,
-                upload_signing_secret: 'upload-secret-123',
-              })
-            );
-          });
-        },
-        async (baseUrl) => {
-          const api = await MswarmApi.create({ baseUrl });
-          try {
-            const response = await api.registerFreeMcodaClient({
-              clientId: 'free-client-123',
-              policyVersion: '2026-03-18',
-              productVersion: '1.2.3',
-            });
-            assert.equal(response.client_id, 'free-client-123');
-            assert.equal(response.client_type, 'free_mcoda_client');
-            assert.equal(response.consent_token, 'consent-token-123');
-          } finally {
-            await api.close();
-          }
-        }
-      );
-    });
+test('MswarmApi exposes no consent registration or data-collection calls', () => {
+  const proto = MswarmApi.prototype as unknown as Record<string, unknown>;
+  for (const name of [
+    'issuePaidConsent',
+    'registerFreeMcodaClient',
+    'revokeConsent',
+    'requestDataDeletion',
+  ]) {
+    assert.equal(proto[name], undefined, `${name} should not exist`);
   }
-);
+});
 
 test(
-  'MswarmApi.revokeConsent posts the revoke payload',
+  'MswarmConfigStore ignores and clears legacy consent state without touching the API key',
   { concurrency: false },
   async () => {
-    await withTempHome(async () => {
-      await withStubServer(
-        (req, res) => {
-          assert.equal(req.method, 'POST');
-          assert.equal(req.url, '/v1/swarm/consent/revoke');
-          let body = '';
-          req.setEncoding('utf8');
-          req.on('data', (chunk) => {
-            body += chunk;
-          });
-          req.on('end', () => {
-            const payload = JSON.parse(body) as Record<string, unknown>;
-            assert.equal(payload.consent_token, 'consent-token-123');
-            assert.equal(payload.reason, 'user-request');
-            res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ revoked: true, revoked_at_ms: 456 }));
-          });
-        },
-        async (baseUrl) => {
-          const api = await MswarmApi.create({ baseUrl });
-          try {
-            const response = await api.revokeConsent(
-              'consent-token-123',
-              'user-request'
-            );
-            assert.equal(response.revoked, true);
-            assert.equal(response.revoked_at_ms, 456);
-          } finally {
-            await api.close();
-          }
-        }
-      );
-    });
-  }
-);
+    await withTempHome(async (home) => {
+      const configPath = path.join(home, 'legacy-config.json');
+      const store = new MswarmConfigStore(configPath);
+      await store.saveApiKey('key-123');
+      const raw = JSON.parse(await fs.readFile(configPath, 'utf8'));
+      raw.other = { keep: true };
+      raw.mswarm = {
+        ...raw.mswarm,
+        baseUrl: 'https://example.invalid/',
+        consentAccepted: true,
+        consentPolicyVersion: '2026-03-18',
+        consentToken: 'legacy-token',
+        clientId: 'client-1',
+        clientType: 'free_mcoda_client',
+        registeredAtMs: 1,
+        uploadSigningSecret: 'legacy-secret',
+      };
+      await fs.writeFile(configPath, JSON.stringify(raw), 'utf8');
 
-test(
-  'MswarmApi.requestDataDeletion posts the deletion payload',
-  { concurrency: false },
-  async () => {
-    await withTempHome(async () => {
-      await withStubServer(
-        (req, res) => {
-          assert.equal(req.method, 'POST');
-          assert.equal(req.url, '/v1/swarm/data/deletion-request');
-          let body = '';
-          req.setEncoding('utf8');
-          req.on('data', (chunk) => {
-            body += chunk;
-          });
-          req.on('end', () => {
-            const payload = JSON.parse(body) as Record<string, unknown>;
-            assert.equal(payload.consent_token, 'consent-token-123');
-            assert.equal(payload.product, 'mcoda');
-            assert.equal(payload.client_id, 'client-123');
-            assert.equal(payload.client_type, 'free_mcoda_client');
-            assert.equal(payload.reason, 'privacy');
-            res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                accepted: true,
-                request_id: 9,
-                product: 'mcoda',
-                client_id: 'client-123',
-                client_type: 'free_mcoda_client',
-                status: 'pending',
-                requested_at: '2026-03-18T00:00:00Z',
-              })
-            );
-          });
-        },
-        async (baseUrl) => {
-          const api = await MswarmApi.create({ baseUrl });
-          try {
-            const response = await api.requestDataDeletion({
-              consentToken: 'consent-token-123',
-              product: 'mcoda',
-              clientId: 'client-123',
-              clientType: 'free_mcoda_client',
-              reason: 'privacy',
-            });
-            assert.equal(response.accepted, true);
-            assert.equal(response.request_id, 9);
-            assert.equal(response.status, 'pending');
-          } finally {
-            await api.close();
-          }
-        }
-      );
+      const state = (await store.readState()) as Record<string, unknown>;
+      assert.equal(state.apiKey, 'key-123');
+      assert.equal(state.baseUrl, 'https://example.invalid/');
+      assert.equal(state.consentToken, undefined);
+      assert.equal(state.uploadSigningSecret, undefined);
+
+      const removed = await store.clearLegacyConsentState();
+      assert.deepEqual(removed.sort(), [
+        'clientId',
+        'clientType',
+        'consentAccepted',
+        'consentPolicyVersion',
+        'consentToken',
+        'registeredAtMs',
+        'uploadSigningSecret',
+      ]);
+      const after = JSON.parse(await fs.readFile(configPath, 'utf8'));
+      assert.deepEqual(after.other, { keep: true });
+      assert.equal(after.mswarm.baseUrl, 'https://example.invalid/');
+      assert.ok(after.mswarm.encryptedApiKey);
+      assert.equal('consentToken' in after.mswarm, false);
+      assert.equal('uploadSigningSecret' in after.mswarm, false);
+      assert.equal((await store.readState()).apiKey, 'key-123');
+      assert.deepEqual(await store.clearLegacyConsentState(), []);
     });
   }
 );

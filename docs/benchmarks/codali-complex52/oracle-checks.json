@@ -1,0 +1,60 @@
+{
+  "complex-05": {
+    "buy": 44586.08199216846,
+    "lease": 41070.372816549716,
+    "buyMinusLease": 3515.7091756187438,
+    "breakEvenAnnual": 13061.465742529259
+  },
+  "complex-06": {
+    "2": {
+      "waitProbability": 0.6428571428571429,
+      "meanQueueMinutes": 6.428571428571429,
+      "tail10minutes": 0.23649392646735581
+    },
+    "3": {
+      "waitProbability": 0.23684210526315788,
+      "meanQueueMinutes": 0.7894736842105263,
+      "tail10minutes": 0.01179167408712567
+    }
+  },
+  "complex-07": {
+    "normal": {
+      "minimumMakespan": 10,
+      "schedule": {
+        "A": 0,
+        "B": 0,
+        "C": 2,
+        "D": 2,
+        "E": 6,
+        "F": 9
+      }
+    },
+    "outage": {
+      "minimumMakespan": 14,
+      "schedule": {
+        "A": 0,
+        "B": 0,
+        "C": 6,
+        "D": 2,
+        "E": 10,
+        "F": 13
+      }
+    }
+  },
+  "complex-35": [
+    {
+      "A": "Y",
+      "B": "X",
+      "C": "Z"
+    },
+    {
+      "A": "Z",
+      "B": "Y",
+      "C": "X"
+    }
+  ],
+  "complex-36": {
+    "exact": 0.9231432779297286,
+    "binomial": 0.9138616441006833
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "kind": "bounded skill selection and behavior probes; manual semantic review required",
+  "at": "2026-11-04T18:14:47.172Z",
+  "promptChars": 2858,
+  "results": [
+    {
+      "id": "architecture",
+      "skill": "architecture-design",
+      "request": "Design a small invoice ingestion service for one server and two developers, about 2000 invoices/day. Clients retry submissions after timeouts. Keep existing SQLite storage. No implementation requested. Give components, data ownership, failure handling and one alternative with tradeoffs.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:architecture-design:e8c59e0f"
+          }
+        }
+      ],
+      "error": "ModelServiceError: Model service HTTP 200: invalid_response; the model reached its per-response output limit before finishing. No partial tool call was executed; continue with smaller file patches",
+      "routes": [
+        {
+          "id": "3b9d0081-7afc-4728-8867-185a676224f1",
+          "binding": "lead",
+          "configHash": "032f0b6ed6a575b88dab8583fdc63e994aeebbd19622c38dad436b35db324ef7",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 1277,
+        "outputTokens": 69,
+        "totalTokens": 5308,
+        "estimated": true,
+        "pendingCalls": 1
+      },
+      "elapsedMs": 46376
+    },
+    {
+      "id": "implementation",
+      "skill": "code-implementation",
+      "request": "Propose a minimal repair of this JavaScript helper; the public contract is an inclusive integer range and an empty array when start > end. Existing function: function range(start,end){return Array.from({length:Math.max(0,end-start)},(_,i)=>start+i)}. Return the replacement function in a code field and representative checks. Do not claim files were edited or tests executed.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:code-implementation:24817430"
+          }
+        }
+      ],
+      "error": "SyntaxError: Unexpected token '`', \"```json\n{\n\"... is not valid JSON",
+      "routes": [
+        {
+          "id": "47870d3d-1870-4ecc-897b-7dab5f6c37af",
+          "binding": "lead",
+          "configHash": "032f0b6ed6a575b88dab8583fdc63e994aeebbd19622c38dad436b35db324ef7",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "7cff6885-5662-4689-9dc9-c70714179add",
+          "binding": "lead",
+          "configHash": "032f0b6ed6a575b88dab8583fdc63e994aeebbd19622c38dad436b35db324ef7",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3190,
+        "outputTokens": 1079,
+        "totalTokens": 4269,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 29382
+    },
+    {
+      "id": "review",
+      "skill": "code-review",
+      "request": "Review only this profile endpoint. Every database query applies the authenticated tenant filter. const cache=new Map(); async function profile(req){const key=req.params.id;if(cache.has(key))return cache.get(key);const row=await db.profile.findFirst({where:{id:key,tenantId:req.auth.tenantId}});cache.set(key,row);return row;} File api/profile.js line1. Give actionable findings, if any, with triggering conditions and consequences. No code edits.",
+      "calls": [
+        {
+          "name": "skill_load",
+          "args": {
+            "id": "builtin:code-review:a9e2fca2"
+          }
+        }
+      ],
+      "answer": {
+        "scope": "api/profile.js line 1 — profile() handler and its module-level cache only; no edits made. No tests or runtime checks were run (no repository/runner supplied), so findings are static-analysis based.",
+        "findings": [
+          {
+            "severity": "critical",
+            "location": "api/profile.js:1 (cache key = req.params.id)",
+            "issue": "Cache key is not tenant-scoped, so the tenant filter is bypassed on cache hits.",
+            "trigger": "Two tenants request the same req.params.id value (likely with non-global ids such as sequential/short/slug ids; also any id reused across tenants).",
+            "consequence": "The first tenant's row is cached under the bare id; the second tenant's request returns tenant A's profile without any DB query, so the tenantId filter never runs. Cross-tenant data exposure / broken access control.",
+            "remedy": "Key the cache by tenantId+id (e.g. `${req.auth.tenantId}:${req.params.id}`) or store the row with its tenantId and re-verify the filter on hit."
+          },
+          {
+            "severity": "high",
+            "location": "api/profile.js:1 (cache.set(key,row) with no TTL/eviction/invalidate)",
+            "issue": "Unbounded, never-invalidated cache.",
+            "trigger": "Sustained requests for distinct ids, or any profile update/delete made through another endpoint.",
+            "consequence": "Memory growth toward exhaustion (DoS vector: attacker requests many unique ids, each caching a row or null); stale profile data served indefinitely after updates; process restart is the only reset.",
+            "remedy": "Add a size cap + TTL (LRU) and explicit invalidation on profile write/delete paths."
+          },
+          {
+            "severity": "medium",
+            "location": "api/profile.js:1 (negative caching of null)",
+            "issue": "Misses/nulls are cached under the same unscoped key.",
+            "trigger": "A tenant requests an id that does not exist (or belongs to another tenant), then the row is later created for a legitimate tenant.",
+            "consequence": "Legitimate tenant receives a cached null (404-like) until restart; also cross-tenant null poisoning interacts with finding 1.",
+            "remedy": "Do not cache misses, or cache them with a short TTL and tenant-scoped key."
+          },
+          {
+            "severity": "low",
+            "location": "api/profile.js:1 (req.auth.tenantId)",
+            "issue": "Assumes req.auth is always populated.",
+            "trigger": "Route mounted without the auth middleware, or middleware misconfiguration.",
+            "consequence": "TypeError on req.auth.tenantId -> unhandled rejection / 500 instead of a clean 401.",
+            "remedy": "Assert auth presence or rely on verified route-level middleware; add a test for the unauthenticated case."
+          },
+          {
+            "severity": "low",
+            "location": "api/profile.js:1 (module-level Map)",
+            "issue": "Per-process cache semantics.",
+            "trigger": "Multi-instance / serverless deployment.",
+            "consequence": "Inconsistent hit/miss behavior across instances; combined with finding 1, exposure depends on which instance serves the request.",
+            "remedy": "Document per-instance scope or move to a shared, tenant-keyed cache."
+          }
+        ],
+        "validationGaps": "No tests supplied; a test that seeds the same id for two tenants and calls profile() for both would demonstrate finding 1. DB id uniqueness (global vs per-tenant) is an assumption to confirm against the schema.",
+        "summary": "The stated invariant 'every DB query applies the tenant filter' is true only for cache misses; the cache itself is the authorization gap. Fix the key scoping first, then cache lifecycle."
+      },
+      "routes": [
+        {
+          "id": "560541f2-2247-4687-86d8-6d20928838fc",
+          "binding": "lead",
+          "configHash": "032f0b6ed6a575b88dab8583fdc63e994aeebbd19622c38dad436b35db324ef7",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        },
+        {
+          "id": "2364b3da-1554-4bbb-a204-999128239279",
+          "binding": "lead",
+          "configHash": "032f0b6ed6a575b88dab8583fdc63e994aeebbd19622c38dad436b35db324ef7",
+          "modelId": "reasoning-lead",
+          "catalogId": "qwen-latest-flash-next",
+          "backend": "strata",
+          "nativeReasoningRequest": {
+            "reasoning_effort": "low",
+            "reasoning_budget_tokens": 512
+          }
+        }
+      ],
+      "usage": {
+        "modelCalls": 2,
+        "inputTokens": 3137,
+        "outputTokens": 1376,
+        "totalTokens": 4513,
+        "estimated": false,
+        "pendingCalls": 0
+      },
+      "elapsedMs": 39217
+    }
+  ]
+}

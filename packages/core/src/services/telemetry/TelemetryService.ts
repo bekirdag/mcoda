@@ -255,7 +255,7 @@ export class TelemetryService {
     return {
       ...apiConfig,
       localRecording: apiConfig.localRecording ?? true,
-      remoteExport: apiConfig.remoteExport ?? true,
+      remoteExport: apiConfig.remoteExport ?? false,
       optOut: apiConfig.optOut ?? false,
       strict: apiConfig.strict ?? false,
       configPath: this.configPath,
@@ -516,10 +516,10 @@ export class TelemetryService {
     }
     const config = await this.readConfigFile();
     const telemetry = config.telemetry ?? {};
-    const envOptOut = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
     const optOut = telemetry.optOut === true || telemetry.optedOut === true || false;
     const strict = telemetry.strict === true || false;
-    const remoteExport = !optOut && !envOptOut;
+    // mcoda never uploads usage data; token accounting stays in the local workspace DB.
+    const remoteExport = false;
     const localRecording = !strict;
     return {
       localRecording,

@@ -11,11 +11,15 @@ const cliEntry = path.resolve(testDir, "..", "..", "cli.js");
 
 const withCliEntry = async (fn: () => Promise<void>): Promise<void> => {
   const previous = process.argv[1];
+  const previousDocdex = process.env.CODALI_DOCDEX_BASE_URL;
   process.argv[1] = cliEntry;
+  process.env.CODALI_DOCDEX_BASE_URL = "http://127.0.0.1:0";
   try {
     await fn();
   } finally {
     process.argv[1] = previous;
+    if (previousDocdex === undefined) delete process.env.CODALI_DOCDEX_BASE_URL;
+    else process.env.CODALI_DOCDEX_BASE_URL = previousDocdex;
   }
 };
 

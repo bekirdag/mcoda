@@ -1,0 +1,113 @@
+{
+  "health": {
+    "status": "ok",
+    "max_context": 65536,
+    "model": "qwen-latest-flash-next",
+    "images": true,
+    "api_key": false,
+    "image_generation": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "results": [
+    {
+      "case": "near-limit",
+      "encoded_content_tokens": 64525,
+      "request_sha256": "70708b4d8d2377897e481184a674cffa2474dc5b1d5b023d921d787f12377b91",
+      "status": 200,
+      "response": {
+        "id": "chatcmpl-6ad82364b9e6468686233aef",
+        "object": "chat.completion",
+        "created": 1793823938,
+        "model": "qwen-latest-flash-next",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "READY"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 64537,
+          "completion_tokens": 2,
+          "total_tokens": 64539,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 64537,
+          "prompt_ms": 25471.5,
+          "prompt_per_token_ms": 0.395,
+          "prompt_per_second": 2533.7,
+          "predicted_n": 2,
+          "predicted_ms": 108.4,
+          "predicted_per_token_ms": 54.2,
+          "predicted_per_second": 18.5,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        }
+      },
+      "correct": true,
+      "seconds": 25.655681313946843
+    },
+    {
+      "case": "over-limit",
+      "encoded_content_tokens": 66573,
+      "request_sha256": "0b5d50bcd75a8bac2c7029f8f20b718585d0e235b495716b125d1ac8986a1a86",
+      "status": 400,
+      "error": "{\"error\": {\"type\": \"invalid_request_error\", \"message\": \"request exceeds the context window: prompt (66585 tokens) leaves no room to answer in the context (65536); requests are never truncated\"}}",
+      "correct": true,
+      "seconds": 0.0640110878739506
+    },
+    {
+      "case": "recovery",
+      "encoded_content_tokens": 4,
+      "request_sha256": "160b8ac043e92b0acae82a274c6f38c07066bc8bd3c4417c607aced05205fde9",
+      "status": 200,
+      "response": {
+        "id": "chatcmpl-b62c4960072244f09007013d",
+        "object": "chat.completion",
+        "created": 1793823964,
+        "model": "qwen-latest-flash-next",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "READY"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 16,
+          "completion_tokens": 2,
+          "total_tokens": 18,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 16,
+          "prompt_ms": 1143.9,
+          "prompt_per_token_ms": 71.494,
+          "prompt_per_second": 14.0,
+          "predicted_n": 2,
+          "predicted_ms": 93.8,
+          "predicted_per_token_ms": 46.9,
+          "predicted_per_second": 21.3,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        }
+      },
+      "correct": true,
+      "seconds": 1.239999869838357
+    }
+  ]
+}

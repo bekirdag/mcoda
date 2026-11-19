@@ -1,12 +1,28 @@
 export interface ToolContext {
+  signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+  beforeTool?: (tool: ToolDescriptor, args: unknown) => Promise<void>;
+  afterTool?: (tool: ToolDescriptor, args: unknown, result: ToolExecutionResult) => Promise<void>;
+  checkPath?: (resolvedPath: string, action: "read" | "write") => Promise<void>;
+  shellTimeoutMs?: number;
+  shellMaxOutputBytes?: number;
+  /** Process cwd inside workspaceRoot; does not change root-relative write scopes. */
+  shellWorkingDirectory?: string;
+  /** Optional trusted executor wrapper, applied after permission evaluation. */
+  shellExecutor?: (command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>;
   workspaceRoot: string;
   runId?: string;
   recordTouchedFile?: (path: string) => void;
   allowOutsideWorkspace?: boolean;
   allowedReadPaths?: string[];
   allowedWritePaths?: string[];
+  /** Trusted workspace input paths, read-only even within a writable parent. */
+  protectedPaths?: string[];
   allowShell?: boolean;
   allowDestructiveOperations?: boolean;
+  /** Set by a host whose shell executor confines writes to scratch and the
+   * declared write paths, so a delete cannot reach anything else. */
+  shellIsolated?: boolean;
   shellAllowlist?: string[];
 }
 
@@ -132,6 +148,8 @@ export interface ToolHandlerResult {
 export interface ToolExecutionResult extends ToolHandlerResult {
   ok: boolean;
   error?: ToolError;
+  /** Set by the host's afterTool hook; retained outside output truncation. */
+  invocationReceipt?: { id: string; reference: string };
 }
 
 export type ToolHandler = (args: unknown, context: ToolContext) => Promise<ToolHandlerResult>;

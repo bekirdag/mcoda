@@ -5,19 +5,18 @@ mcoda is a local-first CLI for planning, documentation, and execution workflows 
 ## Install
 - Requires Node.js >= 20.
 - Global install: `npm i -g mcoda`
-- Interactive installs show the bundled mswarm data collection terms and require acceptance before setup can continue.
-- If install cannot prompt, complete the same mandatory consent flow with `mcoda setup` before other commands.
+- Works right after install: there is no consent prompt or mandatory setup step, and mcoda does not collect or upload usage data.
 - Verify: `mcoda --version`
 
 ## Quick start
 ```sh
-mcoda setup
 mcoda set-workspace --workspace-root .
 mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web.md --agent codex
 ```
 
 ## Docdex & QA
 - mcoda depends on the `docdex` CLI for doc search and context stitching.
+- Provision that CLI explicitly or set `MCODA_DOCDEX_BINARY` to its executable; mcoda installation does not install or restart shared Docdex services. `codali setup` independently prepares the terminal client's private pinned runtime.
 - Run `docdex setup` (or `docdexd browser install`) to install the headless Chromium browser used for web enrichment.
 - Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run.
@@ -48,7 +47,7 @@ Environment variables are optional overrides for workspace settings:
 - `MCODA_DOCDEX_URL` to point at a docdex server.
 - `MCODA_API_BASE_URL` or `MCODA_JOBS_API_URL` for job APIs.
 - `MCODA_MSWARM_NODE_BASE_URL`, `MCODA_MSWARM_NODE_ID`, and `MCODA_MSWARM_NODE_SIGNING_SECRET` for owner-local generic GPU job commands.
-- `MCODA_TELEMETRY` set to `off` to disable telemetry.
+- Token usage is recorded only in the local workspace DB (`mcoda tokens`); `mcoda telemetry opt-out --strict` disables that local recording. Nothing is uploaded.
 - `MCODA_STREAM_IO=1` to emit agent I/O lines to stderr.
 
 ## Self-hosted mswarm agents

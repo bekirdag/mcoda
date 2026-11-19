@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "version": "codali-trust-r1-v1",
+  "seed": 20261029,
+  "total": 300,
+  "families": 30,
+  "validationContract": {
+    "count": 300,
+    "families": 30,
+    "splits": {
+      "development": 0,
+      "validation": 100,
+      "held_out": 200
+    }
+  },
+  "domains": {
+    "general_knowledge": 30,
+    "math_and_data": 30,
+    "daily_assistance": 30,
+    "code_generation": 30,
+    "debugging_and_tests": 30,
+    "software_architecture": 30,
+    "repository_and_docdex": 30,
+    "writing_and_communication": 30,
+    "history_and_ambiguity": 30,
+    "security_and_evidence": 30
+  },
+  "splits": {
+    "held_out": 200,
+    "validation": 100
+  },
+  "graders": {
+    "json": 150,
+    "code": 60,
+    "rubric": 90
+  },
+  "promptsSha256": "63999299eb0926a879a45a04784c40fefc59d84c5da7dcc2a8ac9496fb2f0d69",
+  "gradingSha256": "a6c737e6f9f4a6caf89ca52831922566048a3cc9b272bf5ac987b273dd1b4d40",
+  "limitations": [
+    "Agent-authored synthetic tasks, not real user traffic or independent human assessment.",
+    "Ten correlated variants per family; cluster uncertainty by family.",
+    "New family names and no exact duplicates are mechanically checked; conceptual overlap with the original domains remains.",
+    "Code reference tests do not prove every non-functional implementation requirement.",
+    "Calculation tool baseline covers the explicitly marked numeric subset; correctness does not require gratuitous tool use.",
+    "Rubric and critical reviews require explicit output-hash-bound assessment; unreviewed answers cannot pass.",
+    "Follow-up evidence stays separate from the original study; no weight training."
+  ]
+}

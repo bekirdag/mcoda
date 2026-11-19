@@ -1,0 +1,143 @@
+{
+  "study": "codali-u5-regression",
+  "sourceCommit": "e064aa9",
+  "purpose": "Fresh constrained regression diagnosis, not a quality-promotion study",
+  "attempts": 64,
+  "prompts": 32,
+  "primary": {
+    "raw_direct": {
+      "attempts": 32,
+      "uniqueCases": 32,
+      "passed": 28,
+      "failed": 4,
+      "liveResponseCases": 32,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 0,
+      "needsReview": 0,
+      "errors": 0,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.875,
+      "latencyMs": {
+        "p50": 3739,
+        "p95": 13442,
+        "known": 32
+      },
+      "tokens": {
+        "p50": 115,
+        "p95": 259,
+        "sum": 4439,
+        "known": 32,
+        "estimated": 0
+      }
+    },
+    "codali_selected": {
+      "attempts": 32,
+      "uniqueCases": 32,
+      "passed": 27,
+      "failed": 5,
+      "liveResponseCases": 32,
+      "zeroDispatchAttempts": 0,
+      "unansweredDispatchedAttempts": 0,
+      "needsReview": 0,
+      "errors": 0,
+      "criticalFailures": 0,
+      "criticalUnreviewed": 0,
+      "strictAccuracy": 0.84375,
+      "latencyMs": {
+        "p50": 5905,
+        "p95": 28721,
+        "known": 32
+      },
+      "tokens": {
+        "p50": 939,
+        "p95": 3333,
+        "sum": 46662,
+        "known": 32,
+        "estimated": 0
+      }
+    }
+  },
+  "domains": {
+    "raw_direct": {
+      "general_knowledge": {
+        "attempts": 8,
+        "passed": 7,
+        "failed": 1
+      },
+      "daily_usage": {
+        "attempts": 8,
+        "passed": 6,
+        "failed": 2
+      },
+      "code_writing": {
+        "attempts": 8,
+        "passed": 8,
+        "failed": 0
+      },
+      "software_architecture": {
+        "attempts": 8,
+        "passed": 7,
+        "failed": 1
+      }
+    },
+    "codali_selected": {
+      "general_knowledge": {
+        "attempts": 8,
+        "passed": 6,
+        "failed": 2
+      },
+      "daily_usage": {
+        "attempts": 8,
+        "passed": 7,
+        "failed": 1
+      },
+      "code_writing": {
+        "attempts": 8,
+        "passed": 8,
+        "failed": 0
+      },
+      "software_architecture": {
+        "attempts": 8,
+        "passed": 6,
+        "failed": 2
+      }
+    }
+  },
+  "corpus": {
+    "promptsSha256": "b4aac4413920fc88afe6367e6ec71b43214bc3607e6acd375c146e4b36e9d2b8",
+    "gradingSha256": "f929a197457076c279f7ca5200588feb6272c0247270dc90c6fdd9e3bf892c59"
+  },
+  "erratum": {
+    "issue": "The eight general-knowledge prompts use quoted type placeholders in their requested JSON structure. This is ambiguous for numeric and boolean values. Qualification checked expected answers but failed to detect the prompt ambiguity.",
+    "originalScoresPreserved": true,
+    "exclusionRule": "Exclude the complete eight-case shared prompt-template group from both arms, including cases both passed. This is post-observation sensitivity, not a new primary score.",
+    "excluded": [
+      "u5-01",
+      "u5-02",
+      "u5-03",
+      "u5-04",
+      "u5-05",
+      "u5-06",
+      "u5-07",
+      "u5-08"
+    ]
+  },
+  "postObservationSensitivity": {
+    "raw_direct": {
+      "passed": 21,
+      "total": 24
+    },
+    "codali_selected": {
+      "passed": 21,
+      "total": 24
+    }
+  },
+  "findings": [
+    "Codali quick-answer mode incorrectly solved u5-10 arithmetic, u5-26 migration ordering and u5-30 dependency readiness.",
+    "All eight isolated code cases passed both arms.",
+    "32 unique questions are a diagnostic, not evidence of statistical superiority or open-ended architectural design quality.",
+    "No automated retries and no scoring changes were applied."
+  ],
+  "promotion": false
+}

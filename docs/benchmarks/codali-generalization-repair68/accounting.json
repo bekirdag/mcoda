@@ -1,0 +1,29 @@
+{
+  "before": {
+    "score": 78.8076923076923,
+    "tokens": 1055230,
+    "inputTokens": 723380,
+    "outputTokens": 331850,
+    "modelCalls": 215,
+    "toolCalls": 177,
+    "elapsedMs": 8570740
+  },
+  "after": {
+    "score": 87.88461538461539,
+    "tokens": 1999075,
+    "inputTokens": 1650874,
+    "outputTokens": 348201,
+    "modelCalls": 261,
+    "toolCalls": 311,
+    "elapsedMs": 8992789
+  },
+  "raw_tools": {
+    "score": 78.53846153846153,
+    "tokens": 1610333,
+    "inputTokens": 1284139,
+    "outputTokens": 326194,
+    "modelCalls": 233,
+    "toolCalls": 295,
+    "elapsedMs": 8615369
+  }
+}

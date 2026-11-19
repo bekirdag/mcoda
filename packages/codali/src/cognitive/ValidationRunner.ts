@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { runProcess } from "../tools/shell/AsyncProcess.js";
+import { ToolExecutionError, type ToolContext } from "../tools/ToolTypes.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DocdexClient } from "../docdex/DocdexClient.js";
@@ -12,6 +13,9 @@ import type {
 } from "./Types.js";
 
 export interface ValidationRunnerOptions {
+  signal?: AbortSignal;
+  shellExecutor?: ToolContext["shellExecutor"];
+  onOutput?: ToolContext["onOutput"];
   allowShell: boolean;
   shellAllowlist: string[];
   workspaceRoot: string;
@@ -340,6 +344,7 @@ export class ValidationRunner {
   }
 
   async run(steps: string[], runOptions: ValidationRunOptions = {}): Promise<ValidationResult> {
+    this.options.signal?.throwIfAborted();
     const errors: string[] = [];
     const touchedFiles = (runOptions.touchedFiles ?? []).map((entry) => entry.trim()).filter(Boolean);
     const languageSignals = detectLanguageSignals(touchedFiles);
@@ -415,6 +420,7 @@ export class ValidationRunner {
     };
 
     for (const check of checks) {
+      this.options.signal?.throwIfAborted();
       const startedAt = Date.now();
       const step = check.step;
       if (!step) {
@@ -492,55 +498,27 @@ export class ValidationRunner {
         });
         continue;
       }
-      const result = spawnSync(command, args, {
-        cwd: this.options.workspaceRoot,
-        encoding: "utf8",
-        timeout: this.options.shellTimeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS,
-      });
-      if (result.error) {
-        const errorMessage = result.error.message;
-        const timeoutHit =
-          result.error.name === "TimeoutError"
-          || (result.error as { code?: string }).code === "ETIMEDOUT"
-          || result.error.message.toLowerCase().includes("timed out");
+      try {
+        const result = await (this.options.shellExecutor ?? runProcess)(command, args, {
+          workspaceRoot: this.options.workspaceRoot, signal: this.options.signal,
+          shellTimeoutMs: this.options.shellTimeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS, onOutput: this.options.onOutput,
+        });
+        this.options.signal?.throwIfAborted();
+        const details = result.data as { stdout?: string } | undefined;
+        pushResult({ ...check, status: "passed", evidence: compactText(details?.stdout ?? result.output) ?? `command succeeded: ${command}`, duration_ms: Date.now() - startedAt });
+      } catch (error) {
+        this.options.signal?.throwIfAborted();
+        const code = error instanceof ToolExecutionError ? error.code : undefined;
+        const details = error instanceof ToolExecutionError ? error.details as { stdout?: string } | undefined : undefined;
         pushResult({
           ...check,
           status: "failed",
-          reason_code: timeoutHit
-            ? "verification_command_timeout"
-            : "verification_tool_unavailable",
-          message: errorMessage,
+          reason_code: code === "tool_timeout" ? "verification_command_timeout" : code === "tool_execution_failed" ? "verification_command_failed" : "verification_tool_unavailable",
+          message: error instanceof Error ? error.message : String(error),
+          evidence: compactText(details?.stdout),
           duration_ms: Date.now() - startedAt,
         });
-        continue;
       }
-      if (result.status === null && result.signal === "SIGTERM") {
-        pushResult({
-          ...check,
-          status: "failed",
-          reason_code: "verification_command_timeout",
-          message: `command timed out: ${command}`,
-          duration_ms: Date.now() - startedAt,
-        });
-        continue;
-      }
-      if (result.status !== 0) {
-        pushResult({
-          ...check,
-          status: "failed",
-          reason_code: "verification_command_failed",
-          message: result.stderr?.toString().trim() || `command failed: ${command}`,
-          evidence: compactText(result.stdout?.toString()),
-          duration_ms: Date.now() - startedAt,
-        });
-        continue;
-      }
-      pushResult({
-        ...check,
-        status: "passed",
-        evidence: compactText(result.stdout?.toString()) ?? `command succeeded: ${command}`,
-        duration_ms: Date.now() - startedAt,
-      });
     }
 
     const totals: ValidationTotals = {

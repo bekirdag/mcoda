@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-11-04T20:44:04.394915+00:00",
+  "cases": 50,
+  "criteriaPerCase": 5,
+  "seed": 202611042037,
+  "promptsSha256": "2f7d23f1278427eefe8bb93ea130927e3e5e043786ecff7b6c4a34a00865a5a6",
+  "gradingSha256": "2483d6d7fb72fb2faa7dbb18163bb588f64662331ecf93287171b02a91de7ff3",
+  "limitations": [
+    "Fresh synthetic fixtures; task archetypes may be familiar.",
+    "Single paired first attempts; objective read-only workplace deliverables, not full autonomous project execution.",
+    "Raw gets full files; Codali has read-only tools. No claim of tool-parity attribution."
+  ]
+}

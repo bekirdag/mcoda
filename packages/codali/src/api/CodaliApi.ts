@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { EffortLevel, ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
+import { ConfiguredModelScope, type ScopedModelUsage } from "../providers/ConfiguredModelScope.js";
+import type { ModelCallerContext, ModelInvocation } from "../providers/ConfiguredProvider.js";
 import { attachHttpTools } from "../connectors/http/HttpToolSource.js";
 import { attachMcpTools } from "../connectors/mcp/McpToolSource.js";
 import {
@@ -104,6 +107,7 @@ export interface CodaliToolCallRecord {
 }
 
 export interface CodaliResult {
+  orchestration?: { configHash: string; usage: ScopedModelUsage; toolCalls: number; routes: ModelInvocation[] };
   status: CodaliGatewayStatus;
   /** Text answer, or the clarifying question when status is needs_clarification. */
   answer: string;
@@ -171,6 +175,9 @@ const toolCallRecords = (tracer: GatewayTracer): CodaliToolCallRecord[] =>
   }));
 
 export interface CodaliRunDependencies {
+  /** Trusted host policy, never copied from a tenant's request payload. */
+  orchestration?: { resolved: ResolvedOrchestrationConfig; effort?: EffortLevel; caller?: ModelCallerContext };
+  signal?: AbortSignal;
   loadInventory?: typeof getAgentInventory;
   resolveRunContext?: (workspaceRoot: string) => Promise<RunContext>;
   buildRegistry?: (workspaceRoot: string, context: RunContext) => ToolRegistry;
@@ -187,6 +194,20 @@ export const runCodali = async (
   request: CodaliRequest,
   deps: CodaliRunDependencies = {},
 ): Promise<CodaliResult> => {
+  if (!deps.orchestration) return runCodaliWithinScope(request, deps);
+  if (deps.createProvider) throw new Error("Configured Codali API cannot accept a legacy provider override");
+  if (request.media) throw new Error("Configured Codali API media must be registered by the host using approved bindings; request media overrides are not allowed");
+  const routes: ModelInvocation[] = [];
+  const scope = new ConfiguredModelScope(deps.orchestration.resolved, { effort: deps.orchestration.effort, signal: deps.signal, caller: deps.orchestration.caller,
+    onEvent: event => { if (event.type === "intent" && event.route) routes.push(event.route); } });
+  try {
+    for (const binding of ["planner", "synthesizer", "worker"]) scope.models(binding);
+    const result = await runCodaliWithinScope(request, deps, scope);
+    return { ...result, orchestration: { configHash: scope.configHash, usage: scope.snapshot(), toolCalls: scope.toolsUsed, routes } };
+  } finally { scope.close(); }
+};
+
+const runCodaliWithinScope = async (request: CodaliRequest, deps: CodaliRunDependencies, scope?: ConfiguredModelScope): Promise<CodaliResult> => {
   const workspaceRoot = request.workspaceRoot ?? process.cwd();
   const query = messagesToQuery(request.messages);
   const tracer = new GatewayTracer(query);
@@ -234,7 +255,7 @@ export const runCodali = async (
   const context = resolvedContext;
   for (const warning of context.warnings ?? []) tracer.addWarning(warning);
 
-  const inventory = await (deps.loadInventory ?? getAgentInventory)();
+  const inventory = scope ? { agents: [], warnings: [] } : await (deps.loadInventory ?? getAgentInventory)();
   const drivable = filterLocallyDrivable(inventory.agents);
   const roles = resolveConfigurableRoles({
     inventory: drivable,
@@ -245,7 +266,7 @@ export const runCodali = async (
 
   const orchestrator = roles.assignments.orchestrator;
   const synthesizer = roles.assignments.synthesizer;
-  if (!orchestrator && !synthesizer) {
+  if (!scope && !orchestrator && !synthesizer) {
     return {
       status: "failed",
       answer: "No usable model agent could be resolved for this run.",
@@ -269,11 +290,11 @@ export const runCodali = async (
   const baseProvider = deps.createProvider ?? createProviderForAssignment;
   const makeProvider: typeof createProviderForAssignment = (assignment, options) =>
     baseProvider(assignment, { clientIdentity, clientProduct, ...options });
-  const primary = makeProvider((synthesizer ?? orchestrator)!);
-  const orchestratorProvider = orchestrator ? makeProvider(orchestrator) : undefined;
+  const primary = scope ? scope.provider("synthesizer") : makeProvider((synthesizer ?? orchestrator)!);
+  const orchestratorProvider = scope ? scope.provider("planner") : orchestrator ? makeProvider(orchestrator) : undefined;
 
   const workerCandidates = [roles.toolCapable, orchestrator, synthesizer].filter(Boolean);
-  let worker = primary;
+  let worker = scope ? scope.provider("worker") : primary;
   for (const candidate of workerCandidates) {
     const provider = makeProvider(candidate!);
     if (providerSupportsToolCalls(provider)) {
@@ -287,7 +308,7 @@ export const runCodali = async (
 
   // ---- Tools ------------------------------------------------------------
   const registry =
-    deps.buildRegistry?.(workspaceRoot, context) ?? buildDefaultRegistry(workspaceRoot, context);
+    deps.buildRegistry?.(workspaceRoot, context) ?? buildDefaultRegistry(workspaceRoot, context, scope);
 
   const mcp = await (deps.attachMcp ?? attachMcpTools)({ context, toolRegistry: registry });
   for (const warning of mcp.warnings) tracer.addWarning(warning);
@@ -321,10 +342,10 @@ export const runCodali = async (
   // A run with no tool budget is a run without tools. Offering them anyway
   // produced tasks that could not execute, and a failed job where the honest
   // outcome was an answer given without them.
-  const toolBudget = min(
+  const toolBudget = Math.min(scope?.budget().maxToolCalls ?? Infinity, min(
     request.budgets?.maxToolCalls ?? DEFAULTS.maxToolCalls,
     context.limits?.maxToolCalls,
-  );
+  ));
   const allowedTools = toolsExecutable && toolBudget > 0
     ? (context.allowedTools ?? defaultAllowed).filter((tool) => registered.includes(tool))
     : [];
@@ -349,12 +370,13 @@ export const runCodali = async (
   // ---- Budgets ----------------------------------------------------------
   const maxRounds = min(request.budgets?.maxRounds ?? DEFAULTS.maxRounds, context.limits?.maxRounds);
   const maxToolCalls = toolBudget;
-  const deadlineMs = min(
+  const deadlineMs = Math.min(scope?.budget().timeoutMs ?? Infinity, min(
     request.budgets?.deadlineMs ?? DEFAULTS.deadlineMs,
     context.limits?.deadlineMs,
-  );
+  ));
 
   const gatewayRequest: CodaliGatewayRequest = {
+    metadata: scope ? { orchestration: { configHash: scope.configHash, effort: scope.effort, scopeId: scope.id } } : undefined,
     id: runId,
     query,
     mode: request.mode ?? "balanced",
@@ -375,7 +397,7 @@ export const runCodali = async (
       maxIterations: maxRounds,
       maxRuntimeMs: deadlineMs,
       maxToolCalls,
-      maxModelCalls: request.budgets?.maxModelCalls ?? DEFAULTS.maxModelCalls,
+      maxModelCalls: Math.min(request.budgets?.maxModelCalls ?? DEFAULTS.maxModelCalls, scope?.budget().maxModelCalls ?? Infinity),
       maxEvidenceItems: 40,
       maxImageArtifacts: request.media ? 4 : 0,
       maxContextPackTokens: 16_000,
@@ -406,6 +428,8 @@ export const runCodali = async (
       provider: worker,
       registry,
       toolContext: {
+        signal: scope?.signal ?? deps.signal,
+        beforeTool: scope ? async () => scope.reserveTool() : undefined,
         workspaceRoot,
         allowShell: false,
         allowDestructiveOperations: false,
@@ -435,6 +459,7 @@ export const runCodali = async (
 
   try {
     const result = await gateway.run(gatewayRequest);
+    scope?.signal.throwIfAborted();
     return {
       status: result.status,
       answer: result.answer,
@@ -475,9 +500,13 @@ export const runCodali = async (
 const buildDefaultRegistry = (
   workspaceRoot: string,
   context: RunContext,
+  scope?: ConfiguredModelScope,
 ): ToolRegistry => {
   const registry = new ToolRegistry();
   const client = new DocdexClient({
+    signal: () => scope?.signal,
+    beforeRequest: scope ? () => scope.reserveTool() : undefined,
+    localSearchOnly: Boolean(scope),
     baseUrl: context.docdex?.baseUrl ?? "http://127.0.0.1:28491",
     repoRoot: docdexRepoRootFor(context.repo?.root, context.docdex?.repoId, workspaceRoot),
     repoId: context.docdex?.repoId,

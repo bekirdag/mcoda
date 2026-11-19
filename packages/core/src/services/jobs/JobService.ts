@@ -136,9 +136,6 @@ export class JobService {
   private workspaceRepoInit = false;
   private telemetryConfig?: { optOut?: boolean; strict?: boolean };
   private telemetryWarningShown = false;
-  private telemetryRemoteWarningShown = false;
-  private perRunTelemetryDisabled: boolean;
-  private envTelemetryDisabled: boolean;
   private requireRepo: boolean;
   private workspaceRoot: string;
   private workspaceId: string;
@@ -190,8 +187,6 @@ export class JobService {
     this.workspaceRoot = resolvedRoot;
     this.workspaceId = typeof workspace === "string" ? resolvedRoot : workspace.workspaceId ?? resolvedRoot;
     this.mcodaDirOverride = typeof workspace === "string" ? undefined : workspace.mcodaDir;
-    this.perRunTelemetryDisabled = options.noTelemetry ?? false;
-    this.envTelemetryDisabled = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
     this.requireRepo = options.requireRepo ?? false;
   }
 
@@ -843,16 +838,9 @@ export class JobService {
       }
       return false;
     }
-    if (
-      (this.perRunTelemetryDisabled || this.envTelemetryDisabled || this.telemetryConfig?.optOut) &&
-      !this.telemetryRemoteWarningShown
-    ) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "Remote telemetry export disabled for this run (--no-telemetry/MCODA_TELEMETRY=off or opt-out). Local logging still enabled unless telemetry.strict is set.",
-      );
-      this.telemetryRemoteWarningShown = true;
-    }
+    // Token usage is recorded only in the local workspace DB; mcoda never
+    // exports it, so --no-telemetry / MCODA_TELEMETRY=off / opt-out need no
+    // extra handling here.
     return true;
   }
 

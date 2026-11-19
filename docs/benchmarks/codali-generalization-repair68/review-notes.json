@@ -1,0 +1,2090 @@
+[
+  {
+    "id": "unseen-31",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "8f79bd1fd1ca1b16",
+    "criteria": [
+      "Atomic capacity reservation before charge prevents oversell including concurrent requests",
+      "Stable payment identity plus payload fingerprint and durable state prevents duplicate logical charges",
+      "Unknown outcomes reconciled by lookup/webhooks; no automatic blind fresh-key retry",
+      "Compensation/refunds and expiry race are explicit; no impossible cross-system atomic guarantee",
+      "Crash injection/duplicate/reordered callbacks/concurrency tests verify invariants and reconciliation"
+    ],
+    "points": [
+      10,
+      10,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "TX A takes a hold, but prose rejects reserve-before-charge and contradicts the diagram; implementation contract is ambiguous.",
+      "Stable key and durable intent present; payload conflict binding absent.",
+      "Provider lookup/same-key recovery and retention caveat explicit.",
+      "Confirmed holds protected; unavailable capacity refunded.",
+      "Crash, duplicate callbacks, expiry and concurrency validation cases included; openly states execution failed."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "0b188473b91783aa5bb95a8b622d3aa234f45bf7470619f22fe6245fef550616",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/8f79bd1fd1ca1b16.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-31",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "3a40df200dccf7fc",
+    "criteria": [
+      "Atomic capacity reservation before charge prevents oversell including concurrent requests",
+      "Stable payment identity plus payload fingerprint and durable state prevents duplicate logical charges",
+      "Unknown outcomes reconciled by lookup/webhooks; no automatic blind fresh-key retry",
+      "Compensation/refunds and expiry race are explicit; no impossible cross-system atomic guarantee",
+      "Crash injection/duplicate/reordered callbacks/concurrency tests verify invariants and reconciliation"
+    ],
+    "points": [
+      20,
+      10,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Seat allocation is transactional before charge (\u00a71,TX1).",
+      "Stable command keys and amount mismatch quarantine exist, but no explicit durable request-payload fingerprint/reuse-conflict policy.",
+      "Unknown outcomes use same-key lookup/reconciliation.",
+      "Expiry ownership guard and orphan-charge refund are explicit.",
+      "Crash matrix, concurrent reservations and reordered webhook tests specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "061d27618edf9239ba12f8da2e5553a1d863d617b2ffb0f35443b2e04c0b8f03",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/3a40df200dccf7fc.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-31",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "f4095dcd88a69c8e",
+    "criteria": [
+      "Atomic capacity reservation before charge prevents oversell including concurrent requests",
+      "Stable payment identity plus payload fingerprint and durable state prevents duplicate logical charges",
+      "Unknown outcomes reconciled by lookup/webhooks; no automatic blind fresh-key retry",
+      "Compensation/refunds and expiry race are explicit; no impossible cross-system atomic guarantee",
+      "Crash injection/duplicate/reordered callbacks/concurrency tests verify invariants and reconciliation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Guarded inventory update before money moves.",
+      "Durable intent identity, amount/currency binding and mismatch quarantine.",
+      "Timeout is UNKNOWN, never fresh-key retry.",
+      "Stranded charge state and expiry/refund ownership explicit.",
+      "Detailed crash injection, webhook reorder, concurrency and reconciliation plan."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "70a4e5b17719c05df687b1b31e0e90765a308e0637b59af531cde0a7b00823e2",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/f4095dcd88a69c8e.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-32",
+    "arm": "before",
+    "score": 60,
+    "anonymousId": "d2355bfe98057a50",
+    "criteria": [
+      "Identifies backup wrapped-key recoverability with surviving shared root",
+      "Per-tenant irreversible revocation/key destruction or honest delayed deletion guarantee",
+      "Enumerates cached plaintext/keys, replicas, exports and recovery copies without false guarantees",
+      "Restore applies durable deletion tombstones and does not resurrect tenant access; legal holds handled before delete",
+      "Verifiable drills include old backup restore/key unavailable and other tenant intact; threat assumptions explicit"
+    ],
+    "points": [
+      20,
+      0,
+      10,
+      20,
+      10
+    ],
+    "notes": [
+      "Correctly identifies backup and cache recovery paths.",
+      "Destroying inner DEK while its wrapped backup survives shared root is not crypto-shredding; backup tombstone option does not fix cryptographic recoverability.",
+      "Replica/cache inventory present but false irreversible guarantee remains.",
+      "Restore tombstones and held state explicitly discussed.",
+      "Tests and caveats present, but key-hierarchy threat assumption is incorrect and a model test remains failing."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "78fb03ff18e657d556db7e14eab226c203b19b2906692e070138bbe4580fcc4a",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/d2355bfe98057a50.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-32",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "269372c1a106e5e8",
+    "criteria": [
+      "Identifies backup wrapped-key recoverability with surviving shared root",
+      "Per-tenant irreversible revocation/key destruction or honest delayed deletion guarantee",
+      "Enumerates cached plaintext/keys, replicas, exports and recovery copies without false guarantees",
+      "Restore applies durable deletion tombstones and does not resurrect tenant access; legal holds handled before delete",
+      "Verifiable drills include old backup restore/key unavailable and other tenant intact; threat assumptions explicit"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      20,
+      10
+    ],
+    "notes": [
+      "Identifies wrapped DEK recoverability from90day backups.",
+      "Separate non-backed-up tenant shred secret breaks root-key decryption path.",
+      "Quorum cache acknowledgement does not establish deletion from every plaintext/key cache; claims conflict with unreachable-cache discussion.",
+      "Durable shred ledger and pre-deletion legal-hold gate specified.",
+      "Restore/other-tenant tests included, but declares failing quorum tests mere harness bugs and promises corrected success without evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "865bc949cc172f9907340af1b21101e792bc179427f6e835f265251bdb7970de",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/269372c1a106e5e8.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-32",
+    "arm": "raw_tools",
+    "score": 90,
+    "anonymousId": "921c74423e18e9cd",
+    "criteria": [
+      "Identifies backup wrapped-key recoverability with surviving shared root",
+      "Per-tenant irreversible revocation/key destruction or honest delayed deletion guarantee",
+      "Enumerates cached plaintext/keys, replicas, exports and recovery copies without false guarantees",
+      "Restore applies durable deletion tombstones and does not resurrect tenant access; legal holds handled before delete",
+      "Verifiable drills include old backup restore/key unavailable and other tenant intact; threat assumptions explicit"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      20,
+      20
+    ],
+    "notes": [
+      "Explains old backups plus surviving root.",
+      "Tenant key destruction or explicitly weaker delayed promise.",
+      "Enumerates copies/exports/replicas, but TTL fallback leaves immediate-cache guarantee incomplete.",
+      "Restore tombstones and legal hold precede destruction.",
+      "Restore drills, other-tenant independence and key-provider assumptions specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "c54980bb6314b9c8966c88d3cde4429b03e1a9701495d06749d3bc1815872ac9",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/921c74423e18e9cd.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-33",
+    "arm": "before",
+    "score": 90,
+    "anonymousId": "875134bcb7066a3d",
+    "criteria": [
+      "Base revision or per-field base values distinguish independent from conflicting edits",
+      "Result preserves B assignee while A status conflicts with escalated",
+      "Atomic compare-and-set/version increment prevents races during resolution",
+      "Stable operation IDs and tombstones handle retries and deletion versus update",
+      "Tests cover offline reorder, duplicate upload, stale resolution and visible conflict UI"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      20,
+      20
+    ],
+    "notes": [
+      "Per-field base revision/value comparison.",
+      "Preserves independent assignee and exposes status conflict.",
+      "Atomic resolution is stated but clear compare-and-set against concurrently changed revision is under-specified.",
+      "Mutation IDs and deletion tombstones included.",
+      "Duplicate/stale/offline/UI validation plan included."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "173f0958613adde38ccb149a4e9f009264a4e5e0189c63a32ff2c739a3116cb9",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/875134bcb7066a3d.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-33",
+    "arm": "after",
+    "score": 70,
+    "anonymousId": "f4cac5304a82e720",
+    "criteria": [
+      "Base revision or per-field base values distinguish independent from conflicting edits",
+      "Result preserves B assignee while A status conflicts with escalated",
+      "Atomic compare-and-set/version increment prevents races during resolution",
+      "Stable operation IDs and tombstones handle retries and deletion versus update",
+      "Tests cover offline reorder, duplicate upload, stale resolution and visible conflict UI"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      10,
+      10
+    ],
+    "notes": [
+      "Base/server/incoming comparison defined.",
+      "Worked trace retains Bo and escalated with manual status conflict.",
+      "Revision check then increment is stated without atomic CAS implementation.",
+      "Deletion pseudocode accepts unchanged deletion flag before checking concurrent field edits, contradicting claimed conflict invariant.",
+      "Relevant tests listed, but unresolved model failures and contradictory deletion fix prevent complete validation credit."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "f97a8658337da7de327b1a0e480c6f642a5f1ae884c4ec3453f378c0f07840a3",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/f4cac5304a82e720.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-33",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "bc34f0538687bac7",
+    "criteria": [
+      "Base revision or per-field base values distinguish independent from conflicting edits",
+      "Result preserves B assignee while A status conflicts with escalated",
+      "Atomic compare-and-set/version increment prevents races during resolution",
+      "Stable operation IDs and tombstones handle retries and deletion versus update",
+      "Tests cover offline reorder, duplicate upload, stale resolution and visible conflict UI"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Three-way field merge with base hashes.",
+      "Worked example preserves Bo and surfaces escalated/closed conflict.",
+      "Expected revision resolution and transactionally written revision/log/dedupe.",
+      "Stable op IDs and explicit delete-vs-update conflicts.",
+      "Reordering, retry, stale resolution and conflict UI validation specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "af82c4345655816e1e433fddf61970d03bfbe7c12fde341775ee04b964b74969",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/bc34f0538687bac7.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-34",
+    "arm": "before",
+    "score": 100,
+    "anonymousId": "7aa1c8848bf83ca2",
+    "criteria": [
+      "Stable unique event identity with durable dedup and explicit conflict policy",
+      "Event time versus ingestion time and late correction window correctly separated",
+      "Deterministic recompute/upsert aggregates avoiding double count",
+      "Deletion tombstones/exclusion propagate to raw data/backups/replay with retention limits honestly stated",
+      "Tests combine duplicate/out-of-order data, late corrections, erase then replay and tenant isolation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Stable event identity, revision and deterministic conflict resolution.",
+      "Event and ingestion timestamps separated with late-data policy.",
+      "Latest effective revisions and deterministic aggregate rebuild.",
+      "Deletion propagation, replay exclusion and backup retention limitations explicit.",
+      "Replay/correction/deletion and isolation validation specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "f18f207ae0e3535f99f71a71fe15e7b344c4b5a3467eb4741d85141f05642c2b",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/7aa1c8848bf83ca2.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-34",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "512562d5fe4e122b",
+    "criteria": [
+      "Stable unique event identity with durable dedup and explicit conflict policy",
+      "Event time versus ingestion time and late correction window correctly separated",
+      "Deterministic recompute/upsert aggregates avoiding double count",
+      "Deletion tombstones/exclusion propagate to raw data/backups/replay with retention limits honestly stated",
+      "Tests combine duplicate/out-of-order data, late corrections, erase then replay and tenant isolation"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Stable event identity/dedup present; conflicting payload for same identity is not explicitly handled.",
+      "Event-time watermark versus arrival and late correction path explicit.",
+      "Full partition recompute and atomic publication.",
+      "Deletion ledger gates ingestion/rebuild/restore and tombstone GC waits for purge.",
+      "Duplicate/late/erase tests present; tenant-isolation and payload-conflict coverage incomplete."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "857c36a3d8a3df08306dad9efa936d5a58d4b4847357f69171b478936174f105",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/512562d5fe4e122b.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-34",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "d7afbbfdaf12f562",
+    "criteria": [
+      "Stable unique event identity with durable dedup and explicit conflict policy",
+      "Event time versus ingestion time and late correction window correctly separated",
+      "Deterministic recompute/upsert aggregates avoiding double count",
+      "Deletion tombstones/exclusion propagate to raw data/backups/replay with retention limits honestly stated",
+      "Tests combine duplicate/out-of-order data, late corrections, erase then replay and tenant isolation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Stable source ID plus payload-hash conflict quarantine.",
+      "Event time/arrival, clock-skew quarantine and late backfill explicit.",
+      "Partition recompute and revision/checksum publication.",
+      "Tombstone gates and artifact purge ledger cover replays/backups.",
+      "Duplicate, correction, erasure and isolation validation plan."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e8fc28183e959582a7dad6e6ce81e4ead5b90c9edf9f50ae542e2f77663f4522",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/d7afbbfdaf12f562.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-35",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "a92c1db9bee25551",
+    "criteria": [
+      "Shows stale worker resuming after replacement can otherwise overwrite data",
+      "Monotonic fencing token atomically issued for lease acquisition",
+      "Target storage atomically rejects stale token on every protected write",
+      "Renewal/expiry use authoritative time and ownership checks; partition tradeoff not unsafe split brain",
+      "Pause/resume, stale renewal and concurrent-acquire tests plus irreversible external side-effect limitation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      10,
+      10
+    ],
+    "notes": [
+      "60second pause versus30second lease trace.",
+      "Row-lock monotonic fence acquisition.",
+      "Storage fencing guard specified.",
+      "DB time and quorum discussed, but CRDT counter offered as substitute for globally ordered fencing is unsafe without stronger coordination.",
+      "Pause/renew/concurrency tests present; irreversible external effect boundary omitted."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "40828cc1049d31e835488d2a431c25fac03f75aacadb067c8baa5ace787c9834",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/a92c1db9bee25551.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-35",
+    "arm": "after",
+    "score": 100,
+    "anonymousId": "4d417e92303df4ea",
+    "criteria": [
+      "Shows stale worker resuming after replacement can otherwise overwrite data",
+      "Monotonic fencing token atomically issued for lease acquisition",
+      "Target storage atomically rejects stale token on every protected write",
+      "Renewal/expiry use authoritative time and ownership checks; partition tradeoff not unsafe split brain",
+      "Pause/resume, stale renewal and concurrent-acquire tests plus irreversible external side-effect limitation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Paused-worker stale write trace explicit.",
+      "Atomic DB-issued increasing fencing generation.",
+      "Protected DB writes require current fence.",
+      "DB-time expiry, ownership renewal and strong coordination.",
+      "Pause/renew/acquire tests and external effect assumptions explicit."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "c1fa4a51688ae246a0bcd03a8bdc0f325ca071e919613b9d4b15821533aed0a3",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/4d417e92303df4ea.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-35",
+    "arm": "raw_tools",
+    "score": 90,
+    "anonymousId": "55ddaaca2b12b3fe",
+    "criteria": [
+      "Shows stale worker resuming after replacement can otherwise overwrite data",
+      "Monotonic fencing token atomically issued for lease acquisition",
+      "Target storage atomically rejects stale token on every protected write",
+      "Renewal/expiry use authoritative time and ownership checks; partition tradeoff not unsafe split brain",
+      "Pause/resume, stale renewal and concurrent-acquire tests plus irreversible external side-effect limitation"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Explains in-flight stale writes beyond lease expiry.",
+      "Atomic monotonic token acquisition.",
+      "Storage enforces token ordering on protected results.",
+      "Authoritative clock and partition availability tradeoff.",
+      "External effect limitation discussed, but using generation token as payment dedup key permits duplicate logical effect across generations."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "7741b66136dfc7170715e4325c18c555070c690479ce172d379fd93fd1e75dc9",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/55ddaaca2b12b3fe.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-36",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "8d2370f9a4ba5ec4",
+    "criteria": [
+      "Expand/backfill/switch/contract sequence preserves old/new overlap",
+      "USD default historical mapping and exact numeric semantics explicit",
+      "Atomic dual-write or equivalent single authoritative representation avoids divergence",
+      "Chunked resumable backfill with concurrent write reconciliation and verification",
+      "Rollback retains old compatible fields/writes until window closes; staged tests and metrics"
+    ],
+    "points": [
+      10,
+      20,
+      10,
+      20,
+      20
+    ],
+    "notes": [
+      "Phases detailed but legacy UPDATE compatibility broken by supplied trigger.",
+      "Exact USD minor-unit equality and currency gate.",
+      "Trigger derives only if NEW.amount_minor IS NULL; old updates to backfilled rows instead raise mismatch, interrupting old writers.",
+      "Chunked resumable guarded backfill and verification described.",
+      "48hour rollback, staged rollout and monitoring specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "bff308ecfdc5a77f1f0d2b9430409b04597781927123f10dfceb79a95ce0b1db",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/8d2370f9a4ba5ec4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-36",
+    "arm": "after",
+    "score": 50,
+    "anonymousId": "388dbc0de6838624",
+    "criteria": [
+      "Expand/backfill/switch/contract sequence preserves old/new overlap",
+      "USD default historical mapping and exact numeric semantics explicit",
+      "Atomic dual-write or equivalent single authoritative representation avoids divergence",
+      "Chunked resumable backfill with concurrent write reconciliation and verification",
+      "Rollback retains old compatible fields/writes until window closes; staged tests and metrics"
+    ],
+    "points": [
+      10,
+      20,
+      0,
+      10,
+      10
+    ],
+    "notes": [
+      "Expand/contract phases present but old/new overlap inconsistent.",
+      "USD-only exact integer projection through rollback window.",
+      "Untouched old binaries write only cents; asynchronous reconciliation cannot meet no-divergence guarantee.",
+      "NULL-only backfill fails to track subsequent old-writer changes to non-NULL rows.",
+      "Rollback window retained but stale compatibility representation undermines correctness."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e12ddbc79786972a16eb7428601cfad01c69fc66ad0b6e72426f9b84e3e45c74",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/388dbc0de6838624.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-36",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "ee640e6cff2964e4",
+    "criteria": [
+      "Expand/backfill/switch/contract sequence preserves old/new overlap",
+      "USD default historical mapping and exact numeric semantics explicit",
+      "Atomic dual-write or equivalent single authoritative representation avoids divergence",
+      "Chunked resumable backfill with concurrent write reconciliation and verification",
+      "Rollback retains old compatible fields/writes until window closes; staged tests and metrics"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Expand alias view then contract; compatibility assumptions gated by tests.",
+      "Historical USD and exact shared integer amount.",
+      "Single physical amount column eliminates dual representation divergence.",
+      "No amount backfill required; engine-dependent fallback chunking and verification included.",
+      "USD gate and old interface retained through48hour rollback."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "9d84596afea2369f1dc24b27c06dde33c2c985f2d59a9e373cf1f22c0eaced0e",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/ee640e6cff2964e4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-37",
+    "arm": "before",
+    "score": 90,
+    "anonymousId": "01ac2bbab36db49a",
+    "criteria": [
+      "Retrieved text explicitly untrusted data, not higher-priority instructions",
+      "Tool capability/argument checks outside model prevent exfiltration and unauthorized refund",
+      "Summary can use factual content without obeying embedded commands",
+      "Refund needs explicit scoped authorization tied to actual user intent and validated target",
+      "Adversarial tests cover tool-output injection, hidden markup, benign quotes and legitimate allowed flow"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Retrieved ticket text is untrusted data.",
+      "External deterministic capability/egress gateway.",
+      "Summarization allowed without obedience to embedded commands.",
+      "Human approval token bound to refund plan.",
+      "Adversarial model suite partially failed; missing obfuscated/multitool variants acknowledged, verification remains incomplete."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "b4d8de8ef67a4f795598e3d02461513b4ca9bc577b7e70836c42f2f88783bcd1",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/01ac2bbab36db49a.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-37",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "450606a25f65e839",
+    "criteria": [
+      "Retrieved text explicitly untrusted data, not higher-priority instructions",
+      "Tool capability/argument checks outside model prevent exfiltration and unauthorized refund",
+      "Summary can use factual content without obeying embedded commands",
+      "Refund needs explicit scoped authorization tied to actual user intent and validated target",
+      "Adversarial tests cover tool-output injection, hidden markup, benign quotes and legitimate allowed flow"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Quoted ticket imperative is data, not authority.",
+      "Restricted egress and token-enforcing refund API.",
+      "Complaint summary remains allowed.",
+      "Explicit user refund request plus supervisor approval token.",
+      "Partial failing test evidence and egress integration still untested."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "dce0cafc67a29b8ba1282c3dcbcb8a9db6c5b3fcf98d24cdec86925d67441e75",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/450606a25f65e839.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-37",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "d8787b07fe3af8d4",
+    "criteria": [
+      "Retrieved text explicitly untrusted data, not higher-priority instructions",
+      "Tool capability/argument checks outside model prevent exfiltration and unauthorized refund",
+      "Summary can use factual content without obeying embedded commands",
+      "Refund needs explicit scoped authorization tied to actual user intent and validated target",
+      "Adversarial tests cover tool-output injection, hidden markup, benign quotes and legitimate allowed flow"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "All retrieved and derived summaries untrusted as authority.",
+      "Tool broker enforces policy outside models and default-deny egress.",
+      "Reader may extract complaint facts without executable directives.",
+      "One-use parameter-bound human token with server-resolved targets.",
+      "Explicit hidden-channel, benign quote, legitimate approval and exfiltration validation plan; no invented execution."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "71ea0d542280b23078842a73cd307e1bce69c9ade28166eb70678932abb187ab",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/d8787b07fe3af8d4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-38",
+    "arm": "before",
+    "score": 100,
+    "anonymousId": "b088bc0761fd3fb3",
+    "criteria": [
+      "Equivalent keyboard/button movement and understandable names/states",
+      "Stable focus after updates/moves, no unsolicited focus theft, accessible dialog return",
+      "Bounded appropriate live regions with urgent versus routine announcement policy",
+      "Responsive semantic layout, readable contrast and non-color status cues",
+      "Concrete keyboard/screenreader/mobile/reduced-motion tests and usable error/empty/loading states"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Non-drag controls and named stages.",
+      "Dialog focus containment/return and stable moves.",
+      "Debounced announcements distinguish priorities.",
+      "Semantic mobile layout, contrast and status labels.",
+      "Keyboard/screenreader/mobile/state validation plan."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "df772cbb9f5069741cdbeb2bf127f0fd74ae0e28b243048ef0f2db8ce5088f4e",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/b088bc0761fd3fb3.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-38",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "e366211305fc16b5",
+    "criteria": [
+      "Equivalent keyboard/button movement and understandable names/states",
+      "Stable focus after updates/moves, no unsolicited focus theft, accessible dialog return",
+      "Bounded appropriate live regions with urgent versus routine announcement policy",
+      "Responsive semantic layout, readable contrast and non-color status cues",
+      "Concrete keyboard/screenreader/mobile/reduced-motion tests and usable error/empty/loading states"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      10,
+      20
+    ],
+    "notes": [
+      "Keyboard move mechanism and named states.",
+      "Rejects focus stealing and specifies user-controlled focus.",
+      "Urgency-sensitive announcements with limits.",
+      "Responsive/non-color design present, but aria-pressed on article container and menu semantics are not consistently valid.",
+      "Assistive-tech, reduced-motion and error-state testing specified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "49696d1fc7672b587822a1242901757b1c76c3d533667cef8a75dc5bdc3c1dbb",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/e366211305fc16b5.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-38",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "8c8e121b24b508a7",
+    "criteria": [
+      "Equivalent keyboard/button movement and understandable names/states",
+      "Stable focus after updates/moves, no unsolicited focus theft, accessible dialog return",
+      "Bounded appropriate live regions with urgent versus routine announcement policy",
+      "Responsive semantic layout, readable contrast and non-color status cues",
+      "Concrete keyboard/screenreader/mobile/reduced-motion tests and usable error/empty/loading states"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Keyboard/button movement and accessible destination state.",
+      "No alert focus theft; move/dialog focus handling specified.",
+      "Rate-limited live summaries and persistent feed.",
+      "Responsive reflow, contrast and non-color cues.",
+      "Concrete assistive technology/mobile/error/loading/reduced-motion checks."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "0cb1d8afcf3ae69bda49b090514207e0d5e8e044c778919ce13615c0f73d250c",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/8c8e121b24b508a7.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-39",
+    "arm": "before",
+    "score": 90,
+    "anonymousId": "80754c6c0b759e47",
+    "criteria": [
+      "Reject absolute/traversal/encoded ambiguity paths and enforce containment at actual filesystem access",
+      "Reject symlink/hardlink/device entries and race-safe extraction in isolated staging",
+      "Enforce cumulative expanded bytes and entry count during streaming, not just headers",
+      "Deterministic duplicate/collision policy and atomic publish only after validation",
+      "Tests include zip bomb, symlink traversal, duplicate/case collision, interrupted cleanup and no partial index"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Descriptor-relative/openat2 confinement.",
+      "Explicit nonregular-entry rejection and isolated staging.",
+      "Streaming cumulative limits.",
+      "Collision rejection and atomic final publication.",
+      "Relevant tests specified but10 of22 checks fail, leaving security invariants only partly verified."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "5642cfb7f3e116652aee2f36320a146eb72c0f018a3e73d0d985d5972f45fac0",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/80754c6c0b759e47.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-39",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "da4cb44664bcd4e3",
+    "criteria": [
+      "Reject absolute/traversal/encoded ambiguity paths and enforce containment at actual filesystem access",
+      "Reject symlink/hardlink/device entries and race-safe extraction in isolated staging",
+      "Enforce cumulative expanded bytes and entry count during streaming, not just headers",
+      "Deterministic duplicate/collision policy and atomic publish only after validation",
+      "Tests include zip bomb, symlink traversal, duplicate/case collision, interrupted cleanup and no partial index"
+    ],
+    "points": [
+      10,
+      10,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Structural checks present, but realpath then write leaves filesystem access race unaddressed.",
+      "Rejects link/device entries, but relies on earlier checks rather than descriptor-level no-follow creation.",
+      "Cumulative streaming budgets and entry caps.",
+      "Case/Unicode collision policy and publish after complete extraction.",
+      "Bomb/traversal/collision/cleanup test plan included; honestly states no successful test run."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "a72030ed1b65c0edd85a878237315f608268b04cd1da63e0b706738d36dae44e",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/da4cb44664bcd4e3.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-39",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "0f3089b12edbbb11",
+    "criteria": [
+      "Reject absolute/traversal/encoded ambiguity paths and enforce containment at actual filesystem access",
+      "Reject symlink/hardlink/device entries and race-safe extraction in isolated staging",
+      "Enforce cumulative expanded bytes and entry count during streaming, not just headers",
+      "Deterministic duplicate/collision policy and atomic publish only after validation",
+      "Tests include zip bomb, symlink traversal, duplicate/case collision, interrupted cleanup and no partial index"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Descriptor-relative containment and ambiguous-path rejection.",
+      "Rejects link/device types; isolated worker and NOFOLLOW path traversal.",
+      "Counts actual expanded stream bytes and entries.",
+      "Canonical collision rejection and publish after verification.",
+      "Bomb/link/collision/interruption/index atomicity validation plan."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "9d0f0f5d25bcde7335ef8a233bca4851e19bdf679a42e207e577d3031bf84efb",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/0f3089b12edbbb11.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-40",
+    "arm": "before",
+    "score": 90,
+    "anonymousId": "b9acdc7aaf6f0683",
+    "criteria": [
+      "Rejects certain root-cause claim; connection contention/shared downstream bottleneck plausible",
+      "Measures service time/queue wait/pools/locks/downstream latency and resource saturation",
+      "Controlled concurrency sweep with fixed workload, warmup, percentiles and error rates",
+      "Backpressure/bounded queues and pool sizing before uncontrolled worker multiplication",
+      "Rollback thresholds, reproducible load and correctness checks; no invented measurements"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Acknowledges missing metrics but infers4x worker service time from throughput without observed in-flight population.",
+      "Pool/locks/service-time/downstream measurement plan.",
+      "Controlled sweep, warmup and percentiles.",
+      "Explicit bounded inflight, producer backpressure and short DB transactions.",
+      "Rollback/correctness invariants and no invented executed experiment."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "8314cbf84df95067f43ac6c22f55ab05389de3e9dae118905ecd5c58ee4615b2",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/b9acdc7aaf6f0683.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-40",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "1596e87e56f40340",
+    "criteria": [
+      "Rejects certain root-cause claim; connection contention/shared downstream bottleneck plausible",
+      "Measures service time/queue wait/pools/locks/downstream latency and resource saturation",
+      "Controlled concurrency sweep with fixed workload, warmup, percentiles and error rates",
+      "Backpressure/bounded queues and pool sizing before uncontrolled worker multiplication",
+      "Rollback thresholds, reproducible load and correctness checks; no invented measurements"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      10,
+      20
+    ],
+    "notes": [
+      "Labels DB hypothesis, but treats raising capacity as definitive falsification and predicts4\u20138x p99 without evidence.",
+      "Measures pool waits, DB and downstream stages.",
+      "Controlled concurrency/load experiments specified.",
+      "Pool sizing considered; bounded queues/backpressure not explicit.",
+      "Correctness checks and go/no-go stages specified; no claimed measured new results."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "9a0f74ed7df53c5fcc78496c40484493d8900d9b98d2e144c465c8b7bc9f7144",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/1596e87e56f40340.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-40",
+    "arm": "raw_tools",
+    "score": 100,
+    "anonymousId": "7a3bd55551386377",
+    "criteria": [
+      "Rejects certain root-cause claim; connection contention/shared downstream bottleneck plausible",
+      "Measures service time/queue wait/pools/locks/downstream latency and resource saturation",
+      "Controlled concurrency sweep with fixed workload, warmup, percentiles and error rates",
+      "Backpressure/bounded queues and pool sizing before uncontrolled worker multiplication",
+      "Rollback thresholds, reproducible load and correctness checks; no invented measurements"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "notes": [
+      "Separates observations from falsifiable hypotheses.",
+      "Pool wait/DB/worker profiling plan.",
+      "Fixed-load staged worker sweep and latency/error measures.",
+      "Semaphore bounded concurrency before worker multiplication.",
+      "Validation stages and correctness/rollback decisions explicit."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "00cf4e483ffc4025cb4bbc018c93e8b38f2d24e915a96cc94f7c518e30c96e97",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/7a3bd55551386377.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-41",
+    "arm": "before",
+    "score": 70,
+    "anonymousId": "61f232d85bf9cdf1",
+    "criteria": [
+      "Must-revalidate forbids stale reuse despite client max-stale",
+      "Disconnected validation failure returns error, normally504 rather than cached success",
+      "No-cache permits storage but requires successful validation before reuse",
+      "No-store prohibits storage under its rules but is not sufficient privacy guarantee",
+      "Cites retrieved RFC9111 relevant sections and separates policy from normative requirements"
+    ],
+    "points": [
+      20,
+      10,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Correct cache directives; disconnected response ambiguous (503 or 504); only RFC front matter retrieved."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "c021544e80eb2709c082c7b8cd5322dc1ebd4ee143a899b129d488a9d3ab4872",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/61f232d85bf9cdf1.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-41",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "9d5b044663a155c4",
+    "criteria": [
+      "Must-revalidate forbids stale reuse despite client max-stale",
+      "Disconnected validation failure returns error, normally504 rather than cached success",
+      "No-cache permits storage but requires successful validation before reuse",
+      "No-store prohibits storage under its rules but is not sufficient privacy guarantee",
+      "Cites retrieved RFC9111 relevant sections and separates policy from normative requirements"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Correct directive behavior and 504; required normative passages not retrieved."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "902641144108fbc2a60f97de7dd11ccfb881ba347107811f6cb6fab35331a373",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/9d5b044663a155c4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-41",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "e28072d2e80a8d86",
+    "criteria": [
+      "Must-revalidate forbids stale reuse despite client max-stale",
+      "Disconnected validation failure returns error, normally504 rather than cached success",
+      "No-cache permits storage but requires successful validation before reuse",
+      "No-store prohibits storage under its rules but is not sufficient privacy guarantee",
+      "Cites retrieved RFC9111 relevant sections and separates policy from normative requirements"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/e28072d2e80a8d86.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-42",
+    "arm": "before",
+    "score": 0,
+    "anonymousId": "2727cebb4dde229e",
+    "criteria": [
+      "Rejects signature-only authorization and cross-audience substitution",
+      "Explicit allowed algorithm set/key binding, not token-controlled algorithm choice",
+      "Validates issuer and intended audience with trustworthy key association",
+      "Distinct token purposes/typing with mutually exclusive validation rules",
+      "Primary RFC8725 citations support checks; no claim claims are safe merely because signed"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/2727cebb4dde229e.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-42",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "f0d9ce90e777b31d",
+    "criteria": [
+      "Rejects signature-only authorization and cross-audience substitution",
+      "Explicit allowed algorithm set/key binding, not token-controlled algorithm choice",
+      "Validates issuer and intended audience with trustworthy key association",
+      "Distinct token purposes/typing with mutually exclusive validation rules",
+      "Primary RFC8725 citations support checks; no claim claims are safe merely because signed"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Rejects signature-only validation with audience, issuer, algorithm and purpose binding; RFC front matter only."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "0141997a4645838444b0c6d43f4fef7cd6820dbfdc471da309facaaf202bd2a6",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/f0d9ce90e777b31d.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-42",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "bbf14ad4d39e8044",
+    "criteria": [
+      "Rejects signature-only authorization and cross-audience substitution",
+      "Explicit allowed algorithm set/key binding, not token-controlled algorithm choice",
+      "Validates issuer and intended audience with trustworthy key association",
+      "Distinct token purposes/typing with mutually exclusive validation rules",
+      "Primary RFC8725 citations support checks; no claim claims are safe merely because signed"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/bbf14ad4d39e8044.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-43",
+    "arm": "before",
+    "score": 50,
+    "anonymousId": "01b45458ae986cb4",
+    "criteria": [
+      "Public client refresh tokens require sender constraint or rotation",
+      "Rotation invalidates previous token while retaining relationship",
+      "Reuse detection revokes active token/family per described mechanism rather than ignoring",
+      "Cannot identify attacker versus legitimate caller solely from reuse; fresh grant may be needed",
+      "Cites RFC9700 section4.14 and does not promise prevention of all theft"
+    ],
+    "points": [
+      10,
+      10,
+      10,
+      20,
+      0
+    ],
+    "notes": [
+      "Rotation compromise identified, but public-client requirement and active-family invalidation imprecise; wrong section and missing normative RFC retrieval."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "7b76797fa92f2b79bc4109c24957a8ddcae2895228fd7ff5d89a0f93f556f83f",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/01b45458ae986cb4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-43",
+    "arm": "after",
+    "score": 50,
+    "anonymousId": "50379e9fa575a660",
+    "criteria": [
+      "Public client refresh tokens require sender constraint or rotation",
+      "Rotation invalidates previous token while retaining relationship",
+      "Reuse detection revokes active token/family per described mechanism rather than ignoring",
+      "Cannot identify attacker versus legitimate caller solely from reuse; fresh grant may be needed",
+      "Cites RFC9700 section4.14 and does not promise prevention of all theft"
+    ],
+    "points": [
+      10,
+      10,
+      10,
+      20,
+      0
+    ],
+    "notes": [
+      "Rotation/reuse described, but sender constraint framed as recommendation and revocation conditional on confirmed compromise; overview instead of normative RFC."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "ce00f9b1fc6601b076fee5c8cd7b3081b72360a4e388ef4d32189b76fd4ab18b",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/50379e9fa575a660.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-43",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "d7f004051eb05eb7",
+    "criteria": [
+      "Public client refresh tokens require sender constraint or rotation",
+      "Rotation invalidates previous token while retaining relationship",
+      "Reuse detection revokes active token/family per described mechanism rather than ignoring",
+      "Cannot identify attacker versus legitimate caller solely from reuse; fresh grant may be needed",
+      "Cites RFC9700 section4.14 and does not promise prevention of all theft"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/d7f004051eb05eb7.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-44",
+    "arm": "before",
+    "score": 40,
+    "anonymousId": "c62670c9b2563c34",
+    "criteria": [
+      "Crash trace causes duplicate external charge on replay; commit-before-charge risks loss",
+      "Kafka transactional records/offset scope explained accurately",
+      "External destination requires cooperation/atomic outcome or idempotency for stronger semantics",
+      "Read-committed hides aborted transactions but does not atomically include arbitrary external side effects",
+      "Cites official design docs and offers honest attainable guarantee"
+    ],
+    "points": [
+      10,
+      10,
+      20,
+      0,
+      0
+    ],
+    "notes": [
+      "Duplicate window and external idempotency covered; Kafka scope incomplete, read_committed absent, no primary evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "d0bf13e836d9f1754c154fccad5312d8297d89ab15be8c9c8b977dc51e86c235",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/c62670c9b2563c34.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-44",
+    "arm": "after",
+    "score": 50,
+    "anonymousId": "35657859b224cedb",
+    "criteria": [
+      "Crash trace causes duplicate external charge on replay; commit-before-charge risks loss",
+      "Kafka transactional records/offset scope explained accurately",
+      "External destination requires cooperation/atomic outcome or idempotency for stronger semantics",
+      "Read-committed hides aborted transactions but does not atomically include arbitrary external side effects",
+      "Cites official design docs and offers honest attainable guarantee"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      0,
+      0
+    ],
+    "notes": [
+      "Explains charge-before-offset duplicate, Kafka transaction scope and external idempotency; omits commit-first loss and read_committed; no requested Apache primary evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "162e5b8910952294c2bd21ed685d3645dc848e8144947c45bd9f0642ca464224",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/35657859b224cedb.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-44",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "00a72648fc446af4",
+    "criteria": [
+      "Crash trace causes duplicate external charge on replay; commit-before-charge risks loss",
+      "Kafka transactional records/offset scope explained accurately",
+      "External destination requires cooperation/atomic outcome or idempotency for stronger semantics",
+      "Read-committed hides aborted transactions but does not atomically include arbitrary external side effects",
+      "Cites official design docs and offers honest attainable guarantee"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/00a72648fc446af4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-45",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "3054839e42d95c48",
+    "criteria": [
+      "Zero-RTT can be replayed; encryption/authentication not sufficient",
+      "Purchase side effects must not blindly execute replayable early data",
+      "Zero-RTT lacks full forward secrecy of ordinary handshake traffic",
+      "Replay defenses need deployment coordination; local cache not automatic global protection",
+      "Cites RFC8446 sections2.3/8 or appendixE.5 and distinguishes app mitigation from TLS guarantee"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Replay, payment mitigation, forward secrecy and multi-region cache limits correct; no primary RFC evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "88654ff370bd14bcf8427e503aa50f1ca69c98098b3be3e5e192cff7dffad3bd",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/3054839e42d95c48.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-45",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "7e72bc84191ac698",
+    "criteria": [
+      "Zero-RTT can be replayed; encryption/authentication not sufficient",
+      "Purchase side effects must not blindly execute replayable early data",
+      "Zero-RTT lacks full forward secrecy of ordinary handshake traffic",
+      "Replay defenses need deployment coordination; local cache not automatic global protection",
+      "Cites RFC8446 sections2.3/8 or appendixE.5 and distinguishes app mitigation from TLS guarantee"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Correct core replay/PSK/deployment conclusions; nonexistent 9.2.3 reference and no primary source."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "36377ba217ceb1f9f1f0aa55dc395502d9cee6b62169da2ad5f7f02860d071c4",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/7e72bc84191ac698.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-45",
+    "arm": "raw_tools",
+    "score": 60,
+    "anonymousId": "ea423ba5dd070c5d",
+    "criteria": [
+      "Zero-RTT can be replayed; encryption/authentication not sufficient",
+      "Purchase side effects must not blindly execute replayable early data",
+      "Zero-RTT lacks full forward secrecy of ordinary handshake traffic",
+      "Replay defenses need deployment coordination; local cache not automatic global protection",
+      "Cites RFC8446 sections2.3/8 or appendixE.5 and distinguishes app mitigation from TLS guarantee"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      10,
+      0
+    ],
+    "notes": [
+      "Correct reject-payment recommendation and forward-secrecy distinction. Incorrectly describes replay-window/client-promise/max_early_data_size mechanism and only two defenses; no primary text retrieved."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "5676be23f25a51a16af5d8b487fdaf7e9ec32cc251e9fa2ceeb9d91ba6b07d5c",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/ea423ba5dd070c5d.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-46",
+    "arm": "before",
+    "score": 70,
+    "anonymousId": "c2504c7ec9c663dd",
+    "criteria": [
+      "AA minimum target24x24 with exceptions,44x44 relates to enhanced criterion",
+      "Dragging needs single-pointer alternative unless essential/useragent exception",
+      "Keyboard access independent requirement, drag replacement alone insufficient",
+      "Focus not entirely obscured by author content is AA requirement",
+      "Inline target exception correctly considered, primary WCAG2.2 criteria cited"
+    ],
+    "points": [
+      10,
+      10,
+      20,
+      10,
+      20
+    ],
+    "notes": [
+      "Retrieved primary target-size/inline exception. Does not identify enhanced 44px criterion, drag exceptions or precise normative focus threshold; other rules tentative."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "5ec25b09466e0c7e6072c5d710125040d244ffa0b23fa5b0af6680db4170b473",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/c2504c7ec9c663dd.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-46",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "82a07c446ff34586",
+    "criteria": [
+      "AA minimum target24x24 with exceptions,44x44 relates to enhanced criterion",
+      "Dragging needs single-pointer alternative unless essential/useragent exception",
+      "Keyboard access independent requirement, drag replacement alone insufficient",
+      "Focus not entirely obscured by author content is AA requirement",
+      "Inline target exception correctly considered, primary WCAG2.2 criteria cited"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Correct AA/AAA, drag, keyboard and focus principles; inline exception covered but only secondary pages retrieved."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "18d863c36a1d766e328c934a158afbdcb9e763d293cf5c6ea20b4fad6b3c14c7",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/82a07c446ff34586.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-46",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "84e91a40131771ed",
+    "criteria": [
+      "AA minimum target24x24 with exceptions,44x44 relates to enhanced criterion",
+      "Dragging needs single-pointer alternative unless essential/useragent exception",
+      "Keyboard access independent requirement, drag replacement alone insufficient",
+      "Focus not entirely obscured by author content is AA requirement",
+      "Inline target exception correctly considered, primary WCAG2.2 criteria cited"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/84e91a40131771ed.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-47",
+    "arm": "before",
+    "score": 70,
+    "anonymousId": "beafe7f7c460e419",
+    "criteria": [
+      "Reject second stale different edit, normally412; do not overwrite",
+      "If-Match uses strong comparison",
+      "Condition evaluated before mutation atomically in implementation",
+      "If-Unmodified-Since ignored when If-Match supplied",
+      "Already-applied success exception distinguished; RFC9110 sections13.1/13.2 cited"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      10,
+      10
+    ],
+    "notes": [
+      "Correct reject/strong/exception; no atomic compare-mutate implementation. Describes order rather than ignoring date condition; incorrect If-Match section, front matter only."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3f0b1d54f8cb3d8b9572e5127f68f7d7e3b5fcc85f5243b196b96ca9af423a1",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/beafe7f7c460e419.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-47",
+    "arm": "after",
+    "score": 70,
+    "anonymousId": "a0a79d3d829eead2",
+    "criteria": [
+      "Reject second stale different edit, normally412; do not overwrite",
+      "If-Match uses strong comparison",
+      "Condition evaluated before mutation atomically in implementation",
+      "If-Unmodified-Since ignored when If-Match supplied",
+      "Already-applied success exception distinguished; RFC9110 sections13.1/13.2 cited"
+    ],
+    "points": [
+      20,
+      20,
+      10,
+      10,
+      10
+    ],
+    "notes": [
+      "Correct reject/strong/exception; no atomic implementation and does not explicitly ignore date condition when If-Match exists. Wrong section references and no normative passage."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "b2f931309d65350ea274f102b0179e37913f2447bcec984bbffcba4249db8dd7",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/a0a79d3d829eead2.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-47",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "ae6a54c8f7043f44",
+    "criteria": [
+      "Reject second stale different edit, normally412; do not overwrite",
+      "If-Match uses strong comparison",
+      "Condition evaluated before mutation atomically in implementation",
+      "If-Unmodified-Since ignored when If-Match supplied",
+      "Already-applied success exception distinguished; RFC9110 sections13.1/13.2 cited"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/ae6a54c8f7043f44.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-48",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "6a714218ab652b40",
+    "criteria": [
+      "Population variation statistic, not fraction of individual trait",
+      "Population/environment specificity and transfer limitation",
+      "High heritability does not mean environmental intervention impossible",
+      "No specific genes or causality inferred from number alone",
+      "Authoritative retrieved genetics source cited; no invented study methods"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Correct population variance, environment and transfer limits, no invented study/gene evidence. No authoritative source; additionally unexpected Chinese response to English task (recorded, no extra rubric deduction)."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "a8b6014096a210c891f1da70832ce1fee32c42a752ab0f61aebeba86ce9f37be",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/6a714218ab652b40.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-48",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "892bc56befb8bd25",
+    "criteria": [
+      "Population variation statistic, not fraction of individual trait",
+      "Population/environment specificity and transfer limitation",
+      "High heritability does not mean environmental intervention impossible",
+      "No specific genes or causality inferred from number alone",
+      "Authoritative retrieved genetics source cited; no invented study methods"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Correct population and environment interpretation; SEP opening passage provides partial population framing, not requested detailed evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "23b69989629141af636270726dc60c7a937b3599ac71c726d8fe6ddce751d81b",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/892bc56befb8bd25.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-48",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "06b0ae30e3b29832",
+    "criteria": [
+      "Population variation statistic, not fraction of individual trait",
+      "Population/environment specificity and transfer limitation",
+      "High heritability does not mean environmental intervention impossible",
+      "No specific genes or causality inferred from number alone",
+      "Authoritative retrieved genetics source cited; no invented study methods"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/06b0ae30e3b29832.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-49",
+    "arm": "before",
+    "score": 80,
+    "anonymousId": "2bc927f89c6252b1",
+    "criteria": [
+      "Axial tilt changes sunlight angle/daylength as principal seasonal mechanism",
+      "Opposite hemisphere seasons",
+      "Present-day perihelion inJanuary/aphelion inJuly contradict proposed northern summer cause",
+      "Distance does affect flux but does not dominate Earth seasons; avoid absolute no-effect claim",
+      "Retrieves and cites two relevant primary institutional sources"
+    ],
+    "points": [
+      10,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Tilt and angle but omits longer-day mechanism; NASA retrieved, second required institutional source missing."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "ec58a41fe5abdf3805eca93562d18056c72548ab8efade27b38bd4a844add5b0",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/2bc927f89c6252b1.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-49",
+    "arm": "after",
+    "score": 80,
+    "anonymousId": "6cfbcf21bab23959",
+    "criteria": [
+      "Axial tilt changes sunlight angle/daylength as principal seasonal mechanism",
+      "Opposite hemisphere seasons",
+      "Present-day perihelion inJanuary/aphelion inJuly contradict proposed northern summer cause",
+      "Distance does affect flux but does not dominate Earth seasons; avoid absolute no-effect claim",
+      "Retrieves and cites two relevant primary institutional sources"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      0
+    ],
+    "notes": [
+      "Mechanism, opposite hemispheres, dates and distance nuance correct; only Spaceweather retrieved, not NASA plus second institutional source."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "bf631c58221e92e29c20459fe898d00b1ffe62b8edbb4770ceb16e1e8bd09d91",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/6cfbcf21bab23959.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-49",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "9a6e8058ac5dbfa6",
+    "criteria": [
+      "Axial tilt changes sunlight angle/daylength as principal seasonal mechanism",
+      "Opposite hemisphere seasons",
+      "Present-day perihelion inJanuary/aphelion inJuly contradict proposed northern summer cause",
+      "Distance does affect flux but does not dominate Earth seasons; avoid absolute no-effect claim",
+      "Retrieves and cites two relevant primary institutional sources"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/9a6e8058ac5dbfa6.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-50",
+    "arm": "before",
+    "score": 90,
+    "anonymousId": "a598ba411cfb4c5f",
+    "criteria": [
+      "Confirms1.09 and assessed range0.95-1.20 relative1850-1900 for2011-2020",
+      "Decadal global mean not every year/location; land/ocean differences acknowledged",
+      "Human warming attribution distinguished from simplistic every-event inference",
+      "Event attribution needs event-specific evidence/methods and uncertainty",
+      "Cites retrieved AR6 primary evidence and reports inaccessible sources honestly"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Correct figure/scales/event distinction; no IPCC retrieval and some inaccurate section labels, honestly disclosed."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "01a716300a4b4111b4aae4cc6af89d433d2ff3f0566b6fe23c6644060cd56bfc",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/a598ba411cfb4c5f.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-50",
+    "arm": "after",
+    "score": 90,
+    "anonymousId": "11e2af6027f7a6c4",
+    "criteria": [
+      "Confirms1.09 and assessed range0.95-1.20 relative1850-1900 for2011-2020",
+      "Decadal global mean not every year/location; land/ocean differences acknowledged",
+      "Human warming attribution distinguished from simplistic every-event inference",
+      "Event attribution needs event-specific evidence/methods and uncertainty",
+      "Cites retrieved AR6 primary evidence and reports inaccessible sources honestly"
+    ],
+    "points": [
+      20,
+      20,
+      20,
+      20,
+      10
+    ],
+    "notes": [
+      "Correct range/baseline, scale and event attribution; honest retrieval failure but no IPCC primary evidence."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "9210f96fb3f52987c92565f933e8c816d866d4f6a0bb36a3cc379f07ac70df20",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/11e2af6027f7a6c4.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-50",
+    "arm": "raw_tools",
+    "score": 0,
+    "anonymousId": "f732a293ad0b913c",
+    "criteria": [
+      "Confirms1.09 and assessed range0.95-1.20 relative1850-1900 for2011-2020",
+      "Decadal global mean not every year/location; land/ocean differences acknowledged",
+      "Human warming attribution distinguished from simplistic every-event inference",
+      "Event attribution needs event-specific evidence/methods and uncertainty",
+      "Cites retrieved AR6 primary evidence and reports inaccessible sources honestly"
+    ],
+    "points": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "notes": [
+      "No final answer delivered; tool activity is not an answer."
+    ],
+    "reviewer": "Primary Codex assistant; not candidate Qwen",
+    "answerSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidencePacket": "/home/wodo/.local/state/codali-generalization-20261106/repair68-operations/blind-review/f732a293ad0b913c.json",
+    "limitations": "Single rubric-based review. Author/evaluator overlap; not an independently replicated expert audit."
+  },
+  {
+    "id": "unseen-51",
+    "arm": "before",
+    "caseId": "unseen-51",
+    "score": 4,
+    "categories": {
+      "reproducibility": 0,
+      "businessCorrectness": 0,
+      "security": 0,
+      "uiUx": 0,
+      "engineeringDelivery": 4
+    },
+    "subcriteria": {
+      "reproducibility": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        0,
+        0,
+        0,
+        4
+      ]
+    },
+    "apiChecksPassed": 0,
+    "apiChecksTotal": 27,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Only fixture documents remain. Four engineering points reflect accurate disclosure that no app was built, not implementation credit."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  },
+  {
+    "id": "unseen-51",
+    "arm": "after",
+    "caseId": "unseen-51",
+    "score": 16,
+    "categories": {
+      "reproducibility": 0,
+      "businessCorrectness": 0,
+      "security": 10,
+      "uiUx": 0,
+      "engineeringDelivery": 6
+    },
+    "subcriteria": {
+      "reproducibility": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        2,
+        2,
+        2,
+        0
+      ]
+    },
+    "apiChecksPassed": 0,
+    "apiChecksTotal": 27,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Security receives partial source credit only: password/session primitives, tenant and role gates, parameterized SQL/input validation, and origin checks are present. None is awarded complete runtime assurance.",
+      "Engineering receives partial modular/domain/persistence credit; no executable passing candidate test suite or delivery files. No final model answer, so no delivery-honesty credit.",
+      "Missing scripts/setup.js, scripts/build.js, scripts/test.js and server/index.js. tests/api.test.js imports openDb/closeDb/createServer inconsistent with actual exports; schema helper uses lot_id rather than child_id. No frontend."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  },
+  {
+    "id": "unseen-51",
+    "arm": "raw_tools",
+    "caseId": "unseen-51",
+    "score": 24,
+    "categories": {
+      "reproducibility": 8,
+      "businessCorrectness": 0,
+      "security": 10,
+      "uiUx": 0,
+      "engineeringDelivery": 6
+    },
+    "subcriteria": {
+      "reproducibility": [
+        4,
+        4,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        2,
+        2,
+        2,
+        0
+      ]
+    },
+    "apiChecksPassed": 2,
+    "apiChecksTotal": 27,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Security receives partial source credit only: password/session primitives, tenant and role gates, parameterized SQL/input validation, and origin checks are present. None is awarded complete runtime assurance.",
+      "Engineering receives partial modular/domain/persistence credit; no executable passing candidate test suite or delivery files. No final model answer, so no delivery-honesty credit.",
+      "Setup and repeat setup passed. Build/test scripts and README/delivery absent; /health unavailable; API login times out. Login page renders unstyled (referenced app.css absent) but never authenticates."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  },
+  {
+    "id": "unseen-52",
+    "arm": "before",
+    "caseId": "unseen-52",
+    "score": 4,
+    "categories": {
+      "reproducibility": 0,
+      "businessCorrectness": 0,
+      "security": 0,
+      "uiUx": 0,
+      "engineeringDelivery": 4
+    },
+    "subcriteria": {
+      "reproducibility": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        0,
+        0,
+        0,
+        4
+      ]
+    },
+    "apiChecksPassed": 0,
+    "apiChecksTotal": 26,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Only fixture documents remain. Four engineering points reflect accurate disclosure that no app was built, not implementation credit."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  },
+  {
+    "id": "unseen-52",
+    "arm": "after",
+    "caseId": "unseen-52",
+    "score": 4,
+    "categories": {
+      "reproducibility": 0,
+      "businessCorrectness": 0,
+      "security": 0,
+      "uiUx": 0,
+      "engineeringDelivery": 4
+    },
+    "subcriteria": {
+      "reproducibility": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        0,
+        0,
+        0,
+        4
+      ]
+    },
+    "apiChecksPassed": 0,
+    "apiChecksTotal": 26,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Only fixture documents remain. Four engineering points reflect accurate disclosure that no app was built, not implementation credit."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  },
+  {
+    "id": "unseen-52",
+    "arm": "raw_tools",
+    "caseId": "unseen-52",
+    "score": 20,
+    "categories": {
+      "reproducibility": 4,
+      "businessCorrectness": 0,
+      "security": 10,
+      "uiUx": 0,
+      "engineeringDelivery": 6
+    },
+    "subcriteria": {
+      "reproducibility": [
+        4,
+        0,
+        0,
+        0,
+        0
+      ],
+      "security": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "uiUx": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "engineeringDelivery": [
+        0,
+        2,
+        2,
+        2,
+        0
+      ]
+    },
+    "apiChecksPassed": 1,
+    "apiChecksTotal": 26,
+    "notes": [
+      "All named business checks failed or were blocked by failed prerequisites; fixed denominator retained.",
+      "UI workflow score is zero: no usable authenticated primary or secondary flow. Browser evidence retained for raw attempts; missing server/UI blocks Codali attempts.",
+      "Security receives partial source credit only: password/session primitives, tenant and role gates, parameterized SQL/input validation, and origin checks are present. None is awarded complete runtime assurance.",
+      "Engineering receives partial modular/domain/persistence credit; no executable passing candidate test suite or delivery files. No final model answer, so no delivery-honesty credit.",
+      "Repeat seed assigns to const harborOrgId; login fails HTTP500 because native response lacks res.append. build.mjs and tests absent. Timestamp validator compares no-millisecond input against toISOString() with .000Z, rejecting otherwise valid requested UTC instants. Error is placed inside hidden app-view, so login failure has no visible explanation."
+    ],
+    "evidence": {
+      "api": "independent/api-checks.json",
+      "browser": "independent/browser/browser-review.json",
+      "source": "independent/project",
+      "logs": "independent/"
+    },
+    "limitations": "Targeted source/security review plus independent execution. Not a complete security audit. No candidate code patched; partial source credit is not functioning behavior."
+  }
+]

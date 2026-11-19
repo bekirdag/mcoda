@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
+  CONSENT_NOT_REQUIRED_MESSAGE,
   ConsentCommands,
-  parseConsentArgs,
 } from '../commands/consent/ConsentCommands.js';
-import { acceptMswarmConsent } from '../commands/consent/MswarmConsentFlow.js';
-import { MswarmApi, MswarmConfigStore } from '@mcoda/core';
+import { SetupCommand } from '../commands/setup/SetupCommand.js';
+import { MswarmConfigStore } from '@mcoda/core';
 
 const captureLogs = async (
-  fn: () => Promise<void> | void
+  fn: () => Promise<unknown> | unknown
 ): Promise<string[]> => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -25,108 +28,92 @@ const captureLogs = async (
   return logs;
 };
 
-test('parseConsentArgs parses accept flags', () => {
-  const parsed = parseConsentArgs([
-    'accept',
-    '--policy-version',
-    '2026-03-18',
-    '--json',
-  ]);
-  assert.equal(parsed.subcommand, 'accept');
-  assert.equal(parsed.policyVersion, '2026-03-18');
-  assert.equal(parsed.json, true);
-});
+const withNoNetwork = async (fn: () => Promise<void>): Promise<void> => {
+  const originalFetch = globalThis.fetch;
+  (globalThis as any).fetch = async (input: unknown) => {
+    throw new Error(`unexpected network call: ${String(input)}`);
+  };
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+};
 
 test(
-  'ConsentCommands show renders persisted state as json',
+  'mcoda consent is a local no-op that reports consent is not required',
   { concurrency: false },
   async () => {
-    const originalReadState = MswarmConfigStore.prototype.readState;
-    (MswarmConfigStore.prototype as any).readState = async () => ({
-      baseUrl: 'https://api.mswarm.org/',
-      apiKey: 'paid-key',
-      consentAccepted: true,
-      consentPolicyVersion: '2026-03-18',
-      consentToken: 'token-123',
-      clientId: 'client-123',
-      clientType: 'free_mcoda_client',
-      uploadSigningSecret: 'secret-123',
-      deletionRequestedAtMs: 42,
-    });
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcoda-consent-'));
+    const configPath = path.join(tempDir, 'config.json');
     try {
-      const logs = await captureLogs(() =>
-        ConsentCommands.run(['show', '--json'])
+      await fs.writeFile(
+        configPath,
+        JSON.stringify({
+          mswarm: {
+            baseUrl: 'https://example.invalid/',
+            consentAccepted: true,
+            consentToken: 'legacy-token',
+            uploadSigningSecret: 'legacy-secret',
+          },
+        }),
+        'utf8'
       );
-      const payload = JSON.parse(logs.join('\n')) as Record<string, unknown>;
-      assert.equal(payload.consentAccepted, true);
-      assert.equal(payload.clientId, 'client-123');
-      assert.equal(payload.clientType, 'free_mcoda_client');
-      assert.equal(payload.apiKeySet, true);
-      assert.equal(payload.uploadSigningSecretSet, true);
-      assert.equal(payload.deletionRequestedAtMs, 42);
+      const store = new MswarmConfigStore(configPath);
+      await withNoNetwork(async () => {
+        for (const sub of ['accept', 'show', 'revoke', 'request-deletion']) {
+          const logs = await captureLogs(() =>
+            ConsentCommands.run([sub, '--json'], { store })
+          );
+          const payload = JSON.parse(logs.join('\n'));
+          assert.equal(payload.consentRequired, false);
+          assert.equal(payload.message, CONSENT_NOT_REQUIRED_MESSAGE);
+        }
+      });
+      const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+      assert.deepEqual(saved.mswarm, { baseUrl: 'https://example.invalid/' });
     } finally {
-      (MswarmConfigStore.prototype as any).readState = originalReadState;
+      await fs.rm(tempDir, { recursive: true, force: true });
     }
   }
 );
 
 test(
-  'acceptMswarmConsent persists paid consent when the response omits client identifiers',
+  'mcoda consent reports removed legacy keys in text mode',
   { concurrency: false },
   async () => {
-    const originalCreate = MswarmApi.create;
-    (MswarmApi as any).create = async () =>
-      ({
-        async issuePaidConsent(policyVersion: string) {
-          assert.equal(policyVersion, '2026-03-18');
-          return {
-            consent_token: 'paid-token-123',
-            client_type: 'paid_mcoda_client',
-            issued_at_ms: 123,
-            upload_signing_secret: 'upload-secret-123',
-          };
-        },
-        async close() {},
-      }) as MswarmApi;
-
-    const state = {
-      apiKey: 'paid-key',
-      deletionRequestedAtMs: 42,
-    };
-    let savedConsent:
-      | Parameters<MswarmConfigStore['saveConsentState']>[0]
-      | undefined;
-    const store = {
-      async readState() {
-        return state;
-      },
-      async saveConsentState(consent: Parameters<MswarmConfigStore['saveConsentState']>[0]) {
-        savedConsent = consent;
-        return {
-          ...state,
-          ...consent,
-        };
-      },
-    } as MswarmConfigStore;
-
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcoda-consent-'));
+    const configPath = path.join(tempDir, 'config.json');
     try {
-      const nextState = await acceptMswarmConsent({
-        state,
-        policyVersion: '2026-03-18',
-        store,
-      });
-      assert.equal(savedConsent?.consentAccepted, true);
-      assert.equal(savedConsent?.clientId, undefined);
-      assert.equal(savedConsent?.clientType, 'paid_mcoda_client');
-      assert.equal(savedConsent?.consentToken, 'paid-token-123');
-      assert.equal(savedConsent?.registeredAtMs, 123);
-      assert.equal(savedConsent?.uploadSigningSecret, 'upload-secret-123');
-      assert.equal(savedConsent?.deletionRequestedAtMs, 42);
-      assert.equal(nextState.consentAccepted, true);
-      assert.equal(nextState.clientId, undefined);
-      assert.equal(nextState.clientType, 'paid_mcoda_client');
+      await fs.writeFile(
+        configPath,
+        JSON.stringify({ mswarm: { consentToken: 'legacy-token' } }),
+        'utf8'
+      );
+      const store = new MswarmConfigStore(configPath);
+      const logs = await captureLogs(() => ConsentCommands.run([], { store }));
+      assert.equal(logs[0], CONSENT_NOT_REQUIRED_MESSAGE);
+      assert.match(logs.join('\n'), /Removed legacy consent data .*consentToken/);
     } finally {
-      (MswarmApi as any).create = originalCreate;
+      await fs.rm(tempDir, { recursive: true, force: true });
     }
+  }
+);
+
+test(
+  'mcoda setup needs no consent, prompt or network',
+  { concurrency: false },
+  async () => {
+    await withNoNetwork(async () => {
+      const logs = await captureLogs(() => SetupCommand.run(['--json']));
+      const payload = JSON.parse(logs.join('\n'));
+      assert.equal(payload.status, 'ready');
+      assert.equal(payload.consentRequired, false);
+      const textLogs = await captureLogs(() =>
+        SetupCommand.run(['--policy-version', '2026-03-18'])
+      );
+      assert.match(textLogs.join('\n'), /mcoda is ready to use/);
+      assert.doesNotMatch(textLogs.join('\n'), /Consent>|Type "accept"/);
+    });
   }
 );

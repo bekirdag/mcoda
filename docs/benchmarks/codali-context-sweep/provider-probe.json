@@ -1,0 +1,23 @@
+{
+  "answer": "READY",
+  "route": {
+    "id": "8e1da4e4-71eb-486b-924c-79e22a849fff",
+    "binding": "lead",
+    "configHash": "048577bc203e5d6498b88b09f542ab4032a2b37c2a1770011c1ed998504a9bbb",
+    "modelId": "reasoning-lead",
+    "catalogId": "qwen-latest-flash-next",
+    "backend": "strata",
+    "nativeReasoningRequest": {
+      "reasoning_effort": "low",
+      "reasoning_budget_tokens": 512
+    }
+  },
+  "usage": {
+    "modelCalls": 1,
+    "inputTokens": 44,
+    "outputTokens": 30,
+    "totalTokens": 74,
+    "estimated": false,
+    "pendingCalls": 0
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "scope": "All60 numeric final answers inspected for reasoning/output consistency. Five-field frozen scores unchanged except original field failures and documented interval representation correction; narrative errors are reported separately, so a100 field score does not mean error-free prose.",
+  "observations": {
+    "unseen-04:before": "Correct scored outputs, but extra cost-table values Q5/Q6 should be11.2/8.2, not8.2/6.7.",
+    "unseen-04:after": "Correct scored outputs; extra cost-table Q5/Q6 should be11.2/8.2, not8.2/6.7, and marginal cost11->12 is1.0, not0.7.",
+    "unseen-04:raw_tools": "Correct scored outputs; extra cost-table entries Q5/Q6 are wrong (11.2/8.2, not7.2/6.0); Q4=15.2 is correct.",
+    "unseen-06:raw_tools": "Correct chosen optimum; claims E and F compatible although E ends8 and F starts7.",
+    "unseen-07:after": "Correct scored numbers; falsely says k=6 gives lower false-positive rate than k=7.",
+    "unseen-07:raw_tools": "Correct scored numbers; k=6 approximation in prose is inaccurate (about .01014, not .0130).",
+    "unseen-08:before": "Correct scored integer result; prose calls the rejected (5,3) constraint machine, although the violating expression3x+y is material.",
+    "unseen-09:after": "Correct interval outputs; prose margin107-97 is10, not12.",
+    "unseen-13:before": "Correct commission outputs; 4000*(.05-.035)=60, not210; duplicated low-rate band accounts for remaining150.",
+    "unseen-13:after": "Correct numbers; prose describes splitting benefit as pooling moving amounts down bands (direction reversed).",
+    "unseen-15:before": "Correct scored bounds; explanation confuses nested successes with disjoint successes at lower bound. Successes with probabilities .9/.8 cannot be disjoint.",
+    "unseen-15:after": "Correct bounds; reverses implication in parenthesis and final common-failure/staggered discussion. Also .72 is nearer .7 than .8.",
+    "unseen-15:raw_tools": "Correct bounds; reverses subset directions and misnames Frechet-Hoeffding bounds.",
+    "unseen-16:after": "Correct fields; SUM(DISTINCT amount) over the INNER JOIN is300, not350; source prose fails to distinguish missing order3.",
+    "unseen-16:raw_tools": "Correct fields; similar DISTINCT claim and counterexample omit unmatched order rather than adding a nonexistent join row.",
+    "unseen-17:raw_tools": "Correct numeric fields; averaging does not invariably understate all tail quantiles (its own unweighted bucket example illustrates limits).",
+    "unseen-05:before": "Wrong minutesToExhaust already loses20points: 12.6/.045=280 elapsed minutes, not12.6/90.",
+    "unseen-05:after": "Same dimension/unit mistake survives calculator repair; already deducted20points."
+  }
+}

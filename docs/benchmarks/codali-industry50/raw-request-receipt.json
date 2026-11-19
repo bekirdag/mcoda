@@ -1,0 +1,12 @@
+{
+  "requestId": "d3808e60-895c-4455-9e12-9088b4b495db",
+  "complete": true,
+  "invocationIds": [
+    "shi_3500d7f4665049d08ce66fff211417ea"
+  ],
+  "usage": {
+    "inputTokens": 329,
+    "outputTokens": 969,
+    "totalTokens": 1298
+  }
+}
