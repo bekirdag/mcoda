@@ -16,8 +16,11 @@ export interface EffortBudget {
 export const EFFORT_BUDGETS: Readonly<Record<EffortLevel, Readonly<EffortBudget>>> = Object.freeze({
   low: Object.freeze({ maxSteps: 12, maxToolCalls: 12, maxModelCalls: 12, maxTotalTokens: 32_000, maxOutputTokens: 2048, timeoutMs: 300_000 }),
   medium: Object.freeze({ maxSteps: 32, maxToolCalls: 48, maxModelCalls: 36, maxTotalTokens: 128_000, maxOutputTokens: 4096, timeoutMs: 900_000 }),
-  high: Object.freeze({ maxSteps: 64, maxToolCalls: 128, maxModelCalls: 72, maxTotalTokens: 320_000, maxOutputTokens: 8192, timeoutMs: 1_800_000 }),
-  max: Object.freeze({ maxSteps: 128, maxToolCalls: 256, maxModelCalls: 144, maxTotalTokens: 640_000, maxOutputTokens: 8192, timeoutMs: 3_600_000 }),
+  // Output caps here bound every routed request (a node serving gateway calls
+  // uses these presets); 8192 cut a 22.6k-character answer audit in cycle 5.
+  // Routes still clamp to their own advertised limit.
+  high: Object.freeze({ maxSteps: 64, maxToolCalls: 128, maxModelCalls: 72, maxTotalTokens: 320_000, maxOutputTokens: 65_536, timeoutMs: 1_800_000 }),
+  max: Object.freeze({ maxSteps: 128, maxToolCalls: 256, maxModelCalls: 144, maxTotalTokens: 640_000, maxOutputTokens: 65_536, timeoutMs: 3_600_000 }),
 });
 
 export interface OrchestrationProvider {

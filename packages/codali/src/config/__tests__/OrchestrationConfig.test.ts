@@ -36,3 +36,10 @@ test("alias policies intersect rather than broaden backend eligibility", () => {
   const input = { ...fixture(), routing: { strategy: "capability-and-capacity", requiredBackends: { lead: ["strata"], reviewer: ["other"] } } };
   assert.throws(() => validateOrchestrationConfig(input), /No compatible/);
 });
+
+test("high and max effort leave long answers room; routes clamp to their own limits", async () => {
+  const { EFFORT_BUDGETS } = await import("../OrchestrationConfig.js");
+  // Cycle 5: an 8192 preset cut a 22.6k-character answer audit served through a node.
+  assert.ok(EFFORT_BUDGETS.high.maxOutputTokens >= 65_536);
+  assert.ok(EFFORT_BUDGETS.max.maxOutputTokens >= 65_536);
+});
