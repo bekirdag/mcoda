@@ -28,7 +28,7 @@ import { completionReport, deadlineReport, interruptedReport } from "./Completio
 import { checkWrittenJavaScript, type WriteSyntaxCheck } from "./WriteSyntaxCheck.js";
 import { workStatusPage } from "./WorkStatusPage.js";
 import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, interactionFirstPrompt, INTERACTION_CONTRACT_VERSION, DIRECT_INTERACTION_VERSION, NATIVE_INTERACTION_VERSION, CASCADE_INTERACTION_VERSION, GATEWAY_INTERACTION_VERSION, interactionGatewayTool, nativeFinalAnswerTool, nativeStartWorkTool, compactToolSchema, nativeInteractionTool, parseNativeInteractionDecision, parseInteractionDecision, parseDirectInteractionDecision, preparedInteraction, ROUTER_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
-import { normalizeJsonPresentation, validateInteractionOutput } from "./InteractionContract.js";
+import { normalizeJsonPresentation, requestDemandsJsonOnly, validateInteractionOutput } from "./InteractionContract.js";
 import { ADAPTIVE_INTERACTION_VERSION, ANSWER_PROMPT, ANSWER_INVARIANTS } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
@@ -2072,7 +2072,11 @@ export class SessionController {
       }
       // Every route reaches this gate, including the dispatcher's quick replies.
       // Presentation validation does not verify facts, code or task completion.
-      const contract = decision.output!;
+      let contract = decision.output!;
+      if (contract.format === "text" && decision.mode !== "execute" && requestDemandsJsonOnly(prompt)) {
+        contract = { ...contract, format: "json" };
+        await this.emit("interaction_output_contract_upgraded", { from: "text", to: "json", reason: "request_demands_json_only" });
+      }
       if (contract.format === "json") {
         const normalized = normalizeJsonPresentation(content);
         if (normalized !== content) {

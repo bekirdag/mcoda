@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseOutputContract, unconstrainedOutput, validateInteractionOutput } from "../InteractionContract.js";
+import { parseOutputContract, requestDemandsJsonOnly, unconstrainedOutput, validateInteractionOutput } from "../InteractionContract.js";
+
+test("only explicit JSON-only wording upgrades a request to a JSON reply", () => {
+  for (const request of ["Return only JSON with exactly these five keys: a, b.", "Respond with JSON only.", "Output just valid JSON.", "Reply with only a JSON object? No: return only JSON."]) {
+    assert.equal(requestDemandsJsonOnly(request), true, request);
+  }
+  for (const request of ["Explain what JSON is.", "Return a summary and include a JSON example.", "Only use JSON fields that exist. Answer in prose.", "Write a JSON parser in Python."]) {
+    assert.equal(requestDemandsJsonOnly(request), false, request);
+  }
+});
 
 test("contracts reject malformed, excessive and contradictory constraints without coercion", () => {
   const valid = unconstrainedOutput();

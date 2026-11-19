@@ -104,6 +104,21 @@ test("fenced JSON answers do not invoke a semantic-changing repair model", async
   assert.equal(result.validationScope, "presentation");
 });
 
+test("a request for only JSON unwraps a fenced answer even when the extracted contract says text", async t => {
+  // Cycle 5 numeric 05: all five values were right; the fence made it unparseable.
+  const body = '{\n  "periodSeconds": 2.749193,\n  "amplitudeForTenPercentLonger": 69.3251\n}';
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+    if (++calls === 1) return decision("reason", "Compute the values.", "none", unconstrainedOutput());
+    if (calls === 2) return reply(`\x60\x60\x60json\n${body}\n\x60\x60\x60`);
+    throw new Error("Unnecessary model repair could change the answer");
+  } });
+  assert.equal((await controller.interact("Report the period. Return only JSON with exactly these keys: periodSeconds, amplitudeForTenPercentLonger. No prose.")).content, body);
+  assert.equal(calls, 2);
+  assert.ok(events.some(e => e.type === "interaction_output_contract_upgraded"));
+  assert.ok(events.some(e => e.type === "interaction_output_normalized"));
+});
+
 test("continuous interactive answers exceed aggregate budgets and retain real tool accounting", async t => {
   const config = structuredClone(base);
   config.interaction = { strategy: "adaptive", maxTotalTokens: 1, maxModelCalls: 1, maxInspectionSteps: 1, timeoutMs: 1 };

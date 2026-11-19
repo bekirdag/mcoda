@@ -17,6 +17,16 @@ export const normalizeJsonPresentation = (content: string): string => {
   return body;
 };
 
+/**
+ * True when the request itself plainly demands a JSON-only reply ("Return only
+ * JSON", "Respond with JSON only"). The model-extracted contract can miss this:
+ * in cycle 5 a fully correct numeric answer arrived in a ```json fence under a
+ * text contract and was rejected. Only explicit wording counts.
+ */
+export const requestDemandsJsonOnly = (request: string): boolean =>
+  /\b(?:return|respond|reply|answer|output|give)\b[^.\n]{0,40}?\b(?:only|just)\s+(?:valid\s+|a\s+|the\s+)?json\b/iu.test(request)
+  || /\b(?:return|respond|reply|answer|output)\b[^.\n]{0,40}?\bjson\s+only\b/iu.test(request);
+
 export const outputContractSchema = {
   type: "object", additionalProperties: false, required: ["format", "requiredKeys", "minWords", "maxWords"],
   properties: {
