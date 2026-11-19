@@ -2109,6 +2109,7 @@ test("a search-engine page opened in the browser runs as a web search instead", 
 test("final code that the session's last tests fail is re-run by the runtime and sent back once for repair", async t => {
   // .41 regression pack, cycle 5 case 28: every verify_tests run failed, then a
   // rewritten module was delivered untested and crashed on a base case.
+  if (!executorStatus().available) { t.skip("OS isolation unavailable"); return; }
   const config = structuredClone(base);
   config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 8, maxTotalTokens: 64000 };
   const tests = "import unittest\nfrom approx import half\n\nclass T(unittest.TestCase):\n    def test_half(self):\n        self.assertEqual(half(4), 2)\n";
