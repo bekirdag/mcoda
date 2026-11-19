@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { researchPacket, selectResearchEvidence, type ResearchPacket } from "../ResearchEvidence.js";
+import { draftAnchors, researchPacket, selectResearchEvidence, type ResearchPacket } from "../ResearchEvidence.js";
+
+test("draft anchors are exact quotes and specific figures, not years or small numbers", () => {
+  const anchors = draftAnchors('s 63D: “Civil penalty: 30,000 penalty units” under F2025L00889, made in 2025, section 12, on 10 Dec.');
+  assert.ok(anchors.includes("civil penalty: 30,000 penalty units"));
+  assert.ok(anchors.includes("30,000")); assert.ok(anchors.includes("f2025l00889"));
+  assert.ok(!anchors.includes("2025")); assert.ok(!anchors.includes("12")); assert.ok(!anchors.includes("10"));
+});
+
+test("the audit sees the passage behind a quoted draft claim even among many more relevant-looking pages", () => {
+  // Cycle 5 research 42: 67 passages, 9 shown, the quoted penalty passage left out.
+  const draft = 'The ban applies to age-restricted platforms. s 63D: "Civil penalty: 30,000 penalty units". Platforms must take reasonable steps.';
+  const filler = Array.from({ length: 40 }, (_, index) => ({ source: `https://example.org/news-${index}`, query: "age restricted platforms reasonable steps",
+    passage: ("Age-restricted social media platforms must take reasonable steps to prevent age-restricted users. ").repeat(25) + index, tool: "browser_read" }));
+  const penalty = { source: "https://legislation.example/act", passage: 'Section 63D. Civil penalty: 30,000 penalty units. (2) Before making rules the Minister must consult.', tool: "browser_read" };
+  const selected = selectResearchEvidence([...filler, penalty], "Australia social media minimum age ban penalties platforms", draft, 12000);
+  assert.ok(selected.some(packet => packet.source === penalty.source));
+  assert.ok(JSON.stringify(selected).length <= 12000);
+});
 
 test("failed queries and HTTP errors cannot displace actual source passages", () => {
   assert.equal(researchPacket("browser_read", { query: "missing" }, '{"matchFound":false,"url":"https://example.org"}'), undefined);
