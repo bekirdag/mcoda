@@ -92,8 +92,16 @@ const build = async ({ out, cycles, sample, seed, includeReviewed, only }) => {
     const cycle = await loadCycle(directory);
     let { failures, passes } = selectFromCycle(cycle, { includeReviewed: includeReviewed || Boolean(only) });
     let sampled = seededShuffle(passes, `${seed}:${directory}`).slice(0, sample);
-    if (only) { failures = failures.filter(item => only.has(item.id)); sampled = passes.filter(item => only.has(item.id)); }
-    for (const [kind, list] of [['failure', failures], ['sample', sampled]]) for (const entry of list) {
+    let requested = [];
+    if (only) {
+      failures = failures.filter(item => only.has(item.id)); sampled = passes.filter(item => only.has(item.id));
+      // A named case is wanted even when no rule classifies it, e.g. a review
+      // that found defects without Codali losing the comparison.
+      const chosen = new Set([...failures, ...sampled].map(item => item.id));
+      requested = cycle.cases.filter(task => only.has(task.id) && !chosen.has(task.id) && task.comparison !== 'implementation' && cycle.attempts.has(task.id))
+        .map(task => ({ id: task.id, domain: task.domain, previousScore: cycle.attempts.get(task.id).score, reasons: ['requested'] }));
+    }
+    for (const [kind, list] of [['failure', failures], ['sample', sampled], ['requested', requested]]) for (const entry of list) {
       selection.push({ cycle: path.basename(directory), kind, ...entry });
       allCases.push(cycle.cases.find(task => task.id === entry.id));
       allGold.push(cycle.gold.find(item => item.id === entry.id));
