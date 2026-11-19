@@ -190,6 +190,26 @@ export const draftBackedByVerifiedRun = (draft: string, verifiedOutputs: unknown
   const verified = new Set(numbersIn(JSON.stringify(verifiedOutputs)));
   return drafted.every(value => verified.has(value));
 };
+/** Whether an equation review overturned a draft whose every number is a
+ * calculator result (at the draft's own rounding). Across cycles 4-6 the review
+ * fixed 6 short answers by changing one value; the two that lost a correct
+ * answer rewrote most of them without tools (cycle 6 case 08: all five values
+ * from receipts became two wrong numbers and three nulls). A review that adds
+ * nulls or changes more than half of such a draft's values is rejected. */
+export const overturnsCalculatedDraft = (draft: string, revised: string, results: string[]): boolean => {
+  const tokens = (text: string) => text.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? [];
+  const computed = results.flatMap(tokens).map(Number).filter(Number.isFinite);
+  const near = (token: string, pool: number[]) => {
+    const value = Number(token), decimals = (token.split(".")[1] ?? "").replace(/e.*/i, "").length;
+    return pool.some(other => Math.abs(other - value) <= 0.5 * 10 ** -decimals + 1e-12);
+  };
+  const drafted = tokens(draft);
+  if (!drafted.length || !computed.length || !drafted.every(token => near(token, computed))) return false;
+  if ((revised.match(/\bnull\b/g) ?? []).length > (draft.match(/\bnull\b/g) ?? []).length) return true;
+  const kept = tokens(revised).map(Number);
+  const changed = drafted.filter(token => !near(token, kept)).length;
+  return changed * 2 > drafted.length;
+};
 /** Why a rewritten answer must not replace its draft, if it must not. Every
  * audit is an edit of a usable draft, so a bad edit keeps the draft. */
 export const rewriteDefect = (draft: string, response: { message: { content: string; toolCalls?: unknown[] }; toolCalls?: unknown[]; usage?: { outputTokens?: number }; outputLimited?: boolean },
@@ -2480,7 +2500,8 @@ export class SessionController {
           await this.emit("interaction_progress", { message: "Checking the calculation against the original inputs and units" }, false);
           const checked = await optionalPass("calculation_answer_audit", auditRequest);
           if (!checked) return decision;
-          const unusable = rewriteDefect(decision.reply, checked);
+          const unusable = rewriteDefect(decision.reply, checked)
+            ?? (overturnsCalculatedDraft(decision.reply, checked.message.content, calculationEvidence.map(item => item.result)) ? "overturned_calculated_values" : undefined);
           if (unusable) {
             await this.emit("calculation_answer_audit_rejected", { reason: unusable, draftSha256: hash(decision.reply), draftChars: decision.reply.length, answerChars: checked.message.content.length }, false);
             return decision;

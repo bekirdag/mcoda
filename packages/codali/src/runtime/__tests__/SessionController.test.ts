@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, finalAttemptMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, finalAttemptMs, overturnsCalculatedDraft, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -87,6 +87,18 @@ test("the prompt states today's date from the host clock as authoritative", () =
   const notice = todayNotice(new Date("2026-11-13T08:35:54Z"));
   assert.match(notice, /Today's date is 2026-11-13/);
   assert.match(notice, /trust it over any date you assume/);
+});
+
+test("an equation review may correct one calculated value but not overturn most of them", () => {
+  // Cycle 6 case 08: every drafted value came from calculator receipts.
+  const results = ['{"results":{"lam1":5.8,"Ltot":2.6846723,"W":0.53693446,"erlangC":0.21884892086,"scale":2.0689655}}'];
+  const draft = '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.068966}';
+  assert.equal(overturnsCalculatedDraft(draft, '{"a":8.220339,"b":null,"c":null,"d":null,"e":0.971195}', results), true);
+  assert.equal(overturnsCalculatedDraft(draft, '{"a": 6.1, "b": 2.9, "c": 0.58, "d": 0.218849, "e": 2.068966}', results), true);
+  // One corrected value (cycle 6 case 07, cycle 4 case 06) is kept.
+  assert.equal(overturnsCalculatedDraft(draft, '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.1}', results), false);
+  // A draft with values the calculator never produced is reviewed as before.
+  assert.equal(overturnsCalculatedDraft('{"a": 7.5}', '{"a": null}', results), false);
 });
 
 test("a stalled final call is bounded to half the window only when a retry fits", () => {

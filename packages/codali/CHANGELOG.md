@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Calculations: the equation review of a short quantitative answer can no
+  longer replace a draft whose values all come from calculator results when it
+  adds nulls or changes more than half of those values; a single corrected
+  value is still accepted.
+
 ## 0.1.135-codali.41
 
 - Output: a request that explicitly asks for only JSON ("return only JSON",
