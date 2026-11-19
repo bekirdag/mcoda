@@ -58,11 +58,7 @@ try{
     if(!result)throw Error(`Uncertain prior attempt ${start.key}; inspect receipts, never silently retry`);
     await append({type:'result',key:start.key,label:start.label,directory:start.directory,result,recovered:true});completed.add(start.key);
   }
-  for(let i=0;i<cases.length;i++){
-    const task=cases[i],offset=i%labels.length,order=[...labels.slice(offset),...labels.slice(0,offset)];if(Math.floor(i/labels.length)%2)order.reverse();
-    for(const label of order){
-      const key=`${task.id}:${label}`;if(completed.has(key))continue;abort.signal.throwIfAborted();
-      if(selectedKeys&&!selectedKeys.has(key))continue;
+  const runAttempt=async(task,label,key)=>{
       await waitForDependencies();await validateEvaluators();
       const arm=study.arms[label];await validateRuntime(arm.runtime);
       if(hash(await fs.readFile(studyPath))!==hash(studyBytes)||hash(await fs.readFile(study.casesFile))!==study.casesSha256||hash(await fs.readFile(study.gradingFile))!==study.gradingSha256||hash(await fs.readFile(arm.config))!==arm.configSha256)throw Error('Frozen inputs changed');
@@ -86,7 +82,20 @@ try{
       if(!result)throw Error(`Attempt ${key} ended without a result (${launchError}); inspect before resuming`);
       await append({type:'result',key,label,directory,result,launchError,at:new Date().toISOString()});completed.add(key);
       console.log(JSON.stringify({type:'result',key,error:result.error,tokens:result.usage?.tokens,elapsedMs:result.elapsedMs}));
+  };
+  for(let i=0;i<cases.length;i++){
+    const task=cases[i],offset=i%labels.length,order=[...labels.slice(offset),...labels.slice(0,offset)];if(Math.floor(i/labels.length)%2)order.reverse();
+    const pending=order.map(label=>({label,key:`${task.id}:${label}`})).filter(({key})=>!completed.has(key)&&!(selectedKeys&&!selectedKeys.has(key)));
+    // Builds of the same app may run side by side (study.parallelBuilds): each arm
+    // keeps its own deadline, workspace and receipts; neither waits for the other.
+    if(study.parallelBuilds===true&&task.comparison==='implementation'&&pending.length>1){
+      abort.signal.throwIfAborted();
+      await append({type:'parallel_builds',caseId:task.id,keys:pending.map(p=>p.key),at:new Date().toISOString()});
+      const settled=await Promise.allSettled(pending.map(({label,key})=>runAttempt(task,label,key)));
+      const failed=settled.find(s=>s.status==='rejected');if(failed)throw failed.reason;
+      continue;
     }
+    for(const {label,key} of pending){abort.signal.throwIfAborted();await runAttempt(task,label,key);}
   }
   await append({type:'run_complete',attempts:completed.size,at:new Date().toISOString()});
 }finally{await lock.close();await fs.unlink(lockPath);}

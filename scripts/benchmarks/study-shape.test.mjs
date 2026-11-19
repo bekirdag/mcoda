@@ -18,13 +18,25 @@ test('historical cohorts still require fifty questions and two builds', () => {
 test('only app builds may exceed the 30-minute deadline', () => {
   const study={expectedCases:2,expectedBuilds:1};
   const make=(answer,build)=>[{id:'q',comparison:'answer',execution:{deadlineMs:answer}},{id:'app',comparison:'implementation',execution:{deadlineMs:build}}];
-  assert.doesNotThrow(()=>validateStudyShape(study,make(1800000,86400000)));
-  assert.throws(()=>validateStudyShape(study,make(1800001,86400000)),/30-minute/);
-  assert.throws(()=>validateStudyShape(study,[{id:'q',comparison:'artifact',execution:{deadlineMs:86400000}},make(1,1)[1]]),/30-minute/);
+  assert.doesNotThrow(()=>validateStudyShape(study,make(1800000,43200000)));
+  assert.throws(()=>validateStudyShape(study,make(1800001,43200000)),/30-minute/);
+  assert.throws(()=>validateStudyShape(study,[{id:'q',comparison:'artifact',execution:{deadlineMs:43200000}},make(1,1)[1]]),/30-minute/);
+});
+test('app builds may run 12 hours, no longer', () => {
+  const study={expectedCases:2,expectedBuilds:1};
+  const make=build=>[{id:'q',comparison:'answer',execution:{deadlineMs:1}},{id:'app',comparison:'implementation',execution:{deadlineMs:build}}];
+  assert.doesNotThrow(()=>validateStudyShape(study,make(43200000)));
+  assert.throws(()=>validateStudyShape(study,make(43200001)),/12-hour/);
+  assert.throws(()=>validateStudyShape(study,make(86400000)),/12-hour/);
+});
+test('parallelBuilds is an explicit boolean', () => {
+  const cases=[{id:'q',comparison:'answer'},{id:'app',comparison:'implementation'}];
+  for(const value of [true,false,undefined]) assert.doesNotThrow(()=>validateStudyShape({expectedCases:2,expectedBuilds:1,parallelBuilds:value},cases));
+  for(const value of ['true',1,null]) assert.throws(()=>validateStudyShape({expectedCases:2,expectedBuilds:1,parallelBuilds:value},cases),/parallelBuilds/);
 });
 test('research answers may run 45 minutes, no longer', () => {
   const study={expectedCases:2,expectedBuilds:1};
-  const make=ms=>[{id:'r',domain:'research',comparison:'answer',execution:{deadlineMs:ms}},{id:'app',comparison:'implementation',execution:{deadlineMs:86400000}}];
+  const make=ms=>[{id:'r',domain:'research',comparison:'answer',execution:{deadlineMs:ms}},{id:'app',comparison:'implementation',execution:{deadlineMs:43200000}}];
   assert.doesNotThrow(()=>validateStudyShape(study,make(2700000)));
   assert.throws(()=>validateStudyShape(study,make(2700001)),/45-minute/);
 });

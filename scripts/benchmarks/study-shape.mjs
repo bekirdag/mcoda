@@ -5,6 +5,9 @@ export const MAX_NON_APP_DEADLINE_MS = 30 * 60 * 1000;
 // so the limit measured stopping in time; research may run 45 minutes.
 export const MAX_RESEARCH_DEADLINE_MS = 45 * 60 * 1000;
 export const maxDeadlineMs = c => c.domain === 'research' ? MAX_RESEARCH_DEADLINE_MS : MAX_NON_APP_DEADLINE_MS;
+// App builds get 12 hours. Every Codali build through cycle 5 finished in 3-7
+// hours; raw's cycle 5 RosterLift used 23.9 of 24 hours without a working build.
+export const MAX_APP_DEADLINE_MS = 12 * 60 * 60 * 1000;
 
 // Validate a prospective cohort without silently changing historical defaults.
 export function studyLabels(study) {
@@ -27,4 +30,7 @@ export function validateStudyShape(study, cases) {
   }
   const overLimit = cases.find(c => c.comparison !== 'implementation' && c.execution?.deadlineMs > maxDeadlineMs(c));
   if (overLimit) throw Error(`Case ${overLimit.id} exceeds the ${maxDeadlineMs(overLimit) / 60000}-minute limit for non-app ${overLimit.domain === 'research' ? 'research ' : ''}requests`);
+  const longBuild = cases.find(c => c.comparison === 'implementation' && c.execution?.deadlineMs > MAX_APP_DEADLINE_MS);
+  if (longBuild) throw Error(`Case ${longBuild.id} exceeds the 12-hour limit for app builds`);
+  if (study.parallelBuilds !== undefined && typeof study.parallelBuilds !== 'boolean') throw Error('parallelBuilds must be a boolean');
 }
