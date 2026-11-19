@@ -2105,3 +2105,25 @@ test("a search-engine page opened in the browser runs as a web search instead", 
   assert.equal(events.find(event => event.type === "search_page_redirected")?.data.query, "experiment measured value");
   assert.ok(!events.some(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "browser_open"));
 });
+
+test("final code that the session's last tests fail is re-run by the runtime and sent back once for repair", async t => {
+  // .41 regression pack, cycle 5 case 28: every verify_tests run failed, then a
+  // rewritten module was delivered untested and crashed on a base case.
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 8, maxTotalTokens: 64000 };
+  const tests = "import unittest\nfrom approx import half\n\nclass T(unittest.TestCase):\n    def test_half(self):\n        self.assertEqual(half(4), 2)\n";
+  let calls = 0, guidance = "";
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "discover", name: "codali", args: { name: "tools_describe", args: { query: "run python unittest tests sandbox verify" } } }] };
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "run", name: "verify_tests", args: { runner: "python", files: [{ path: "approx.py", content: "def half(x):\n    return x\n" }, { path: "test_approx.py", content: tests }] } }] };
+    if (calls === 3) return reply("```python\ndef half(x):\n    return x + 1\n```\n");
+    guidance = JSON.stringify(request.messages.at(-1));
+    return reply("```python\ndef half(x):\n    return x // 2\n```\n");
+  } }, config);
+  const answer = await controller.interact("Write half(x) in Python and test it.");
+  assert.match(guidance, /The runtime ran your final code against the tests from your last verify_tests run/);
+  assert.match(answer.content, /x \/\/ 2/);
+  const rerun = events.find(event => event.type === "final_code_rerun");
+  assert.equal(rerun?.data.passed, false); assert.equal(rerun?.data.executed, true);
+  assert.equal(events.filter(event => event.type === "final_code_rerun").length, 1);
+});

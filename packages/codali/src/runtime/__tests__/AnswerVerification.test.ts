@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { answerTestBundle, unmatchedExecutedCode } from "../AnswerVerification.js";
+import { answerTestBundle, finalCodeRerun, unmatchedExecutedCode } from "../AnswerVerification.js";
 const fence = (language: string, code: string) => `\`\`\`${language}\n${code}\n\`\`\`\n`;
 test("standalone source/tests retain exact source, including bugs for execution to catch", () => {
   const source = "export const add = (a,b) => a + missing;";
@@ -32,4 +32,20 @@ test("final code must match executed source rather than an obsolete or rewritten
   assert.deepEqual(unmatchedExecutedCode(fence("python", "def value():\n    return 4"), executed), ["python"]);
   assert.deepEqual(unmatchedExecutedCode(fence("js", "const unrelated = 1;"), executed), []);
   assert.deepEqual(unmatchedExecutedCode(fence("sql", "SELECT 0 FROM ledger;"), []), []);
+});
+
+test("the final answer's code replaces the source file of the session's last test run", () => {
+  const last = { runner: "python", files: [{ path: "approx.py", content: "def f():\n    return 1\n" }, { path: "test_approx.py", content: "import unittest\nfrom approx import f\n" }] };
+  const answer = "Here it is:\n```python\ndef f():\n    return 2\n```\n";
+  const run = finalCodeRerun(answer, last);
+  assert.ok(run);
+  assert.equal(run.runner, "python");
+  assert.equal(run.files[0].content, "def f():\n    return 2\n");
+  assert.equal(run.files[1], last.files[1]);
+  // Unchanged code, ambiguous answers and runs without tests are not re-run.
+  assert.equal(finalCodeRerun("```python\ndef f():\n    return 1\n```\n", last), undefined);
+  assert.equal(finalCodeRerun("```python\na=1\n```\n```python\nb=2\n```\n", last), undefined);
+  assert.equal(finalCodeRerun(answer, { files: [last.files[0]] }), undefined);
+  assert.equal(finalCodeRerun("```js\nexport const f = 2\n```\n", last), undefined);
+  assert.equal(finalCodeRerun(answer, undefined), undefined);
 });

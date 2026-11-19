@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, finalAttemptMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
@@ -87,6 +87,14 @@ test("the prompt states today's date from the host clock as authoritative", () =
   const notice = todayNotice(new Date("2026-11-13T08:35:54Z"));
   assert.match(notice, /Today's date is 2026-11-13/);
   assert.match(notice, /trust it over any date you assume/);
+});
+
+test("a stalled final call is bounded to half the window only when a retry fits", () => {
+  // Cycle 5 case 50 (.41 pack): 335 s left after the delivery margin, slowest call 104 s.
+  assert.equal(finalAttemptMs(335_000, 104_000), 167_500);
+  assert.equal(finalAttemptMs(170_000, 10_000), undefined);
+  assert.equal(finalAttemptMs(400_000, 200_000), undefined);
+  assert.equal(finalAttemptMs(Infinity, 0), undefined);
 });
 
 test("the answer reserve follows the slowest model call instead of a quarter of the timeout", () => {

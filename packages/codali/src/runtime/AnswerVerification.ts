@@ -14,6 +14,30 @@ export function unmatchedExecutedCode(text: string, executed: ExecutedAnswerCode
   return [...unmatched];
 }
 
+export interface TestRun { runner?: string; files: Array<{ path: string; content: string }>; }
+const TEST_PATH = /(^|\/)(test_[^/]*\.py|[^/]*_test\.py|[^/]*\.(test|spec)\.[cm]?[jt]s)$/;
+const LANGUAGE_OF = (path: string) => path.endsWith(".py") ? "python" : /\.[cm]?[jt]s$/.test(path) ? "code-js" : undefined;
+
+/** The session's last test run with the final answer's code in place of its
+ * source file. Cycle 5 case 28 (.41 regression pack): every verify_tests run
+ * failed, the model rewrote the module once more and shipped that version
+ * untested; a crash the old tests would have caught reached the user.
+ * Undefined unless the mapping is unambiguous: one source file plus test
+ * files, and one answer code block in that language that differs from it. */
+export function finalCodeRerun(text: string, last: TestRun | undefined): TestRun | undefined {
+  if (!last?.files?.length) return;
+  const sources = last.files.filter(file => !TEST_PATH.test(file.path));
+  if (sources.length !== 1 || sources.length === last.files.length) return;
+  const language = LANGUAGE_OF(sources[0].path);
+  if (!language) return;
+  const blocks = [...text.matchAll(/^```(python|py|javascript|js|mjs|typescript|ts)\s*\n([\s\S]*?)^```\s*$/gm)]
+    .filter(match => (["python", "py"].includes(match[1]) ? "python" : "code-js") === language).map(match => match[2]);
+  if (blocks.length !== 1 || blocks[0].length > 60000) return;
+  const code = blocks[0].replace(/\r\n/g, "\n").trim();
+  if (!code || code === sources[0].content.replace(/\r\n/g, "\n").trim()) return;
+  return { ...(last.runner ? { runner: last.runner } : {}), files: last.files.map(file => file === sources[0] ? { path: file.path, content: `${code}\n` } : file) };
+}
+
 /** Recognize only unambiguous standalone source/test pairs. This suggests a
  * verifier invocation; it never executes quoted code or grants permission. */
 export function answerTestBundle(text: string): { runner: "node" | "python"; files: Array<{ path: string; content: string }> } | undefined {
