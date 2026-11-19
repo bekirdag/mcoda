@@ -97,6 +97,8 @@ test("an equation review may correct one calculated value but not overturn most 
   assert.equal(overturnsCalculatedDraft(draft, '{"a": 6.1, "b": 2.9, "c": 0.58, "d": 0.218849, "e": 2.068966}', results), true);
   // One corrected value (cycle 6 case 07, cycle 4 case 06) is kept.
   assert.equal(overturnsCalculatedDraft(draft, '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.1}', results), false);
+  // A one-value draft can be corrected: the calculated figure may model the wrong quantity.
+  assert.equal(overturnsCalculatedDraft("The trip takes 48 hours.", "The trip takes 3 hours.", ["48"]), false);
   // A draft with values the calculator never produced is reviewed as before.
   assert.equal(overturnsCalculatedDraft('{"a": 7.5}', '{"a": null}', results), false);
 });

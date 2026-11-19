@@ -4,8 +4,8 @@
 
 - Calculations: the equation review of a short quantitative answer can no
   longer replace a draft whose values all come from calculator results when it
-  adds nulls or changes more than half of those values; a single corrected
-  value is still accepted.
+  adds nulls or changes two or more values and over half of them; a single
+  corrected value is still accepted.
 
 ## 0.1.135-codali.41
 

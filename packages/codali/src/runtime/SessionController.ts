@@ -195,7 +195,7 @@ export const draftBackedByVerifiedRun = (draft: string, verifiedOutputs: unknown
  * fixed 6 short answers by changing one value; the two that lost a correct
  * answer rewrote most of them without tools (cycle 6 case 08: all five values
  * from receipts became two wrong numbers and three nulls). A review that adds
- * nulls or changes more than half of such a draft's values is rejected. */
+ * nulls or changes two or more values and more than half of them is rejected. */
 export const overturnsCalculatedDraft = (draft: string, revised: string, results: string[]): boolean => {
   const tokens = (text: string) => text.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? [];
   const computed = results.flatMap(tokens).map(Number).filter(Number.isFinite);
@@ -208,7 +208,9 @@ export const overturnsCalculatedDraft = (draft: string, revised: string, results
   if ((revised.match(/\bnull\b/g) ?? []).length > (draft.match(/\bnull\b/g) ?? []).length) return true;
   const kept = tokens(revised).map(Number);
   const changed = drafted.filter(token => !near(token, kept)).length;
-  return changed * 2 > drafted.length;
+  // One changed value is the review's job: a single calculated figure can
+  // still model the wrong quantity (12 km at 4 km/h is not 12*4 hours).
+  return changed >= 2 && changed * 2 > drafted.length;
 };
 /** Why a rewritten answer must not replace its draft, if it must not. Every
  * audit is an edit of a usable draft, so a bad edit keeps the draft. */
