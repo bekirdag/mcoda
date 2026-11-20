@@ -196,3 +196,20 @@ test('outages: OOM kills and route waits are tied to the attempts running at the
   const affected = tools.affectedAttempts([...kills, waits[0]], ledger, '2026-11-20T15:00:00.000Z');
   assert.deepEqual(affected.map(e => e.affected), [['c-49:after'], ['c-49:after'], []], 'a wait between attempts affects none');
 });
+
+test('recurrence: a class that loses again after its fix shipped is flagged', () => {
+  const rows = [
+    { type: 'loss', cycle: 3, caseId: 'c3-45', class: 'research-early-stop' },
+    { type: 'fix', release: '.38', afterCycle: 3, class: 'research-early-stop' },
+    { type: 'loss', cycle: 4, caseId: 'c4-43', class: 'research-early-stop' },
+    { type: 'loss', cycle: 6, caseId: 'c6-49', class: 'research-early-stop' },
+    { type: 'loss', cycle: 5, caseId: 'c5-36', class: 'design-arithmetic-error' },
+    { type: 'fix', release: '.41', afterCycle: 5, class: 'format-contract' },
+  ];
+  const out = tools.recurrence(rows);
+  assert.equal(out[0].class, 'research-early-stop');
+  assert.deepEqual(out[0].cycles, [3, 4, 6]);
+  assert.deepEqual(out[0].recurredAfterFix, [{ release: '.38', cases: ['c4-43', 'c6-49'] }]);
+  assert.deepEqual(out.find(e => e.class === 'format-contract').recurredAfterFix, []);
+  assert.equal(out.find(e => e.class === 'design-arithmetic-error').fixes.length, 0);
+});

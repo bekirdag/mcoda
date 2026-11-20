@@ -286,6 +286,30 @@ export const affectedAttempts = (events, ledger, now = new Date().toISOString())
   });
 };
 
+// ---------- loss ledger: failure classes across cycles ----------
+
+/**
+ * Recurrence of failure classes. Ledger rows are {type:'loss', cycle, caseId,
+ * class, ...} and {type:'fix', class, release, afterCycle}. A class that loses
+ * again in a cycle after its fix shipped is flagged: that fix did not hold.
+ */
+export const recurrence = rows => {
+  const classes = {};
+  for (const row of rows) {
+    const entry = (classes[row.class] ??= { class: row.class, losses: 0, cycles: [], fixes: [], recurredAfterFix: [] });
+    if (row.type === 'loss') { entry.losses++; if (!entry.cycles.includes(row.cycle)) entry.cycles.push(row.cycle); }
+    if (row.type === 'fix') entry.fixes.push({ release: row.release, afterCycle: row.afterCycle });
+  }
+  for (const entry of Object.values(classes)) {
+    entry.cycles.sort((a, b) => a - b);
+    for (const fix of entry.fixes) {
+      const later = rows.filter(row => row.type === 'loss' && row.class === entry.class && row.cycle > fix.afterCycle);
+      if (later.length) entry.recurredAfterFix.push({ release: fix.release, cases: later.map(row => row.caseId) });
+    }
+  }
+  return Object.values(classes).sort((a, b) => b.recurredAfterFix.length - a.recurredAfterFix.length || b.losses - a.losses);
+};
+
 // ---------- how sure a category result is ----------
 
 /** Correctness without presentation: a fenced JSON block is unwrapped and no key-set cap applies. */
@@ -439,6 +463,43 @@ const main = async () => {
     print({ mean: out.mean, wins: out.wins, needSecondReviewer: out.needSecondReviewer, reviewersDisagreeOnWinner: out.reviewersDisagreeOnWinner }); return;
   }
   if (command === 'cost') { print(costReport(attempts, await goldFor())); return; }
+  if (command === 'losses') {
+    // Codali losses with evidence, for classification into the private loss ledger.
+    // Auto-graded: Codali below 100. Reviewed: Codali below raw. Infrastructure-lost attempts are listed apart.
+    const gold = await goldFor(), lost = new Set(infraLost(attempts).map(item => item.id)), out = [];
+    const reviewReasons = {};
+    for (const kind of Object.keys(KIND_CATEGORY)) {
+      const mapFile = path.join(cycleDir, 'private', `${kind}-blind-map.json`), dir = path.join(cycleDir, 'reviews');
+      if (!await exists(mapFile) || !await exists(dir)) continue;
+      const map = await readJson(mapFile);
+      for (const file of (await fs.readdir(dir)).filter(name => new RegExp(`^${kind}-(?:second-)?\\d+-\\d+\\.json$`).test(name))) {
+        const data = await readJson(path.join(dir, file));
+        for (const item of Array.isArray(data) ? data : Object.entries(data.cases).map(([caseId, value]) => ({ caseId, ...value }))) {
+          const letter = map[item.caseId]?.X === 'after' ? 'X' : 'Y';
+          (reviewReasons[item.caseId] ??= []).push(...(item[letter]?.criteria ?? []).filter(c => c.points < 15).map(c => `${c.points}/20 ${c.criterion.slice(0, 80)}: ${c.reason ?? ''}`.slice(0, 400)));
+        }
+      }
+    }
+    const unblinded = {};
+    for (const kind of Object.keys(KIND_CATEGORY)) { const file = path.join(cycleDir, 'reviews', `${kind}-unblinded.json`); if (await exists(file)) Object.assign(unblinded, (await readJson(file)).cases); }
+    for (const [id, entry] of attempts) {
+      const rubric = gold.find(item => item.id === id), name = category(entry.task, rubric);
+      if (name === 'apps') continue;
+      let codali, raw, evidence = [];
+      if (unblinded[id]) { codali = unblinded[id].after; raw = unblinded[id].raw_tools; if (!(codali < raw)) continue; evidence = reviewReasons[id] ?? []; }
+      else {
+        const file = entry.arms.after && path.join(entry.arms.after.directory, 'independent-answer-score.json');
+        if (!file || !await exists(file)) continue;
+        const scored = await readJson(file); codali = scored.score; if (codali >= 100) continue;
+        const rawFile = entry.arms.raw_tools && path.join(entry.arms.raw_tools.directory, 'independent-answer-score.json');
+        raw = rawFile && await exists(rawFile) ? (await readJson(rawFile)).score : null;
+        evidence = [`formatCap ${scored.formatCap}`, ...scored.criteria.filter(c => !c.points).map(c => `${c.criterion}: ${c.error ?? (c.expected !== undefined ? `got ${JSON.stringify(c.actual)} want ${JSON.stringify(c.expected)}` : String(c.receipt?.output ?? c.receipt?.failures ?? '').slice(0, 300))}`.slice(0, 400))];
+      }
+      out.push({ cycle: study.cycle, caseId: id, category: name, family: entry.task.family, codali, raw, infraLost: lost.has(id), error: entry.arms.after?.result?.error ?? null, elapsedMin: round1((entry.arms.after?.result?.elapsedMs ?? 0) / 60000), deadlineMin: round1((entry.task.execution?.deadlineMs ?? 0) / 60000), evidence });
+    }
+    print(out); return;
+  }
+  if (command === 'recurrence') { print(recurrence(await readJsonl(path.resolve(option(args, 'ledger'))))); return; }
   if (command === 'outages') {
     // Rewrites <cycle>/outages.json from the kernel log and the runner ledgers; --process filters OOM kills (default: all).
     const { execFileSync } = await import('node:child_process');
