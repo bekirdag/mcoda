@@ -233,20 +233,27 @@ export const unblind = (map, reviews, { margin = 10 } = {}) => {
 
 const median = values => { const sorted = [...values].sort((a, b) => a - b); return sorted.length ? sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2 : null; };
 
-/** Tokens and wall time per category and arm, over attempts that produced a result. */
+/**
+ * Tokens and wall time per category and arm, over attempts that produced a
+ * result. Token figures are verified (input + output reported by the model
+ * service); Codali also reserves an estimate for calls whose outcome is
+ * unknown (e.g. a request in flight when a node died), shown apart as
+ * unverifiedTokens and never used for the ratio.
+ */
 export const costReport = (attempts, gold) => {
   const rubrics = new Map(gold.map(item => [item.id, item])), groups = {};
   for (const [id, entry] of attempts) for (const arm of ARMS) {
     const result = entry.arms[arm]?.result; if (!result) continue;
-    const bucket = ((groups[category(entry.task, rubrics.get(id))] ??= {})[arm] ??= { attempts: 0, tokens: [], minutes: [], errors: 0 });
+    const bucket = ((groups[category(entry.task, rubrics.get(id))] ??= {})[arm] ??= { attempts: 0, tokens: [], minutes: [], errors: 0, unverified: 0 });
     bucket.attempts++; if (result.error) bucket.errors++;
-    if (Number.isFinite(result.usage?.tokens)) bucket.tokens.push(result.usage.tokens);
+    const verified = (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
+    if (Number.isFinite(result.usage?.inputTokens)) { bucket.tokens.push(verified); bucket.unverified += Math.max(0, (result.usage.tokens ?? verified) - verified); }
     if (Number.isFinite(result.elapsedMs)) bucket.minutes.push(result.elapsedMs / 60000);
   }
   const out = {};
   for (const [name, arms] of Object.entries(groups)) {
     out[name] = Object.fromEntries(Object.entries(arms).map(([arm, b]) => [arm, {
-      attempts: b.attempts, errors: b.errors, totalTokens: b.tokens.reduce((a, c) => a + c, 0), medianTokens: median(b.tokens),
+      attempts: b.attempts, errors: b.errors, totalTokens: b.tokens.reduce((a, c) => a + c, 0), medianTokens: median(b.tokens), unverifiedTokens: b.unverified,
       medianMinutes: b.minutes.length ? round1(median(b.minutes)) : null, totalHours: round1(b.minutes.reduce((a, c) => a + c, 0) / 60),
     }]));
     if (out[name].after?.medianTokens && out[name].raw_tools?.medianTokens) out[name].tokenRatio = round1(out[name].after.medianTokens / out[name].raw_tools.medianTokens);

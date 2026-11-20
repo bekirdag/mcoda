@@ -71,7 +71,7 @@ async function fixtureCycle() {
   const cases = [{ id: 'c-41', domain: 'research', comparison: 'answer', prompt: 'Q41' }, { id: 'c-42', domain: 'research', comparison: 'answer', prompt: 'Q42' }, { id: 'c-43', domain: 'research', comparison: 'answer', prompt: 'Q43' }];
   await fs.writeFile(path.join(root, 'cases.jsonl'), cases.map(c => JSON.stringify(c)).join('\n') + '\n');
   await fs.mkdir(path.join(root, 'results'));
-  const ok = (content, tokens = 100) => ({ content, usage: { tokens }, elapsedMs: 60000 });
+  const ok = (content, tokens = 100) => ({ content, usage: { tokens: tokens + 7, inputTokens: tokens - 10, outputTokens: 10 }, elapsedMs: 60000 });
   await fs.writeFile(path.join(root, 'results', 'ledger.jsonl'), [
     ledgerLine('c-41:after', '/r/41a', ok('A41')), ledgerLine('c-41:raw_tools', '/r/41r', ok('R41', 50)),
     ledgerLine('c-42:after', '/r/42a', ok('A42')), ledgerLine('c-42:raw_tools', '/r/42r', { error: 'ModelServiceError: Model service HTTP 404: model_unavailable', content: '' }),
@@ -144,6 +144,7 @@ test('cost: tokens and minutes per category and arm, with the token ratio', asyn
   assert.equal(report.research.after.medianTokens, 100);
   assert.equal(report.research.raw_tools.medianTokens, 75);
   assert.equal(report.research.tokenRatio, 1.3);
+  assert.equal(report.research.after.unverifiedTokens, 14, 'estimated reservations are kept apart from verified tokens');
 });
 
 test('anchors: tasks Codali lost points on come first, never ceiling-for-both or undelivered, reproducible', () => {
