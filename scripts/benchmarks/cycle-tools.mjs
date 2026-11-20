@@ -360,8 +360,8 @@ const main = async () => {
   if (command === 'unblind') {
     const kind = option(args, 'kind'); if (!KIND_CATEGORY[kind]) throw Error('--kind design|research');
     const map = await readJson(path.join(cycleDir, 'private', `${kind}-blind-map.json`));
-    const pattern = new RegExp(`^${kind}-[\\w.-]+\\.json$`), reviews = [];
-    for (const file of (await fs.readdir(path.join(cycleDir, 'reviews'))).filter(name => pattern.test(name) && !name.endsWith('-unblinded.json')).sort()) {
+    const pattern = new RegExp(`^${kind}-(?:second-)?\\d+-\\d+\\.json$`), reviews = [];
+    for (const file of (await fs.readdir(path.join(cycleDir, 'reviews'))).filter(name => pattern.test(name)).sort()) {
       const data = await readJson(path.join(cycleDir, 'reviews', file));
       reviews.push({ file, list: Array.isArray(data) ? data : Object.entries(data.cases).map(([caseId, value]) => ({ caseId, ...value })) });
     }
