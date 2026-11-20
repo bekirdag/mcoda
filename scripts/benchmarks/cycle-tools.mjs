@@ -254,6 +254,75 @@ export const costReport = (attempts, gold) => {
   return out;
 };
 
+// ---------- outages: what happened to the host and route while attempts ran ----------
+
+/** Kernel OOM kills from `journalctl -k -o short-iso` text. */
+export const parseOomKills = text => [...String(text).matchAll(/^(\S+) \S+ kernel: Out of memory: Killed process (\d+) \(([^)]+)\).*?anon-rss:(\d+)kB/gm)]
+  .map(([, at, pid, process, anon]) => ({ type: 'oom_kill', at: new Date(at).toISOString(), pid: Number(pid), process, anonGB: round1(Number(anon) / 1048576) }));
+
+/** Route and dependency waits recorded by the runner, as closed or still-open intervals. */
+export const routeWaits = ledger => {
+  const out = [], open = new Map();
+  for (const record of ledger) {
+    if (record.type === 'model_route_wait' || record.type === 'dependencies_wait') open.set(record.type, record);
+    const start = record.type === 'model_route_ready' ? open.get('model_route_wait') : record.type === 'dependencies_ready' ? open.get('dependencies_wait') : undefined;
+    if (start) { out.push({ type: start.type, at: start.at, until: record.at, key: start.key, minutes: round1((Date.parse(record.at) - Date.parse(start.at)) / 60000) }); open.delete(start.type); }
+  }
+  for (const start of open.values()) out.push({ type: start.type, at: start.at, until: null, key: start.key });
+  return out;
+};
+
+/** Attempts whose run overlapped each event (start..result, or still running). */
+export const affectedAttempts = (events, ledger, now = new Date().toISOString()) => {
+  const spans = new Map();
+  for (const record of ledger) {
+    if (record.type === 'start') spans.set(record.key, { key: record.key, from: record.at, to: null });
+    if (record.type === 'result' && spans.has(record.key)) spans.get(record.key).to = record.at ?? null;
+  }
+  return events.map(event => {
+    const from = Date.parse(event.at), to = Date.parse(event.until ?? event.at);
+    const affected = [...spans.values()].filter(span => Date.parse(span.from) <= to && Date.parse(span.to ?? now) >= from).map(span => span.key);
+    return { ...event, affected };
+  });
+};
+
+// ---------- how sure a category result is ----------
+
+/** Correctness without presentation: a fenced JSON block is unwrapped and no key-set cap applies. */
+export const numericSubstance = (rubric, content) => {
+  const text = String(content ?? ''), fenced = /^\s*```(?:json)?[ \t]*\r?\n([\s\S]*?)```\s*$/i.exec(text);
+  return scoreNumeric(rubric, fenced ? fenced[1] : text).criteria.reduce((sum, item) => sum + item.points, 0);
+};
+
+/** Exact two-sided sign test on paired wins and losses (ties dropped). */
+export const signTest = (wins, losses) => {
+  const n = wins + losses; if (!n) return 1;
+  const k = Math.min(wins, losses);
+  let tail = 0, coefficient = 1;
+  for (let i = 0; i <= k; i++) { if (i) coefficient = coefficient * (n - i + 1) / i; tail += coefficient; }
+  return Math.min(1, 2 * tail / 2 ** n);
+};
+
+const seededRandom = seed => {
+  let state = crypto.createHash('sha256').update(String(seed)).digest().readUInt32LE(0) || 1;
+  return () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 2 ** 32; };
+};
+
+/** Paired comparison: means, mean difference with a 95% bootstrap interval, wins, sign test and a plain verdict. */
+export const comparePaired = (pairs, { seed = 'paired', iterations = 10000 } = {}) => {
+  const diffs = pairs.map(pair => pair.after - pair.raw_tools), n = diffs.length;
+  const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
+  const wins = diffs.filter(d => d > 0).length, losses = diffs.filter(d => d < 0).length;
+  if (!n) return { n: 0 };
+  const random = seededRandom(seed), boot = [];
+  for (let i = 0; i < iterations; i++) { let sum = 0; for (let j = 0; j < n; j++) sum += diffs[Math.floor(random() * n)]; boot.push(sum / n); }
+  boot.sort((a, b) => a - b);
+  const ci95 = [round1(boot[Math.floor(iterations * 0.025)]), round1(boot[Math.ceil(iterations * 0.975) - 1])];
+  const verdict = n < 5 ? 'too few cases' : ci95[0] > 0 ? 'Codali leads' : ci95[1] < 0 ? 'raw leads' : 'not distinguishable';
+  return { n, after: round1(mean(pairs.map(p => p.after))), raw_tools: round1(mean(pairs.map(p => p.raw_tools))), meanDiff: round1(mean(diffs)), ci95,
+    wins: { after: wins, raw_tools: losses, tie: n - wins - losses }, signTestP: Math.round(signTest(wins, losses) * 1000) / 1000, verdict };
+};
+
 // ---------- anchors: a fixed set of earlier tasks rerun every cycle ----------
 
 /**
@@ -370,6 +439,26 @@ const main = async () => {
     print({ mean: out.mean, wins: out.wins, needSecondReviewer: out.needSecondReviewer, reviewersDisagreeOnWinner: out.reviewersDisagreeOnWinner }); return;
   }
   if (command === 'cost') { print(costReport(attempts, await goldFor())); return; }
+  if (command === 'outages') {
+    // Rewrites <cycle>/outages.json from the kernel log and the runner ledgers; --process filters OOM kills (default: all).
+    const { execFileSync } = await import('node:child_process');
+    let kernel = '';
+    try { kernel = execFileSync('journalctl', ['-k', '-o', 'short-iso', '--no-pager', '--since', new Date(study.frozenAt).toISOString().replace('T', ' ').slice(0, 19)], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }); }
+    catch (error) { kernel = String(error.stdout ?? ''); }
+    const only = option(args, 'process') ? new RegExp(option(args, 'process')) : null;
+    const ledgers = [study.output, ...(await fs.readdir(cycleDir)).filter(name => /^rerun-\d+$/.test(name)).map(name => path.join(cycleDir, name, 'results'))];
+    const events = [];
+    for (const output of ledgers) {
+      const file = path.join(output, 'ledger.jsonl'); if (!await exists(file)) continue;
+      const ledger = await readJsonl(file);
+      const kills = parseOomKills(kernel).filter(kill => !only || only.test(kill.process));
+      events.push(...affectedAttempts([...kills, ...routeWaits(ledger)], ledger).map(event => ({ ...event, ledger: path.relative(cycleDir, output) })));
+    }
+    events.sort((a, b) => a.at.localeCompare(b.at));
+    await fs.writeFile(path.join(cycleDir, 'outages.json'), JSON.stringify({ updatedAt: new Date().toISOString(), events }, null, 1));
+    for (const event of events) console.log(`${event.at.slice(0, 19)}Z ${event.type} ${event.process ?? event.key ?? ''}${event.minutes != null ? ` ${event.minutes} min` : ''} affected=${event.affected.join(',') || '-'}`);
+    return;
+  }
   if (command === 'reruns') {
     const lost = infraLost(attempts);
     if (!args.includes('--write')) { print({ lost, incomplete, pairsToRerun: [...new Set(lost.map(item => item.id))] }); return; }
@@ -381,20 +470,27 @@ const main = async () => {
     print({ study: path.join(cycleDir, `rerun-${number}`, 'study.json'), onlyKeys: next.onlyKeys }); return;
   }
   if (command === 'summary') {
-    const gold = await goldFor(), scores = {};
+    const gold = await goldFor(), pairs = {};
     for (const [id, entry] of attempts) {
-      const name = category(entry.task, gold.find(item => item.id === id));
+      const rubric = gold.find(item => item.id === id), name = category(entry.task, rubric), pair = { id };
       for (const arm of ARMS) {
         const file = entry.arms[arm] && path.join(entry.arms[arm].directory, 'independent-answer-score.json');
-        if (file && await exists(file)) ((scores[name] ??= {})[arm] ??= []).push((await readJson(file)).score);
+        if (!file || !await exists(file)) continue;
+        const scored = await readJson(file);
+        pair[arm] = scored.score;
+        pair[`${arm}Substance`] = rubric?.expected ? numericSubstance(rubric, entry.arms[arm].result?.content) : scored.criteria.reduce((sum, item) => sum + item.points, 0);
       }
+      if (ARMS.every(arm => Number.isFinite(pair[arm]))) (pairs[name] ??= []).push(pair);
     }
     for (const kind of Object.keys(KIND_CATEGORY)) {
       const file = path.join(cycleDir, 'reviews', `${kind}-unblinded.json`);
-      if (await exists(file)) { const data = await readJson(file); scores[kind] = { after: Object.values(data.cases).map(c => c.after), raw_tools: Object.values(data.cases).map(c => c.raw_tools) }; }
+      if (await exists(file)) pairs[kind] = Object.entries((await readJson(file)).cases).map(([id, c]) => ({ id, after: c.after, raw_tools: c.raw_tools }));
     }
-    const table = Object.fromEntries(Object.entries(scores).map(([name, arms]) => [name, Object.fromEntries(Object.entries(arms).map(([arm, list]) => [arm, { n: list.length, mean: round1(list.reduce((a, b) => a + b, 0) / list.length) }]))]));
-    print({ scores: table, cost: costReport(attempts, gold), lost: infraLost(attempts), incomplete }); return;
+    const scores = Object.fromEntries(Object.entries(pairs).map(([name, list]) => [name, {
+      ...comparePaired(list, { seed: name }),
+      ...(list.every(item => Number.isFinite(item.afterSubstance)) ? { substance: comparePaired(list.map(item => ({ after: item.afterSubstance, raw_tools: item.raw_toolsSubstance })), { seed: name + ':substance' }) } : {}),
+    }]));
+    print({ scores, cost: costReport(attempts, gold), lost: infraLost(attempts), incomplete }); return;
   }
   throw Error('Usage: node cycle-tools.mjs grade|selftest|packets|unblind|cost|reruns|summary --cycle DIR ...');
 };

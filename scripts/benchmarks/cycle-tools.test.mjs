@@ -156,3 +156,43 @@ test('anchors: tasks Codali lost points on come first, never ceiling-for-both or
   assert.equal(chosen[0].task.id, 'anchor-n2'); assert.equal(chosen[0].task.split, 'validation'); assert.equal(chosen[0].rubric.id, 'anchor-n2');
   assert.deepEqual(selectAnchors(entries, { numeric: 5, code: 0, shuffle: identity }).map(item => item.source.id), ['n2', 'n3', 'n4']);
 });
+
+test('paired stats: sign test, bootstrap interval and verdict', () => {
+  assert.equal(tools.signTest(0, 0), 1);
+  assert.ok(Math.abs(tools.signTest(6, 4) - 0.7539) < 1e-3);
+  assert.ok(Math.abs(tools.signTest(10, 0) - 0.00195) < 1e-4);
+  const lead = tools.comparePaired(Array.from({ length: 10 }, (_, i) => ({ after: 90 + (i % 3), raw_tools: 60 + i })), { seed: 's' });
+  assert.equal(lead.verdict, 'Codali leads'); assert.ok(lead.ci95[0] > 0); assert.equal(lead.wins.after, 10);
+  const close = tools.comparePaired([[80, 70], [70, 80], [75, 74], [60, 66], [90, 85], [50, 55]].map(([after, raw_tools]) => ({ after, raw_tools })), { seed: 's' });
+  assert.equal(close.verdict, 'not distinguishable');
+  assert.deepEqual(tools.comparePaired([]), { n: 0 });
+  assert.equal(tools.comparePaired([{ after: 1, raw_tools: 0 }]).verdict, 'too few cases');
+  const again = tools.comparePaired([[80, 70], [70, 80], [75, 74], [60, 66], [90, 85], [50, 55]].map(([after, raw_tools]) => ({ after, raw_tools })), { seed: 's' });
+  assert.deepEqual(again.ci95, close.ci95, 'reproducible from the seed');
+});
+
+test('substance: a fenced JSON answer is unwrapped and no key cap applies', () => {
+  assert.equal(tools.numericSubstance(numericRubric, '```json\n{"a":1.5,"b":3,"c":[1,2],"d":"x","e":0,"z":1}\n```'), 100);
+  assert.equal(scoreNumeric(numericRubric, '```json\n{"a":1.5,"b":3,"c":[1,2],"d":"x","e":0}\n```').score, 0);
+  assert.equal(tools.numericSubstance(numericRubric, 'The answer: {"a":1.5}'), 0);
+});
+
+test('outages: OOM kills and route waits are tied to the attempts running at the time', () => {
+  const kernel = [
+    '2026-11-20T12:59:56+00:00 raijin kernel: Out of memory: Killed process 2039683 (strata-host) total-vm:124kB, anon-rss:52876368kB, file-rss:1kB',
+    '2026-11-20T13:07:49+00:00 raijin kernel: Out of memory: Killed process 2165214 (node) total-vm:1kB, anon-rss:1048576kB, file-rss:1kB',
+    '2026-11-20T13:07:50+00:00 raijin kernel: oom_reaper: reaped process 2165214 (node)',
+  ].join('\n');
+  const kills = tools.parseOomKills(kernel);
+  assert.deepEqual(kills.map(k => [k.process, k.anonGB, k.at]), [['strata-host', 50.4, '2026-11-20T12:59:56.000Z'], ['node', 1, '2026-11-20T13:07:49.000Z']]);
+  const ledger = [
+    { type: 'start', key: 'c-48:raw_tools', at: '2026-11-20T12:30:00.000Z' }, { type: 'result', key: 'c-48:raw_tools', at: '2026-11-20T12:50:20.000Z' },
+    { type: 'model_route_wait', key: 'c-49:after', at: '2026-11-20T12:50:29.000Z' }, { type: 'model_route_ready', key: 'c-49:after', at: '2026-11-20T12:59:03.000Z' },
+    { type: 'start', key: 'c-49:after', at: '2026-11-20T12:59:04.000Z' }, { type: 'result', key: 'c-49:after', at: '2026-11-20T13:33:24.000Z' },
+    { type: 'model_route_wait', key: 'c-50:after', at: '2026-11-20T14:00:00.000Z' },
+  ];
+  const waits = tools.routeWaits(ledger);
+  assert.deepEqual(waits.map(w => [w.key, w.minutes ?? null, w.until]), [['c-49:after', 8.6, '2026-11-20T12:59:03.000Z'], ['c-50:after', null, null]]);
+  const affected = tools.affectedAttempts([...kills, waits[0]], ledger, '2026-11-20T15:00:00.000Z');
+  assert.deepEqual(affected.map(e => e.affected), [['c-49:after'], ['c-49:after'], []], 'a wait between attempts affects none');
+});
