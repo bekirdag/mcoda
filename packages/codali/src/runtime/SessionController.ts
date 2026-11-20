@@ -28,7 +28,7 @@ import { completionReport, deadlineReport, interruptedReport } from "./Completio
 import { checkWrittenJavaScript, type WriteSyntaxCheck } from "./WriteSyntaxCheck.js";
 import { workStatusPage } from "./WorkStatusPage.js";
 import { awaitInteraction, interactionSettings, interactionHistory, interactionResponseFormat, interactionFirstPrompt, INTERACTION_CONTRACT_VERSION, DIRECT_INTERACTION_VERSION, NATIVE_INTERACTION_VERSION, CASCADE_INTERACTION_VERSION, GATEWAY_INTERACTION_VERSION, interactionGatewayTool, nativeFinalAnswerTool, nativeStartWorkTool, compactToolSchema, nativeInteractionTool, parseNativeInteractionDecision, parseInteractionDecision, parseDirectInteractionDecision, preparedInteraction, ROUTER_PROMPT, type InteractionDecision } from "./InteractionRouter.js";
-import { normalizeJsonPresentation, requestDemandsJsonOnly, validateInteractionOutput } from "./InteractionContract.js";
+import { normalizeCodeBlockPresentation, normalizeJsonPresentation, requestDemandsCodeBlockOnly, requestDemandsJsonOnly, validateInteractionOutput } from "./InteractionContract.js";
 import { ADAPTIVE_INTERACTION_VERSION, ANSWER_PROMPT, ANSWER_INVARIANTS } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
@@ -2115,6 +2115,14 @@ export class SessionController {
         const normalized = normalizeJsonPresentation(content);
         if (normalized !== content) {
           await this.emit("interaction_output_normalized", { method: "json_fence", draftHash: hash(content), answerHash: hash(normalized), semanticValuesChanged: false });
+          content = normalized;
+        }
+      } else if (decision.mode !== "execute" && requestDemandsCodeBlockOnly(prompt)) {
+        // The runtime's own failed-test disclosure is kept: honesty outranks format.
+        const note = /\n\nRuntime check: this final code was run[^\n]*$/u.exec(content)?.[0] ?? "";
+        const normalized = normalizeCodeBlockPresentation(note ? content.slice(0, -note.length) : content) + note;
+        if (normalized !== content) {
+          await this.emit("interaction_output_normalized", { method: "code_block_only", draftHash: hash(content), answerHash: hash(normalized), semanticValuesChanged: false });
           content = normalized;
         }
       }

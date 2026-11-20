@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseOutputContract, requestDemandsJsonOnly, unconstrainedOutput, validateInteractionOutput } from "../InteractionContract.js";
+import { normalizeCodeBlockPresentation, parseOutputContract, requestDemandsCodeBlockOnly, requestDemandsJsonOnly, unconstrainedOutput, validateInteractionOutput } from "../InteractionContract.js";
 
 test("only explicit JSON-only wording upgrades a request to a JSON reply", () => {
   for (const request of ["Return only JSON with exactly these five keys: a, b.", "Respond with JSON only.", "Output just valid JSON.", "Reply with only a JSON object? No: return only JSON."]) {
@@ -46,4 +46,24 @@ test("explicit word bounds use whitespace-separated words and do not imply factu
   assert.match(validateInteractionOutput("one two three four", contract).join(), /maximum is 3/);
   assert.ok(validateInteractionOutput("  ", unconstrainedOutput()).length);
   assert.deepEqual(validateInteractionOutput('{"answer":999}', { ...unconstrainedOutput(), format: "json", requiredKeys: ["answer"] }), []);
+});
+
+test("only explicit one-code-block-no-prose wording asks for a bare code block", () => {
+  for (const request of ["Do not mutate inputs. Return exactly one fenced python code block, all imports included, no prose. Use available tools to verify your answer.", "Reply with only one code block and nothing else.", "Return exactly one fenced code block. No explanation."]) {
+    assert.equal(requestDemandsCodeBlockOnly(request), true, request);
+  }
+  for (const request of ["Return exactly one fenced python code block, then explain the design.", "Show the code and explain it.", "Return only JSON, no prose."]) {
+    assert.equal(requestDemandsCodeBlockOnly(request), false, request);
+  }
+});
+
+test("prose around the single code block is dropped and the block is kept byte for byte", () => {
+  const block = "```python\nimport math\n\ndef f(x):\n    return math.floor(x)\n```";
+  assert.equal(normalizeCodeBlockPresentation(`The exact final version below was re-executed in the sandbox (25 tests OK).\n\n${block}`), block);
+  assert.equal(normalizeCodeBlockPresentation(`${block}\n\nHow it works / design notes\n\n- Parsing is hand-written.`), block);
+  assert.equal(normalizeCodeBlockPresentation(block), block);
+  const two = `${block}\n\nAlternative:\n\n${block}`;
+  assert.equal(normalizeCodeBlockPresentation(two), two);
+  const inner = "Note\n\n```python\ndoc = \"\"\"\n```\n\"\"\"\n```";
+  assert.equal(normalizeCodeBlockPresentation(inner), inner);
 });

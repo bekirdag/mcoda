@@ -27,6 +27,23 @@ export const requestDemandsJsonOnly = (request: string): boolean =>
   /\b(?:return|respond|reply|answer|output|give)\b[^.\n]{0,40}?\b(?:only|just)\s+(?:valid\s+|a\s+|the\s+)?json\b/iu.test(request)
   || /\b(?:return|respond|reply|answer|output)\b[^.\n]{0,40}?\bjson\s+only\b/iu.test(request);
 
+/**
+ * True when the request plainly demands a reply that is one fenced code block
+ * and nothing else ("Return exactly one fenced python code block, ... no
+ * prose"). In cycles 2, 4, 5 and 6 Codali wrapped such a block in verification
+ * notes the request had ruled out. Only explicit wording counts.
+ */
+export const requestDemandsCodeBlockOnly = (request: string): boolean =>
+  /\b(?:exactly|only|just|a\s+single)\s+one\s+(?:fenced\s+)?(?:[\w+#.-]+\s+)?code\s+block\b|\bonly\s+(?:a|one|the)\s+(?:single\s+)?(?:fenced\s+)?(?:[\w+#.-]+\s+)?code\s+block\b/iu.test(request)
+  && /\bno\s+(?:prose|explanations?|commentary|other\s+text)\b|\bnothing\s+else\b/iu.test(request);
+
+/** Keep the one fenced code block unchanged when the answer has exactly one; otherwise return the content as-is. */
+export const normalizeCodeBlockPresentation = (content: string): string => {
+  const blocks = [...content.matchAll(/^[ \t]*```[^\n`]*\r?\n[\s\S]*?\r?\n[ \t]*```[ \t]*$/gmu)];
+  if (blocks.length !== 1 || (content.match(/```/gu) ?? []).length !== 2) return content;
+  return blocks[0][0].trim();
+};
+
 export const outputContractSchema = {
   type: "object", additionalProperties: false, required: ["format", "requiredKeys", "minWords", "maxWords"],
   properties: {

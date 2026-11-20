@@ -6,6 +6,9 @@
   longer replace a draft whose values all come from calculator results when it
   adds nulls or changes two or more values and over half of them; a single
   corrected value is still accepted.
+- Answers: when the request explicitly asks for exactly one fenced code block
+  and no prose, text around the single block is dropped and the block is kept
+  unchanged. The runtime's own failed-test note is kept.
 
 ## 0.1.135-codali.41
 
