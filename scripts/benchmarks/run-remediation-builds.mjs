@@ -47,7 +47,7 @@ const runtime=await fs.readFile(new URL('../../packages/codali/dist/runtime/Sess
 for(const item of cases){
  const dir=path.join(output,item.id),workspace=path.join(dir,'workspace');await fs.mkdir(workspace,{recursive:true,mode:0o700});
  await fs.writeFile(path.join(workspace,'RFP.md'),item.rfp,{flag:'wx'});
- const controller=new SessionController({workspaceRoot:workspace,storageRoot:path.join(dir,'state'),resolved,effort:'medium',permissions:'workspace',allowNetwork:false,allowWeb:false,allowMemory:false,userInstructionsPath:false,onEvent:e=>{if(e.type!=='token')appendFileSync(path.join(dir,'events.jsonl'),JSON.stringify(e)+'\n');}});
+ const controller=new SessionController({workingStyle:false,workspaceRoot:workspace,storageRoot:path.join(dir,'state'),resolved,effort:'medium',permissions:'workspace',allowNetwork:false,allowWeb:false,allowMemory:false,userInstructionsPath:false,onEvent:e=>{if(e.type!=='token')appendFileSync(path.join(dir,'events.jsonl'),JSON.stringify(e)+'\n');}});
  const started=Date.now();let answer,error,gradeError,testError,gradePassed=false,testsPassed=false;
  try{answer=await controller.run('Implement and test the complete requirements in RFP.md. Read it first and preserve it. Deliver the runnable library, real tests and usage documentation.');}catch(e){error=String(e);}
  // Independent checks are mounted read-only only after the candidate has stopped.

@@ -47,7 +47,7 @@ const result={schemaVersion:1,attemptId,arm,caseId:task.id,domain:task.domain,fa
 emit('benchmark_request',{...result,prompt:task.prompt,history:task.history,files:task.files,opaqueRoot});
 try{
   if(arm.startsWith('codali')){
-    controller=new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved,effort:'low',permissions:'plan',
+    controller=new SessionController({workingStyle:false,workspaceRoot:workspace,storageRoot:storage,resolved,effort:'low',permissions:'plan',
       userInstructionsPath:false,allowWeb:false,allowMemory:false,allowMedia:false,allowNetwork:false,
       onEvent:event=>emit(event.type,event.data)});
     abort.signal.addEventListener('abort',()=>controller.cancel(),{once:true});

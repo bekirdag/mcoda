@@ -31,6 +31,7 @@ import { awaitInteraction, interactionSettings, interactionHistory, interactionR
 import { normalizeCodeBlockPresentation, normalizeJsonPresentation, requestDemandsCodeBlockOnly, requestDemandsJsonOnly, validateInteractionOutput } from "./InteractionContract.js";
 import { ADAPTIVE_INTERACTION_VERSION, ANSWER_PROMPT, ANSWER_INVARIANTS } from "./InteractionRouter.js";
 import { preparedMemory } from "./PreparedMemory.js";
+import { formatWorkingStyle, workingStyleEnabled } from "./WorkingStyle.js";
 import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
 import { InspectionConvergence } from "./InspectionConvergence.js";
@@ -118,6 +119,8 @@ export interface SessionControllerOptions {
   allowMedia?: boolean;
   allowNetwork?: boolean;
   userInstructionsPath?: string | false;
+  /** Follow the user's working style from Docdex personal preferences. Default: config docdex.workingStyle, else on; CODALI_WORKING_STYLE=0 turns it off. Benchmarks pass false. */
+  workingStyle?: boolean;
   /** Authenticated host context; repository settings can only narrow tools. */
   runContext?: RunContext;
   projectTaskAuthority?: ProjectTaskAuthority;
@@ -377,6 +380,7 @@ export class SessionController {
   private docdexNames: string[] = [];
   private docdexReady = false;
   private memoryContext = "";
+  private workingStyleLoad?: { mode: "build" | "answer"; text: Promise<string> };
   private preparingEdit = false;
   private lastRequestEstimate = 4000;
   private feedbackRound = 0;
@@ -400,7 +404,7 @@ export class SessionController {
     this.contextArchive.clear();
     this.outputStreams.clear();
     this.sequence = 0; this.currentReceipt = undefined; this.reservations.clear();
-    this.baseline = undefined; this.previousSnapshot = undefined; this.instructions = ""; this.routingInstructions = ""; this.scopedInstructions = ""; this.instructionFocusKey = ""; this.instructionSources = []; this.memoryContext = "";
+    this.baseline = undefined; this.previousSnapshot = undefined; this.instructions = ""; this.routingInstructions = ""; this.scopedInstructions = ""; this.instructionFocusKey = ""; this.instructionSources = []; this.memoryContext = ""; this.workingStyleLoad = undefined;
     this.lastRequestEstimate = 4000; this.repeatedFailures.clear(); this.finalAttempts = 0; this.feedbackRound = 0;
     this.progressTracker.clear();
     this.repairStreaks.clear();
@@ -1921,6 +1925,24 @@ export class SessionController {
     await this.emit("skill_applied", { id: skill.id, sha256: guide.sha256, reason: "validation_phase", scriptsExecuted: false }, false);
   }
 
+  /** Loaded once per session and mode; an unavailable Docdex or tool adds nothing. */
+  private workingStyle(mode: "build" | "answer"): Promise<string> {
+    if (this.options.docdex === false || !workingStyleEnabled(this.options.workingStyle, this.options.resolved.config.docdex?.workingStyle)) return Promise.resolve("");
+    if (this.workingStyleLoad?.mode === mode) return this.workingStyleLoad.text;
+    const text = (async () => {
+      try {
+        const style = formatWorkingStyle(await (this.docdex ?? this.sharedDocdexClient()).workingStyle(mode, this.workspaceRoot));
+        await this.emit("working_style_loaded", { mode, included: style.included, dropped: style.dropped, profileHash: style.profileHash, characters: style.text.length }, false);
+        return style.text;
+      } catch (error) {
+        await this.emit("working_style_unavailable", { mode, reason: String(error instanceof Error ? error.message : error).slice(0, 200) }, false).catch(() => undefined);
+        return "";
+      }
+    })();
+    this.workingStyleLoad = { mode, text };
+    return text;
+  }
+
   private async loadInstructions(): Promise<void> {
     const focusPaths = this.state?.tasks.flatMap(task => task.allowedPaths);
     const blocks = await loadInstructionBlocks({ workspaceRoot: this.workspaceRoot, includeSystem: true,
@@ -1934,6 +1956,8 @@ export class SessionController {
     // User/workspace instructions remain intact; only our own guide is staged.
     this.routingInstructions = formatInstructionBlocks(blocks.map(block => block.sourcePath === "[codali]/AGENTS.md"
       ? { ...block, content: block.content.split("\n## Repository work and Docdex")[0] } : block));
+    const style = await this.workingStyle(this.state ? "build" : "answer");
+    if (style) { this.instructions += `\n${style}`; this.scopedInstructions += `\n${style}`; this.routingInstructions += `\n${style}`; }
     await this.skills.refresh();
     this.verificationGuideApplied = false;
     if ([...this.receipts.values()].some(receipt => receipt.tool === "run_shell" && isVerificationCommand(receipt.args))) await this.applyVerificationGuide();

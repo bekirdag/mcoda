@@ -40,7 +40,7 @@ await fs.writeFile(path.join(output,'manifest.json'), JSON.stringify({ kind: 'as
   runtimeRoot, runtimeHash: createHash('sha256').update(await fs.readFile(path.join(runtimeRoot,'runtime/SessionController.js'))).digest('hex'), startedAt: new Date().toISOString() }, null, 2));
 await fs.cp(runtimeRoot,path.join(output,'runtime'),{recursive:true,errorOnExist:true,force:false});
 await fs.writeFile(path.join(output,'before.json'), JSON.stringify(await snapshotWorkflowWorkspace(workspace), null, 2));
-const controller = new SessionController({ workspaceRoot: workspace, storageRoot: path.join(directory,'state'), resolved, effort: 'medium', permissions: 'workspace',
+const controller = new SessionController({workingStyle:false, workspaceRoot: workspace, storageRoot: path.join(directory,'state'), resolved, effort: 'medium', permissions: 'workspace',
   allowNetwork: true, allowWeb: true, allowMemory: false, userInstructionsPath: false,
   onEvent: event => { if (event.type !== 'token') appendFileSync(path.join(output,'events.jsonl'),JSON.stringify(event)+'\n'); } });
 const started = Date.now(); let answer, error;

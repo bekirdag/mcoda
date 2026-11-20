@@ -12,6 +12,17 @@
 - Model routes: a route that served this process and then drops out of the
   catalog (for example while a node restarts) is now a temporary outage that
   the session waits out, instead of a final "no eligible route" error.
+- Working style: Codali follows the user's working style (how they ask for
+  work to be done, communicate and judge quality) from the local Docdex
+  personal-preferences store through `docdex_working_style`. It is loaded once
+  per session, ranks below the request, workspace instructions and repository
+  facts, and never widens permissions. Codali keeps only short style lines in
+  style categories at the lowest sensitivity, and drops personal context,
+  contact details, secret-like values and links even if Docdex returns them.
+  It is on by default and adds nothing when Docdex or the tool is unavailable.
+  Turn it off with `docdex.workingStyle: false`, `CODALI_WORKING_STYLE=0` or
+  the `workingStyle: false` session option. Benchmark sessions always turn it
+  off.
 
 ## 0.1.135-codali.41
 

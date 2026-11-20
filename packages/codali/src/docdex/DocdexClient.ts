@@ -257,6 +257,7 @@ const MCP_OPERATION_BY_METHOD: Record<string, DocdexRuntimeOperation> = {
   docdex_tree: "tree",
   docdex_open: "open",
   docdex_get_profile: "profile_read",
+  docdex_working_style: "profile_read",
   docdex_save_preference: "profile_write",
   docdex_web_research: "web_research",
   docdex_rerank: "rerank",
@@ -1164,7 +1165,7 @@ export class DocdexClient {
     await this.ensureMcpSession();
     // The daemon recognizes the web-specific deadline only on standard MCP
     // tools/call envelopes; a legacy direct method gets the generic 30s limit.
-    const standardToolCall = method === "docdex_web_research";
+    const standardToolCall = method === "docdex_web_research" || method === "docdex_working_style";
     const payload = {
       jsonrpc: "2.0",
       id: randomUUID(),
@@ -1437,6 +1438,11 @@ export class DocdexClient {
         clamp: options.clamp,
       }),
     );
+  }
+
+  /** The user's curated working style from Docdex personal preferences (read-only profile lane). */
+  workingStyle(mode: "build" | "review" | "release" | "answer", repoPath?: string, maxChars = 6000): Promise<unknown> {
+    return this.callMcp("docdex_working_style", { mode, ...(repoPath ? { repo_path: repoPath } : {}), max_chars: maxChars }, 5_000);
   }
 
   getProfile(agentId?: string): Promise<unknown> {

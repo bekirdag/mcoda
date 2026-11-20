@@ -86,6 +86,14 @@ inference usage is separate from Codali model totals. Legacy `binary`,
 `binarySha256` and `startupTimeoutMs` settings are accepted but do not launch a
 process. If the shared service is unavailable, Codali continues with local tools.
 
+Codali follows your working style, meaning how you ask for work to be done,
+communicate and judge quality. It reads this from Docdex's personal-preferences
+store (`docdex_working_style`) once per session. It ranks below your request,
+workspace instructions and repository facts. Only short style lines at the
+lowest sensitivity are used; personal context, contact details, secret-like
+values and links are dropped. Turn it off with `"docdex": { "workingStyle": false }`
+or `CODALI_WORKING_STYLE=0`.
+
 | Command | Purpose |
 | --- | --- |
 | `/status`, `/usage` | Current execution state, reconciled accounting and server limits |

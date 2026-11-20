@@ -52,7 +52,7 @@ for (const item of cases) {
   const directory=path.join(output,item.id), workspace=path.join(directory,'workspace'), storage=path.join(directory,'state');
   await fs.mkdir(directory,{mode:0o700}); await fs.mkdir(workspace,{mode:0o700});
   for (const [name,content] of Object.entries(item.files??{})) await fs.writeFile(path.join(workspace,name),content,{flag:'wx',mode:0o600});
-  const controller=new SessionController({workspaceRoot:workspace,storageRoot:storage,resolved,effort:'low',permissions:'workspace',allowWeb:false,allowNetwork:false,allowMemory:false,userInstructionsPath:false,
+  const controller=new SessionController({workingStyle:false,workspaceRoot:workspace,storageRoot:storage,resolved,effort:'low',permissions:'workspace',allowWeb:false,allowNetwork:false,allowMemory:false,userInstructionsPath:false,
     onEvent:event=>{if(event.type!=='token')appendFileSync(path.join(directory,'events.jsonl'),JSON.stringify(event)+'\n',{mode:0o600});}});
   const started=Date.now();let answer,error,passed=false;
   try { answer=await controller.interact(item.prompt);passed=item.check?item.check(answer.content):isDeepStrictEqual(JSON.parse(answer.content),item.expected); }
