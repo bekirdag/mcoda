@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { SessionController, type SessionEvent } from "../SessionController.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
+import { forgetServedRoutes } from "../../providers/ConfiguredProvider.js";
 
 for (const rejected of [false, true]) {
   test(`tool attempts after the last model snapshot survive reconciliation and resume (rejected: ${rejected})`, async t => {
@@ -41,6 +42,7 @@ for (const rejected of [false, true]) {
 
 for (const scenario of ["smaller-advertised-context", "no-eligible-model", "authentication", "malformed-catalog", "route-observer", "settlement-observer"] as const) {
   test(`undispatched ${scenario} failure releases accounting across resume`, { concurrency: false }, async t => {
+    forgetServedRoutes();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-preflight-"));
     const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-preflight-state-"));
     t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });

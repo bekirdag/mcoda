@@ -9,6 +9,9 @@
 - Answers: when the request explicitly asks for exactly one fenced code block
   and no prose, text around the single block is dropped and the block is kept
   unchanged. The runtime's own failed-test note is kept.
+- Model routes: a route that served this process and then drops out of the
+  catalog (for example while a node restarts) is now a temporary outage that
+  the session waits out, instead of a final "no eligible route" error.
 
 ## 0.1.135-codali.41
 

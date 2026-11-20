@@ -125,3 +125,19 @@ test("malformed discovery and inference failures are never replayed by discovery
   await new ModelServiceClient({ ...service, catalogUrl: "https://discovery.test/custom?scope=private" }, "fixture-key").catalog();
   assert.equal(urls[1], "https://discovery.test/custom?scope=private");
 });
+
+test("a served route that leaves the catalog is a retryable outage; a never-served one stays a denial", async t => {
+  const restarting = { ...service, baseUrl: "https://restart.test/v1/swarm/self-hosted/openai" };
+  let listed = true;
+  t.mock.method(globalThis, "fetch", async () => Response.json({ agents: listed ? [{ slug: "served", backend: "strata", supports_tools: true, health_status: "healthy" }] : [] }));
+  const provider = (catalogId: string) => {
+    const config: OrchestrationConfig = { schemaVersion: 1, profile: "route-restart", providers: { service: restarting },
+      models: { lead: { provider: "service", catalogId, revision: "fixture", backend: "strata", supportsTools: true,
+        operations: ["chat.completions"], contextWindow: 8192, maxOutputTokens: 512 } }, bindings: { lead: { candidates: ["lead"] } } };
+    return new ConfiguredProvider({ config, hash: orchestrationHash(config), source: "fixture" }, "lead", { credentials: { service: "fixture-key" } });
+  };
+  await assert.rejects(provider("never-served").select("chat.completions"), (error: Error) => error.name === "Error" && /not entitled\/advertised/.test(error.message));
+  assert.equal((await provider("served").select("chat.completions")).actual.id, "served");
+  listed = false;
+  await assert.rejects(provider("served").select("chat.completions"), (error: Error & { code?: string }) => error.name === "ModelServiceError" && error.code === "model_unavailable");
+});

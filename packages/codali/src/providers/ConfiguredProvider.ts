@@ -173,6 +173,12 @@ export interface ModelInvocation {
   resolvedCatalogId?: string;
   nativeReasoningRequest?: Record<string, unknown>;
 }
+/** Routes this process has been served by (provider origin + catalog ID). */
+const servedRoutes = new Set<string>();
+const servedRouteKey = (baseUrl: string, catalogId: string): string => `${baseUrl}\u0000${catalogId}`;
+/** Test-only: forgets served routes so a scenario starts like a fresh process. */
+export const forgetServedRoutes = (): void => servedRoutes.clear();
+
 export class ConfiguredProvider implements Provider {
   readonly name = "configured";
   readonly supportsToolCalls = true;
@@ -206,6 +212,7 @@ export class ConfiguredProvider implements Provider {
     const candidates = resolveBinding(this.resolved.config, this.binding, operation);
     const reasons: string[] = [];
     const refreshed = new Set<string>();
+    let vanished = false;
     for (const candidate of candidates) {
       const { id, model } = candidate;
       const client = this.client(model.provider);
@@ -232,6 +239,7 @@ export class ConfiguredProvider implements Provider {
             transient ||= ["unreachable", "unhealthy", "offline"].includes(actual.health);
             continue;
           }
+          servedRoutes.add(servedRouteKey(this.resolved.config.providers[model.provider].baseUrl, model.catalogId));
           return { id, model, actual, provider: this.resolved.config.providers[model.provider] };
         }
         // Revalidate temporary health once instead of failing from a stale
@@ -241,10 +249,16 @@ export class ConfiguredProvider implements Provider {
           catalog = await client.catalog(signal, true);
           continue;
         }
+        if (!matches.length && servedRoutes.has(servedRouteKey(this.resolved.config.providers[model.provider].baseUrl, model.catalogId))) vanished = true;
         reasons.push(`${id}: ${failures.join(", ") || "not entitled/advertised"}`);
         break;
       }
     }
+    // A route that served this process and then left the catalog is a node
+    // restart, not a denial: in cycle 6 a node's OOM restart ended a research
+    // session with this error after 7 minutes of work, while the same outage
+    // reached the other arm as a retryable 404. Report it the same way.
+    if (vanished) throw new ModelServiceError("model_unavailable", 404);
     throw new Error(`No eligible configured ${this.binding} route: ${reasons.join("; ")}`);
   }
 
