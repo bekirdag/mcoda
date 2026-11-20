@@ -425,6 +425,7 @@ const main = async () => {
     await fs.writeFile(path.resolve(option(args, 'out')), JSON.stringify({ createdAt: new Date().toISOString(), anchors: chosen }, null, 1), { flag: 'wx' });
     print(chosen.map(item => item.source)); return;
   }
+  if (command === 'recurrence') { print(recurrence(await readJsonl(path.resolve(option(args, 'ledger'))))); return; }
   if (!cycleDir) throw Error('--cycle DIR is required');
   const { study, cases, attempts, incomplete } = await resolveAttempts(cycleDir);
   if (command === 'grade') {
@@ -506,7 +507,6 @@ const main = async () => {
     }
     print(out); return;
   }
-  if (command === 'recurrence') { print(recurrence(await readJsonl(path.resolve(option(args, 'ledger'))))); return; }
   if (command === 'outages') {
     // Rewrites <cycle>/outages.json from the kernel log and the runner ledgers; --process filters OOM kills (default: all).
     const { execFileSync } = await import('node:child_process');
