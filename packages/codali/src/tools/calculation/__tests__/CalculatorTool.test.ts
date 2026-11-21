@@ -33,7 +33,7 @@ test("calculator batches named formulas atomically without allowing code or ambi
   assert.equal(result.ok, true, result.output);
   assert.deepEqual(JSON.parse(result.output).results, { total: 126, ratio: 0.75 });
   for (const args of [{}, { expression: "1", expressions: { a: "2" } }, { expressions: {} },
-    { expressions: { a: "1", b: "process.env" } }, { expressions: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`a${i}`, "1"])) }]) {
+    { expressions: { a: "1", b: "process.env" } }, { expressions: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`a${i}`, "1"])) }]) {
     assert.equal((await run(args)).ok, false);
   }
 });
@@ -89,4 +89,46 @@ test("counting functions give exact binomial coefficients and permutations", () 
   assert.equal(evaluateCalculation("factorial(10)"), 3628800);
   assert.ok(Math.abs(evaluateCalculation("0.3*2*C(38,7)/C(40,8) + 0.2*6*C(34,7)/C(40,8)") - 0.182404) < 1e-6);
   assert.throws(() => evaluateCalculation("C(4.5,2)"), /non-negative integers/);
+});
+
+test("a calculation may name intermediate values and reuse them", async () => {
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  const run = async (args: unknown) => { const r = await registry.execute("calculate", args, { workspaceRoot: "." }); return { ok: r.ok, body: r.ok ? JSON.parse(r.output) : r.error!.message }; };
+  // Hohmann transfer written the way a model writes it: assignments chained with ";".
+  const orbit = await run({ expression: "mu=398600.4418; Re=6378.137; r1=Re+400; r2=Re+35786; v1=sqrt(mu/r1); vtp=sqrt(2*mu*r2/(r1*(r1+r2))); vtp-v1" });
+  assert.equal(orbit.ok, true, String(orbit.body));
+  assert.ok(Math.abs(orbit.body.result - 2.3975) < 1e-3, String(orbit.body.result));
+  assert.ok(Math.abs(orbit.body.values.r1 - 6778.137) < 1e-9);
+  // Line breaks separate statements too; a name may shadow a constant or a function alias.
+  const shadow = await run({ expression: "e = 0.25\nP = 101325\nC = 3\nP*(1-e)/C + C(5,2)" });
+  assert.equal(shadow.ok, true, String(shadow.body));
+  assert.equal(shadow.body.result, 101325 * 0.75 / 3 + 10);
+  // Later labels may use earlier ones, and more than 16 formulas fit.
+  const batch = await run({ expressions: { ev_per_day: "80000*1500*1440", bytes_per_day: "ev_per_day*600", tb_per_day: "bytes_per_day/1e12", ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`k${i}`, `tb_per_day*${i}`])) } });
+  assert.equal(batch.ok, true, String(batch.body));
+  assert.equal(batch.body.results.tb_per_day, 103.68);
+  assert.equal(batch.body.results.k29, 103.68 * 29);
+  // Still numbers only: nothing here is evaluated as code.
+  for (const expression of ["a = [1,2]", "a = 'x'", "import os; 1", "a = 1; a.constructor", "a = 1; a(2)", "x = y + 1", "for i in range(3): 1", "a == 1", "a = b = 1", "1a = 2", "__proto__ = 1", "constructor = 1; constructor.constructor",
+    Array.from({ length: 65 }, (_, i) => `v${i} = ${i}`).join(";")]) {
+    assert.equal((await run({ expression })).ok, false, expression);
+  }
+  assert.match(String((await run({ expression: "x = y + 1" })).body), /Unknown name y/);
+});
+
+test("inverse and hyperbolic functions and large capacity integers are available", async () => {
+  for (const [formula, expected] of [["asin(1)", Math.PI / 2], ["acos(0)", Math.PI / 2], ["atan(1)", Math.PI / 4], ["atan2(1,-1)", 3 * Math.PI / 4],
+    ["sinh(0)+cosh(0)+tanh(0)", 1], ["log2(1024)", 10], ["cbrt(27)", 3], ["hypot(3,4)", 5], ["trunc(-2.7)", -2], ["sign(-3)", -1]] as const) {
+    assert.ok(Math.abs(evaluateCalculation(formula) - expected) < 1e-12, formula);
+  }
+  for (const formula of ["asin(2)", "acos(-1.5)", "atan2(1)", "log2(0)"]) assert.throws(() => evaluateCalculation(formula), Error, formula);
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  // Bytes per year passes 2^53: answered as a rounded double with a warning, not refused.
+  const big = await registry.execute("calculate", { expression: "80000*1500*1440*600*365" }, { workspaceRoot: "." });
+  assert.equal(big.ok, true, big.output);
+  assert.equal(JSON.parse(big.output).result, 80000 * 1500 * 1440 * 600 * 365);
+  assert.match(JSON.parse(big.output).warning, /2\^53/);
+  assert.equal(JSON.parse((await registry.execute("calculate", { expression: "2+3" }, { workspaceRoot: "." })).output).warning, undefined);
+  // The strict single-formula API still refuses an inexact integer.
+  assert.throws(() => evaluateCalculation("80000*1500*1440*600*365"), /exact supported range/);
 });
