@@ -1871,11 +1871,16 @@ const consistencyConfig = () => {
   return config;
 };
 
-test("long reasoned answers receive one separately metered consistency audit", async t => {
+/** The requirement check that precedes the audit of a long answer; here it finds nothing. */
+const requirementCheckReply = (request: { messages: Array<{ content: string }> }, requirements: unknown[] = [{ item: "reservation service", status: "covered", note: "" }]) =>
+  request.messages[0].content.startsWith("You check a draft answer against the request") ? reply(JSON.stringify({ requirements })) : undefined;
+
+test("long reasoned answers receive a requirement check and one separately metered consistency audit", async t => {
   const revised = `${longDesignDraft}Stale leaders are fenced by a per-shard epoch.`;
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return reply(longDesignDraft);
+    const check = requirementCheckReply(request); if (check) { assert.equal(calls, 2); return check; }
     assert.equal(request.toolChoice, "none");
     const packet = JSON.parse(request.messages[1].content);
     assert.equal(packet.request, designPrompt); assert.equal(packet.draft, longDesignDraft);
@@ -1883,8 +1888,51 @@ test("long reasoned answers receive one separately metered consistency audit", a
     return reply(revised);
   } }, consistencyConfig());
   assert.equal((await controller.interact(designPrompt)).content, revised);
-  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().modelCalls, 2);
+  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
   assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
+  assert.equal(events.find(e => e.type === "requirement_coverage_check")!.data.gaps, 0);
+});
+
+test("requirements a design misses, changes or defers are handed to the audit, which fixes them", async t => {
+  const prompt = `${designPrompt} It must survive the loss of one region, hold a reservation for exactly 90 seconds, and state the partition count.`;
+  const fixed = `${longDesignDraft}Each reservation is held for 90 seconds. Writes are replicated to a second region before they are acknowledged. The table uses 64 partitions.`;
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(`${longDesignDraft}Each reservation is held for 60 seconds. The partition count is to be determined.`);
+    if (calls === 2) {
+      assert.match(request.messages[0].content, /never add a requirement of your own/);
+      assert.equal(JSON.parse(request.messages[1].content).request, prompt);
+      return reply(JSON.stringify({ requirements: [
+        { item: "reservation state machine", status: "covered", note: "" },
+        { item: "survive the loss of one region", status: "missing", note: "The draft never says how data survives a regional outage." },
+        { item: "hold a reservation for exactly 90 seconds", status: "contradicted", note: "The draft holds reservations for 60 seconds." },
+        { item: "state the partition count", status: "deferred", note: "The draft leaves the partition count to be determined." },
+        { item: "unexplained verdict", status: "missing", note: "" }] }));
+    }
+    assert.match(request.messages[0].content, /Internal consistency audit[\s\S]*requirementGaps lists explicit requirements/);
+    const packet = JSON.parse(request.messages[1].content);
+    assert.deepEqual(packet.requirementGaps.map((gap: { status: string }) => gap.status), ["missing", "contradicted", "deferred"]);
+    assert.match(packet.requirementGaps[1].note, /60 seconds/);
+    return reply(fixed);
+  } }, consistencyConfig());
+  assert.equal((await controller.interact(prompt)).content, fixed);
+  assert.equal(calls, 3);
+  assert.equal(events.find(e => e.type === "requirement_coverage_check")!.data.gaps, 3);
+  assert.equal(events.find(e => e.type === "consistency_answer_audit")!.data.requirementGaps, 3);
+});
+
+test("an unusable requirement check changes nothing: the audit runs as before", async t => {
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(longDesignDraft);
+    if (calls === 2) return reply("The draft looks complete to me.");
+    assert.doesNotMatch(request.messages[0].content, /requirementGaps lists/);
+    assert.equal(JSON.parse(request.messages[1].content).requirementGaps, undefined);
+    return reply(longDesignDraft);
+  } }, consistencyConfig());
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(calls, 3);
+  assert.equal(events.filter(e => e.type === "requirement_coverage_check_rejected").length, 1);
 });
 
 test("short answers skip the consistency audit", async t => {
@@ -1945,6 +1993,7 @@ test("a long design that used the calculator keeps its figures: one consistency 
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "40000/30" } } }] };
     if (calls === 2) return reply(draft);
+    const check = requirementCheckReply(request); if (check) return check;
     assert.doesNotMatch(request.messages[0].content, /Independently solve/);
     assert.match(request.messages[0].content, /Preserve every concrete value/);
     const packet = JSON.parse(request.messages[1].content);
@@ -1952,7 +2001,7 @@ test("a long design that used the calculator keeps its figures: one consistency 
     return reply(packet.draft);
   } }, config);
   assert.equal((await controller.interact(designPrompt)).content, draft);
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
   assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 0);
   assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
 });
