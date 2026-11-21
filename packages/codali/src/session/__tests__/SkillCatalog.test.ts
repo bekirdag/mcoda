@@ -176,3 +176,23 @@ test("catalog prompt bounds escaped metadata while omitted skills remain retriev
   }
   assert.match(restored, /LAZY_BODY_SENTINEL/);
 });
+
+test("the web testing skill ships a browser journey driver that can be read to the end and loaded", async t => {
+  const { root } = await fixture(t);
+  const catalog = new SkillCatalog({ workspaceRoot: root, includeUser: false });
+  await catalog.refresh();
+  const skill = catalog.list().skills.find(entry => entry.name === "webapp-testing")!;
+  assert.match(String((await catalog.read(skill.id)).content), /journey-driver\.mjs/);
+  const read = catalog.tools().find(tool => tool.name === "skill_read")!;
+  let offset: number | null = 0, text = "", pages = 0;
+  while (offset !== null) {
+    const page = JSON.parse((await read.handler({ id: skill.id, path: "journey-driver.mjs", offset }, { workspaceRoot: root })).output);
+    text += page.content; offset = page.nextOffset; pages++;
+    assert.ok(pages < 8, "the driver stays a few pages long");
+  }
+  // What the model pieces together from the pages is a module that loads and exports the driver.
+  const copy = path.join(root, "journey-driver.mjs"); await fs.writeFile(copy, text);
+  const driver = await import(copy);
+  assert.equal(typeof driver.launch, "function"); assert.equal(typeof driver.startServer, "function");
+  await assert.rejects(driver.startServer(process.execPath, ["-e", "process.exit(3)"], { url: "http://127.0.0.1:9/", ms: 3000 }), /exited before it answered|not reachable/);
+});
