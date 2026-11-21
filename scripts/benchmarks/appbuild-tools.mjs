@@ -14,6 +14,8 @@ import { createTextTool } from '../../packages/codali/dist/tools/system/TextTool
 import { createCalendarTool } from '../../packages/codali/dist/tools/system/CalendarTool.js';
 import { createIsolatedExecutor, executorStatus } from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
+import { modelStallAllowanceMs } from '../../packages/codali/dist/runtime/OutageWait.js';
+import { estimateProviderInputTokens } from '../../packages/codali/dist/providers/RequestSize.js';
 import { compressProviderContext } from '../../packages/codali/dist/runtime/ContextCompression.js';
 import { outageWaitMs } from '../../packages/codali/dist/runtime/OutageWait.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
@@ -142,36 +144,53 @@ export const finalAnswerReserveMs = deadlineMs => Math.min(300000, Math.ceil(dea
  * reply is returned as given. */
 /** Model-service failures a plain agent loop retries. Codali retries these too;
  * without it one malformed reply ended a raw app build after three hours. */
-export const RAW_RETRYABLE_MODEL_CODES = new Set(['invalid_response', 'service_unavailable', 'rate_limited']);
+/* Parity with Codali's own handling (cycle 6): it also waits out a model route
+ * that disappears (404 model_unavailable) and a failed connection ("fetch
+ * failed"), and abandons a request that never returns. Without these the raw
+ * arm lost two research attempts to a model-server restart and a 12-hour build
+ * to a five-second gateway blip. */
+export const RAW_RETRYABLE_MODEL_CODES = new Set(['invalid_response', 'service_unavailable', 'rate_limited', 'model_unavailable', 'transport_unavailable']);
 export const RAW_MODEL_RETRIES = 2;
 /** A temporary outage is waited out on the same schedule Codali uses, so
  * neither arm loses a long build to a two-minute service restart. A malformed
  * reply keeps the two quick retries. */
-export const RAW_OUTAGE_CODES = new Set(['service_unavailable', 'rate_limited']);
+export const RAW_OUTAGE_CODES = new Set(['service_unavailable', 'rate_limited', 'model_unavailable', 'transport_unavailable']);
 export const RAW_OUTAGE_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_000, 60_000];
 
 /** The service error behind a failure: a native-reasoning preflight wraps it as its cause. */
-const modelErrorCode = error => error?.code ?? error?.cause?.code;
+const modelErrorCode = error => error instanceof TypeError && error.message === 'fetch failed' ? 'transport_unavailable' : error?.code ?? error?.cause?.code;
 
 /** The same request again, unchanged: no added guidance, so it is not answer repair.
  * An outage is waited out exactly as Codali does (outageWaitMs: the ladder, then a
  * minute per retry, within 30 minutes and half the time left). */
-export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, now = Date.now } = {}) {
+export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, now = Date.now, stall = { longestMs: 0 }, stallMs } = {}) {
+  let stalled = 0;
   for (let attempt = 0; ; attempt++) {
-    try { return await provider.generate(request); }
+    // The same allowance Codali gives each of its requests.
+    const allowance = stallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? 65536, stall.longestMs, stalled);
+    const timer = new AbortController(); const handle = setTimeout(() => timer.abort(), allowance); const started = now();
+    try {
+      const dispatched = provider.generate({ ...request, signal: request.signal ? AbortSignal.any([request.signal, timer.signal]) : timer.signal });
+      dispatched.catch(() => undefined);
+      const response = await Promise.race([dispatched, new Promise((_, reject) => timer.signal.addEventListener('abort', () => reject(Object.assign(new Error('Model request stalled'), { code: 'service_unavailable', stalled: true })), { once: true }))]);
+      stall.longestMs = Math.max(stall.longestMs, now() - started);
+      return response;
+    }
     catch (error) {
+      if (error?.stalled) stalled++;
       const code = modelErrorCode(error);
       const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
       const waitMs = RAW_OUTAGE_CODES.has(code) ? outageWaitMs(attempt, remainingMs) : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
       if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
-      await onRetry({ attempt: attempt + 1, code, waitMs });
+      await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}) });
       await wait(waitMs);
     }
+    finally { clearTimeout(handle); }
   }
 }
 
 export async function runRawWorkflow({ provider, tools, messages, limits, contextWindow = 32768, signal, onResponse = () => {}, onRetry, wait, deadlineAt, now = Date.now }) {
-  const transcript = structuredClone(messages); let toolCalls = 0;
+  const transcript = structuredClone(messages); let toolCalls = 0; const stall = { longestMs: 0 };
   const finalAt = deadlineAt === undefined ? Infinity : deadlineAt - finalAnswerReserveMs(limits.timeoutMs);
   for (let step = 0; step < limits.maxSteps; step++) {
     signal?.throwIfAborted();
@@ -182,7 +201,7 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
         if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
         await tools.rememberContext(compressed.archived);
       }
-      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now });
+      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now, stall });
       await onResponse(response);
       transcript.push(response.message);
       return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript, finalizedAtDeadline: true };
@@ -195,7 +214,7 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
       if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
       await tools.rememberContext(compressed.archived);
     }
-    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now });
+    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now, stall });
     await onResponse(response);
     const calls = response.toolCalls ?? response.message.toolCalls ?? [];
     if (!calls.length) {

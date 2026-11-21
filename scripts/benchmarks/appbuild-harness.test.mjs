@@ -130,7 +130,7 @@ test('raw arm retries a malformed model reply with the same request, at most twi
  const request={messages:[{role:'user',content:'Q'}]};
  const response=await generateWithRetry(provider,request,{wait:async()=>{},onRetry:r=>retries.push(r)});
  assert.equal(response.message.content,'ok');assert.equal(seen.length,3);
- assert.ok(seen.every(r=>r===request),'retry must not add guidance');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
+ assert.ok(seen.every(r=>r.messages===request.messages&&Object.keys(r).every(key=>key==='signal'||r[key]===request[key])),'retry must not add guidance');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
  let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('invalid_response');}},request,{wait:async()=>{}}),/invalid_response/);assert.equal(m,3);
  let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw fail('invalid_request');}},request,{wait:async()=>{}}),/invalid_request/);assert.equal(k,1);
 });
@@ -148,4 +148,24 @@ test('raw arm waits out a temporary outage on the schedule Codali uses', async (
  assert.equal(ok.message.content,'ok');
  // Near the deadline the wait is bounded by half the time left.
  let d=0;await assert.rejects(generateWithRetry({generate:async()=>{d++;throw fail('service_unavailable');}},request,{wait:async()=>{},deadlineAt:1_000_000+5000,now:()=>1_000_000}),/service_unavailable/);assert.equal(d,3,"retries fit in half the time left: 500 + 2000 ms");
+});
+
+test('raw arm waits out a lost connection and a vanished model route, as Codali does', async () => {
+ const request={messages:[{role:'user',content:'Q'}]};
+ for(const failure of [()=>new TypeError('fetch failed'),()=>Object.assign(Error('Model service HTTP 404: model_unavailable'),{code:'model_unavailable'})]){
+  const waits=[];let n=0;
+  const provider={generate:async()=>{if(n++<4)throw failure();return {message:{role:'assistant',content:'ok'}};}};
+  const response=await generateWithRetry(provider,request,{wait:async ms=>{waits.push(ms);}});
+  assert.equal(response.message.content,'ok');assert.deepEqual(waits,RAW_OUTAGE_WAITS_MS.slice(0,4));
+ }
+ // Other transport-level TypeErrors and refusals are not retried.
+ let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw new TypeError('Invalid URL');}},request,{wait:async()=>{}}),/Invalid URL/);assert.equal(k,1);
+});
+
+test('raw arm abandons a request that never returns and sends it again', async () => {
+ const request={messages:[{role:'user',content:'Q'}]};const retries=[];let n=0;let abandoned=false;
+ const provider={generate:async r=>{if(n++===0)return new Promise((_,reject)=>r.signal.addEventListener('abort',()=>{abandoned=true;reject(new Error('aborted'));},{once:true}));return {message:{role:'assistant',content:'ok'}};}};
+ const response=await generateWithRetry(provider,request,{wait:async()=>{},onRetry:r=>retries.push(r),stallMs:30});
+ assert.equal(response.message.content,'ok');assert.equal(n,2);assert.ok(abandoned);
+ assert.deepEqual(retries.map(r=>[r.code,r.stalledAfterMs]),[['service_unavailable',30]]);
 });
