@@ -228,7 +228,7 @@ test("a large output ceiling does not starve evidence, and generation is clamped
   const result = compressProviderContext(request, 65536, 40960);
   assert.ok(result.afterTokens > 24000, `kept ${result.afterTokens} tokens of evidence`);
   assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 65536);
-  assert.ok(result.request.maxTokens! >= 19000);
+  assert.ok(result.request.maxTokens! >= 16000);
   const small: ProviderRequest = { messages: [{ role: "user", content: "y".repeat(90000) }], maxTokens: 40960 };
   const clamped = compressProviderContext(small, 65536, 40960);
   assert.ok(clamped.afterTokens + clamped.request.maxTokens! + 512 <= 65536, "an uncompressed request also fits the window");
@@ -247,7 +247,7 @@ test("folding keeps recent markers and a readable inventory of what already ran"
 
 test("execution history keeps a usable share of a window with a large output ceiling", () => {
   // 65k window with a 40k output ceiling used to leave 6k tokens of history.
-  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - Math.floor(65536 * 0.3)) / 4));
+  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - 16384) / 4));
   assert.equal(executionHistoryBudget(32768, 2048), (32768 - 2048) / 4);
 });
 
@@ -261,7 +261,31 @@ test("an abbreviated or evicted tool result is not still visible", () => {
 });
 
 test("window budgets reserve a share for output, never the whole ceiling", () => {
-  assert.equal(reservedOutputTokens(65536, 40960), 19660);
+  assert.equal(reservedOutputTokens(65536, 40960), 16384);
   assert.equal(reservedOutputTokens(65536, 8192), 8192);
-  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - 19660) / 4));
+  assert.equal(executionHistoryBudget(65536, 40960), Math.floor((65536 - 16384) / 4));
+  // A 131k window reserves 15%; a small window never more than 30%.
+  assert.equal(reservedOutputTokens(131072, 65536), 19660);
+  assert.equal(reservedOutputTokens(32768, 40960), 9830);
+});
+
+test("a large window is used and trimmed in steps, not on every call", () => {
+  // 131k window, 65k output ceiling: the benchmark model. Each step adds one 6k-token page.
+  const page = (index: number): ProviderMessage[] => [
+    { role: "assistant", content: "", toolCalls: [{ id: `p${index}`, name: "browser_open", args: { url: `https://example.org/${index}` } }] },
+    { role: "tool", name: "browser_open", toolCallId: `p${index}`, content: `page ${index} ` + "x".repeat(18000) }];
+  let messages: ProviderMessage[] = [{ role: "system", content: "Research carefully." }, { role: "user", content: "Research this." }];
+  let trims = 0, peak = 0;
+  for (let step = 0; step < 60; step++) {
+    messages = [...messages, ...page(step)];
+    const result = compressProviderContext({ messages, maxTokens: 65536 }, 131072, 65536);
+    if (result.archived.length) trims++;
+    peak = Math.max(peak, result.afterTokens);
+    assert.ok(result.afterTokens + result.request.maxTokens! + 512 <= 131072);
+    assert.ok(result.request.maxTokens! >= 19000, "room for a full answer remains");
+    messages = result.request.messages;
+  }
+  // The old budget held at most 73k and trimmed on about three calls in four here.
+  assert.ok(peak > 90000, `peak ${peak}`);
+  assert.ok(trims <= 20, `trimmed on ${trims} of 60 calls`);
 });

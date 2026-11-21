@@ -132,7 +132,19 @@ export const compressConversation = (messages: ProviderMessage[], targetChars: n
   return { messages: result, archived: [...archived.values()] };
 };
 
-const OUTPUT_RESERVE_SHARE = 0.3;
+/** Share of the window kept free for the response. At 0.3, with trimming at 80%
+ * of the rest down to 70%, a 131k window held 64-73k estimated tokens (about
+ * 51-58k real ones: the estimate runs a fifth high), and app builds trimmed on
+ * 85% of their model calls. Answers and file writes rarely pass 10k tokens. */
+const OUTPUT_RESERVE_SHARE = 0.15;
+/** A small window still keeps room for one file write, up to the old share. */
+const OUTPUT_RESERVE_FLOOR = 16_384;
+const OUTPUT_RESERVE_CEILING_SHARE = 0.3;
+/** Trim when the context passes this share of the room for input ... */
+export const COMPRESSION_TRIGGER_SHARE = 0.9;
+/** ... down to this share, so several calls pass between two trims instead of
+ * every call rewriting older messages (which also defeats the server's prompt cache). */
+export const COMPRESSION_TARGET_SHARE = 0.6;
 
 /** Token budget for retained execution history. It reserves output the same way
  * as compressProviderContext: subtracting the full 40k ceiling of a 65k model
@@ -152,7 +164,7 @@ export const resultStillVisible = (output: string, visible: readonly string[]): 
 /** Output is an allowance, not occupied context: every budget derived from the
  * window reserves this much for it, never the configured ceiling. */
 export const reservedOutputTokens = (contextWindow: number, maxOutputTokens: number): number =>
-  Math.min(maxOutputTokens, Math.floor(contextWindow * OUTPUT_RESERVE_SHARE));
+  Math.min(maxOutputTokens, Math.floor(contextWindow * OUTPUT_RESERVE_CEILING_SHARE), Math.max(Math.floor(contextWindow * OUTPUT_RESERVE_SHARE), OUTPUT_RESERVE_FLOOR));
 export const executionHistoryBudget = (contextWindow: number, maxOutputTokens: number): number =>
   Math.max(1, Math.floor((contextWindow - reservedOutputTokens(contextWindow, maxOutputTokens)) / 4));
 const KEPT_HISTORY_MARKERS = 8;
@@ -179,14 +191,14 @@ export const compressProviderContext = (request: ProviderRequest, contextWindow:
   const reservedOutput = reservedOutputTokens(contextWindow, outputTokens);
   const available = contextWindow - reservedOutput - 512;
   const beforeTokens = estimateContextTokens(request);
-  if (beforeTokens <= available * 0.8) {
+  if (beforeTokens <= available * COMPRESSION_TRIGGER_SHARE) {
     const room = contextWindow - beforeTokens - 512;
     return { request: (request.maxTokens ?? outputTokens) > room ? { ...request, maxTokens: room } : request, archived: [], beforeTokens, afterTokens: beforeTokens };
   }
   const archived = new Map<string, ArchivedContext>();
   const messages = request.messages.map(message => ({ ...message }));
   const compressed = { ...request, messages };
-  const target = Math.max(0, Math.floor(available * 0.7));
+  const target = Math.max(0, Math.floor(available * COMPRESSION_TARGET_SHARE));
   // Do not immediately abbreviate the excerpt the model just recovered with
   // context_read. Exhaust older history first; trim recent context only if the
   // actual window requires it, not merely to meet the preferred headroom.
