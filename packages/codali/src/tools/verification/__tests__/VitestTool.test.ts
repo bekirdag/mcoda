@@ -42,7 +42,7 @@ const run = (content: string, signal?: AbortSignal) => {
 };
 test("Python startup and empty-suite errors retain the actionable cause", options, async () => {
   const registry = new ToolRegistry(); registry.register(createVitestTool());
-  for (const [content, expected] of [["import package_that_does_not_exist\n", /ModuleNotFoundError/], ["def test_example(): assert True\n", /Zero executed tests/]] as const) {
+  for (const [content, expected] of [["import package_that_does_not_exist\n", /ModuleNotFoundError/], ["def helper(): return True\n", /Zero executed tests/]] as const) {
     const result = await registry.execute("verify_tests", { runner: "python", files: [{ path: "test_subject.py", content }] }, { workspaceRoot: os.tmpdir() });
     assert.equal(result.ok, false);
     assert.match(result.error!.message, expected);
@@ -66,4 +66,53 @@ test("Vitest cannot read workspace neighbors or credentials and honors cancellat
   assert.equal(result.ok, true, result.error?.message || result.output); assert.equal(JSON.parse(result.output).passed, true);
   const abort = new AbortController(); const timer = setTimeout(() => abort.abort(Error("cancel tests")), 30);
   try { await assert.rejects(run("while(true){}", abort.signal), /cancel tests/); } finally { clearTimeout(timer); }
+});
+
+test("the Python runner accepts pytest-style tests without pytest installed", async () => {
+  const registry = new ToolRegistry(); registry.register(createVitestTool());
+  const run = async (testSource: string) => {
+    const result = await registry.execute("verify_tests", { runner: "python", files: [
+      { path: "interval.py", content: "def merge(a):\n    out=[]\n    for s,e in sorted(a):\n        if out and s<=out[-1][1]: out[-1][1]=max(out[-1][1],e)\n        else: out.append([s,e])\n    return out\n\ndef mean(xs):\n    if not xs: raise ValueError('empty input')\n    return sum(xs)/len(xs)\n" },
+      { path: "test_interval.py", content: testSource }] }, { workspaceRoot: os.tmpdir() });
+    return { ok: result.ok, body: result.ok ? JSON.parse(result.output) : undefined, message: result.error?.message ?? "" };
+  };
+  const passing = await run(`import pytest
+from interval import merge, mean
+
+def test_merges_overlaps():
+    assert merge([[1, 3], [2, 6], [8, 10]]) == [[1, 6], [8, 10]]
+
+@pytest.mark.parametrize("values,expected", [([1, 2, 3], 2.0), ([0.1, 0.2], 0.15), ([5], 5)])
+def test_mean(values, expected):
+    assert mean(values) == pytest.approx(expected)
+
+def test_empty_mean_is_refused():
+    with pytest.raises(ValueError, match="empty"):
+        mean([])
+`);
+  assert.equal(passing.ok, true, passing.message);
+  assert.equal(passing.body.passed, true, JSON.stringify(passing.body));
+  assert.equal(passing.body.total, 5);
+  // A wrong expectation still fails; a stand-in must not turn tests into no-ops.
+  const failing = await run(`import pytest
+from interval import mean
+
+def test_wrong():
+    assert mean([1, 2]) == pytest.approx(2.0)
+
+def test_not_raised():
+    with pytest.raises(ValueError):
+        mean([1])
+`);
+  assert.equal(failing.ok, true, failing.message);
+  assert.equal(failing.body.passed, false);
+  assert.equal(failing.body.failedTests, 2);
+  // What the stand-in does not provide is reported by name instead of passing silently.
+  const fixture = await run(`import pytest
+
+def test_needs_fixture(tmp_path):
+    assert tmp_path
+`);
+  assert.equal(fixture.body?.passed, false);
+  assert.match(fixture.body.diagnostic, /fixture tmp_path is not available/);
 });

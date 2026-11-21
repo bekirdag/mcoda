@@ -52,6 +52,46 @@ async function runnerRuntime() {
   return { entry, version, mounts: [...mounts] };
 }
 
+/** Standard-library stand-in for the part of pytest that generated tests use. */
+const PYTEST_STAND_IN = `import math,re
+class _Raises:
+ def __init__(self,expected,match=None): self.expected=expected; self.match=match; self.value=None
+ def __enter__(self): return self
+ def __exit__(self,kind,value,trace):
+  if kind is None: raise AssertionError('DID NOT RAISE '+str(self.expected))
+  if not issubclass(kind,self.expected): return False
+  if self.match is not None and not re.search(self.match,str(value)): raise AssertionError('raised message '+repr(str(value))+' does not match '+repr(self.match))
+  self.value=value; return True
+def raises(expected,*args,match=None,**kwargs):
+ if args:
+  with _Raises(expected,match): args[0](*args[1:],**kwargs)
+  return None
+ return _Raises(expected,match)
+class approx:
+ def __init__(self,expected,rel=None,abs=None): self.expected=expected; self.rel=1e-6 if rel is None else rel; self.abs=1e-12 if abs is None else abs
+ def _one(self,actual,expected): return math.isclose(actual,expected,rel_tol=self.rel,abs_tol=self.abs)
+ def __eq__(self,actual):
+  e=self.expected
+  if isinstance(e,dict): return isinstance(actual,dict) and actual.keys()==e.keys() and all(self._one(actual[k],e[k]) for k in e)
+  if isinstance(e,(list,tuple)): return len(actual)==len(e) and all(self._one(a,b) for a,b in zip(actual,e))
+  return self._one(actual,e)
+ def __ne__(self,actual): return not self.__eq__(actual)
+ def __repr__(self): return 'approx('+repr(self.expected)+')'
+def fail(reason=''): raise AssertionError(reason)
+class _Mark:
+ def parametrize(self,names,values,**ignored):
+  keys=[n.strip() for n in names.split(',')] if isinstance(names,str) else list(names)
+  def wrap(fn):
+   rows=[tuple(v) if len(keys)>1 else (v,) for v in values]
+   earlier=getattr(fn,'_codali_params',[()]); earlier_names=getattr(fn,'_codali_names',())
+   fn._codali_params=[tuple(r)+tuple(e) for r in rows for e in earlier]; fn._codali_names=tuple(keys)+tuple(earlier_names)
+   return fn
+  return wrap
+ def __getattr__(self,name): raise AttributeError('pytest.mark.'+name+' is not available in this runner; only parametrize is')
+mark=_Mark()
+def __getattr__(name): raise AttributeError('pytest.'+name+' is not available in this runner (stand-in provides raises, approx, fail and mark.parametrize); use the standard library')
+`;
+
 export const createVitestTool = (): ToolDefinition => ({
   name: "verify_tests", readOnly: true, capability: "verification",
   description: "Run supplied tests offline: runner vitest (default) for JS/TS, node for node:test, python for standard-library unittest (test_*.py). Use the requested language/runner without translating tests. No workspace/config/credentials. Reports supplied-test results, not independent proof.",
@@ -84,13 +124,31 @@ export const createVitestTool = (): ToolDefinition => ({
       await fs.mkdir(path.join(root, "artifacts"));
       if (runner !== "vitest") {
         const tests = args.files.filter(file => testPattern.test(file.path)).map(file => path.join(root, file.path));
-        const python = `import unittest,sys,os,json,importlib.util
+        // Models write pytest-style tests (plain test_* functions, pytest.raises,
+        // approx, parametrize) far more often than unittest classes; cycle 6 lost
+        // twelve test runs to "pytest is not installed". A small stand-in covers
+        // that subset on the standard library; anything else says so by name.
+        if (runner === "python" && !args.files.some(file => file.path === "pytest.py" || file.path.startsWith("pytest/"))) await fs.writeFile(path.join(root, "pytest.py"), PYTEST_STAND_IN);
+        const python = `import unittest,sys,os,json,importlib.util,inspect
 sys.path.insert(0,os.getcwd())
 suite=unittest.TestSuite()
+def cases(module):
+ for name,fn in sorted(vars(module).items()):
+  if not name.startswith('test') or not inspect.isfunction(fn) or fn.__module__!=module.__name__: continue
+  sets=getattr(fn,'_codali_params',[()])
+  for index,values in enumerate(sets):
+   names=getattr(fn,'_codali_names',())
+   kwargs=dict(zip(names,values))
+   needed=[p for p in inspect.signature(fn).parameters if p not in kwargs]
+   def run(fn=fn,kwargs=kwargs,needed=needed):
+    if needed: raise RuntimeError('fixture '+needed[0]+' is not available in this runner: build the value inside the test or use unittest setUp')
+    fn(**kwargs)
+   yield unittest.FunctionTestCase(run,description=name+('['+str(index)+']' if len(sets)>1 else ''))
 for i,file in enumerate(sys.argv[1:]):
  spec=importlib.util.spec_from_file_location('codali_test_'+str(i),file)
- module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+ module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
  suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(module))
+ suite.addTests(cases(module))
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 data={'total':result.testsRun,'failedTests':len(result.failures)+len(result.errors)+len(result.unexpectedSuccesses),'pendingTests':len(result.skipped)+len(result.expectedFailures)}
 data['passedTests']=data['total']-data['failedTests']-data['pendingTests']
@@ -110,12 +168,12 @@ sys.exit(0 if result.wasSuccessful() and data['total']>0 and data['pendingTests'
         const reportPath = path.join(root, "artifacts", "native-report.json");
         if (runner === "python") {
           const stat = await fs.lstat(reportPath).catch(() => undefined);
-          if (!stat) throw new ToolExecutionError("tool_execution_failed", `Python tests could not start. This runner loads standard-library unittest.TestCase tests; third-party packages such as pytest are not installed. Fix the reported import/syntax error or use unittest.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
+          if (!stat) throw new ToolExecutionError("tool_execution_failed", `Python tests could not start. This runner loads unittest.TestCase classes and plain test_* functions, with a stand-in for pytest.raises, pytest.approx and pytest.mark.parametrize; other third-party packages are not installed. Fix the reported import/syntax error.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16000) throw new Error("Invalid test report");
         }
         const report = runner === "node" ? { total: count("tests"), passedTests: count("pass"), failedTests: count("fail"), pendingTests: count("skipped") + count("todo") + count("cancelled") }
           : JSON.parse(await fs.readFile(reportPath, "utf8"));
-        if (!Object.values(report).every(value => Number.isSafeInteger(value) && Number(value) >= 0) || report.total < 1) throw new ToolExecutionError("tool_execution_failed", `No complete test results were produced. Python requires unittest.TestCase methods named test_*; Node requires node:test cases. Zero executed tests cannot establish correctness.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
+        if (!Object.values(report).every(value => Number.isSafeInteger(value) && Number(value) >= 0) || report.total < 1) throw new ToolExecutionError("tool_execution_failed", `No complete test results were produced. Python requires test_* functions or unittest.TestCase methods named test_*; Node requires node:test cases. Zero executed tests cannot establish correctness.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
         const result = { library: runner === "node" ? "node:test" : "unittest", ...report,
           passed: exitCode === 0 && report.failedTests === 0 && report.pendingTests === 0 && report.passedTests === report.total,
           diagnostic: testFailureSummary(output).slice(0, 1800), sourceSha256: createHash("sha256").update(payload).digest("hex"), elapsedMs: Date.now() - started,
