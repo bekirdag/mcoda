@@ -476,14 +476,16 @@ test(`${strategy}/${toolExposure} finalizes from real evidence with final delive
   assert.equal(controller.state, undefined);
 });
 
-test("adaptive rejects malformed calls and mixed control batches without execution", async t => {
+test("adaptive rejects malformed calls, and a handoff sent beside other calls does not take effect", async t => {
   for (const calls of [[{ id: "a", name: "codali", args: { action: "write_file", path: "bad.txt" } }], [{ id: "a", name: "codali", args: { name: "start_work", args: { task: "write bad.txt" } } }, { id: "b", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }]]) {
     const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
     let modelCalls = 0;
     const { controller, root, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++modelCalls === 1 ? ({ ...reply(""), toolCalls: calls }) : reply("Hello.") }, config);
     assert.equal((await controller.interact("Hello.")).content, "Hello.");
     assert.ok(events.some(event => event.type === "interaction_tool_rejected")); assert.equal(controller.state, undefined);
-    assert.equal(controller.turnUsageSnapshot().toolCalls, 0); await assert.rejects(fs.access(path.join(root, "bad.txt")));
+    // The read-only lookup beside the handoff runs; the handoff and any write do not.
+    assert.equal(controller.turnUsageSnapshot().toolCalls, calls.length === 2 ? 1 : 0); await assert.rejects(fs.access(path.join(root, "bad.txt")));
+    assert.ok(!events.some(event => event.type === "interaction_handoff"));
   }
 });
 
@@ -830,14 +832,18 @@ test("gateway final-budget boundary cannot execute another tool", async t => {
   assert.equal(controller.turnUsageSnapshot().toolCalls, 0); assert.equal(controller.turnUsageSnapshot().modelCalls, 1);
 });
 
-test("gateway rejects mixed finalization batches before performing any tool", async t => {
+test("gateway does not accept an answer sent in the same batch as the lookup it depends on", async t => {
   const config = structuredClone(base); config.interaction = { strategy: "gateway" };
   let calls = 0;
-  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => ++calls === 1
-    ? { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }, { id: "final", name: "codali", args: { name: "final_answer", args: { text: "5" } } }] }
-    : reply("No tool was executed.") }, config);
-  assert.equal((await controller.interact("Use the calculator.")).content, "No tool was executed.");
-  assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }, { id: "final", name: "codali", args: { name: "final_answer", args: { text: "6" } } }] };
+    // The premature answer was refused; the lookup's result is now in front of the model.
+    const results = request.messages.filter(m => m.role === "tool").map(m => m.content).join("\n");
+    assert.match(results, /final_answer must be the only call in its batch/); assert.match(results, /result\\":5/);
+    return reply("The result is 5.");
+  } }, config);
+  assert.equal((await controller.interact("Use the calculator.")).content, "The result is 5.");
+  assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
 });
 
 test("gateway authorized work transitions retain the durable completion gate", async t => {
@@ -1812,7 +1818,10 @@ test("nested gateway recovery preserves read-only permissions and exclusive cont
       assert.match(request.messages.filter(m => m.role === "tool").at(-1)!.content, /not permitted|permission|Unknown tool/);
       return { ...reply(""), toolCalls: [wrapped("final", "final_answer", { text: "premature" }), wrapped("calc", "calculate", { expression: "3+4" })] };
     }
-    assert.match(request.messages.filter(m => m.role === "tool").at(-1)!.content, /only call in their batch/);
+    // The lookup sent beside the premature answer runs; only the answer waits.
+    const batch = request.messages.filter(m => m.role === "tool").slice(-2).map(m => m.content);
+    assert.match(batch[0], /final_answer must be the only call in its batch/);
+    assert.match(batch[1], /result\\":7/);
     return reply("No files changed.");
   } }, config);
   assert.equal((await controller.interact("Inspect only; do not change files.")).content, "No files changed.");
@@ -2127,4 +2136,33 @@ test("final code that the session's last tests fail is re-run by the runtime and
   const rerun = events.find(event => event.type === "final_code_rerun");
   assert.equal(rerun?.data.passed, false); assert.equal(rerun?.data.executed, true);
   assert.equal(events.filter(event => event.type === "final_code_rerun").length, 1);
+});
+
+test("a model request that never returns is abandoned and retried instead of holding the turn", async t => {
+  const config = structuredClone(base);
+  let calls = 0; let abandoned = false;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    // The first request is lost in transit: it settles only if its signal fires.
+    if (++calls === 1) return new Promise((_, reject) => request.signal!.addEventListener("abort", () => { abandoned = true; reject(new Error("aborted")); }, { once: true }));
+    return decision("answer", "Four.");
+  } }, config, undefined, false, { modelStallMs: 40 });
+  const started = Date.now();
+  assert.equal((await controller.interact("What is 2+2?")).content, "Four.");
+  assert.ok(abandoned, "the lost request was told to stop");
+  assert.ok(events.some(event => event.type === "model_failure" && event.data.responseReason === "stalled"), "the stall is recorded");
+  assert.ok(calls >= 2 && Date.now() - started < 15_000);
+});
+
+test("the stall allowance grows with slow requests and retries but never past what a request could need", async () => {
+  const { modelStallAllowanceMs } = await import("../OutageWait.js");
+  // Ten minutes by default; four times the slowest completed request when that is longer.
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0), 600_000);
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 226_000), 904_000);
+  // Each retry of a stalled request doubles it, so a slow live request finally fits.
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0, 1), 1_200_000);
+  // Ceiling: scheduling + prompt read + the whole output at 25 tokens a second.
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0, 6), 120_000 + 60_000 + 65_536 * 40);
+  assert.equal(modelStallAllowanceMs(2_000, 256, 0), 120_000 + 2_000 + 256 * 40);
+  // The 158-minute hang of cycle 6 (67k prompt, 65k ceiling, slowest call 226 s) is cut at about 15 minutes.
+  assert.ok(modelStallAllowanceMs(67_000, 65_536, 226_000) < 16 * 60_000);
 });

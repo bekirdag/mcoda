@@ -145,3 +145,24 @@ test("ShellTool rejects cwd traversal, symlink escapes and non-directories befor
   }
   assert.equal(launches, 0);
 });
+
+test("a command may ask for the time it needs, within the host's limit", { concurrency: false }, async () => {
+  const tool = createShellTool();
+  const seen: Array<number | undefined> = [];
+  const shellExecutor = async (_command: string, _args: string[], context: { shellTimeoutMs?: number }) => { seen.push(context.shellTimeoutMs); return { output: "ok" }; };
+  const context = { workspaceRoot: process.cwd(), shellAllowlist: ["node"], allowShell: true, shellExecutor };
+  await tool.handler({ command: "node", args: ["--test"] }, context);
+  await tool.handler({ command: "node", args: ["--test"], timeoutSeconds: 600 }, context);
+  // A limit set by the host is not raised by the caller.
+  await tool.handler({ command: "node", args: ["--test"], timeoutSeconds: 600 }, { ...context, shellTimeoutMs: 30_000 });
+  assert.deepEqual(seen, [undefined, 600_000, 30_000]);
+  for (const timeoutSeconds of [0, 901, 1.5, "600"]) {
+    await assert.rejects(tool.handler({ command: "node", args: [], timeoutSeconds }, context), /timeoutSeconds must be a whole number from 1 to 900/);
+  }
+  // A real timeout says how to ask for longer.
+  const real = { workspaceRoot: process.cwd(), shellAllowlist: [process.execPath], allowShell: true };
+  await assert.rejects(tool.handler({ command: process.execPath, args: ["-e", "setTimeout(()=>{}, 5000)"], timeoutSeconds: 1 }, real), (error: unknown) => {
+    assert.ok(error instanceof ToolExecutionError); assert.equal(error.code, "tool_timeout");
+    assert.match(error.message, /stopped after 1 s[\s\S]*timeoutSeconds \(up to 900\)/); return true;
+  });
+});

@@ -17,9 +17,10 @@ export class ModelServiceError extends Error {
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
   constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
-    readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream" | "capacity_busy") {
+    readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream" | "capacity_busy" | "stalled") {
     super(`Model service HTTP ${status}: ${code}${responseReason === "output_limit" ? "; the model reached its per-response output limit before finishing. No partial tool call was executed; continue with smaller file patches" : responseReason === "incomplete_stream" ? "; the response stream ended before completion. No partial tool call was executed" : code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
     this.name = "ModelServiceError";
+    if (responseReason === "stalled") this.message += "; the model request did not return within its time allowance and was abandoned";
     if (responseReason === "capacity_busy") this.message += "; all compatible model workers are busy; retry after capacity becomes available";
     if (code === "request_conflict") this.message += "; the service reported a request conflict. Completion and usage are unconfirmed; inspect request status before retrying";
   }

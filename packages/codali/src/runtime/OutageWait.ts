@@ -28,3 +28,19 @@ export const outageWaitMs = (attempt: number, remainingMs = Infinity, budget: st
   }
   return undefined;
 };
+
+/** How long one model request may stay unanswered before it is abandoned and
+ * retried. A request whose connection was lost, or that a scheduler dropped,
+ * never returns: a 12-hour build sat on one such review call for 158 minutes
+ * and ended unfinished although its work was done.
+ *
+ * The allowance is the larger of ten minutes and four times the slowest
+ * request this turn has completed, doubled on each retry of a stalled request
+ * (a slow but live request must eventually fit), and never more than the time
+ * the request could need at its ceiling: two minutes to be scheduled, the
+ * prompt read at 1,000 tokens a second and the full output at 25. */
+export const modelStallAllowanceMs = (inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts = 0): number => {
+  const ceiling = 120_000 + Math.max(0, inputTokens) + Math.max(0, maxOutputTokens) * 40;
+  const usual = Math.max(600_000, longestModelMs * 4) * 2 ** Math.min(Math.max(0, stalledAttempts), 6);
+  return Math.max(60_000, Math.min(usual, ceiling));
+};

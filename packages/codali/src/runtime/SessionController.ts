@@ -36,7 +36,7 @@ import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
 import { InspectionConvergence } from "./InspectionConvergence.js";
 import { capacityRetryDelayMs, isCapacityRefusal, MODEL_CAPACITY_WAIT_MS } from "../providers/ModelCapacityWait.js";
-import { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS } from "./OutageWait.js";
+import { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, modelStallAllowanceMs } from "./OutageWait.js";
 /** Today's date from the host clock, stated as authoritative. Without it a
  * research answer dated itself from the model's own belief (2026-08-24 on
  * 2026-11-13) and called the real dates in retrieved pages suspect. Day
@@ -103,6 +103,9 @@ export interface SessionControllerOptions {
   /** Wall-clock time (epoch ms) at which the host stops this controller. Work
    * winds down before it and ends with a status report instead of an error. */
   deadlineAt?: number;
+  /** Fixed time one model request may stay unanswered before it is abandoned
+   * and retried; by default it follows modelStallAllowanceMs. */
+  modelStallMs?: number;
   workspaceRoot: string;
   resolved: ResolvedOrchestrationConfig;
   effort?: EffortLevel;
@@ -259,7 +262,7 @@ ${LOCALIZED_SHORTCUT}For substantial work, use work_refine/work_plan before impl
 Read files before writing. When Docdex is available, existing source edits require current successful symbols/AST and impact receipts. If the host reports Docdex unavailable, continue with file reads, repository search and local checks; inspect related code and disclose unavailable structural analysis. Prefer prepare_edit for a small existing file: it returns content and available analysis together. Refresh after content changes. A file you created with write_file in the current task needs no prepare_edit or analysis before you revise it: patch it directly, and re-read it only after a shell command changed it. Use write_file for edits; preserve module format and exports. For a new file, prefer a cohesive working module that fits the response budget; do not spend separate calls on empty stubs or one-line fragments. For existing files, use write_file with search (exact unique old text) and content (replacement text) for focused patches. Combine multiple same-file replacements in one write_file edits array after one preparation; separate writes make earlier analysis stale. Split only modules that would exceed the response limit, keeping each intermediate edit syntactically valid. Do not replace functional setup or UI with success-printing placeholders. Batch independent reads/analysis. Avoid unrelated inspection or cleanup.
 Establish delivery contracts early: create the real setup/build/start/test entrypoints and run a minimal end-to-end path before expanding features or polishing UI. Keep that runnable path working as features grow. Inspect actual exported names, argument shapes and return values before writing callers/tests; do not assume a start helper returns a port or database handle. Discover a bound server address from the actual server API. Reserve time for the exact documented commands and final user workflow, not only implementation.
 ${UI_JOURNEY_RULE}
-run_shell takes command and a separate args array, with cwd relative to the workspace. Arguments are literal; &&, pipes and redirection require an explicitly invoked shell. Use fail-fast shell scripts for checks so a final echo cannot mask errors. Its default workspace is read-only. Add root-relative writePaths only for actual writes; these paths require fresh reads/analysis and claimed scope. $TMPDIR is already writable scratch that persists between calls in this session, not a writePaths entry; use unique scratch files instead of deleting existing project data; deleting works only in $TMPDIR and the declared writePaths. Tests usually need no writePaths. On test failure, compare the failing assertion and implementation with the original requirements. A model-written test may be wrong; fix that contradiction without relaxing the contract, then rerun. Avoid unrelated comments/docs until the failing behavior is resolved. Repeating unchanged failures or inventing output cannot verify work.
+run_shell takes command and a separate args array, with cwd relative to the workspace. Arguments are literal; &&, pipes and redirection require an explicitly invoked shell. Use fail-fast shell scripts for checks so a final echo cannot mask errors. Its default workspace is read-only. Add root-relative writePaths only for actual writes; these paths require fresh reads/analysis and claimed scope. $TMPDIR is already writable scratch that persists between calls in this session, not a writePaths entry; use unique scratch files instead of deleting existing project data; deleting works only in $TMPDIR and the declared writePaths. Tests usually need no writePaths. A command is stopped after 120 seconds unless timeoutSeconds (up to 900) asks for longer; give a full suite, build or browser journey the time it needs instead of retrying it unchanged. On test failure, compare the failing assertion and implementation with the original requirements. A model-written test may be wrong; fix that contradiction without relaxing the contract, then rerun. Avoid unrelated comments/docs until the failing behavior is resolved. Repeating unchanged failures or inventing output cannot verify work.
 To change only claimed file scope, call work_rescope with taskId, current attemptId, allowedPaths and note; continue using its NEW attemptId. For other plan changes, work_release with attemptId/note, then work_plan mode:"update" and claim again. Update retains omitted contracts; replace requires the entire plan. Checkpoint does not release a claim. Use work_reopen if later checks disprove verified work, retaining its contract.
 After implementation and meaningful checks, work_verify with taskId, attemptId and summary. Normally omit invocationIds: the controller selects fresh successful checks from this attempt and supplies source/diff. If selecting manually use actual receiptRef handles, never invented IDs. Review is independent; never request it for unfinished work merely to unlock planning. Complete all required tasks, then work_complete. A final answer is not completion. If blocked, work_block with the exact reason and checkpoint it. Do not weaken requirements or checks. Report actual results concisely; never expose credentials.`;
 
@@ -1103,7 +1106,7 @@ export class SessionController {
           : "For work_verify, normally omit invocationIds to select current-attempt checks automatically. Evidence must cover the task criteria; independent review and the full freshness check still apply." });
   }
 
-  private provider(binding = "lead", addGoal = true, recoveryAttempt = 0, capacityWaitedMs = 0): Provider {
+  private provider(binding = "lead", addGoal = true, recoveryAttempt = 0, capacityWaitedMs = 0, stalledAttempts = 0): Provider {
     const lead = binding === "lead" && addGoal;
     const turn = this.active;
     const dispatchReady = new Set<string>();
@@ -1252,8 +1255,20 @@ export class SessionController {
       await this.emit("usage", { usage: { ...this.usage, estimated: true }, pendingReservations: this.reservations.size });
       if (this.options.provider) await this.auditModelRequest(id, binding, request);
       let recovered = false;
+      let stalledNow = false;
       const modelStarted = Date.now();
-      const response = await configured.generate({ ...request, requestId: id }).then(response => {
+      // No request may wait for ever: a stalled one is abandoned and takes the
+      // outage path below, which retries it with a longer allowance.
+      const stall = new AbortController();
+      const stallMs = this.options.modelStallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts);
+      const stallTimer = setTimeout(() => stall.abort(), stallMs);
+      // Raced, not only aborted: a transport that ignores its signal must not hold the turn either.
+      const stalled = new Promise<never>((_, reject) => stall.signal.addEventListener("abort", () => {
+        stalledNow = true; reject(new ModelServiceError("service_unavailable", 504, undefined, false, "stalled"));
+      }, { once: true }));
+      const dispatched = configured.generate({ ...request, requestId: id, signal: request.signal ? AbortSignal.any([request.signal, stall.signal]) : stall.signal });
+      dispatched.catch(() => undefined);
+      const response = await Promise.race([dispatched, stalled]).finally(() => clearTimeout(stallTimer)).then(response => {
         // Some relays normalize finish_reason to success even when generation
         // exhausts its cap. Do not certify capped prose as a complete answer.
         const cap = request.maxTokens ?? limits.maxOutputTokens;
@@ -1332,7 +1347,7 @@ export class SessionController {
             message: "The model service is temporarily unavailable. Retrying the same request; no tool action from the failed response was executed." });
           await delay(waitMs, undefined, { signal: request.signal });
           recovered = true;
-          return this.provider(binding, addGoal, recoveryAttempt + 1).generate({ ...request, requestId: undefined });
+          return this.provider(binding, addGoal, recoveryAttempt + 1, 0, stalledAttempts + (stalledNow ? 1 : 0)).generate({ ...request, requestId: undefined });
         }
         if (error instanceof ModelServiceError && error.code === "invalid_response" && recoveryAttempt < 2) {
           request.signal?.throwIfAborted();
@@ -2690,8 +2705,13 @@ export class SessionController {
         let request = requestFor(call);
         let result: ToolExecutionResult | undefined;
         if (!(budgeted.finalizing ? ["start_work", "final_answer"].includes(call.name) : nativeTools.some(tool => tool.name === call.name)) || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)
-          || Object.keys(request).some(key => !["name", "args"].includes(key)) || controlBatch && calls.length !== 1) {
+          || Object.keys(request).some(key => !["name", "args"].includes(key))) {
           result = { ok: false, output: "", error: { code: "tool_invalid_args", category: "validation", message: "Call codali with name and args. Final answers/work transitions must be the only call in their batch.", retryable: false } };
+        } else if (controlBatch && calls.length !== 1 && ["final_answer", "start_work"].includes(request.name)) {
+          // A lookup sent together with the handoff used to fail both calls with
+          // one unspecific message (twelve times in cycle 6). The lookups are
+          // ordinary calls and run; only the transition waits for its own turn.
+          result = { ok: false, output: "", error: { code: "tool_invalid_args", category: "validation", message: `${request.name} must be the only call in its batch, so it was not performed. The other calls in this batch ran; read their results, then send ${request.name} by itself.`, retryable: false } };
         } else if (["final_answer", "start_work"].includes(request.name)) {
           const args = request.args as Record<string, unknown>;
           let control: InteractionDecision | undefined;
