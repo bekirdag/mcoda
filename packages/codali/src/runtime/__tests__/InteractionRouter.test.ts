@@ -2166,3 +2166,75 @@ test("the stall allowance grows with slow requests and retries but never past wh
   // The 158-minute hang of cycle 6 (67k prompt, 65k ceiling, slowest call 226 s) is cut at about 15 minutes.
   assert.ok(modelStallAllowanceMs(67_000, 65_536, 226_000) < 16 * 60_000);
 });
+
+test("an investigation whose final answer cannot be written delivers its evidence instead of nothing", async t => {
+  for (const failure of ["service", "time"] as const) {
+    const config = structuredClone(base);
+    config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 80000, ...(failure === "time" ? { timeoutMs: 6_000 } : {}) };
+    t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+    t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+    t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://regulator.example/orders/14", content: "Emergency order 14 capped production at 38 aircraft a month from 4 March 2026 until the audit closes." }] }));
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+      if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web", name: "codali", args: { name: "docdex_web_research", args: { query: "production cap order" } } }] };
+      // Every later request is the final answer, and it never succeeds.
+      if (failure === "service") throw new ModelServiceError("service_unavailable", 504);
+      return new Promise((_, reject) => request.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    } }, config, undefined, true, { allowWeb: true, modelStallMs: 600_000 });
+    const answer = await controller.interact("Research the production cap and give its date and level.");
+    assert.match(answer.content, /^I could not finish writing the answer: (the model service failed before it was written|the model did not return it before the time limit)\./);
+    assert.match(answer.content, /evidence gathered, not a finished answer/);
+    assert.match(answer.content, /capped production at 38 aircraft a month from 4 March 2026/);
+    const delivered = events.find(event => event.type === "research_evidence_delivered")!;
+    assert.equal(delivered.data.reason, failure === "service" ? "model_service_failed" : "time_limit");
+    // A stuck research request is given up while the answer can still be written.
+    assert.equal(events.some(event => event.type === "inspection_request_abandoned"), failure === "time");
+    assert.ok(!events.some(event => event.type === "interaction_failed"));
+  }
+});
+
+test("a research draft that names open points goes back to research while time remains", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 12, maxTotalTokens: 120000, timeoutMs: 1_800_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  let searches = 0;
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ++searches === 1
+    ? { web_context: [{ url: "https://news.example/a", content: "An amendment to the order is reported to have followed in June 2026." }] }
+    : { web_context: [{ url: "https://gazette.example/2026/114", content: "Amendment No. 2 to the order was published and took effect on 2 June 2026." }] });
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls === 1) return { ...reply(""), toolCalls: [{ id: "web1", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment" } } }] };
+    if (calls === 2) return reply("The order was amended in June 2026. The exact date of the amendment could not be verified; it is alleged by one news site.");
+    if (calls === 3) {
+      // The draft was not delivered: the open points come back with the time that is left.
+      assert.match(request.messages.at(-1)!.content, /Not delivered yet[\s\S]*your draft leaves these points open:\n- The exact date of the amendment could not be verified/);
+      return { ...reply(""), toolCalls: [{ id: "web2", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment gazette date" } } }] };
+    }
+    if (calls === 4) return reply("The order was amended on 2 June 2026 (https://gazette.example/2026/114).");
+    return reply("The order was amended on 2 June 2026, when Amendment No. 2 took effect (https://gazette.example/2026/114).");
+  } }, config, undefined, true, { allowWeb: true });
+  const answer = await controller.interact("Research the order and give the date of its amendment.");
+  assert.match(answer.content, /2 June 2026/);
+  assert.doesNotMatch(answer.content, /could not be verified|alleged/);
+  assert.equal(searches, 2);
+  const pushes = events.filter(event => event.type === "research_coverage_requested");
+  assert.equal(pushes.length, 1); assert.equal(pushes[0].data.openPoints, 1);
+});
+
+test("open points are accepted when the time for more research has gone", async t => {
+  const config = structuredClone(base);
+  // Five minutes in all: the answer reserve leaves less than the four minutes more research needs.
+  config.interaction = { strategy: "adaptive", maxModelCalls: 12, maxTotalTokens: 120000, timeoutMs: 300_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://news.example/a", content: "An amendment to the order is reported to have followed in June 2026." }] }));
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web1", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment" } } }] };
+    return reply("The order was amended in June 2026 (https://news.example/a). The exact date could not be verified.");
+  } }, config, undefined, true, { allowWeb: true });
+  assert.match((await controller.interact("Research the order and give the date of its amendment.")).content, /could not be verified/);
+  assert.ok(!events.some(event => event.type === "research_coverage_requested"));
+});

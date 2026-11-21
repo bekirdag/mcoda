@@ -51,3 +51,25 @@ test("audit evidence retains bounded browser handles and pagination for real fol
   assert.equal(invalid?.snapshotId, undefined); assert.equal(invalid?.offset, undefined); assert.equal(invalid?.totalChars, undefined);
   assert.equal(invalid?.nextOffset, null);
 });
+
+test("the points a draft leaves open are read from its own words", async () => {
+  const { openResearchPoints } = await import("../ResearchEvidence.js");
+  const draft = `## Kashiwazaki-Kariwa restart
+- Unit 6 restarted on 21 January 2026 (TEPCO release).
+- **Commercial operation date:** could not be verified from a primary source.
+- The 2 June 2026 amendment is alleged by two news sites; the gazette page was not found during this research.
+
+| Item | Value |
+| Final 2026 budget | No official figure was found |
+
+The Bundesrat vote count remains unclear. The court's reasoning is set out in paragraphs 40 to 52 of the judgment, which this answer quotes directly and at length so that the reader can follow each step without opening the source, and nothing in that passage is disputed.`;
+  const open = openResearchPoints(draft);
+  assert.equal(open.length, 4);
+  assert.match(open[0], /^Commercial operation date: could not be verified/);
+  assert.match(open[1], /alleged by two news sites/);
+  assert.match(open[2], /No official figure was found/);
+  assert.equal(open[3], "The Bundesrat vote count remains unclear.");
+  // A finished answer has none; ordinary uses of similar words are not admissions.
+  assert.deepEqual(openResearchPoints("Unit 6 restarted on 21 January 2026. The regulator found the plan adequate and confirmed the date."), []);
+  assert.equal(openResearchPoints(Array.from({ length: 20 }, (_, index) => `Item ${index} could not be confirmed.`).join("\n")).length, 8);
+});
