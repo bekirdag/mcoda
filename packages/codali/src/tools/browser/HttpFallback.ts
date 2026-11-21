@@ -16,33 +16,39 @@ export const isPdf = (contentType: string | null, url: string): boolean =>
 
 export interface DirectResponse { url: string; httpStatus: number; contentType: string | null; body: Buffer; truncated: boolean }
 
-const MAX_PDF_BYTES = 32 * 1024 * 1024;
+// Official reports run large: a grid operator's final incident report was 50.8 MB.
+const MAX_PDF_BYTES = 96 * 1024 * 1024;
 const MAX_TEXT_BYTES = 6 * 1024 * 1024;
 
 /** One unauthenticated GET from this process: no cookies, no credentials, no
  * scripts. The body is read up to a fixed size and treated as untrusted text. */
 export async function fetchDirect(url: string, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<DirectResponse> {
-  const limit = AbortSignal.timeout(20000);
-  const response = await fetcher(url, { method: "GET", redirect: "follow", credentials: "omit", signal: signal ? AbortSignal.any([signal, limit]) : limit,
-    headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      accept: "text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5", "accept-language": "en-US,en;q=0.9" } });
-  const finalUrl = new URL(response.url || url);
-  if (!["http:", "https:"].includes(finalUrl.protocol) || finalUrl.username || finalUrl.password) throw new Error("Redirected outside http/https");
-  const contentType = response.headers.get("content-type");
-  const max = isPdf(contentType, finalUrl.href) ? MAX_PDF_BYTES : MAX_TEXT_BYTES;
-  const chunks: Buffer[] = []; let bytes = 0, truncated = false;
-  if (response.body) {
-    const reader = response.body.getReader();
-    try {
-      for (;;) {
-        const part = await reader.read();
-        if (part.done) break;
-        if (bytes + part.value.byteLength > max) { chunks.push(Buffer.from(part.value.subarray(0, max - bytes))); bytes = max; truncated = true; break; }
-        chunks.push(Buffer.from(part.value)); bytes += part.value.byteLength;
-      }
-    } finally { await reader.cancel().catch(() => undefined); }
-  }
-  return { url: finalUrl.href, httpStatus: response.status, contentType, body: Buffer.concat(chunks), truncated };
+  // Twenty seconds for the server to answer, then up to three minutes for a large body.
+  const limiter = new AbortController();
+  let timer = setTimeout(() => limiter.abort(new Error("The server did not answer within 20 seconds")), 20000);
+  try {
+    const response = await fetcher(url, { method: "GET", redirect: "follow", credentials: "omit", signal: signal ? AbortSignal.any([signal, limiter.signal]) : limiter.signal,
+      headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5", "accept-language": "en-US,en;q=0.9" } });
+    clearTimeout(timer); timer = setTimeout(() => limiter.abort(new Error("The download did not finish within three minutes")), 180000);
+    const finalUrl = new URL(response.url || url);
+    if (!["http:", "https:"].includes(finalUrl.protocol) || finalUrl.username || finalUrl.password) throw new Error("Redirected outside http/https");
+    const contentType = response.headers.get("content-type");
+    const max = isPdf(contentType, finalUrl.href) ? MAX_PDF_BYTES : MAX_TEXT_BYTES;
+    const chunks: Buffer[] = []; let bytes = 0, truncated = false;
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          if (bytes + part.value.byteLength > max) { chunks.push(Buffer.from(part.value.subarray(0, max - bytes))); bytes = max; truncated = true; break; }
+          chunks.push(Buffer.from(part.value)); bytes += part.value.byteLength;
+        }
+      } finally { await reader.cancel().catch(() => undefined); }
+    }
+    return { url: finalUrl.href, httpStatus: response.status, contentType, body: Buffer.concat(chunks), truncated };
+  } finally { clearTimeout(timer); }
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "–", mdash: "—", hellip: "…", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“", euro: "€", pound: "£", copy: "©", reg: "®", deg: "°", middot: "·", bull: "•", times: "×" };
@@ -165,7 +171,7 @@ export async function pdfToText(bytes: Buffer, signal?: AbortSignal, options: { 
     await fs.chmod(root, 0o700);
     await fs.writeFile(path.join(root, "source.pdf"), bytes, { mode: 0o600 });
     const runtime = path.resolve(options.pythonRoot ?? defaultDocumentPythonRoot());
-    const context = { workspaceRoot: root, signal, allowedWritePaths: [], shellTimeoutMs: 40000, shellMaxOutputBytes: 8 * 1024 * 1024 };
+    const context = { workspaceRoot: root, signal, allowedWritePaths: [], shellTimeoutMs: 120000, shellMaxOutputBytes: 8 * 1024 * 1024 };
     const hasRuntime = await fs.access(path.join(runtime, "bin/python")).then(() => true, () => false);
     if (hasRuntime) {
       try {

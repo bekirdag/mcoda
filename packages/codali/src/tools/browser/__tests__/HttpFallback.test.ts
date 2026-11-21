@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
-import { browserRefused, htmlToText, isPdf, pdfToText } from "../HttpFallback.js";
+import { browserRefused, fetchDirect, htmlToText, isPdf, pdfToText } from "../HttpFallback.js";
 import { captureDirect, createBrowserTools } from "../BrowserTool.js";
 import { defaultDocumentPythonRoot } from "../../documents/DocumentTools.js";
 import { executorStatus } from "../../shell/IsolatedExecutor.js";
@@ -121,4 +121,23 @@ test("hostile markup is converted in time proportional to its size", () => {
   // Anything past the size limit is ignored rather than processed.
   const huge = htmlToText("<p>start</p>" + "<p>x</p>".repeat(1_000_000) + "<p>END-MARKER</p>", "https://example.org/");
   assert.doesNotMatch(huge.content, /END-MARKER/);
+});
+
+test("a large official PDF is downloaded whole, and other bodies stay bounded", async t => {
+  const chunk = Buffer.alloc(1024 * 1024, 0x20);
+  const server = createServer((request, response) => {
+    // 50 MB, the size of a real incident report that cycle 7 research needs.
+    const megabytes = request.url === "/report.pdf" ? 50 : 12;
+    response.writeHead(200, { "content-type": request.url === "/report.pdf" ? "application/pdf" : "text/html" });
+    let sent = 0;
+    const send = (): void => { while (sent < megabytes) { sent++; if (!response.write(chunk)) { response.once("drain", send); return; } } response.end(); };
+    send();
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const report = await fetchDirect(`${base}/report.pdf`);
+  assert.equal(report.body.length, 50 * 1024 * 1024); assert.equal(report.truncated, false);
+  const page = await fetchDirect(`${base}/page`);
+  assert.equal(page.body.length, 6 * 1024 * 1024); assert.equal(page.truncated, true);
 });

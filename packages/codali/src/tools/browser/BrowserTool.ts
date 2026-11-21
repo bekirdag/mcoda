@@ -156,7 +156,7 @@ export async function captureDirect(url: string, scope: "main" | "page", signal?
   return { ...base, title: converted.title.slice(0, 1000), scope: converted.scope, format: "http_text", content: converted.content.slice(0, 1000000), truncated: response.truncated || converted.content.length > 1000000 };
 }
 
-export function createBrowserTools(options: { executablePath?: string; timeoutMs?: number; fetcher?: typeof fetch; pythonRoot?: string } = {}): ToolDefinition[] {
+export function createBrowserTools(options: { executablePath?: string; timeoutMs?: number; directTimeoutMs?: number; fetcher?: typeof fetch; pythonRoot?: string } = {}): ToolDefinition[] {
   let snapshot: BrowserSnapshot | undefined;
   const snapshots = new Map<string, BrowserSnapshot>();
   // Requested URL and scope to snapshot id. Long research reopened the same
@@ -197,7 +197,10 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
     inputSchema: { type: "object", properties: { url: { type: "string", maxLength: 4096 }, scope: { type: "string", enum: ["main", "page"] } }, required: ["url"], additionalProperties: false },
     handler: async (args, context) => {
       const url = browserUrl((args as { url: string }).url);
-      const signal = AbortSignal.any([...(context.signal ? [context.signal] : []), AbortSignal.timeout(options.timeoutMs ?? 45000)]);
+      // The browser gets its usual time; a direct read that follows it (a large
+      // PDF is downloaded and its text extracted) has its own, longer allowance.
+      const browserMs = options.timeoutMs ?? 45000;
+      const signal = AbortSignal.any([...(context.signal ? [context.signal] : []), AbortSignal.timeout(browserMs + (options.directTimeoutMs ?? 240000))]);
       signal.throwIfAborted(); snapshot = undefined;
       const scopeRequested = (args as { scope?: string }).scope ?? "main";
       const captureKey = `${scopeRequested}\n${url}`;
@@ -246,7 +249,9 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
         const direct = () => captureDirect(url, scopeRequested === "page" ? "page" : "main", signal, options);
         let result: Capture;
         try {
-          result = await viaBrowser();
+          let timer: NodeJS.Timeout | undefined;
+          try { result = await Promise.race([viaBrowser(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timeout ${browserMs}ms exceeded`)), browserMs); })]); }
+          finally { clearTimeout(timer); }
           // Chrome shows a PDF in a viewer with no readable text: twelve of
           // twenty PDF sources came back empty in cycles 5 and 6.
           if (!result.content.trim() && isPdf(result.contentType, result.url)) result = await direct().catch(() => result);
@@ -254,6 +259,7 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
           const message = error instanceof Error ? error.message : String(error);
           if (signal.aborted || !browserRefused(message)) throw error;
           // The site refused the automated browser, or the URL is a download.
+          worker?.kill("SIGKILL"); await browser?.close().catch(() => undefined);
           const fallback = await direct().catch(() => undefined);
           if (!fallback || signal.aborted) throw error;
           result = { ...fallback, notice: [`The browser could not load this page (${message.match(/ERR_[A-Z0-9_]+|Timeout \d+ms exceeded|Download is starting/)?.[0] ?? "navigation failed"}); this is a plain HTTP read.`, fallback.notice].filter(Boolean).join(" ") };
