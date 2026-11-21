@@ -4,6 +4,7 @@ import type { WorkTask } from "../session/WorkTypes.js";
 import { prepareReviewContract, reviewContractSources, type ReviewContractSource } from "./ReviewContract.js";
 import { reviewPromptContext, type taskReviewContext } from "./TaskReviewContext.js";
 import { runTaskReview, type ReviewSourcePage, type TaskReviewResult } from "./TaskReview.js";
+import { REVIEW_PAGE_CHARS } from "./ReviewSource.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 
 export interface TaskReviewAssessment {
@@ -125,7 +126,7 @@ export async function reviewTaskScope(options: {
     let remaining = Math.min(32_000, Math.max(0, Math.floor((options.maxInputChars - JSON.stringify(messages()).length) * 0.6)));
     for (const file of initialPaths) {
       if (remaining <= 0) break;
-      const evidence = await options.readSource(file, Math.min(8000, Math.floor(remaining / 2)));
+      const evidence = await options.readSource(file, Math.min(REVIEW_PAGE_CHARS, Math.floor(remaining / 2)));
       const addedChars = JSON.stringify({ [file]: evidence.content }).length + 32;
       if (addedChars > remaining) continue;
       input.source[file] = evidence.content; remaining -= addedChars;

@@ -26,7 +26,7 @@ export async function runTaskReview(options: {
   const requested = new Set<string>();
   const nextOffsets = new Map(Object.entries(options.initialSourceOffsets ?? {}));
   const reject = (finding: string): TaskReviewResult => ({ passed: false, findings: [finding] });
-  let sourceRounds = 0; let formatRepaired = false;
+  let sourceRounds = 0; let formatRepaired = false; let repeatReminded = false;
   // Four evidence rounds followed by a final decision. No execution tool or
   // permission widening is available. One received malformed JSON reply may be
   // repaired, still within the original contract, context and model-call budget.
@@ -68,6 +68,7 @@ export async function runTaskReview(options: {
       return reject("Review sourceRequests must contain one to eight bounded path/offset requests.");
     }
     const requests: { path: string; offset: number }[] = [];
+    let repeats = 0;
     for (const request of result.sourceRequests) {
       if (!request || typeof request !== "object" || typeof request.path !== "string" || !options.allowedPaths.includes(request.path)) {
         return reject("Review requested a file outside the current review evidence scope.");
@@ -75,8 +76,18 @@ export async function runTaskReview(options: {
       const offset = request.offset ?? nextOffsets.get(request.path) ?? 0;
       if (!Number.isSafeInteger(offset) || offset < 0) return reject("Review source offsets must be nonnegative safe integers.");
       const key = JSON.stringify([request.path, offset]);
-      if (requested.has(key)) return reject("Review repeated a source page request without progress; acceptance is not established.");
+      // A page already supplied is skipped, not fatal: a reviewer that asks
+      // for it again beside new pages has lost nothing. Only a request with
+      // no new page is a loop, and it gets one reminder before the review ends.
+      if (requested.has(key)) { repeats++; continue; }
       requested.add(key); requests.push({ path: request.path, offset });
+    }
+    if (!requests.length) {
+      if (repeatReminded) return reject("Review repeated a source page request without progress; acceptance is not established.");
+      repeatReminded = true;
+      messages.push({ role: "assistant", content: response.message.content });
+      messages.push({ role: "user", content: `Every page in that request was already supplied above (${repeats} repeated). Decide from the evidence you have with {"passed":boolean,"findings":string[]}, or request a page you have not received: use the nextOffset of the last page of that file.` });
+      continue;
     }
     const pages: ReviewSourcePage[] = [];
     for (const request of requests) {

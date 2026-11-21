@@ -32,13 +32,19 @@ export const readReviewSource = async (root: string, relative: string, expectedH
   } finally { await handle.close(); }
 };
 
+/** Characters of one source page. At 8,000 a reviewer needed six or seven
+ * requests (a model call each) to read one 50k-character file, and ran into
+ * its four-round limit before it could decide; the review prompt is still
+ * fitted to the model's context after pages are added. */
+export const REVIEW_PAGE_CHARS = 24_000;
+
 /** Page offsets refer to redacted text, so repeated reads cannot reconstruct a secret. */
 export async function readReviewSourcePage(root: string, relative: string, expectedHash: string, offset: number): Promise<ReviewSourcePage> {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid review source offset');
   const source = await readReviewSource(root, relative, expectedHash, 128 * 1024);
   if (source.truncated) return { path: relative, offset, content: source.content, truncated: true, unavailable: true };
   if (offset > source.content.length) throw new Error(`Review source offset exceeds the file length: ${relative}`);
-  const content = source.content.slice(offset, offset + 8000);
+  const content = source.content.slice(offset, offset + REVIEW_PAGE_CHARS);
   const truncated = offset + content.length < source.content.length;
   return { path: relative, offset, content, truncated, ...(truncated ? { nextOffset: offset + content.length } : {}) };
 }

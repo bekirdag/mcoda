@@ -20,12 +20,61 @@ export const isVerificationInspectionCommand = (args: unknown): boolean => {
   return true;
 };
 
+/** Words of one simple command, or undefined when it uses anything beyond plain
+ * words, quotes and $NAME: substitutions, globs and escapes are not followed. */
+const shellWords = (text: string): string[] | undefined => {
+  const words: string[] = []; let current = "", quoted: string | undefined, started = false;
+  for (const char of text) {
+    if (quoted) { if (char === quoted) quoted = undefined; else if (quoted === '"' && (char === "`" || char === "\\")) return undefined; else current += char; continue; }
+    if (char === '"' || char === "'") { quoted = char; started = true; continue; }
+    if (/\s/.test(char)) { if (started || current) words.push(current); current = ""; started = false; continue; }
+    if (!/[A-Za-z0-9_@%+=:,.\/$~{}\[\]^-]/.test(char)) return undefined;
+    current += char;
+  }
+  if (quoted) return undefined;
+  if (started || current) words.push(current);
+  return words.some(word => /\$\(|\$\{[^}]*[^A-Za-z0-9_}]/.test(word)) ? undefined : words;
+};
+
+/** Whether a `bash -c` / `sh -c` line can stand as validation: steps joined
+ * only by &&, so any failing step fails the call, with a real test command
+ * among them. `cmd; echo EXIT=$?`, `|| true` and substitutions hide the exit
+ * status and are refused. Output may go to a file, and in bash (which runs
+ * with pipefail) through tail, head, grep, tee or cat. */
+export const failFastShellVerification = (command: string, argv: string[]): boolean => {
+  if (!["bash", "sh"].includes(command)) return false;
+  const flags = argv.slice(0, -1).filter(arg => arg !== "-o" && arg !== "pipefail");
+  if (argv.length < 2 || flags.length !== flags.filter(arg => /^-[euxc]+$/.test(arg) || arg === "--noprofile" || arg === "--norc").length || !flags.some(arg => /^-[eux]*c$/.test(arg))) return false;
+  const script = argv.at(-1)!;
+  if (script.length > 2000 || /[\n`]|\$\(|<</.test(script)) return false;
+  // Quoted text is set aside so a "|" or ";" inside a grep pattern is not read as shell syntax.
+  const quoted: string[] = [];
+  const masked = script.replace(/2>&1/g, " ").replace(/"[^"]*"|'[^']*'/g, text => `\u0000${quoted.push(text) - 1}\u0000`);
+  if (/["';]|\|\||&(?!&)(?<!&&)/.test(masked)) return false;
+  const restore = (text: string) => text.replace(/\u0000(\d+)\u0000/g, (_, index: string) => quoted[Number(index)]);
+  let verified = false;
+  for (const step of masked.split("&&")) {
+    const [head, ...filters] = step.split("|");
+    if (filters.length && (command !== "bash" || filters.some(filter => !/^\s*(?:tail|head|grep|tee|cat)\b[^<>&]*$/.test(filter)))) return false;
+    // Redirection to a file keeps the exit status; the target is not a word of the command.
+    const words = shellWords(restore(head.replace(/\s\d?>>?\s*\S+/g, " ")));
+    if (!words?.length) return false;
+    let at = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at] ?? "")) at++;
+    if (words[at] === "timeout") { at++; while (/^-/.test(words[at] ?? "")) at += words[at] === "-s" || words[at] === "-k" ? 2 : 1; at++; }
+    if (at >= words.length) { if (words.every(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word))) continue; return false; }
+    if (isVerificationCommand({ command: words[at], args: words.slice(at + 1) })) verified = true;
+  }
+  return verified;
+};
+
 /** Command-shape eligibility only; success, fresh input hashes and review remain mandatory. */
 export const isVerificationCommand = (args: unknown): boolean => {
   if (!args || typeof args !== "object" || Array.isArray(args)) return false;
   const value = args as { command?: unknown; args?: unknown };
   if (typeof value.command !== "string" || value.args !== undefined && (!Array.isArray(value.args) || value.args.some(arg => typeof arg !== "string"))) return false;
   const command = path.basename(value.command); const argv = (value.args ?? []) as string[];
+  if (failFastShellVerification(command, argv)) return true;
   if (argv.some(arg => /^(?:--help|-h|--version|--dry-run|--if-present|--collect-only|--collectonly|--listTests|--list-tests|--showConfig|--listFilesOnly)(?:=|$)/.test(arg))) return false;
   if (["npm", "pnpm", "yarn", "bun"].includes(command)) {
     let offset = 0;

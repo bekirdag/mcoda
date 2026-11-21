@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { readReviewSource, readReviewSourcePage } from '../ReviewSource.js';
+import { readReviewSource, readReviewSourcePage, REVIEW_PAGE_CHARS } from '../ReviewSource.js';
 import { registerSecretValue } from '../SecretRedaction.js';
 
 test('review context preserves source identity, bounds text, and omits binary/large files', async t => {
@@ -33,15 +33,15 @@ test('review pages preserve hashes and redact credentials before page boundaries
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const secret = 'page-boundary-fixture-credential';
   registerSecretValue(secret);
-  const text = `${'a'.repeat(7995)}${secret}${'b'.repeat(1000)}end`;
+  const text = `${'a'.repeat(REVIEW_PAGE_CHARS - 5)}${secret}${'b'.repeat(1000)}end`;
   await fs.writeFile(path.join(root, 'source.txt'), text);
   const hash = createHash('sha256').update(text).digest('hex');
   const first = await readReviewSourcePage(root, 'source.txt', hash, 0);
-  assert.equal(first.nextOffset, 8000); assert.equal(first.truncated, true);
+  assert.equal(first.nextOffset, REVIEW_PAGE_CHARS); assert.equal(first.truncated, true);
   const second = await readReviewSourcePage(root, 'source.txt', hash, first.nextOffset!);
   assert.equal(second.truncated, false); assert.equal(second.nextOffset, undefined);
   assert.equal(first.content + second.content, text.replace(secret, '[redacted]'));
-  assert.equal((await readReviewSource(root, 'source.txt', hash, 8000)).content, first.content);
+  assert.equal((await readReviewSource(root, 'source.txt', hash, REVIEW_PAGE_CHARS)).content, first.content);
   await assert.rejects(readReviewSourcePage(root, 'source.txt', hash, -1), /Invalid review source offset/);
   await assert.rejects(readReviewSourcePage(root, 'source.txt', hash, 100_000), /exceeds the file length/);
   await fs.writeFile(path.join(root, 'source.txt'), 'changed');

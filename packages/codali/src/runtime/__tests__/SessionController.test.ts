@@ -391,8 +391,9 @@ for (const scenario of ["complete", "blocking-tail", "concurrent-edit"] as const
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-page-"));
     const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-page-state-"));
     t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
-    const content = `${"Contract detail.\n".repeat(600)}${scenario === "blocking-tail" ? "TODO: acceptance missing" : "Acceptance complete"}\n`;
-    let step = 0; let attemptId = ""; let reviews = 0;
+    // Longer than one review page, so the acceptance section is only on a later page.
+    const content = `${"Contract detail.\n".repeat(1700)}${scenario === "blocking-tail" ? "TODO: acceptance missing" : "Acceptance complete"}\n`;
+    let step = 0; let attemptId = ""; let reviews = 0; let firstPageChars = 0;
     const events: SessionEvent[] = [];
     const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
       const contract = contractReviewFixture(request); if (contract) return contract;
@@ -401,11 +402,12 @@ for (const scenario of ["complete", "blocking-tail", "concurrent-edit"] as const
         if (reviews++ === 0) {
           assert.ok(input.sourceTruncatedPaths.includes("report.txt"));
           assert.doesNotMatch(input.source["report.txt"], /Acceptance complete|acceptance missing/);
+          firstPageChars = input.source["report.txt"].length;
           if (scenario === "concurrent-edit") await fs.writeFile(path.join(root, "report.txt"), "User edit must be preserved.\n");
           return reply(JSON.stringify({ sourceRequests: [{ path: "report.txt" }] }));
         }
         assert.equal(input.sourcePages[0].path, "report.txt");
-        assert.equal(input.sourcePages[0].offset, 8000);
+        assert.equal(input.sourcePages[0].offset, firstPageChars);
         assert.match(input.sourcePages[0].content, /Acceptance complete|acceptance missing/);
         assert.equal(input.sourcePages[0].truncated, false);
         return reply(JSON.stringify({ passed: scenario === "complete", findings: scenario === "complete" ? [] : ["Report ends with an unfinished acceptance section."] }));

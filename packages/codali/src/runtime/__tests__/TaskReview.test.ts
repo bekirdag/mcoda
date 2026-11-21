@@ -179,10 +179,26 @@ test("review evidence loops and context growth are bounded without a fabricated 
     } }, messages, allowedPaths: ["known.txt"], maxInputChars: mode === "context" ? 1000 : 100_000,
     readSourcePage: async (path, offset) => { reads++; return { path, offset, content: "x".repeat(8000), truncated: true, nextOffset: offset + 8000 }; } });
     assert.equal(result.passed, false);
-    assert.equal(calls, mode === "rounds" ? 5 : 2);
+    // A request with no new page gets one reminder, then ends the review.
+    assert.equal(calls, mode === "rounds" ? 5 : mode === "repeat" ? 3 : 2);
     assert.equal(reads, mode === "rounds" ? 4 : mode === "context" ? 2 : 1);
     assert.match(result.findings[0], mode === "repeat" ? /repeated/ : mode === "rounds" ? /limit reached/ : /configured model context/);
   }
+});
+
+test("a page asked for again beside a new one is skipped, and the review can still decide", async () => {
+  let calls = 0; const reads: number[] = [];
+  const result = await runTaskReview({ provider: { name: "fixture", generate: async request => {
+    calls++;
+    if (calls === 1) return response({ sourceRequests: [{ path: "known.txt", offset: 0 }] });
+    if (calls === 2) return response({ sourceRequests: [{ path: "known.txt", offset: 0 }, { path: "known.txt", offset: 24000 }] });
+    if (calls === 3) return response({ sourceRequests: [{ path: "known.txt", offset: 0 }] });
+    assert.match(request.messages.at(-1)!.content, /already supplied above[\s\S]*nextOffset/);
+    return response({ passed: true, findings: [] });
+  } }, messages, allowedPaths: ["known.txt"], maxInputChars: 200_000,
+  readSourcePage: async (path, offset) => { reads.push(offset); return { path, offset, content: "x".repeat(24000), truncated: offset === 0, ...(offset === 0 ? { nextOffset: 24000 } : {}) }; } });
+  assert.deepEqual(reads, [0, 24000]);
+  assert.equal(calls, 4); assert.equal(result.passed, true);
 });
 
 test("cancellation and invalid model output cannot authorize review reads", async () => {
