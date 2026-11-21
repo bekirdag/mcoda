@@ -103,6 +103,15 @@ test("a calculation may name intermediate values and reuse them", async () => {
   const shadow = await run({ expression: "e = 0.25\nP = 101325\nC = 3\nP*(1-e)/C + C(5,2)" });
   assert.equal(shadow.ok, true, String(shadow.body));
   assert.equal(shadow.body.result, 101325 * 0.75 / 3 + 10);
+  // A name that takes over a constant is allowed but never silent: the same formula means something else.
+  assert.match(shadow.body.warning, /e was given a value here[\s\S]*use exp\(x\)/);
+  const growth = await run({ expressions: { e: "0.0167", growth: "1000*e^(0.05*10)" } });
+  assert.ok(Math.abs(growth.body.results.growth - 129.2) < 0.1); assert.match(growth.body.warning, /e was given a value/);
+  assert.equal((await run({ expressions: { rate: "0.05", growth: "1000*e^(rate*10)" } })).body.warning, undefined);
+  // A formula may wrap inside parentheses; a line break outside them still separates statements.
+  const wrapped = await run({ expression: "a = (1 +\n 2) * 3\nb = a +\n 1" });
+  assert.equal(wrapped.ok, false);
+  assert.equal((await run({ expression: "a = (1 +\n 2) * 3\na + 1" })).body.result, 10);
   // Later labels may use earlier ones, and more than 16 formulas fit.
   const batch = await run({ expressions: { ev_per_day: "80000*1500*1440", bytes_per_day: "ev_per_day*600", tb_per_day: "bytes_per_day/1e12", ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`k${i}`, `tb_per_day*${i}`])) } });
   assert.equal(batch.ok, true, String(batch.body));

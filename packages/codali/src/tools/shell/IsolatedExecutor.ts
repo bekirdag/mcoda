@@ -76,8 +76,15 @@ const bubblewrapRoot = (): string[] => {
 export const executorStatus = (): ExecutorStatus => {
   if (process.platform === "linux") {
     if (!existsSync("/usr/bin/bwrap")) return { available: false, backend: "unavailable", reason: "Install bubblewrap to enable isolated shell execution" };
-    const probe = spawnSync("/usr/bin/bwrap", [...bubblewrapRoot(), "--", "/usr/bin/true"], { timeout: 3000, stdio: "ignore" });
-    return probe.status === 0 ? { available: true, backend: "bubblewrap" } : { available: false, backend: "unavailable", reason: "bubblewrap user namespaces are unavailable" };
+    // On a busy host the probe itself can take seconds. A probe that ran out of
+    // time says nothing about user namespaces, so it is tried again with more
+    // time before the sandbox is declared missing (a full test run on a loaded
+    // machine skipped fourteen sandbox tests for this reason).
+    let probe = spawnSync("/usr/bin/bwrap", [...bubblewrapRoot(), "--", "/usr/bin/true"], { timeout: 3000, stdio: "ignore" });
+    const timedOut = () => probe.status === null && ((probe.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" || probe.signal === "SIGTERM");
+    if (timedOut()) probe = spawnSync("/usr/bin/bwrap", [...bubblewrapRoot(), "--", "/usr/bin/true"], { timeout: 20000, stdio: "ignore" });
+    return probe.status === 0 ? { available: true, backend: "bubblewrap" }
+      : { available: false, backend: "unavailable", reason: timedOut() ? "the bubblewrap sandbox did not start within 20 seconds; the host may be overloaded" : "bubblewrap user namespaces are unavailable" };
   }
   if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
     const scratch = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codali-isolation-probe-")));

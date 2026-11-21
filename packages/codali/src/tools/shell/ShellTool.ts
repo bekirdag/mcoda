@@ -118,14 +118,16 @@ export const createShellTool = (): ToolDefinition => ({
       }
       effectiveArgs.splice(at, 0, "-o", "pipefail");
     }
-    // The host's own limit, when it sets one, stays the upper bound.
-    const shellTimeoutMs = timeoutSeconds === undefined ? context.shellTimeoutMs : Math.min(timeoutSeconds * 1000, context.shellTimeoutMs ?? Infinity);
+    // A host may set the default (shellTimeoutMs) and the most a command may ask
+    // for (shellMaxTimeoutMs). A host that sets only a default keeps it as the cap.
+    const defaultMs = context.shellTimeoutMs ?? DEFAULT_SHELL_TIMEOUT_SECONDS * 1000;
+    const maxMs = context.shellMaxTimeoutMs ?? (context.shellTimeoutMs !== undefined ? context.shellTimeoutMs : MAX_SHELL_TIMEOUT_SECONDS * 1000);
+    const shellTimeoutMs = timeoutSeconds === undefined ? defaultMs : Math.min(timeoutSeconds * 1000, maxMs);
     try {
       return await (context.shellExecutor ?? runProcess)(command, effectiveArgs, { ...context, shellWorkingDirectory, shellTimeoutMs });
     } catch (error) {
-      const allowedMs = shellTimeoutMs ?? DEFAULT_SHELL_TIMEOUT_SECONDS * 1000;
-      if (error instanceof ToolExecutionError && error.code === "tool_timeout" && context.shellTimeoutMs === undefined && allowedMs < MAX_SHELL_TIMEOUT_SECONDS * 1000) {
-        error.message += `\nThe command was stopped after ${Math.round(allowedMs / 1000)} s. If it needs longer, pass timeoutSeconds (up to ${MAX_SHELL_TIMEOUT_SECONDS}); start servers in the background so the call can return.`;
+      if (error instanceof ToolExecutionError && error.code === "tool_timeout" && shellTimeoutMs < maxMs) {
+        error.message += `\nThe command was stopped after ${Math.round(shellTimeoutMs / 1000)} s. If it needs longer, pass timeoutSeconds (up to ${Math.floor(maxMs / 1000)}); start servers in the background so the call can return.`;
       }
       throw error;
     }

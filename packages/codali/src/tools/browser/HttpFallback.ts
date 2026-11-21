@@ -57,35 +57,86 @@ export const decodeBody = (body: Buffer, contentType: string | null): string => 
   try { return new TextDecoder(declared).decode(body); } catch { return new TextDecoder("utf-8").decode(body); }
 };
 
+/** HTML beyond this is cut before conversion: the work below is linear, and no
+ * page worth reading needs more (the browser path keeps its own larger limit). */
+const MAX_HTML_CHARS = 1_500_000;
+
+/** Remove every `<tag ...>...</tag>` block for the given tags in one pass. An
+ * unclosed block is dropped to the end. Linear: each index is searched once,
+ * unlike a lazy regex, which rescans from every unclosed opening tag (a
+ * 400 KB page of unclosed tags held the process for 30 s). */
+const stripBlocks = (html: string, tags: string[]): string => {
+  const lower = html.toLowerCase();
+  let out = "", at = 0;
+  while (at < html.length) {
+    let open = -1, tag = "";
+    for (const name of tags) {
+      let found = lower.indexOf(`<${name}`, at);
+      // A longer tag name that merely starts the same way is not this tag.
+      while (found >= 0 && /[a-z0-9-]/.test(lower[found + name.length + 1] ?? "")) found = lower.indexOf(`<${name}`, found + 1);
+      if (found >= 0 && (open < 0 || found < open)) { open = found; tag = name; }
+    }
+    if (open < 0) { out += html.slice(at); break; }
+    out += html.slice(at, open) + " ";
+    const close = lower.indexOf(`</${tag}`, open);
+    if (close < 0) break;
+    const end = lower.indexOf(">", close);
+    if (end < 0) break;
+    at = end + 1;
+  }
+  return out;
+};
+
+/** Inner HTML of the first `<tag>` block, found with two index searches. */
+const firstBlock = (html: string, tag: string): string | undefined => {
+  const lower = html.toLowerCase(), open = lower.search(new RegExp(`<${tag}[\\s>]`));
+  if (open < 0) return undefined;
+  const start = lower.indexOf(">", open), close = lower.indexOf(`</${tag}`, open);
+  return start >= 0 && close > start ? html.slice(start + 1, close) : undefined;
+};
+
 /** Readable text of an HTML document without running it: headings keep the
- * marker the snapshot reader navigates by, links are listed once at the end. */
+ * marker the snapshot reader navigates by, links are listed once at the end.
+ * Every pattern here is bounded or anchored on a single character class, so
+ * hostile markup costs time in proportion to its length, not its square. */
 export function htmlToText(html: string, baseUrl: string, scope: "main" | "page" = "main"): { title: string; content: string; scope: "main" | "page" } {
-  const title = decodeEntities(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? "").replace(/\s+/g, " ").trim();
-  let body = html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<(script|style|noscript|svg|template|head|iframe)\b[\s\S]*?<\/\1\s*>/gi, " ");
+  html = html.slice(0, MAX_HTML_CHARS);
+  const title = decodeEntities(/<title[^>]{0,200}>([^<]{0,500})/i.exec(html.slice(0, 20000))?.[1] ?? "").replace(/\s+/g, " ").trim();
+  let body = stripBlocks(html.replace(/<!--/g, "<codalicomment>").replace(/-->/g, "</codalicomment>"), ["codalicomment", "script", "style", "noscript", "svg", "template", "head", "iframe"]);
   let used: "main" | "page" = "page";
   if (scope === "main") {
-    const main = /<main\b[^>]*>([\s\S]*?)<\/main\s*>/i.exec(body) ?? /<article\b[^>]*>([\s\S]*?)<\/article\s*>/i.exec(body);
-    if (main && main[1].replace(/<[^>]+>/g, "").trim().length > 200) { body = main[1]; used = "main"; }
-    else body = body.replace(/<(nav|header|footer)\b[\s\S]*?<\/\1\s*>/gi, " ");
+    const main = firstBlock(body, "main") ?? firstBlock(body, "article");
+    if (main && main.replace(/<[^>]*>/g, "").trim().length > 200) { body = main; used = "main"; }
+    else body = stripBlocks(body, ["nav", "header", "footer"]);
   }
   const links: string[] = [], seen = new Set<string>();
-  for (const match of body.matchAll(/<a\b[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/gi)) {
+  // An anchor's text is taken up to its close or 300 characters, whichever comes first.
+  for (const match of body.matchAll(/<a\s[^>]{0,2000}?href\s*=\s*(?:"([^"]{0,2000})"|'([^']{0,2000})')[^>]{0,2000}>([^<]{0,300})/gi)) {
     if (links.length >= 128) break;
     try {
       const target = new URL(decodeEntities(match[1] ?? match[2] ?? ""), baseUrl);
-      const label = decodeEntities(match[3].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().slice(0, 160);
+      const label = decodeEntities(match[3]).replace(/\s+/g, " ").trim().slice(0, 160);
       if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || !label || seen.has(target.href)) continue;
       seen.add(target.href); links.push(`- link ${JSON.stringify(label)}\n  - /url: ${target.href.slice(0, 1000)}`);
     } catch { /* Not a usable link. */ }
   }
+  // The first 100 struck-through passages are marked, as the browser path does; the note is long.
+  const marked: boolean[] = []; let marks = 0;
+  const struck = (opening: boolean): string => {
+    if (opening) { const mark = marks < 100; if (mark) marks++; marked.push(mark); return mark ? " [DELETED/STRUCK-THROUGH TEXT — not current guidance: " : " "; }
+    return marked.pop() ? "] " : " ";
+  };
   const text = decodeEntities(body
-    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi, (_, level: string, inner: string) => {
-      const label = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      return label ? `\n\n- heading ${JSON.stringify(decodeEntities(label))} [level=${level}]\n` : "\n";
-    })
-    .replace(/<(del|s|strike)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, " [DELETED/STRUCK-THROUGH TEXT — not current guidance: $2] ")
-    .replace(/<\/(?:td|th)\s*>/gi, " | ").replace(/<\/?(?:a|b|i|u|em|strong|span|sup|sub|small|mark|abbr|code|cite|q|time|font|label)\b[^>]*>/gi, "").replace(/<br\s*\/?>|<\/(?:p|div|li|tr|section|article|table|ul|ol|dd|dt|blockquote|pre)\s*>/gi, "\n").replace(/<li\b[^>]*>/gi, "- ")
-    .replace(/<[^>]+>/g, " "))
+    // Mark where headings and struck-through text begin and end; their inline tags go with the rest below.
+    .replace(/<h([1-6])(?:\s[^>]{0,2000})?>/gi, "\n\n\u0001$1\u0002").replace(/<\/h[1-6]\s*>/gi, "\u0003\n")
+    .replace(/<(\/?)(?:del|s|strike)(?:\s[^>]{0,2000})?>/gi, (_, closing: string) => struck(!closing))
+    .replace(/<\/(?:td|th)\s*>/gi, " | ").replace(/<\/?(?:a|b|i|u|em|strong|span|sup|sub|small|mark|abbr|code|cite|q|time|font|label)(?:\s[^>]{0,4000})?>/gi, "")
+    .replace(/<br\s*\/?>|<\/(?:p|div|li|tr|section|article|table|ul|ol|dd|dt|blockquote|pre)\s*>/gi, "\n").replace(/<li(?:\s[^>]{0,2000})?>/gi, "- ")
+    .replace(/<[^>]{0,8000}>/g, " "))
+    .replace(/\u0001([1-6])\u0002([^\u0001\u0003]{0,400})\u0003/g, (_, level: string, label: string) => {
+      const clean = label.replace(/\s+/g, " ").trim();
+      return clean ? `- heading ${JSON.stringify(clean)} [level=${level}]` : "";
+    }).replace(/[\u0001-\u0003]\d?/g, " ")
     .replace(/[ \t\f\v\u00a0]+/g, " ").replace(/ \|? ?\n ?/g, "\n").replace(/\n /g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   return { title, scope: used, content: text && links.length ? `${text}\n\nSource links (first 128, bounded; not additional retrieved evidence):\n${links.join("\n").slice(0, 16000)}` : text };
 }

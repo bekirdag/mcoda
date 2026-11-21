@@ -85,33 +85,38 @@ export function selectResearchEvidence(packets: ResearchPacket[], request: strin
 }
 
 /** What an investigation found, as a report, for when its answer could not be
- * written: the final model request failed or would have run past the time
- * limit. In cycle 6 a 41-minute investigation delivered nothing because that
- * request hit three gateway timeouts in its last three minutes. This is built
- * without a model, so it is ready at once; it says plainly that it is evidence
- * and not a finished answer. */
-export function evidenceReport(packets: ResearchPacket[], request: string, reason: string, maxChars = 14000): string | undefined {
-  if (!packets.some(packet => packet.passage.trim().length >= 40)) return undefined;
-  const pages = packets, label = (source: string) => /^https?:/.test(source) ? source : `search result (${source})`;
-  const sources = [...new Set(packets.map(packet => packet.source).filter(source => /^https?:/.test(source)))];
-  const lines = [`I could not finish writing the answer: ${reason}. What follows is the evidence gathered, not a finished answer: nothing below has been checked against the question as a whole, and points it does not cover remain unanswered.`,
-    ...(sources.length ? ["", `Sources read (${sources.length}):`, ...sources.slice(-30).map((source, index) => `${index + 1}. ${source}`)] : []), "", "Most relevant passages:"];
-  let used = lines.join("\n").length;
-  const perSource = new Map<string, number>();
-  for (const packet of selectResearchEvidence(pages, request, "", maxChars * 2)) {
-    // At most three passages per source keep one long page from crowding out the rest.
-    const count = perSource.get(packet.source) ?? 0;
-    if (count >= 3) continue;
-    const passage = packet.passage.replace(/\s+/gu, " ").trim().slice(0, 700);
-    if (passage.length < 40) continue;
-    const entry = `- ${label(packet.source)}${packet.sectionContext?.length ? ` (${packet.sectionContext.join(" > ").slice(0, 160)})` : ""}\n  "${passage}${packet.passage.trim().length > 700 ? "…" : ""}"`;
-    if (used + entry.length + 1 > maxChars) break;
-    perSource.set(packet.source, count + 1); lines.push(entry); used += entry.length + 1;
+ * written: the model service was down or the final request would have run past
+ * the time limit. In cycle 6 a 41-minute investigation delivered nothing
+ * because that request hit three gateway timeouts in its last three minutes.
+ * Built without a model, so it is ready at once. It says plainly that it is
+ * evidence and not an answer, and quotes at most 25 words from any one source:
+ * the sentence that shares most with the request, figures and dates first. */
+export function evidenceReport(packets: ResearchPacket[], request: string, reason: string, maxSources = 30): string | undefined {
+  // A search result packet carries several pages as JSON (possibly cut short); read each as its own source.
+  const pages = packets.flatMap(packet => /^https?:/.test(packet.source) ? [{ source: packet.source, passage: packet.passage }]
+    : [...packet.passage.matchAll(/"url"\s*:\s*"(https?:[^"\s]{1,1000})"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.){0,3000})/gu)]
+      .map(match => ({ source: match[1], passage: match[2].replace(/\\[nrt]/gu, " ").replace(/\\(["\\/])/gu, "$1") })))
+    .filter(page => page.passage.trim().length >= 40);
+  if (!pages.length) return undefined;
+  const terms = new Set(request.toLowerCase().match(/[\p{L}\p{N}_]{4,}/gu) ?? []);
+  const best = new Map<string, { excerpt: string; score: number }>();
+  for (const packet of pages) {
+    for (const sentence of packet.passage.replace(/\s+/gu, " ").split(/(?<=[.!?])\s+|\s+[-•|]\s+/u)) {
+      const words = sentence.trim().split(" ").filter(Boolean);
+      if (words.length < 5) continue;
+      const overlap = new Set(words.map(word => word.toLowerCase().replace(/[^\p{L}\p{N}_]/gu, "")).filter(word => terms.has(word))).size;
+      const score = overlap * 2 + Math.min(4, words.filter(word => /\d/.test(word)).length);
+      const current = best.get(packet.source);
+      if (!current || score > current.score) best.set(packet.source, { score, excerpt: words.slice(0, 25).join(" ") + (words.length > 25 ? " …" : "") });
+    }
   }
-  return lines.join("\n");
+  const ranked = [...best.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, maxSources);
+  if (!ranked.length) return undefined;
+  return [`I could not finish writing the answer: ${reason}. What follows is the evidence gathered, not an answer: the pages that were read, each with the one short excerpt closest to the question. Nothing here has been checked against the question as a whole, and points it does not cover remain unanswered.`,
+    "", ...ranked.map(([source, { excerpt }], index) => `${index + 1}. ${source}\n   "${excerpt}"`)].join("\n");
 }
 
-const OPEN_POINT = /\b(?:unverified|not verified|un(?:confirmed|answered|resolved)|could not (?:be )?(?:verif(?:y|ied)|confirm(?:ed)?|find|found|locate[d]?|access(?:ed)?|retrieved?|determined?|establish(?:ed)?)|(?:unable|failed) to (?:verify|confirm|find|locate|access|retrieve|determine|establish|open)|(?:was|were|is|are) not (?:found|located|available|confirmed|retrieved|accessible)|not (?:found|located|retrieved) (?:in|on|during)|no (?:primary |official |direct )?(?:source|evidence|data|figure|record|page|document)s? (?:was |were |has been |have been )?(?:found|located|available|retrieved|identified)|remains? (?:unclear|unknown|open|to be (?:confirmed|verified))|alleged(?:ly)?|missing evidence|not (?:yet )?(?:established|determined)|to be (?:confirmed|determined|verified)|tbd)\b/iu;
+const OPEN_POINT = /\b(?:unverified|not (?:been )?(?:independently )?verified|unconfirmed|(?:could not|couldn't|can ?not|cannot|was unable to|were unable to|unable to|failed to|did not manage to) (?:be )?(?:independently )?(?:verif(?:y|ied)|confirm(?:ed)?|find|found|locate[d]?|access(?:ed)?|retrieved?|determined?|establish(?:ed)?|open(?:ed)?)|no (?:primary|official|direct|reliable|authoritative) (?:source|page|document|record|figure|confirmation)s? (?:was|were|has been|have been|could be) (?:found|located|retrieved|identified)|(?:was|were) not found (?:during|in) (?:this|the|my) (?:research|search|investigation|review)|remains? (?:unclear|unconfirmed|to be (?:confirmed|verified|determined))|to be (?:confirmed|determined|verified)|tbd)\b/iu;
 
 /** The points a research draft itself leaves open: the sentences or list items
  * in which it says something was not found, not verified or only alleged.

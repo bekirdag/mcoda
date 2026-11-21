@@ -106,7 +106,7 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
       }
       const context = { workspaceRoot: root, signal, allowedWritePaths: execution.writes ? ['.'] : [], checkPath,
         allowShell: execution.writes, allowDestructiveOperations: false, allowOutsideWorkspace: false,
-        shellAllowlist: workflowShellAllowlist, shellTimeoutMs: Math.min(execution.deadlineMs,120000), shellMaxOutputBytes: 64000,
+        shellAllowlist: workflowShellAllowlist, shellTimeoutMs: Math.min(execution.deadlineMs,120000), shellMaxTimeoutMs: Math.min(execution.deadlineMs,900000), shellMaxOutputBytes: 64000,
         shellExecutor: (command, args, context) => createIsolatedExecutor({ network: true, status: isolation, cacheRoot })(command, args, { ...context, allowedWritePaths: writePaths, protectedPaths }) };
       receipt = await registry.execute(call.name, call.args, context);
       } catch (cause) {

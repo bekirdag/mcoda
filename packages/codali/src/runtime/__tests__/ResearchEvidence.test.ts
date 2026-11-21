@@ -71,5 +71,30 @@ The Bundesrat vote count remains unclear. The court's reasoning is set out in pa
   assert.equal(open[3], "The Bundesrat vote count remains unclear.");
   // A finished answer has none; ordinary uses of similar words are not admissions.
   assert.deepEqual(openResearchPoints("Unit 6 restarted on 21 January 2026. The regulator found the plan adequate and confirmed the date."), []);
+  // Finished sentences an independent review got sent back by the first version of the rule.
+  for (const finished of ["The indictment alleged wire fraud; the jury convicted on all counts.", "Dark mode is not available on the free plan.", "The audit reported that no evidence was found of data exfiltration.",
+    "The API returns 404 when the record is not found in the index.", "Two of the complaints remain unresolved before the tribunal.", "The cause of the 1908 event remains unknown to science.",
+    "The appeal was not found admissible.", "Allegedly, the firm knew; the regulator later established that it did."]) assert.deepEqual(openResearchPoints(finished), [], finished);
+  // Admissions about the research itself, in the forms a model actually writes.
+  for (const admitted of ["I couldn't verify the exact date.", "The filing number cannot be confirmed from the registry.", "We were unable to locate the gazette notice.", "The page failed to open and its figure is unverified.", "No primary source was found for the 47-per-month figure."]) assert.equal(openResearchPoints(admitted).length, 1, admitted);
   assert.equal(openResearchPoints(Array.from({ length: 20 }, (_, index) => `Item ${index} could not be confirmed.`).join("\n")).length, 8);
+});
+
+test("the evidence report names each page read with one short excerpt, never a long quotation", async () => {
+  const { evidenceReport } = await import("../ResearchEvidence.js");
+  const long = "The Federal Aviation Administration capped production of the aircraft at 38 a month on 4 March 2026 after the audit found repeated lapses in tool control, parts traceability, torque records and supplier oversight across three plants, and said the cap would remain until all 27 corrective actions were verified on site. " + "Background paragraph about the company history. ".repeat(40);
+  const packets: ResearchPacket[] = [
+    { source: "https://regulator.example/orders/14", passage: long, tool: "browser_open" },
+    { source: "https://regulator.example/orders/14", passage: "Contact the press office for more information about this order and its publication.", tool: "browser_read" },
+    { source: "docdex_web_research", tool: "docdex_web_research", query: "production cap", passage: JSON.stringify({ query: "production cap", pages: [{ url: "https://news.example/cap", content: "Reuters reported the production cap of 38 aircraft a month on 4 March 2026.\nAnalysts expect \"months\" of delay." }, { url: "https://short.example/x", content: "tiny" }] }).slice(0, 300) },
+    { source: "calculate", tool: "calculate", passage: "{\"result\":38}" },
+  ];
+  const report = evidenceReport(packets, "When did the regulator cap production, and at what level?", "the model service was unavailable (service unavailable 504)")!;
+  assert.match(report, /^I could not finish writing the answer: the model service was unavailable \(service unavailable 504\)\. What follows is the evidence gathered, not an answer/);
+  // One entry per page read, the most relevant sentence first; a truncated search result still yields its page.
+  assert.deepEqual([...report.matchAll(/^\d+\. (\S+)$/gm)].map(match => match[1]).sort(), ["https://news.example/cap", "https://regulator.example/orders/14"]);
+  assert.match(report, /capped production of the aircraft at 38 a month on 4 March 2026/);
+  for (const excerpt of report.matchAll(/^ {3}"(.*)"$/gm)) assert.ok(excerpt[1].replace(/ …$/, "").split(" ").length <= 25, excerpt[1]);
+  assert.doesNotMatch(report, /Background paragraph|press office|tiny/);
+  assert.equal(evidenceReport([{ source: "calculate", tool: "calculate", passage: "{\"result\":38}" }], "q", "r"), undefined);
 });

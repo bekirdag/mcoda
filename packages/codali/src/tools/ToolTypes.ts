@@ -4,7 +4,10 @@ export interface ToolContext {
   beforeTool?: (tool: ToolDescriptor, args: unknown) => Promise<void>;
   afterTool?: (tool: ToolDescriptor, args: unknown, result: ToolExecutionResult) => Promise<void>;
   checkPath?: (resolvedPath: string, action: "read" | "write") => Promise<void>;
+  /** Time a shell command gets when it asks for none. */
   shellTimeoutMs?: number;
+  /** The most a shell command may ask for; when unset, a set shellTimeoutMs is also the cap. */
+  shellMaxTimeoutMs?: number;
   shellMaxOutputBytes?: number;
   /** Process cwd inside workspaceRoot; does not change root-relative write scopes. */
   shellWorkingDirectory?: string;

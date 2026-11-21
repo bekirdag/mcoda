@@ -1111,6 +1111,10 @@ export class SessionController {
           : "For work_verify, normally omit invocationIds to select current-attempt checks automatically. Evidence must cover the task criteria; independent review and the full freshness check still apply." });
   }
 
+  /** Time one model request may stay unanswered; a method so a host or a test can scale it. */
+  protected stallAllowanceMs(inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts: number): number {
+    return modelStallAllowanceMs(inputTokens, maxOutputTokens, longestModelMs, stalledAttempts);
+  }
   private provider(binding = "lead", addGoal = true, recoveryAttempt = 0, capacityWaitedMs = 0, stalledAttempts = 0): Provider {
     const lead = binding === "lead" && addGoal;
     const turn = this.active;
@@ -1265,7 +1269,7 @@ export class SessionController {
       // No request may wait for ever: a stalled one is abandoned and takes the
       // outage path below, which retries it with a longer allowance.
       const stall = new AbortController();
-      const stallMs = this.options.modelStallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts);
+      const stallMs = this.options.modelStallMs ?? this.stallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts);
       const stallTimer = setTimeout(() => stall.abort(), stallMs);
       // Raced, not only aborted: a transport that ignores its signal must not hold the turn either.
       const stalled = new Promise<never>((_, reject) => stall.signal.addEventListener("abort", () => {
@@ -1274,6 +1278,9 @@ export class SessionController {
       const dispatched = configured.generate({ ...request, requestId: id, signal: request.signal ? AbortSignal.any([request.signal, stall.signal]) : stall.signal });
       dispatched.catch(() => undefined);
       const response = await Promise.race([dispatched, stalled]).finally(() => clearTimeout(stallTimer)).then(response => {
+        // Only an answered request says how long this model takes; a stall or
+        // an outage wait would inflate every later allowance and reserve.
+        if (ownsTurn()) this.longestModelMs = Math.max(this.longestModelMs, Date.now() - modelStarted);
         // Some relays normalize finish_reason to success even when generation
         // exhausts its cap. Do not certify capped prose as a complete answer.
         const cap = request.maxTokens ?? limits.maxOutputTokens;
@@ -1365,7 +1372,7 @@ export class SessionController {
             messages: [...request.messages, { role: "user", content: "The previous model response was incomplete or invalid and none of its tool calls executed. Continue the original task within the same output limit. For an answer, produce a concise complete answer covering the requested requirements; omit repeated explanations and optional examples. Do not invent missing evidence. If tools are needed and available, return one short complete native call, using small patches instead of an entire large file. Keep reasoning brief. Do not repeat completed operations." }] });
         }
         throw error;
-      }).finally(() => { dispatchReady.delete(id); if (ownsTurn()) { this.longestModelMs = Math.max(this.longestModelMs, Date.now() - modelStarted); return this.flushOutputStreams("token"); } });
+      }).finally(() => { dispatchReady.delete(id); if (ownsTurn()) return this.flushOutputStreams("token"); });
       // The recovery invocation settled its own request ID and usage already.
       // Retain the failed request's separate reservation until reconciliation.
       if (recovered) return response;
@@ -2514,6 +2521,12 @@ export class SessionController {
         { role: "user", content: JSON.stringify({ request: prompt, draft: decision.reply }) },
       ], toolChoice: "none", maxTokens: Math.min(limits.maxOutputTokens, 6000), temperature: 0, signal };
       if (!auditBudget(request)) return [];
+      // The check must never cost the audit it feeds: run it only when both passes fit.
+      const windowMs = this.optionalPassWindowMs(), eachMs = Math.max(this.longestModelMs * 1.5, 60_000);
+      if (windowMs < eachMs * 2.5) {
+        await this.emit("requirement_coverage_check_skipped", { reason: "deadline", remainingMs: Math.max(0, Math.round(windowMs)), neededMs: Math.round(eachMs * 2.5) }, false);
+        return [];
+      }
       await this.emit("interaction_progress", { message: "Checking the answer against each stated requirement" }, false);
       const checked = await optionalPass("requirement_coverage_check", request);
       if (!checked) return [];
@@ -2621,13 +2634,16 @@ export class SessionController {
     // closing. Stopping early with a quarter of the time unused, and skipped
     // sub-questions, were the largest research losses of cycles 3-6.
     let coveragePushes = 0;
+    // The draft that was sent back is kept: if the extra research cannot be
+    // finished, the reader gets that draft, never less than they had.
+    let heldDraft: InteractionDecision | undefined;
     const coverageGuidance = async (decision: InteractionDecision, finalizing: boolean): Promise<string | undefined> => {
       if (finalizing || decision.mode !== "answer" || !researchEvidence.length || coveragePushes >= 2 || convergence.reason()) return undefined;
       const timing = this.inspectionTiming();
       if (timing && timing.remainingMs < timing.answerReserveMs + RESEARCH_CONTINUE_MIN_MS) return undefined;
       const open = openResearchPoints(decision.reply);
       if (!open.length) return undefined;
-      coveragePushes++;
+      coveragePushes++; heldDraft = decision;
       await this.emit("research_coverage_requested", { openPoints: open.length, push: coveragePushes, remainingMs: timing?.remainingMs ?? null, draftSha256: createHash("sha256").update(decision.reply).digest("hex") }, false);
       await this.emit("interaction_progress", { message: "The draft leaves points open; researching them while time remains" }, false);
       return `Not delivered yet: ${timing ? `about ${Math.max(1, Math.floor((timing.remainingMs - timing.answerReserveMs) / 60_000))} minutes of research time remain and ` : ""}your draft leaves these points open:\n${open.map(point => `- ${point}`).join("\n")}\nFor each one, search specifically for it (the responsible body's own page or document first; PDF documents and pages that block browsers are readable), open the page that would settle it, and correct the draft from what you read. Then deliver the complete answer again. Keep a point marked as open only after a real attempt, and say what you tried.`;
@@ -2702,13 +2718,20 @@ export class SessionController {
           await this.emit("interaction_progress", { message: "A request took too long; writing the answer from what has been gathered" }, false);
           continue;
         }
-        // Only a failed or overdue model service is covered; any other error is a defect to report as such.
-        const service = error instanceof ModelServiceError || error instanceof TypeError && error.message === "fetch failed";
-        if (!guard?.aborted && !service) throw error;
-        const reason = guard?.aborted ? "the model did not return it before the time limit" : "the model service failed before it was written";
-        const report = evidenceReport(researchEvidence, prompt, reason);
+        // Only an outage or an overdue request is covered. A refusal that will
+        // not change on its own (sign-in, entitlement, quota, a malformed
+        // request) and any other error surface as the failures they are.
+        const outage = error instanceof ModelServiceError && ["service_unavailable", "rate_limited", "model_unavailable"].includes(error.code)
+          || error instanceof TypeError && error.message === "fetch failed";
+        if (!guard?.aborted && !outage) throw error;
+        const cause = guard?.aborted ? "time_limit" : error instanceof ModelServiceError ? `${error.code}_${error.status}` : "transport_unavailable";
+        if (heldDraft) {
+          await this.emit("research_draft_delivered", { reason: cause, finalizing: budgeted.finalizing, coveragePushes, draftSha256: createHash("sha256").update(heldDraft.reply).digest("hex") }, false);
+          return citationCheck(heldDraft);
+        }
+        const report = evidenceReport(researchEvidence, prompt, guard?.aborted ? "the model did not return it before the time limit" : `the model service was unavailable (${cause.replace(/_/g, " ")})`);
         if (!report) throw error;
-        await this.emit("research_evidence_delivered", { reason: guard?.aborted ? "time_limit" : "model_service_failed", finalizing: budgeted.finalizing, error: (error instanceof Error ? error.message : String(error)).slice(0, 300), sourcePackets: researchEvidence.length, reportChars: report.length }, false);
+        await this.emit("research_evidence_delivered", { reason: cause, finalizing: budgeted.finalizing, error: (error instanceof Error ? error.message : String(error)).slice(0, 300), sourcePackets: researchEvidence.length, reportChars: report.length }, false);
         return { mode: "answer", reply: report, prepared: "", tools: "none", output: unconstrainedOutput() };
       }
       signal.throwIfAborted();
@@ -2759,7 +2782,10 @@ export class SessionController {
         return auditAnswer(decision, response.usage?.outputTokens, response.outputLimited);
       }
       if (budgeted.finalizing && (calls.length !== 1 || !["start_work", "final_answer"].includes(calls[0].name))) {
-        if (++finalViolations > 2 || this.turnUsage().modelCalls >= limits.maxModelCalls) throw new Error("Only final delivery or the execution handoff is available after inspection ends; nothing further was executed.");
+        if (++finalViolations > 2 || this.turnUsage().modelCalls >= limits.maxModelCalls) {
+          if (heldDraft) { await this.emit("research_draft_delivered", { reason: "inspection_closed", finalizing: true, coveragePushes, draftSha256: createHash("sha256").update(heldDraft.reply).digest("hex") }, false); return citationCheck(heldDraft); }
+          throw new Error("Only final delivery or the execution handoff is available after inspection ends; nothing further was executed.");
+        }
         // No tool ran, so nothing is recorded for these calls; ask for the answer.
         textOnly = true;
         messages.push({ role: "user", content: "Inspection has ended; those tool calls were not executed and no tools remain. Write the complete final answer now in plain text from the evidence already collected, and state any missing evidence." });

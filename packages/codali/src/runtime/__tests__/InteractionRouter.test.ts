@@ -1867,7 +1867,7 @@ const longDesignDraft = "The reservation state machine moves from held to confir
 const designPrompt = "Design a reservation service and specify its failure tests.";
 const consistencyConfig = () => {
   const config = structuredClone(base);
-  config.interaction = { strategy: "adaptive", maxModelCalls: 5, maxTotalTokens: 64000 };
+  config.interaction = { strategy: "adaptive", maxModelCalls: 5, maxTotalTokens: 64000, timeoutMs: 1_800_000 };
   return config;
 };
 
@@ -1987,7 +1987,7 @@ for (const [name, audited, reason] of [
 });
 
 test("a long design that used the calculator keeps its figures: one consistency audit with the receipts, no equation rewrite", async t => {
-  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 64000, calculator: true };
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 64000, calculator: true, timeoutMs: 1_800_000 };
   const draft = `${longDesignDraft}Each shard holds 40000/30 = 1333 reservations per second with a 60 s hold timer.`;
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
@@ -2202,18 +2202,42 @@ test("a model request that never returns is abandoned and retried instead of hol
   assert.ok(calls >= 2 && Date.now() - started < 15_000);
 });
 
-test("the stall allowance grows with slow requests and retries but never past what a request could need", async () => {
+test("the stall allowance follows the model's pace and doubles on every stall of the same request", async () => {
   const { modelStallAllowanceMs } = await import("../OutageWait.js");
-  // Ten minutes by default; four times the slowest completed request when that is longer.
+  // Ten minutes by default; four times the slowest answered request when that is longer.
   assert.equal(modelStallAllowanceMs(60_000, 65_536, 0), 600_000);
   assert.equal(modelStallAllowanceMs(60_000, 65_536, 226_000), 904_000);
-  // Each retry of a stalled request doubles it, so a slow live request finally fits.
-  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0, 1), 1_200_000);
-  // Ceiling: scheduling + prompt read + the whole output at 25 tokens a second.
-  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0, 6), 120_000 + 60_000 + 65_536 * 40);
+  // A small request cannot need ten minutes: scheduling + prompt read + its whole output at 25 tokens a second.
   assert.equal(modelStallAllowanceMs(2_000, 256, 0), 120_000 + 2_000 + 256 * 40);
+  assert.equal(modelStallAllowanceMs(30_000, 6_000, 0), 390_000);
+  // Every stall doubles the wait, including for a small request on a model slower than those rates,
+  // which the first version cut off at the same 390 s for ever.
+  assert.deepEqual([0, 1, 2, 3].map(stalls => modelStallAllowanceMs(30_000, 6_000, 0, stalls)), [390_000, 780_000, 1_560_000, 3_120_000]);
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 0, 1), 1_200_000);
+  // Bounded at an hour, or at the base when one request may itself take longer.
+  assert.equal(modelStallAllowanceMs(30_000, 6_000, 0, 6), 3_600_000);
+  assert.equal(modelStallAllowanceMs(60_000, 65_536, 2_000_000, 3), 3_600_000);
+  assert.equal(modelStallAllowanceMs(60_000, 100_000, 2_000_000, 3), 4_180_000);
   // The 158-minute hang of cycle 6 (67k prompt, 65k ceiling, slowest call 226 s) is cut at about 15 minutes.
   assert.ok(modelStallAllowanceMs(67_000, 65_536, 226_000) < 16 * 60_000);
+});
+
+test("a stalled request does not count as the model's pace, and its retry waits twice as long", async t => {
+  const config = structuredClone(base);
+  let calls = 0; const allowances: number[] = [];
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const started = Date.now();
+    // The first two requests never answer; note how long each was given.
+    if (++calls <= 2) return new Promise((_, reject) => request.signal!.addEventListener("abort", () => { allowances.push(Date.now() - started); reject(new Error("aborted")); }, { once: true }));
+    return decision("answer", "Four.");
+  } }, config);
+  // Shrink the real allowance (not a fixed override) so its growth is what is measured.
+  const outage = await import("../OutageWait.js");
+  t.mock.method(Object.getPrototypeOf(controller), "stallAllowanceMs", function (this: unknown, input: number, output: number, longest: number, stalls: number) { return outage.modelStallAllowanceMs(input, output, longest, stalls) / 6000; });
+  assert.equal((await controller.interact("What is 2+2?")).content, "Four.");
+  assert.equal(calls, 3);
+  assert.ok(allowances[1] > allowances[0] * 1.6, `second wait ${allowances[1]} ms after ${allowances[0]} ms`);
+  assert.equal(events.filter(event => event.type === "model_failure" && event.data.responseReason === "stalled").length, 2);
 });
 
 test("an investigation whose final answer cannot be written delivers its evidence instead of nothing", async t => {
@@ -2231,11 +2255,11 @@ test("an investigation whose final answer cannot be written delivers its evidenc
       return new Promise((_, reject) => request.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     } }, config, undefined, true, { allowWeb: true, modelStallMs: 600_000 });
     const answer = await controller.interact("Research the production cap and give its date and level.");
-    assert.match(answer.content, /^I could not finish writing the answer: (the model service failed before it was written|the model did not return it before the time limit)\./);
-    assert.match(answer.content, /evidence gathered, not a finished answer/);
-    assert.match(answer.content, /capped production at 38 aircraft a month from 4 March 2026/);
+    assert.match(answer.content, /^I could not finish writing the answer: (the model service was unavailable \(service unavailable 504\)|the model did not return it before the time limit)\./);
+    assert.match(answer.content, /evidence gathered, not an answer/);
+    assert.match(answer.content, /1\. https:\/\/regulator\.example\/orders\/14\n {3}"Emergency order 14 capped production at 38 aircraft a month from 4 March 2026/);
     const delivered = events.find(event => event.type === "research_evidence_delivered")!;
-    assert.equal(delivered.data.reason, failure === "service" ? "model_service_failed" : "time_limit");
+    assert.equal(delivered.data.reason, failure === "service" ? "service_unavailable_504" : "time_limit");
     // A stuck research request is given up while the answer can still be written.
     assert.equal(events.some(event => event.type === "inspection_request_abandoned"), failure === "time");
     assert.ok(!events.some(event => event.type === "interaction_failed"));
@@ -2286,4 +2310,58 @@ test("open points are accepted when the time for more research has gone", async 
   } }, config, undefined, true, { allowWeb: true });
   assert.match((await controller.interact("Research the order and give the date of its amendment.")).content, /could not be verified/);
   assert.ok(!events.some(event => event.type === "research_coverage_requested"));
+});
+
+test("a sign-in or quota refusal is reported as such, not papered over with an evidence report", async t => {
+  for (const code of ["authentication_failed", "quota_exhausted", "invalid_request"] as const) {
+    const config = structuredClone(base);
+    config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 80000 };
+    t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+    t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+    t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ pages: [{ url: "https://regulator.example/orders/14", content: "Emergency order 14 capped production at 38 aircraft a month from 4 March 2026 until the audit closes." }] }));
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+      if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web", name: "codali", args: { name: "docdex_web_research", args: { query: "production cap order" } } }] };
+      throw new ModelServiceError(code, code === "authentication_failed" ? 401 : code === "quota_exhausted" ? 402 : 400);
+    } }, config, undefined, true, { allowWeb: true });
+    await assert.rejects(controller.interact("Research the production cap."), new RegExp(code));
+    assert.ok(events.some(event => event.type === "interaction_failed"));
+    assert.ok(!events.some(event => event.type === "research_evidence_delivered"));
+  }
+});
+
+test("a draft sent back for open points is delivered if the extra research cannot be finished", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 12, maxTotalTokens: 120000, timeoutMs: 1_800_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ pages: [{ url: "https://news.example/a", content: "An amendment to the order is reported to have followed in June 2026, according to the ministry." }] }));
+  const draft = "The order was amended in June 2026 (https://news.example/a). The exact day could not be verified.";
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web1", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment" } } }] };
+    if (calls === 2) return reply(draft);
+    // The model service goes down while the open point is being researched.
+    throw new ModelServiceError("service_unavailable", 504);
+  } }, config, undefined, true, { allowWeb: true });
+  const answer = await controller.interact("Research the order and give the date of its amendment.");
+  assert.match(answer.content, /The order was amended in June 2026[\s\S]*The exact day could not be verified\./);
+  assert.equal(events.find(event => event.type === "research_draft_delivered")!.data.reason, "service_unavailable_504");
+  assert.ok(!events.some(event => event.type === "research_evidence_delivered"));
+});
+
+test("the requirement check is skipped when there is not time for it and the audit", async t => {
+  const config = consistencyConfig();
+  // 130 s in all: enough for the audit (60 s), not for both passes (150 s).
+  config.interaction = { ...config.interaction, timeoutMs: 130_000 };
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return reply(longDesignDraft);
+    assert.match(request.messages[0].content, /Internal consistency audit/);
+    return reply(longDesignDraft);
+  } }, config);
+  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
+  assert.equal(calls, 2);
+  assert.equal(events.filter(e => e.type === "requirement_coverage_check_skipped").length, 1);
+  assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
 });

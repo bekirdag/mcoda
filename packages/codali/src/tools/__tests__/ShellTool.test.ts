@@ -155,7 +155,10 @@ test("a command may ask for the time it needs, within the host's limit", { concu
   await tool.handler({ command: "node", args: ["--test"], timeoutSeconds: 600 }, context);
   // A limit set by the host is not raised by the caller.
   await tool.handler({ command: "node", args: ["--test"], timeoutSeconds: 600 }, { ...context, shellTimeoutMs: 30_000 });
-  assert.deepEqual(seen, [undefined, 600_000, 30_000]);
+  // A host that sets a default and a separate maximum lets a command ask up to that maximum.
+  await tool.handler({ command: "node", args: ["--test"], timeoutSeconds: 600 }, { ...context, shellTimeoutMs: 120_000, shellMaxTimeoutMs: 900_000 });
+  await tool.handler({ command: "node", args: ["--test"] }, { ...context, shellTimeoutMs: 120_000, shellMaxTimeoutMs: 900_000 });
+  assert.deepEqual(seen, [120_000, 600_000, 30_000, 600_000, 120_000]);
   for (const timeoutSeconds of [0, 901, 1.5, "600"]) {
     await assert.rejects(tool.handler({ command: "node", args: [], timeoutSeconds }, context), /timeoutSeconds must be a whole number from 1 to 900/);
   }

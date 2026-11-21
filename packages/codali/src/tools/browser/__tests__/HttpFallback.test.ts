@@ -64,6 +64,8 @@ test("a PDF on the web is read as text, and a page is read directly when asked",
     if (request.url === "/report.pdf") { response.writeHead(200, { "content-type": "application/pdf" }); response.end(pdf); }
     else if (request.url === "/scan.pdf") { response.writeHead(200, { "content-type": "application/pdf" }); response.end(pdfWith([])); }
     else if (request.url === "/notice") { response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end("<title>Notice</title><main><h1>Gazette notice 14</h1><p>In force from 2 June 2026.</p>" + "<p>Further provisions apply.</p>".repeat(12) + "</main>"); }
+    else if (request.url === "/viewer.pdf") { response.writeHead(200, { "content-type": "text/html" }); response.end("<title>Viewer</title><main><h1>Document viewer</h1><p>Sign in to read report 100%.</p>" + "<p>Help text.</p>".repeat(20) + "</main>"); }
+    else if (request.url === "/100%25.pdf" || request.url === "/100%.pdf") { response.writeHead(200, { "content-type": "application/pdf" }); response.end(pdf); }
     else if (request.url === "/image") { response.writeHead(200, { "content-type": "image/png" }); response.end(Buffer.from([137, 80, 78, 71])); }
     else { response.writeHead(404, { "content-type": "text/html" }); response.end("<main><h1>Not found</h1></main>"); }
   });
@@ -84,6 +86,11 @@ test("a PDF on the web is read as text, and a page is read directly when asked",
   assert.equal((await captureDirect(`${base}/missing`, "main")).httpStatus, 404);
   assert.match((await captureDirect(`${base}/image`, "main")).notice!, /not readable as text/);
   assert.equal(await pdfToText(Buffer.from("<html>not a pdf</html>")), undefined);
+  // A web page behind a ".pdf" address is read as the page it is, not reported as an unreadable PDF.
+  const viewer = await captureDirect(`${base}/viewer.pdf`, "main");
+  assert.equal(viewer.format, "http_text"); assert.match(viewer.content, /Sign in to read report/);
+  // A file name that is not valid percent-encoding does not break the read.
+  assert.match((await captureDirect(`${base}/100%25.pdf`, "main")).content, /Annual report 2026/);
 });
 
 test("a site that refuses the browser is still read, and the result says how", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 60000 }, async t => {
@@ -100,4 +107,18 @@ test("a site that refuses the browser is still read, and the result says how", {
   assert.match(data.content, /Penalty of \$49\.5 million imposed on 12 March 2026/);
   assert.match(data.source, /direct HTTP fetch without a browser/);
   assert.match(data.sourceNotice, /browser could not load this page/);
+});
+
+test("hostile markup is converted in time proportional to its size", () => {
+  // Each of these made a lazy pattern rescan from every unclosed tag: 400 KB took 30 s.
+  for (const piece of ["<svg ", "<script>", "<a href='x'>", "<h1>", "<main>", "<del>", "<!--", "<title>", "<nav>"]) {
+    const html = "<html><body><p>Real text.</p>" + piece.repeat(Math.ceil(400_000 / piece.length)) + "</body></html>";
+    const started = Date.now();
+    const page = htmlToText(html, "https://example.org/");
+    assert.ok(Date.now() - started < 1500, `${piece} took ${Date.now() - started} ms`);
+    assert.ok(page.content.length < 1_600_000);
+  }
+  // Anything past the size limit is ignored rather than processed.
+  const huge = htmlToText("<p>start</p>" + "<p>x</p>".repeat(1_000_000) + "<p>END-MARKER</p>", "https://example.org/");
+  assert.doesNotMatch(huge.content, /END-MARKER/);
 });

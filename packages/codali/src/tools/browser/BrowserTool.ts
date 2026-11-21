@@ -136,9 +136,14 @@ type Capture = Omit<BrowserSnapshot, "id" | "capturedAt">;
 export async function captureDirect(url: string, scope: "main" | "page", signal?: AbortSignal, deps: { fetcher?: typeof fetch; pythonRoot?: string } = {}): Promise<Capture> {
   const response = await fetchDirect(url, signal, deps.fetcher);
   const base = { url: response.url, httpStatus: response.httpStatus, contentType: response.contentType };
-  if (isPdf(response.contentType, response.url)) {
+  // A PDF is recognised by its content, or by its declared type: a ".pdf"
+  // address that serves a web page (a viewer, a sign-in or an error) is read as that page.
+  const pdfBytes = response.body.subarray(0, 1024).indexOf("%PDF-") >= 0;
+  if (pdfBytes || /application\/(?:x-)?pdf/i.test(response.contentType ?? "") && !/^\s*<(?:!doctype|html)/i.test(response.body.subarray(0, 200).toString("latin1"))) {
     const pdf = response.httpStatus < 400 ? await pdfToText(response.body, signal, { pythonRoot: deps.pythonRoot }) : undefined;
-    return { ...base, title: decodeURIComponent(new URL(response.url).pathname.split("/").pop() ?? "").slice(0, 200), scope: "page", format: "pdf_text",
+    let name = new URL(response.url).pathname.split("/").pop() ?? "";
+    try { name = decodeURIComponent(name); } catch { /* Keep the encoded name. */ }
+    return { ...base, title: name.slice(0, 200), scope: "page", format: "pdf_text",
       content: pdf?.content ?? "", truncated: response.truncated || !!pdf?.truncated,
       notice: pdf ? `${pdf.pages ?? "Unknown number of"} pages; text extracted with ${pdf.extractor}.${response.truncated ? " The download was cut at its size limit." : ""}`
         : "No text could be extracted from this PDF: it may be scanned images, or no PDF text extractor is installed (codali tools install --documents). Look for an HTML version of the document." };

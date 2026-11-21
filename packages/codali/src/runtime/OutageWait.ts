@@ -34,13 +34,15 @@ export const outageWaitMs = (attempt: number, remainingMs = Infinity, budget: st
  * never returns: a 12-hour build sat on one such review call for 158 minutes
  * and ended unfinished although its work was done.
  *
- * The allowance is the larger of ten minutes and four times the slowest
- * request this turn has completed, doubled on each retry of a stalled request
- * (a slow but live request must eventually fit), and never more than the time
- * the request could need at its ceiling: two minutes to be scheduled, the
- * prompt read at 1,000 tokens a second and the full output at 25. */
+ * The base allowance is the larger of ten minutes and four times the slowest
+ * request this turn has completed, but no more than the request could need at
+ * its ceiling on a slow server: two minutes to be scheduled, the prompt read at
+ * 1,000 tokens a second and the full output at 25. It doubles with every stall
+ * of the same request, without an upper bound short of an hour, so a model
+ * slower than those rates is waited for longer each time instead of being cut
+ * off at the same point for ever. */
 export const modelStallAllowanceMs = (inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts = 0): number => {
   const ceiling = 120_000 + Math.max(0, inputTokens) + Math.max(0, maxOutputTokens) * 40;
-  const usual = Math.max(600_000, longestModelMs * 4) * 2 ** Math.min(Math.max(0, stalledAttempts), 6);
-  return Math.max(60_000, Math.min(usual, ceiling));
+  const base = Math.max(60_000, Math.min(Math.max(600_000, longestModelMs * 4), ceiling));
+  return Math.min(base * 2 ** Math.min(Math.max(0, stalledAttempts), 6), Math.max(base, 3_600_000));
 };

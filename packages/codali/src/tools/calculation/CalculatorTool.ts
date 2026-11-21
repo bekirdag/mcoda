@@ -178,7 +178,14 @@ const MAX_STATEMENTS = 64;
  * trip on about one calculator call in three. */
 export const evaluateCalculationScript = (script: string, options: CalculationOptions = {}): { result: number; values: Record<string, number> } => {
   if (typeof script !== "string" || !script.trim() || script.length > 4096) throw new Error("Expected an expression of 1 to 4096 characters");
-  const statements = script.split(/[;\n]/).map(part => part.trim()).filter(Boolean);
+  // A line break separates statements only outside parentheses, so a formula may wrap.
+  const statements: string[] = []; let depth = 0, piece = "";
+  for (const char of script) {
+    if (char === "(") depth++; else if (char === ")") depth = Math.max(0, depth - 1);
+    if (char === ";" || char === "\n" && depth === 0) { statements.push(piece); piece = ""; } else piece += char === "\n" ? " " : char;
+  }
+  statements.push(piece);
+  for (let index = statements.length - 1; index >= 0; index--) { statements[index] = statements[index].trim(); if (!statements[index]) statements.splice(index, 1); }
   if (!statements.length) throw new Error("Expected an expression of 1 to 4096 characters");
   if (statements.length > MAX_STATEMENTS) throw new Error(`A calculation holds at most ${MAX_STATEMENTS} statements`);
   const variables = new Map<string, number>(options.variables ?? []);
@@ -205,6 +212,12 @@ export const evaluateCalculationScript = (script: string, options: CalculationOp
 };
 
 const ARITHMETIC = "IEEE-754 double; not exact decimal arithmetic";
+/** Names that are constants until a calculation assigns them. */
+const CONSTANT_NAMES = new Set(["e", "E", "pi", "PI"]);
+const shadowNote = (names: string[]): string | undefined => {
+  const shadowed = names.filter(name => CONSTANT_NAMES.has(name));
+  return shadowed.length ? `${shadowed.join(", ")} ${shadowed.length > 1 ? "were" : "was"} given a value here, so later formulas use that value, not the constant (${shadowed.map(name => name.toLowerCase() === "e" ? "Euler's number: use exp(x)" : "pi: use acos(-1)").join("; ")}).` : undefined;
+};
 const INEXACT = "An integer above 2^53 was rounded to about 16 significant digits; use decimal_calculate where every digit matters";
 
 export const createCalculatorTool = (): ToolDefinition => ({
@@ -220,7 +233,8 @@ export const createCalculatorTool = (): ToolDefinition => ({
       if (!input || typeof input !== "object" || Array.isArray(input) || input.expression === undefined && input.expressions === undefined) throw new Error('Use {"expression":"2+3"} or {"expressions":{"total":"2+3"}}; formulas must be strings');
       let inexact = false;
       const options = { onInexactInteger: () => { inexact = true; } };
-      const note = () => inexact ? { arithmetic: ARITHMETIC, warning: INEXACT } : { arithmetic: ARITHMETIC };
+      let assigned: string[] = [];
+      const note = () => { const warnings = [inexact ? INEXACT : undefined, shadowNote(assigned)].filter(Boolean); return warnings.length ? { arithmetic: ARITHMETIC, warning: warnings.join(" ") } : { arithmetic: ARITHMETIC }; };
       if (input.expressions !== undefined) {
         if (input.expression !== undefined) throw new Error("Supply expression or expressions, not both");
         if (!input.expressions || typeof input.expressions !== "object" || Array.isArray(input.expressions) || Object.keys(input.expressions).length < 1 || Object.keys(input.expressions).length > MAX_STATEMENTS) throw new Error(`Supply 1 to ${MAX_STATEMENTS} named expressions`);
@@ -233,10 +247,12 @@ export const createCalculatorTool = (): ToolDefinition => ({
           results[label] = value;
           if (variableName(label)) variables.set(label, value);
         }
+        assigned = Object.keys(results);
         return { output: JSON.stringify({ results, ...note() }) };
       }
       if (typeof input.expression !== "string") throw new Error('Use {"expression":"2+3"}; the formula must be a string');
       const { result, values } = evaluateCalculationScript(input.expression, options);
+      assigned = Object.keys(values);
       return { output: JSON.stringify(Object.keys(values).length ? { result, values, ...note() } : { result, ...note() }) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

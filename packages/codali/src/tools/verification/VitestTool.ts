@@ -94,7 +94,7 @@ def __getattr__(name): raise AttributeError('pytest.'+name+' is not available in
 
 export const createVitestTool = (): ToolDefinition => ({
   name: "verify_tests", readOnly: true, capability: "verification",
-  description: "Run supplied tests offline: runner vitest (default) for JS/TS, node for node:test, python for standard-library unittest (test_*.py). Use the requested language/runner without translating tests. No workspace/config/credentials. Reports supplied-test results, not independent proof.",
+  description: "Run supplied tests offline: runner vitest (default) for JS/TS, node for node:test, python for unittest classes and pytest-style test_ functions or Test classes in test_*.py (pytest.raises/approx/parametrize only; no fixtures, async tests or plugins). Use the requested language/runner without translating tests. No workspace/config/credentials. Reports supplied-test results, not independent proof.",
   inputSchema: { type: "object", properties: { runner: { type: "string", enum: ["vitest", "node", "python"] }, files: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", properties: {
     path: { type: "string", minLength: 1, maxLength: 160 }, content: { type: "string", maxLength: 24000 },
   }, required: ["path", "content"], additionalProperties: false } } }, required: ["files"], additionalProperties: false },
@@ -132,18 +132,30 @@ export const createVitestTool = (): ToolDefinition => ({
         const python = `import unittest,sys,os,json,importlib.util,inspect
 sys.path.insert(0,os.getcwd())
 suite=unittest.TestSuite()
+def one(name,fn,owner=None):
+ sets=getattr(fn,'_codali_params',[()])
+ for index,values in enumerate(sets):
+  names=getattr(fn,'_codali_names',())
+  kwargs=dict(zip(names,values))
+  needed=[p for p in inspect.signature(fn).parameters if p not in kwargs and p!='self']
+  def run(fn=fn,kwargs=kwargs,needed=needed):
+   if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn): raise RuntimeError('async test '+name+' is not run by this runner: make it a plain function and call asyncio.run(...) inside it')
+   if inspect.isgeneratorfunction(fn): raise RuntimeError('generator test '+name+' is not run by this runner: its body after the first yield would never execute')
+   if needed: raise RuntimeError('fixture '+needed[0]+' is not available in this runner: build the value inside the test or use unittest setUp')
+   if owner is None: return fn(**kwargs)
+   target=owner()
+   if hasattr(target,'setup_method'): target.setup_method(fn)
+   try: getattr(target,fn.__name__)(**kwargs)
+   finally:
+    if hasattr(target,'teardown_method'): target.teardown_method(fn)
+  yield unittest.FunctionTestCase(run,description=name+('['+str(index)+']' if len(sets)>1 else ''))
 def cases(module):
- for name,fn in sorted(vars(module).items()):
-  if not name.startswith('test') or not inspect.isfunction(fn) or fn.__module__!=module.__name__: continue
-  sets=getattr(fn,'_codali_params',[()])
-  for index,values in enumerate(sets):
-   names=getattr(fn,'_codali_names',())
-   kwargs=dict(zip(names,values))
-   needed=[p for p in inspect.signature(fn).parameters if p not in kwargs]
-   def run(fn=fn,kwargs=kwargs,needed=needed):
-    if needed: raise RuntimeError('fixture '+needed[0]+' is not available in this runner: build the value inside the test or use unittest setUp')
-    fn(**kwargs)
-   yield unittest.FunctionTestCase(run,description=name+('['+str(index)+']' if len(sets)>1 else ''))
+ for name,item in sorted(vars(module).items()):
+  if getattr(item,'__module__',None)!=module.__name__: continue
+  if name.startswith('test') and inspect.isfunction(item): yield from one(name,item)
+  elif name.startswith('Test') and inspect.isclass(item) and not issubclass(item,unittest.TestCase):
+   for method,fn in sorted(vars(item).items()):
+    if method.startswith('test') and inspect.isfunction(fn): yield from one(name+'.'+method,fn,item)
 for i,file in enumerate(sys.argv[1:]):
  spec=importlib.util.spec_from_file_location('codali_test_'+str(i),file)
  module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)

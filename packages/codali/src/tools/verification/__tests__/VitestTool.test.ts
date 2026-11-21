@@ -107,6 +107,36 @@ def test_not_raised():
   assert.equal(failing.ok, true, failing.message);
   assert.equal(failing.body.passed, false);
   assert.equal(failing.body.failedTests, 2);
+  // Forms an independent review found reported as passed by the first version.
+  const classes = await run(`import pytest
+from interval import mean
+
+def test_passes():
+    assert mean([2, 4]) == 3
+
+class TestMean:
+    def setup_method(self, method):
+        self.values = [1, 2, 3]
+    def test_ok(self):
+        assert mean(self.values) == 2
+    def test_failing_method(self):
+        assert mean(self.values) == 99
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_each(self, n):
+        assert mean([n]) == n
+
+async def test_async_is_not_silently_passed():
+    assert False
+
+def test_generator_is_not_silently_passed():
+    yield
+    assert False
+`);
+  assert.equal(classes.ok, true, classes.message);
+  assert.equal(classes.body.passed, false);
+  assert.equal(classes.body.total, 7);
+  assert.equal(classes.body.failedTests, 3);
+  assert.match(classes.body.diagnostic, /async test|generator test|99/);
   // What the stand-in does not provide is reported by name instead of passing silently.
   const fixture = await run(`import pytest
 

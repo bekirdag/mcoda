@@ -1,7 +1,7 @@
 // journey-driver.mjs: drive headless Chrome over its debugging protocol.
 // No dependencies; Node 22 or newer. Copy it into the project's test folder.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,10 +19,12 @@ export async function startServer(command, args, { url, env = {}, ms = 20000 } =
 }
 
 /** Launch Chrome and return page controls. Every wait fails with a clear message. */
-export async function launch({ port = 9333, chrome = process.env.CHROME_BIN } = {}) {
+export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'journey-'));
+  // Port 0: Chrome picks a free port and writes it to DevToolsActivePort, so
+  // two journeys on one machine never attach to each other's browser.
   const flags = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run',
-    `--remote-debugging-port=${port}`, `--user-data-dir=${dir}`, 'about:blank'];
+    '--remote-debugging-port=0', `--user-data-dir=${dir}`, 'about:blank'];
   let proc;
   for (const bin of [chrome, 'google-chrome', 'chromium', 'chromium-browser'].filter(Boolean)) {
     const candidate = spawn(bin, flags, { stdio: 'ignore' });
@@ -31,7 +33,10 @@ export async function launch({ port = 9333, chrome = process.env.CHROME_BIN } = 
   if (!proc) throw new Error('No Chrome or Chromium executable found');
   let target;
   for (let i = 0; i < 150 && !target; i++) {
-    try { target = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find(t => t.type === 'page'); } catch {}
+    try {
+      const port = Number(readFileSync(join(dir, 'DevToolsActivePort'), 'utf8').split('\n')[0]);
+      target = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find(t => t.type === 'page');
+    } catch {}
     if (!target) await sleep(100);
   }
   if (!target) { proc.kill(); throw new Error('Chrome did not open its debugging port'); }
