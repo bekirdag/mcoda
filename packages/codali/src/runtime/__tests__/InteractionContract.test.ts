@@ -67,3 +67,19 @@ test("prose around the single code block is dropped and the block is kept byte f
   const inner = "Note\n\n```python\ndoc = \"\"\"\n```\n\"\"\"\n```";
   assert.equal(normalizeCodeBlockPresentation(inner), inner);
 });
+
+test("a runtime note goes inside a single code block as a comment in its language", async () => {
+  const { noteInsideCodeBlock } = await import("../InteractionContract.js");
+  const note = "\n\nRuntime check: this final code was run against the session's last test file and 4 of 17 tests failed; treat it as not passing.";
+  const python = "```python\ndef f(x):\n    return x + 1\n```";
+  const placed = noteInsideCodeBlock(python, note)!;
+  assert.equal(placed, "```python\ndef f(x):\n    return x + 1\n\n# Runtime check: this final code was run against the session's last test file and 4 of 17 tests failed; treat it as not passing.\n```");
+  // Still exactly one fenced block and nothing outside it.
+  assert.equal((placed.match(/```/g) ?? []).length, 2); assert.ok(placed.startsWith("```python") && placed.endsWith("```"));
+  assert.match(noteInsideCodeBlock("```ts\nexport const a = 1;\n```", note)!, /\n\n\/\/ Runtime check: [^\n]*\n```$/);
+  assert.match(noteInsideCodeBlock("```sql\nSELECT 1;\n```", note)!, /\n\n-- Runtime check: /);
+  // No known line comment (or no language): the caller keeps the note after the block.
+  assert.equal(noteInsideCodeBlock("```\nplain\n```", note), undefined);
+  assert.equal(noteInsideCodeBlock("```html\n<p>x</p>\n```", note), undefined);
+  assert.equal(noteInsideCodeBlock("no block here", note), undefined);
+});

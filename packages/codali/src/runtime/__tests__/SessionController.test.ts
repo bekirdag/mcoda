@@ -99,8 +99,16 @@ test("an equation review may correct one calculated value but not overturn most 
   assert.equal(overturnsCalculatedDraft(draft, '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.1}', results), false);
   // A one-value draft can be corrected: the calculated figure may model the wrong quantity.
   assert.equal(overturnsCalculatedDraft("The trip takes 48 hours.", "The trip takes 3 hours.", ["48"]), false);
-  // A draft with values the calculator never produced is reviewed as before.
-  assert.equal(overturnsCalculatedDraft('{"a": 7.5}', '{"a": null}', results), false);
+  // Regression pack for .42, case 19: a linear programme solved with a constraint solver. The solver
+  // reports fractions and the shadow price came from a dual check, so most drafted values are not
+  // literal tool results; the draft was right in all five and the review replaced all five.
+  const solver = ['{"status":"sat","model":{"X":"25","Y":"65/4","Z":"85/4","P":"7725/4"}}', '{"result":1931.25,"arithmetic":"IEEE-754 double"}'];
+  const programme = '{"maxProfit": 1931.25, "optimalX": 25, "optimalY": 16.25, "labourShadowPrice": 5.625, "integerMaxProfit": 1925}';
+  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 2007.1429, "optimalX": 37.1429, "optimalY": 7.1429, "labourShadowPrice": 1.6429, "integerMaxProfit": 1995}', solver), true);
+  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1931.25, "optimalX": 25, "optimalY": 16.25, "labourShadowPrice": 5.625, "integerMaxProfit": 1920}', solver), false);
+  // A value is not swapped for null either; without any tool result there is nothing to protect.
+  assert.equal(overturnsCalculatedDraft('{"a": 7.5}', '{"a": null}', results), true);
+  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1, "optimalX": 2, "optimalY": 3, "labourShadowPrice": 4, "integerMaxProfit": 5}', []), false);
 });
 
 test("a stalled final call is bounded to half the window only when a retry fits", () => {

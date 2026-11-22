@@ -44,6 +44,25 @@ export const normalizeCodeBlockPresentation = (content: string): string => {
   return blocks[0][0].trim();
 };
 
+const LINE_COMMENT: Array<[RegExp, string]> = [
+  [/^(?:python3?|py3?|ruby|rb|sh|bash|zsh|shell|yaml|yml|toml|r|perl|pl|makefile|dockerfile|elixir|julia)$/i, "#"],
+  [/^(?:javascript|js|jsx|mjs|cjs|typescript|ts|tsx|java|c|h|cpp|c\+\+|cc|cs|csharp|go|golang|rust|rs|swift|kotlin|kt|php|scala|dart|zig)$/i, "//"],
+  [/^(?:sql|lua|haskell|hs|ada|plsql)$/i, "--"],
+];
+
+/** Put a one-line note from the runtime inside a single fenced code block, as
+ * a trailing comment in that block's language. A request for "one code block,
+ * no prose" is then still met while the note is kept: appended after the block
+ * it broke the format the user asked for (a correct answer lost a tenth of its
+ * score to it). Undefined when the language has no known line comment. */
+export const noteInsideCodeBlock = (block: string, note: string): string | undefined => {
+  const match = /^([ \t]*```([^\n`]*)\r?\n)([\s\S]*?)(\r?\n[ \t]*```[ \t]*)$/u.exec(block);
+  const text = note.replace(/\s+/gu, " ").trim();
+  if (!match || !text) return undefined;
+  const marker = LINE_COMMENT.find(([language]) => language.test(match[2].trim()))?.[1];
+  return marker ? `${match[1]}${match[3]}\n\n${marker} ${text}${match[4]}` : undefined;
+};
+
 export const outputContractSchema = {
   type: "object", additionalProperties: false, required: ["format", "requiredKeys", "minWords", "maxWords"],
   properties: {

@@ -1871,16 +1871,11 @@ const consistencyConfig = () => {
   return config;
 };
 
-/** The requirement check that precedes the audit of a long answer; here it finds nothing. */
-const requirementCheckReply = (request: { messages: Array<{ content: string }> }, requirements: unknown[] = [{ item: "reservation service", status: "covered", note: "" }]) =>
-  request.messages[0].content.startsWith("You check a draft answer against the request") ? reply(JSON.stringify({ requirements })) : undefined;
-
-test("long reasoned answers receive a requirement check and one separately metered consistency audit", async t => {
+test("long reasoned answers receive one separately metered consistency audit", async t => {
   const revised = `${longDesignDraft}Stale leaders are fenced by a per-shard epoch.`;
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return reply(longDesignDraft);
-    const check = requirementCheckReply(request); if (check) { assert.equal(calls, 2); return check; }
     assert.equal(request.toolChoice, "none");
     const packet = JSON.parse(request.messages[1].content);
     assert.equal(packet.request, designPrompt); assert.equal(packet.draft, longDesignDraft);
@@ -1888,52 +1883,11 @@ test("long reasoned answers receive a requirement check and one separately meter
     return reply(revised);
   } }, consistencyConfig());
   assert.equal((await controller.interact(designPrompt)).content, revised);
-  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
+  assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().modelCalls, 2);
   assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
-  assert.equal(events.find(e => e.type === "requirement_coverage_check")!.data.gaps, 0);
 });
 
-test("requirements a design misses, changes or defers are handed to the audit, which fixes them", async t => {
-  const prompt = `${designPrompt} It must survive the loss of one region, hold a reservation for exactly 90 seconds, and state the partition count.`;
-  const fixed = `${longDesignDraft}Each reservation is held for 90 seconds. Writes are replicated to a second region before they are acknowledged. The table uses 64 partitions.`;
-  let calls = 0;
-  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) return reply(`${longDesignDraft}Each reservation is held for 60 seconds. The partition count is to be determined.`);
-    if (calls === 2) {
-      assert.match(request.messages[0].content, /never add a requirement of your own/);
-      assert.equal(JSON.parse(request.messages[1].content).request, prompt);
-      return reply(JSON.stringify({ requirements: [
-        { item: "reservation state machine", status: "covered", note: "" },
-        { item: "survive the loss of one region", status: "missing", note: "The draft never says how data survives a regional outage." },
-        { item: "hold a reservation for exactly 90 seconds", status: "contradicted", note: "The draft holds reservations for 60 seconds." },
-        { item: "state the partition count", status: "deferred", note: "The draft leaves the partition count to be determined." },
-        { item: "unexplained verdict", status: "missing", note: "" }] }));
-    }
-    assert.match(request.messages[0].content, /Internal consistency audit[\s\S]*requirementGaps lists explicit requirements/);
-    const packet = JSON.parse(request.messages[1].content);
-    assert.deepEqual(packet.requirementGaps.map((gap: { status: string }) => gap.status), ["missing", "contradicted", "deferred"]);
-    assert.match(packet.requirementGaps[1].note, /60 seconds/);
-    return reply(fixed);
-  } }, consistencyConfig());
-  assert.equal((await controller.interact(prompt)).content, fixed);
-  assert.equal(calls, 3);
-  assert.equal(events.find(e => e.type === "requirement_coverage_check")!.data.gaps, 3);
-  assert.equal(events.find(e => e.type === "consistency_answer_audit")!.data.requirementGaps, 3);
-});
 
-test("an unusable requirement check changes nothing: the audit runs as before", async t => {
-  let calls = 0;
-  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) return reply(longDesignDraft);
-    if (calls === 2) return reply("The draft looks complete to me.");
-    assert.doesNotMatch(request.messages[0].content, /requirementGaps lists/);
-    assert.equal(JSON.parse(request.messages[1].content).requirementGaps, undefined);
-    return reply(longDesignDraft);
-  } }, consistencyConfig());
-  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
-  assert.equal(calls, 3);
-  assert.equal(events.filter(e => e.type === "requirement_coverage_check_rejected").length, 1);
-});
 
 test("short answers skip the consistency audit", async t => {
   let calls = 0;
@@ -1993,7 +1947,6 @@ test("a long design that used the calculator keeps its figures: one consistency 
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "40000/30" } } }] };
     if (calls === 2) return reply(draft);
-    const check = requirementCheckReply(request); if (check) return check;
     assert.doesNotMatch(request.messages[0].content, /Independently solve/);
     assert.match(request.messages[0].content, /Preserve every concrete value/);
     const packet = JSON.parse(request.messages[1].content);
@@ -2001,7 +1954,7 @@ test("a long design that used the calculator keeps its figures: one consistency 
     return reply(packet.draft);
   } }, config);
   assert.equal((await controller.interact(designPrompt)).content, draft);
-  assert.equal(calls, 4);
+  assert.equal(calls, 3);
   assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 0);
   assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
 });
@@ -2350,18 +2303,63 @@ test("a draft sent back for open points is delivered if the extra research canno
   assert.ok(!events.some(event => event.type === "research_evidence_delivered"));
 });
 
-test("the requirement check is skipped when there is not time for it and the audit", async t => {
-  const config = consistencyConfig();
-  // 130 s in all: enough for the audit (60 s), not for both passes (150 s).
-  config.interaction = { ...config.interaction, timeoutMs: 130_000 };
+
+test("a research turn writes a draft part-way through, uses its open points, and falls back to it", async t => {
+  for (const ending of ["final answer arrives", "model service fails"] as const) {
+    const config = structuredClone(base);
+    config.interaction = { strategy: "adaptive", maxModelCalls: 14, maxTotalTokens: 200000, timeoutMs: 1_800_000 };
+    t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+    t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+    let searches = 0;
+    t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ pages: [{ url: `https://gazette.example/notice/${++searches}`, content: `Notice ${searches}: the order was amended in June 2026 and the regulator published guidance on its scope afterwards.` }] }));
+    const draft = "The order was amended in June 2026 (https://gazette.example/notice/1). The regulator published guidance on its scope afterwards (https://gazette.example/notice/2). The exact day of the amendment could not be verified from the pages read so far.";
+    let calls = 0, draftAsked = false;
+    const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+      calls++;
+      const last = request.messages.at(-1)!.content;
+      if (/Pause the research for one step/.test(last)) {
+        // The draft request carries no tools and comes once, after two rounds of evidence.
+        assert.equal(draftAsked, false); draftAsked = true;
+        assert.equal(request.toolChoice, "none"); assert.equal(searches, 2);
+        return reply(draft);
+      }
+      if (!draftAsked) return { ...reply(""), toolCalls: [{ id: `web${calls}`, name: "codali", args: { name: "docdex_web_research", args: { query: `order amendment ${calls}` } } }] };
+      // After the draft the model is told what stays open and how long it has.
+      if (searches === 2) {
+        assert.match(last, /That draft is saved and is what will be delivered if time runs out\. About \d+ minutes of research remain\. It leaves these points open:\n- The exact day of the amendment could not be verified/);
+        if (ending === "model service fails") throw new ModelServiceError("service_unavailable", 504);
+        return { ...reply(""), toolCalls: [{ id: "web-open", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment exact day" } } }] };
+      }
+      if (ending === "model service fails") throw new ModelServiceError("service_unavailable", 504);
+      return reply("The order was amended on 2 June 2026 (https://gazette.example/notice/3); the regulator published guidance afterwards (https://gazette.example/notice/2).");
+    } }, config, undefined, true, { allowWeb: true, researchDraftShare: 0 });
+    const answer = await controller.interact("Research the order and give the date of its amendment.");
+    const saved = events.filter(event => event.type === "research_draft_saved");
+    assert.equal(saved.length, 1); assert.equal(saved[0].data.openPoints, 1);
+    if (ending === "final answer arrives") {
+      assert.match(answer.content, /2 June 2026/); assert.equal(searches, 3);
+      assert.ok(!events.some(event => event.type === "research_draft_delivered"));
+    } else {
+      // Not an evidence list and not nothing: the draft itself.
+      assert.match(answer.content, /The order was amended in June 2026[\s\S]*could not be verified/);
+      assert.equal(events.find(event => event.type === "research_draft_delivered")!.data.reason, "service_unavailable_504");
+      assert.ok(!events.some(event => event.type === "research_evidence_delivered" || event.type === "interaction_failed"));
+    }
+  }
+});
+
+test("no mid-run draft is written early in a turn or without evidence", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 10, maxTotalTokens: 120000, timeoutMs: 1_800_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ pages: [{ url: "https://gazette.example/notice/1", content: "Notice 1: the order was amended on 2 June 2026, as published in the official gazette." }] }));
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    if (++calls === 1) return reply(longDesignDraft);
-    assert.match(request.messages[0].content, /Internal consistency audit/);
-    return reply(longDesignDraft);
-  } }, config);
-  assert.equal((await controller.interact(designPrompt)).content, longDesignDraft);
-  assert.equal(calls, 2);
-  assert.equal(events.filter(e => e.type === "requirement_coverage_check_skipped").length, 1);
-  assert.equal(events.filter(e => e.type === "consistency_answer_audit").length, 1);
+    assert.doesNotMatch(request.messages.at(-1)!.content, /Pause the research/);
+    if (++calls <= 3) return { ...reply(""), toolCalls: [{ id: `web${calls}`, name: "codali", args: { name: "docdex_web_research", args: { query: `order amendment ${calls}` } } }] };
+    return reply("The order was amended on 2 June 2026 (https://gazette.example/notice/1).");
+  } }, config, undefined, true, { allowWeb: true });
+  assert.match((await controller.interact("Research the order and give the date of its amendment.")).content, /2 June 2026/);
+  assert.ok(!events.some(event => event.type.startsWith("research_draft")));
 });
