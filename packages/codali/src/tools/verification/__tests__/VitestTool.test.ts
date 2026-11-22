@@ -68,7 +68,7 @@ test("Vitest cannot read workspace neighbors or credentials and honors cancellat
   try { await assert.rejects(run("while(true){}", abort.signal), /cancel tests/); } finally { clearTimeout(timer); }
 });
 
-test("the Python runner accepts pytest-style tests without pytest installed", async () => {
+test("the Python runner accepts pytest-style tests without pytest installed", options, async () => {
   const registry = new ToolRegistry(); registry.register(createVitestTool());
   const run = async (testSource: string) => {
     const result = await registry.execute("verify_tests", { runner: "python", files: [

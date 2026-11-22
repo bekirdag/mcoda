@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { SkillCatalog } from "../SkillCatalog.js";
 import { PermissionGate } from "../../permissions/PermissionGate.js";
 import { toolDescriptorFor } from "../../tools/ToolRegistry.js";
@@ -192,7 +193,7 @@ test("the web testing skill ships a browser journey driver that can be read to t
   }
   // What the model pieces together from the pages is a module that loads and exports the driver.
   const copy = path.join(root, "journey-driver.mjs"); await fs.writeFile(copy, text);
-  const driver = await import(copy);
+  const driver = await import(pathToFileURL(copy).href);
   assert.equal(typeof driver.launch, "function"); assert.equal(typeof driver.startServer, "function");
   await assert.rejects(driver.startServer(process.execPath, ["-e", "process.exit(3)"], { url: "http://127.0.0.1:9/", ms: 3000 }), /exited before it answered|not reachable/);
 });
