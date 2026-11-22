@@ -2,13 +2,65 @@
 
 ## Unreleased
 
+## 0.1.135-codali.42
+
+- Model requests: every request now has a time allowance (ten minutes, or four
+  times the slowest answered request, bounded by what the request could need,
+  and doubled each time the same request stalls). A request that does not
+  return is abandoned and retried on the outage path. A 12-hour build had
+  finished its work and then waited 158 minutes on one review request.
+- Research never ends with nothing: a research turn writes one full draft
+  after 55% of its time. The points that draft leaves open ("could not be
+  verified", "no official source was found") steer the remaining research, and
+  the draft is what is delivered if the final answer cannot be written in
+  time or the model service is down. A final draft that still admits open
+  points is sent back to research while at least four minutes remain. When no
+  draft exists, the pages read are listed with one excerpt of at most 25 words
+  each, marked as evidence and not an answer. Sign-in, quota and request
+  errors are reported as before.
+- Web sources: `browser_open` reads PDF documents as text (downloaded with one
+  plain GET, extracted offline in the sandbox, up to 96 MB). A page whose site
+  refuses the automated browser (HTTP/2 or connection errors, timeouts,
+  downloads) is read with one plain GET and its static HTML converted to
+  text; the result says so. Name-resolution and certificate errors are not
+  worked around.
+- Context: the working context uses more of the model's window (output reserve
+  15%, at least 16k tokens, at most 30%) and is trimmed in steps (from 90% of
+  the input room down to 60%) instead of on almost every request.
+- Calculations: `calculate` accepts named steps (`a = 2*3; b = a+4; b/2`), up
+  to 64 statements or named formulas, later formulas that use earlier labels,
+  inverse and hyperbolic functions, log2, cbrt, hypot, trunc and sign, and
+  integers beyond 2^53 as rounded values with a warning. A name that replaces
+  `e` or `pi` produces a warning. It remains a numeric grammar: no code runs.
 - Calculations: the equation review of a short quantitative answer can no
-  longer replace a draft whose values all come from calculator results when it
-  adds nulls or changes two or more values and over half of them; a single
-  corrected value is still accepted.
+  longer replace most of an answer that was worked out with calculation
+  tools: a review that adds nulls, or changes two or more values and over half
+  of them, is rejected. A single corrected value is still accepted.
+- Tests: `verify_tests` with the python runner runs pytest-style tests (plain
+  `test_` functions and `Test` classes, `pytest.raises`, `pytest.approx`,
+  `pytest.mark.parametrize`) on the standard library. Fixtures, async tests
+  and generator tests fail with a message that names them.
+- Shell: `run_shell` takes `timeoutSeconds` (default 120, up to 900) for a full
+  test suite, a build or a browser journey. A host can set a default
+  (`shellTimeoutMs`) and a separate maximum (`shellMaxTimeoutMs`).
+- Sandbox: the availability probe is retried with more time when it only ran
+  out of time on a busy host, instead of reporting that user namespaces are
+  unavailable.
+- Completion check: review pages are 24,000 characters (were 8,000); a page
+  requested again beside a new one is skipped instead of ending the review. A
+  test run inside `bash -c` counts as validation when its steps are joined
+  only by `&&` and nothing is expanded (`cd app && npm test 2>&1 | tail -40`);
+  lines that can hide the exit status are refused.
+- Tool calls: a lookup sent in the same batch as `start_work` or
+  `final_answer` now runs; only the transition waits and is told to come alone.
 - Answers: when the request explicitly asks for exactly one fenced code block
   and no prose, text around the single block is dropped and the block is kept
-  unchanged. The runtime's own failed-test note is kept.
+  unchanged. The runtime's own failed-test note is placed inside the block as
+  a comment in its language.
+- Web apps: the `webapp-testing` skill ships `journey-driver.mjs`, a
+  dependency-free headless-Chrome driver (launch on a free port, goto, click,
+  type, waits that report what the page shows, screenshot, startServer), with
+  a recipe for running server, browser and steps in one shell call.
 - Model routes: a route that served this process and then drops out of the
   catalog (for example while a node restarts) is now a temporary outage that
   the session waits out, instead of a final "no eligible route" error.
