@@ -100,7 +100,7 @@ jobs:
 
   qualify-terminal:
     needs: package
-    runs-on: ${{ (matrix.os == 'ubuntu-22.04' && fromJSON('["self-hosted","Linux","X64","wodo-ci"]')) || matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -116,6 +116,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install Linux isolation backend
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - uses: actions/download-artifact@v4
         with:
           name: mcoda-linux-x64-gnu
