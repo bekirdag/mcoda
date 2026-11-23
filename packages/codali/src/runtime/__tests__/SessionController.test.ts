@@ -478,7 +478,7 @@ test("core tool declarations survive released claims while execution remains fen
         // Providers such as Strata preserve undeclared calls as plain text. Keep
         // the schema so a premature call reaches the authoritative claim gate.
         assert.ok(request.tools?.some(tool => tool.name === "write_file"));
-        assert.ok(request.tools?.some(tool => tool.name === "run_shell"));
+        assert.equal(request.tools?.some(tool => tool.name === "run_shell"), controller.isolation.available);
         return call("write_file", { path: "report.txt", content: "premature" });
       case 3:
         assert.match(previous(), /Claim a ready work task/);
