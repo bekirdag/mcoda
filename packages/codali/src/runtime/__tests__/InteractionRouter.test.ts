@@ -2179,17 +2179,19 @@ test("a stalled request does not count as the model's pace, and its retry waits 
   const config = structuredClone(base);
   let calls = 0; const allowances: number[] = [];
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    const started = Date.now();
-    // The first two requests never answer; note how long each was given.
-    if (++calls <= 2) return new Promise((_, reject) => request.signal!.addEventListener("abort", () => { allowances.push(Date.now() - started); reject(new Error("aborted")); }, { once: true }));
+    if (++calls <= 2) return new Promise((_, reject) => request.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     return decision("answer", "Four.");
   } }, config);
-  // Shrink the real allowance (not a fixed override) so its growth is what is measured.
+  // Record the scheduled delays. Timer delivery can be late on a busy host.
   const outage = await import("../OutageWait.js");
-  t.mock.method(Object.getPrototypeOf(controller), "stallAllowanceMs", function (this: unknown, input: number, output: number, longest: number, stalls: number) { return outage.modelStallAllowanceMs(input, output, longest, stalls) / 6000; });
+  t.mock.method(Object.getPrototypeOf(controller), "stallAllowanceMs", function (this: unknown, input: number, output: number, longest: number, stalls: number) {
+    const allowance = outage.modelStallAllowanceMs(input, output, longest, stalls);
+    allowances.push(allowance);
+    return allowance / 6000;
+  });
   assert.equal((await controller.interact("What is 2+2?")).content, "Four.");
   assert.equal(calls, 3);
-  assert.ok(allowances[1] > allowances[0] * 1.6, `second wait ${allowances[1]} ms after ${allowances[0]} ms`);
+  assert.equal(allowances[1], allowances[0] * 2);
   assert.equal(events.filter(event => event.type === "model_failure" && event.data.responseReason === "stalled").length, 2);
 });
 
