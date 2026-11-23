@@ -9,16 +9,23 @@ export const outageWaitsMs = (budget: string | undefined = process.env.CODALI_MO
   let waited = 0;
   return PREFLIGHT_RECOVERY_WAITS_MS.filter(wait => (waited += wait) <= total);
 };
-/** The longest a turn waits out one model-service outage. The ladder alone
- * (about four minutes) lost a three-hour build to a nine-minute relay outage. */
-export const MODEL_OUTAGE_WAIT_MS = 30 * 60_000;
+/** The longest one model-service outage is waited out when the turn itself has
+ * no time limit (an interactive session, an open-ended build). Outages happen
+ * in real use: a node restarts, a host runs out of memory, a gateway queue
+ * backs up. The 30 minutes allowed before (and half the turn's remaining
+ * time) ended long builds on outages they could have outlasted. Six hours by
+ * default; CODALI_MODEL_OUTAGE_WAIT_MS raises or lowers it. */
+export const MODEL_OUTAGE_WAIT_MS = 6 * 3_600_000;
+/** Time kept back before a turn's limit, so the turn can still hand over what
+ * it has (a draft, a status report) when the service is still down then. */
+export const OUTAGE_DELIVERY_RESERVE_MS = 90_000;
 /** The wait before outage retry `attempt` (0-based): the ladder, then a minute
- * per retry, while the total stays within the host's budget
- * (CODALI_MODEL_OUTAGE_WAIT_MS), MODEL_OUTAGE_WAIT_MS and half the time the
- * turn has left. Undefined once the outage has used that allowance. */
+ * per retry. The total stays within the host's budget (CODALI_MODEL_OUTAGE_WAIT_MS,
+ * default MODEL_OUTAGE_WAIT_MS) and within the turn's remaining time less
+ * OUTAGE_DELIVERY_RESERVE_MS. Undefined once the outage has used that allowance. */
 export const outageWaitMs = (attempt: number, remainingMs = Infinity, budget: string | undefined = process.env.CODALI_MODEL_OUTAGE_WAIT_MS): number | undefined => {
-  const parsed = budget === undefined || budget.trim() === "" ? Infinity : Number(budget);
-  const cap = Math.min(parsed >= 0 ? parsed : Infinity, MODEL_OUTAGE_WAIT_MS, remainingMs * 0.5);
+  const parsed = budget === undefined || budget.trim() === "" ? MODEL_OUTAGE_WAIT_MS : Number(budget);
+  const cap = Math.min(parsed >= 0 ? parsed : MODEL_OUTAGE_WAIT_MS, remainingMs - OUTAGE_DELIVERY_RESERVE_MS);
   let waited = 0;
   for (let index = 0; index <= attempt; index++) {
     const wait = PREFLIGHT_RECOVERY_WAITS_MS[index] ?? 60_000;
@@ -27,6 +34,40 @@ export const outageWaitMs = (attempt: number, remainingMs = Infinity, budget: st
     waited += wait;
   }
   return undefined;
+};
+
+/** Compute the next delay from actual elapsed outage time. A server-directed
+ * delay must fit in full, including the time reserved for the final response. */
+export const outageRetryDelayMs = (attempt: number, remainingMs: number, elapsedMs: number, retryAfterSeconds: number, injected: boolean, budget = process.env.CODALI_MODEL_OUTAGE_WAIT_MS): number | undefined => {
+  const parsed = budget?.trim() ? Number(budget) : MODEL_OUTAGE_WAIT_MS;
+  const allowance = Number.isFinite(parsed) && parsed >= 0 ? parsed : MODEL_OUTAGE_WAIT_MS;
+  const step = injected ? [500, 2000][attempt] : PREFLIGHT_RECOVERY_WAITS_MS[attempt] ?? 60_000;
+  if (step === undefined) return undefined;
+  const wait = Math.max(step, retryAfterSeconds * 1000);
+  // Interactive turns default to 90 seconds. Preserve a quick retry on those
+  // turns while leaving the full delivery reserve on long-running requests.
+  const reserveMs = Math.min(OUTAGE_DELIVERY_RESERVE_MS, remainingMs / 2);
+  const available = Math.min(allowance - elapsedMs, remainingMs - reserveMs);
+  if (injected && retryAfterSeconds > 2) return undefined;
+  return wait <= available ? wait : undefined;
+};
+
+const NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "ECONNABORTED",
+  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED"]);
+
+/** Whether an error says the model service could not be reached at all (as
+ * opposed to a refusal it gave). A dropped stream ("terminated"), a failed
+ * connection ("fetch failed") and their low-level codes all count; so does a
+ * timed-out catalog request, which only means the gateway did not answer. */
+export const transportOutage = (error: unknown): boolean => {
+  let current: unknown = error;
+  for (let depth = 0; current && typeof current === "object" && depth < 4; current = (current as { cause?: unknown }).cause, depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && NETWORK_CODES.has(code)) return true;
+    if (current instanceof TypeError && /^(?:fetch failed|terminated|network error)$/i.test(String(current.message))) return true;
+    if (current instanceof Error && current.message === "Service request timed out") return true;
+  }
+  return false;
 };
 
 /** How long one model request may stay unanswered before it is abandoned and

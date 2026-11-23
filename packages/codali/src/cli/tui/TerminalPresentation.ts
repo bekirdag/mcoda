@@ -92,7 +92,7 @@ export const toolCompletionSummary = (name: string, args: unknown, output?: stri
 
 export const terminalHelp = (): string => [
   "GET STARTED", "  Just type a message. Ask a question, inspect your project, or request a change.", "",
-  "CONVERSATION", "  /new             Start fresh; keep the saved session", "  /sessions        Browse saved conversations", "  /resume ID       Pick up a saved session", "  /continue        Resume the active work", "  /stop            Stop safely and keep progress", "  /quit            Close Codali", "",
+  "CONVERSATION", "  /new             Start fresh; keep the saved session", "  /sessions        Browse saved conversations", "  /resume ID       Pick up a saved session", "  /continue        Resume the active work or an unfinished answer", "  /stop            Stop safely and keep progress", "  /quit            Close Codali", "",
   "WORK & REVIEW", "  /status          Current workspace and progress", "  /goal · /plan · /tasks · /decisions", "  /diff            Inspect workspace changes", "  /review          Review the current work", "  /artifacts       Browse, open or export generated files", "",
   "MODELS & LIMITS", "  /usage           Tokens, model calls and account limits", "  /model · /models  Inspect or select model routes", "  /effort          low · medium · high · max", "  /permissions     plan · ask · workspace · full (saved per directory)", "  /config          Inspect, validate or reload configuration", "",
   "CONTEXT & RECOVERY", "  /context · /compact · /checkpoint · /fork", "  /skills          Browse available local skills", "  /tools · /mcp · /docdex", "  /reconcile · /reconcile-media · /retention", "",

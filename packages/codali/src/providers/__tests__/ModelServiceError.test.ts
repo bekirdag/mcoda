@@ -104,3 +104,13 @@ test("native context refusals retain a safe classification without quoting the u
   assert.equal(ModelServiceError.fromRelayError({ code: "context_length_exceeded" })?.nativeContextRefused, false);
   assert.doesNotMatch(explicit.message, /secret/);
 });
+
+test("scheduler reservations that expire before dispatch report a service outage", () => {
+  const message = "Self-hosted scheduler reservation expired before dispatch completed";
+  const error = ModelServiceError.fromRelayError({ code: "timeout", message });
+  assert.ok(error instanceof ModelServiceError);
+  assert.equal(error.code, "service_unavailable");
+  assert.equal(error.status, 200);
+  assert.ok(!error.message.includes(message));
+  assert.equal(ModelServiceError.fromRelayError({ code: "timeout", message: "unclassified timeout" }), undefined);
+});

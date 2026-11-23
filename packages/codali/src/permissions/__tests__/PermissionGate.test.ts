@@ -91,3 +91,19 @@ test("workspace changes are possible only with a writing profile or an approver"
   assert.equal(new PermissionGate("workspace").canChangeWorkspace(), true);
   assert.equal(new PermissionGate("full").canChangeWorkspace(), true);
 });
+
+test("a tool the session can never be allowed to run is known in advance", () => {
+  const tool = (name: string, capability: string, readOnly = false) => ({ name, capability, readOnly, description: "", inputSchema: { type: "object" } }) as never;
+  const browser = tool("browser_session", "browser"), write = tool("write_file", "filesystem"), read = tool("read_file", "filesystem", true);
+  // An unattended build: workspace profile, nobody to ask.
+  const unattended = new PermissionGate("workspace", undefined, { shellIsolated: true });
+  assert.equal(unattended.couldAuthorize(browser), false);
+  assert.equal(unattended.couldAuthorize(write), true);
+  assert.equal(unattended.couldAuthorize(read), true);
+  // With someone to ask, or the full profile, it can be.
+  assert.equal(new PermissionGate("workspace", async () => ({ allow: true, scope: "once" }), { shellIsolated: true }).couldAuthorize(browser), true);
+  assert.equal(new PermissionGate("full", undefined, { shellIsolated: true }).couldAuthorize(browser), true);
+  // Plan mode offers reads only; an explicit denial is never offered.
+  assert.equal(new PermissionGate("plan").couldAuthorize(write), false);
+  assert.equal(new PermissionGate("full", undefined, { deniedTools: ["browser_session"] }).couldAuthorize(browser), false);
+});

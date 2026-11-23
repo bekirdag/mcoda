@@ -11,6 +11,8 @@ import { mswarmClientProductHeaders } from "@mcoda/shared";
 import { docdexCatalog, docdexCatalogOperation, type DocdexCatalogEntry } from "./DocdexCatalog.js";
 
 export interface DocdexClientOptions {
+  /** Waits before reconnecting to a daemon that stopped answering (default DOCDEX_RECONNECT_WAITS_MS). */
+  reconnectWaitsMs?: number[];
   /** Trusted host accounting hook; each retrieval HTTP attempt reserves before dispatch. */
   beforeRequest?: (url: string) => void | Promise<void>;
   signal?: () => AbortSignal | undefined;
@@ -338,6 +340,18 @@ export const docdexRepoRootFor = (
   repoId: string | undefined,
   workspaceRoot: string,
 ): string | undefined => contextRepoRoot ?? (repoId ? undefined : workspaceRoot);
+
+/** Waits before reconnecting to a Docdex daemon that stopped answering. */
+export const DOCDEX_RECONNECT_WAITS_MS = [1000, 3000, 8000, 15_000];
+const transportFailure = (error: unknown): boolean => {
+  let current: unknown = error;
+  for (let depth = 0; current && typeof current === "object" && depth < 4; current = (current as { cause?: unknown }).cause, depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && /^(?:ECONNREFUSED|ECONNRESET|EPIPE|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ETIMEDOUT|UND_ERR_SOCKET|UND_ERR_CLOSED)$/.test(code)) return true;
+    if (current instanceof TypeError && /^(?:fetch failed|terminated)$/.test(current.message)) return true;
+  }
+  return false;
+};
 
 export class DocdexClient {
   private repoId?: string;
@@ -1155,7 +1169,33 @@ export class DocdexClient {
     try { await this.mcpInitialize; } finally { this.mcpInitialize = undefined; }
   }
 
+  /** Docdex restarts (an update, a crash, a host reboot) while a session runs.
+   * A call that finds it gone, or finds its MCP session forgotten, reconnects
+   * and is sent again after short waits (about 27 s in all) instead of failing
+   * for the rest of the turn on a health result cached before the restart. */
   async callMcp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number, recovered = false): Promise<T> {
+    const waits = this.options.reconnectWaitsMs ?? DOCDEX_RECONNECT_WAITS_MS;
+    let sessionRenewed = false;
+    for (let attempt = 0; ; attempt++) {
+      const hadSession = !!this.mcpSessionId;
+      try { return await this.callMcpOnce<T>(method, params, timeoutMs, recovered); }
+      catch (error) {
+        const status = error instanceof DocdexRuntimeError ? error.status : undefined;
+        // A forgotten MCP session means the daemon restarted and is back: renew it once, at once.
+        // (A 404 without a session means the daemon has no MCP route at all; callers fall back.)
+        if (status === 404 && hadSession && !sessionRenewed) { sessionRenewed = true; this.mcpSessionId = undefined; continue; }
+        const down = error instanceof DocdexRuntimeError ? error.code === "docdex_unavailable" && (status === undefined || [502, 503, 504].includes(status)) : transportFailure(error);
+        // A transport failure can arrive after a write committed. Replaying
+        // that call could duplicate the entry.
+        const operation = MCP_OPERATION_BY_METHOD[method];
+        if (!down || attempt >= waits.length || operation === "memory_save" || operation === "profile_write" || operation === "diary_write") throw error;
+        this.healthChecked = false; this.mcpSessionId = undefined;
+        await new Promise(resolve => setTimeout(resolve, waits[attempt]));
+      }
+    }
+  }
+
+  private async callMcpOnce<T>(method: string, params: Record<string, unknown>, timeoutMs?: number, recovered = false): Promise<T> {
     const operation = MCP_OPERATION_BY_METHOD[method];
     if (operation) {
       this.assertOperationAllowed(operation);

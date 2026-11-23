@@ -213,6 +213,8 @@ export class ConfiguredProvider implements Provider {
     const reasons: string[] = [];
     const refreshed = new Set<string>();
     let vanished = false;
+    // True while every candidate failed only on temporary health (and was refreshed).
+    let transientOnly = candidates.length > 0;
     for (const candidate of candidates) {
       const { id, model } = candidate;
       const client = this.client(model.provider);
@@ -228,7 +230,7 @@ export class ConfiguredProvider implements Provider {
         const meetsLimits = (entry: CatalogEntry): boolean => (entry.contextWindow ?? Infinity) >= model.contextWindow && (advertisedOutput(entry) ?? Infinity) >= model.maxOutputTokens;
         const aliased = exact.length ? exact : catalog.filter(entry => entry.aliases.includes(model.catalogId));
         const matches = [...aliased.filter(meetsLimits), ...aliased.filter(entry => !meetsLimits(entry))];
-        let transient = false;
+        let transient = false; let permanent = false;
         const failures: string[] = [];
         for (const actual of matches) {
           if (model.backend && actual.backend !== model.backend) { failures.push("backend identity not verified"); continue; }
@@ -237,6 +239,7 @@ export class ConfiguredProvider implements Provider {
           if (!["healthy", "unknown", "ready"].includes(actual.health)) {
             failures.push(actual.health);
             transient ||= ["unreachable", "unhealthy", "offline"].includes(actual.health);
+            if (!["unreachable", "unhealthy", "offline"].includes(actual.health)) permanent = true;
             continue;
           }
           servedRoutes.add(servedRouteKey(this.resolved.config.providers[model.provider].baseUrl, model.catalogId));
@@ -250,6 +253,7 @@ export class ConfiguredProvider implements Provider {
           continue;
         }
         if (!matches.length && servedRoutes.has(servedRouteKey(this.resolved.config.providers[model.provider].baseUrl, model.catalogId))) vanished = true;
+        if (!failures.length || permanent || failures.some(reason => !["unreachable", "unhealthy", "offline"].includes(reason))) transientOnly = false;
         reasons.push(`${id}: ${failures.join(", ") || "not entitled/advertised"}`);
         break;
       }
@@ -259,6 +263,13 @@ export class ConfiguredProvider implements Provider {
     // session with this error after 7 minutes of work, while the same outage
     // reached the other arm as a retryable 404. Report it the same way.
     if (vanished) throw new ModelServiceError("model_unavailable", 404);
+    // Listed but unhealthy, unreachable or offline after a fresh catalog: a
+    // node that is down, not a denial. The outage path waits for it.
+    if (transientOnly) {
+      const outage = new ModelServiceError("model_unavailable", 503);
+      outage.message += `; no ${this.binding} route is reachable right now (${reasons.join("; ")})`;
+      throw outage;
+    }
     throw new Error(`No eligible configured ${this.binding} route: ${reasons.join("; ")}`);
   }
 

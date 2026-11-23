@@ -142,9 +142,10 @@ for (const authenticated of [true, false]) test(`MCP initializes once with scope
     const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", authToken: authenticated ? "private-token" : undefined, requireMcpSession: true, repoRoot: "/tmp/fixture" });
     await Promise.all([client.stats(), client.files()]);
     assert.equal(initializations, 1);
+    // An expired session is renewed once (the daemon restarted); a second refusal is final.
     await assert.rejects(client.memorySave("fact"), /expired/);
-    assert.equal(invocations, 3);
-    assert.equal(initializations, 1);
+    assert.equal(invocations, 4);
+    assert.equal(initializations, 2);
   });
 });
 
@@ -919,5 +920,28 @@ test("DocdexClient forwards metadata for memorySave and savePreference", {
   assert.equal(preferenceCall?.params?.content, "Do not use moment.js");
   assert.deepEqual(preferenceCall?.params?.metadata, {
     dedupe_key: "profile_memory::constraint::do not use moment.js",
+  });
+});
+
+test("a Docdex daemon that restarts mid-session is reconnected and the call sent again", { concurrency: false }, async () => {
+  let up = false, calls = 0, health = 0;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) { health++; if (!up) throw new TypeError("fetch failed"); return makeTextResponse("ok"); }
+    const body = JSON.parse(String(init?.body));
+    if (body.method === "initialize") return makeJsonResponse({ result: {} }, { "mcp-session-id": "s" });
+    calls++;
+    return makeJsonResponse({ result: { ok: true } });
+  }, async () => {
+    const waits: number[] = [];
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", requireMcpSession: true, repoRoot: "/tmp/fixture", reconnectWaitsMs: [5, 5, 5, 5, 5] });
+    // Down for the first two health checks, then back.
+    const timer = setTimeout(() => { up = true; }, 12);
+    const result = await client.stats();
+    clearTimeout(timer); void waits;
+    assert.ok(result); assert.equal(calls, 1); assert.ok(health >= 2);
+    // Still down after every wait: the outage is reported, not hidden.
+    up = false;
+    const down = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", reconnectWaitsMs: [1, 1] });
+    await assert.rejects(down.stats(), /health check failed|unavailable/i);
   });
 });

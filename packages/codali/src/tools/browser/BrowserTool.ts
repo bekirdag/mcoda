@@ -132,6 +132,17 @@ const SOURCES: Record<NonNullable<BrowserSnapshot["format"]>, string> = {
 
 type Capture = Omit<BrowserSnapshot, "id" | "capturedAt">;
 
+/** The browser could not start or died, which says nothing about the page. */
+const browserBroken = (message: string): boolean => /Failed to launch|launchServer|Browser worker exited|Target page, context or browser has been closed|Browser closed|browser has disconnected|spawn .* (?:ENOENT|EACCES)|Chrome\/Chromium was not found/i.test(message);
+
+/** When the machine has no network at all, say so plainly: the page may well
+ * exist, and the right move is to wait or work from evidence already held. */
+const networkDown = (error: unknown, message: string): unknown => {
+  const code = (error as { cause?: { code?: string }; code?: string } | undefined)?.cause?.code ?? (error as { code?: string } | undefined)?.code;
+  if (!/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_ACCESS_DENIED|ERR_ADDRESS_UNREACHABLE/.test(message) && !["ENETUNREACH", "ENETDOWN", "EAI_AGAIN"].includes(String(code))) return error;
+  return new ToolExecutionError("tool_execution_failed", `The network is unreachable from this machine right now (${message.match(/ERR_[A-Z_]+/)?.[0] ?? code}). This says nothing about whether the page exists; try again shortly, or continue from evidence already gathered.`, { retryable: true });
+};
+
 /** Read a URL without the browser: a PDF as extracted text, HTML as static text. */
 export async function captureDirect(url: string, scope: "main" | "page", signal?: AbortSignal, deps: { fetcher?: typeof fetch; pythonRoot?: string } = {}): Promise<Capture> {
   const response = await fetchDirect(url, signal, deps.fetcher);
@@ -245,6 +256,7 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
         });
         return result;
       };
+      let lastDirectError: unknown;
       const work = (async () => {
         const direct = () => captureDirect(url, scopeRequested === "page" ? "page" : "main", signal, options);
         let result: Capture;
@@ -257,11 +269,13 @@ export function createBrowserTools(options: { executablePath?: string; timeoutMs
           if (!result.content.trim() && isPdf(result.contentType, result.url)) result = await direct().catch(() => result);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          if (signal.aborted || !browserRefused(message)) throw error;
-          // The site refused the automated browser, or the URL is a download.
+          // The site refused the automated browser, the URL is a download, or the
+          // browser itself could not start or crashed (a broken install, a host
+          // out of memory): the page can still be read with one plain request.
+          if (signal.aborted || !browserRefused(message) && !browserBroken(message)) throw networkDown(error, message);
           worker?.kill("SIGKILL"); await browser?.close().catch(() => undefined);
-          const fallback = await direct().catch(() => undefined);
-          if (!fallback || signal.aborted) throw error;
+          const fallback = await direct().catch(fetchError => { lastDirectError = fetchError; return undefined; });
+          if (!fallback || signal.aborted) throw networkDown(lastDirectError ?? error, message);
           result = { ...fallback, notice: [`The browser could not load this page (${message.match(/ERR_[A-Z0-9_]+|Timeout \d+ms exceeded|Download is starting/)?.[0] ?? "navigation failed"}); this is a plain HTTP read.`, fallback.notice].filter(Boolean).join(" ") };
         }
         signal.throwIfAborted();

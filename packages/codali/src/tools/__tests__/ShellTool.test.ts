@@ -169,3 +169,9 @@ test("a command may ask for the time it needs, within the host's limit", { concu
     assert.match(error.message, /stopped after 1 s[\s\S]*timeoutSeconds \(up to 900\)/); return true;
   });
 });
+
+test("a listed command missing from the machine is named, with what to use instead", async () => {
+  const tool = createShellTool();
+  const shellExecutor = async () => { throw new ToolExecutionError("tool_execution_failed", "Process terminated (1)\nstderr: bwrap: execvp rg: No such file or directory", { details: { stderr: "bwrap: execvp rg: No such file or directory" } }); };
+  await assert.rejects(tool.handler({ command: "rg", args: ["TODO"] }, { workspaceRoot: process.cwd(), shellAllowlist: ["rg"], allowShell: true, shellExecutor }), /rg is not installed on this machine\. Use grep -rn/);
+});

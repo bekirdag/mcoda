@@ -360,6 +360,8 @@ const normalizeExecutionError = (error: unknown): ToolError => {
   return buildToolError("tool_execution_failed", message, { retryable: true });
 };
 
+const WORKSPACE_TOOLS = new Set(["write_file", "create_directory", "prepare_edit", "apply_patch", "delete_file", "run_shell", "work_claim", "work_verify", "work_complete"]);
+
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
 
@@ -417,7 +419,11 @@ export class ToolRegistry {
       return {
         ok: false,
         output: "",
-        error: buildToolError("tool_unknown", `Unknown tool: ${name}`, {
+        // A workspace tool asked for while only answering (no workspace changes
+        // in this step): say what to do instead of only that it is unknown.
+        error: buildToolError("tool_unknown", WORKSPACE_TOOLS.has(name)
+          ? `${name} is not permitted while answering: nothing in the workspace can be changed in this step. Put the content in the answer itself (for example the complete file in a code block), or hand over with start_work when the workspace must change. Available here: ${[...this.tools.keys()].slice(0, 20).join(", ")}`
+          : `Unknown tool: ${name}. Available here: ${[...this.tools.keys()].slice(0, 20).join(", ")}`, {
           retryable: false,
           details: { tool: name },
         }),
@@ -445,7 +451,18 @@ export class ToolRegistry {
       context.signal?.throwIfAborted();
       await context.beforeTool?.(toolDescriptorFor(tool), sanitized.value);
       context.signal?.throwIfAborted();
-      const result = await tool.handler(sanitized.value, context);
+      // A read-only tool that ignores cancellation (a stuck search, a site that
+      // never answers) must not hold the turn after it was cancelled or ran out
+      // of time; nothing it does can change the workspace. A tool that writes
+      // is awaited, so its outcome is always known.
+      const running = tool.handler(sanitized.value, context);
+      const signal = context.signal;
+      const result = tool.readOnly && signal ? await new Promise<Awaited<typeof running>>((resolve, reject) => {
+        const onAbort = () => reject(signal.reason ?? new Error("Tool call cancelled"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+        running.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+      }) : await running;
       execution = { ok: true, output: result.output, data: result.data };
     } catch (error) {
       execution = {

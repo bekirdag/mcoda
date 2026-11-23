@@ -59,6 +59,26 @@ export class PermissionGate {
     return { profile: this.profile, revision: this.revision, sessionGrants: this.grants.size, sessionDenials: this.denials.size, shellIsolated: this.options.shellIsolated === true, allowWeb: this.profile === "full" || this.options.allowWeb === true, allowMemory: this.profile === "full" || this.options.allowMemory === true, allowMedia: this.profile === "full" || this.options.allowMedia === true, deniedTools: this.options.deniedTools ?? [] };
   }
 
+  /** Whether a call of this tool could ever be allowed in this session without
+   * a new grant: by profile, by host options, or by asking someone who can
+   * approve it. A tool that never can is better left out of what the model is
+   * offered: in unattended builds every browser_session call was refused. */
+  couldAuthorize(tool: ToolDescriptor): boolean {
+    const kind = permissionKind(tool);
+    if (this.options.deniedTools?.includes(tool.name)) return false;
+    if (kind === "read") return true;
+    if (this.profile === "plan") return false;
+    if (kind === "shell" && !this.options.shellIsolated) return false;
+    if (this.prompt || this.profile === "full" || this.grants.size) return true;
+    if (kind === "web") return this.options.allowWeb === true;
+    if (kind === "memory") return this.options.allowMemory === true;
+    if (kind === "media") return this.options.allowMedia === true;
+    return this.profile === "workspace" && (kind === "write" || kind === "shell");
+  }
+
+  /** The sandbox became available after the session opened. */
+  setShellIsolated(available: boolean): void { this.options.shellIsolated = available; this.revision += 1; }
+
   setProfile(profile: PermissionProfile): void {
     if (!["plan", "ask", "workspace", "full"].includes(profile)) throw new Error("Unknown permission profile");
     this.profile = profile; this.revision += 1;

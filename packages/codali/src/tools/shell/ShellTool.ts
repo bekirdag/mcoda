@@ -8,6 +8,9 @@ export const DEVELOPMENT_COMMANDS = ["git", "rg", "grep", "node", "npm", "pnpm",
 
 /** A fixed two minutes ended test suites and browser journeys fifteen times in
  * one 12-hour build; the caller can now ask for the time a command needs. */
+/** What to use when a listed command is missing on the host. */
+const MISSING_ALTERNATIVES: Record<string, string> = { rg: "grep -rn (add -E for extended patterns)", fd: "find", python3: "node", pytest: "python3 -m unittest", pnpm: "npm", tsc: "npx tsc" };
+
 export const DEFAULT_SHELL_TIMEOUT_SECONDS = 120;
 export const MAX_SHELL_TIMEOUT_SECONDS = 900;
 
@@ -126,6 +129,13 @@ export const createShellTool = (): ToolDefinition => ({
     try {
       return await (context.shellExecutor ?? runProcess)(command, effectiveArgs, { ...context, shellWorkingDirectory, shellTimeoutMs });
     } catch (error) {
+      // An allowed command that is not installed on this machine (rg on a host
+      // without ripgrep) is named as such, with what to use instead.
+      const missing = error instanceof ToolExecutionError ? /execvp ([\w.+-]+): No such file or directory|spawn ([\w.+-]+) ENOENT/.exec(`${error.message} ${String((error.details as { stderr?: unknown } | undefined)?.stderr ?? "")}`) : null;
+      if (missing) {
+        const name = missing[1] ?? missing[2];
+        throw new ToolExecutionError("tool_execution_failed", `${name} is not installed on this machine.${MISSING_ALTERNATIVES[name] ? ` Use ${MISSING_ALTERNATIVES[name]} instead.` : " Use another available command."}`, { retryable: false, details: (error as ToolExecutionError).details });
+      }
       if (error instanceof ToolExecutionError && error.code === "tool_timeout" && shellTimeoutMs < maxMs) {
         error.message += `\nThe command was stopped after ${Math.round(shellTimeoutMs / 1000)} s. If it needs longer, pass timeoutSeconds (up to ${Math.floor(maxMs / 1000)}); start servers in the background so the call can return.`;
       }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { contractReviewFixture } from "../../eval/fixtures/ContractReviewProvider.js";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -137,16 +138,27 @@ test("a draft whose numbers a passing code run returned is backed by executed co
   assert.equal(draftBackedByVerifiedRun("no figures here", verified), false);
 });
 
-test("a long turn waits out an outage longer than the ladder, within its remaining time", () => {
+test("an outage is waited out for hours when time allows, and stops in time to hand over what exists", async () => {
+  const { OUTAGE_DELIVERY_RESERVE_MS, transportOutage } = await import("../OutageWait.js");
   const total = (remainingMs: number, budget?: string) => { let sum = 0; for (let i = 0; ; i++) { const w = outageWaitMs(i, remainingMs, budget); if (w === undefined) return sum; sum += w; } };
-  // A 24-hour build rides out a nine-minute outage (the ladder alone is ~4 minutes).
-  assert.ok(total(21 * 3_600_000, undefined) >= 25 * 60_000);
-  assert.ok(total(21 * 3_600_000, undefined) <= MODEL_OUTAGE_WAIT_MS);
-  // A short answer keeps half its remaining time for the work itself.
-  assert.ok(total(10 * 60_000, undefined) <= 5 * 60_000);
-  assert.equal(outageWaitMs(0, 21 * 3_600_000, "2500"), 500);
-  assert.equal(outageWaitMs(2, 21 * 3_600_000, "2500"), undefined);
-  assert.equal(outageWaitMs(12, 21 * 3_600_000, undefined), 60_000);
+  // Without a turn limit (an interactive session) a node restart of several hours is outlasted.
+  assert.ok(total(Infinity) >= 5.9 * 3_600_000 && total(Infinity) <= MODEL_OUTAGE_WAIT_MS);
+  // A 12-hour build rides out a two-hour outage instead of failing after 30 minutes.
+  assert.ok(total(12 * 3_600_000) >= 2 * 3_600_000);
+  // Within a limit, waiting stops early enough to deliver: never past remaining - reserve.
+  for (const remaining of [10 * 60_000, 45 * 60_000, 3 * 3_600_000]) assert.ok(total(remaining) <= remaining - OUTAGE_DELIVERY_RESERVE_MS, String(remaining));
+  assert.equal(outageWaitMs(0, 60_000), undefined);
+  // The host can lower or raise the allowance.
+  assert.equal(outageWaitMs(0, Infinity, "2500"), 500);
+  assert.equal(outageWaitMs(2, Infinity, "2500"), undefined);
+  assert.ok(total(Infinity, String(24 * 3_600_000)) > 23 * 3_600_000);
+  assert.equal(outageWaitMs(12, Infinity, undefined), 60_000);
+  // Transport failures that are outages, including ones wrapped as causes.
+  const coded = (code: string) => Object.assign(new Error("x"), { code });
+  for (const error of [new TypeError("fetch failed"), new TypeError("terminated"), coded("ECONNRESET"), coded("UND_ERR_SOCKET"), coded("ENOTFOUND"),
+    new Error("Service request timed out"), Object.assign(new Error("Native reasoning preflight failed"), { cause: new TypeError("fetch failed") }),
+    Object.assign(new TypeError("fetch failed"), { cause: coded("ECONNREFUSED") })]) assert.equal(transportOutage(error), true, String(error));
+  for (const error of [new Error("Model requestId must be a UUID"), new TypeError("Cannot read properties of undefined"), coded("EACCES"), undefined, "fetch failed"]) assert.equal(transportOutage(error), false, String(error));
 });
 
 test("scope rejection names the missing path and recovery preserves the task contract", async t => {
@@ -1785,7 +1797,10 @@ test("cancellation rejects a provider that ignores AbortSignal without accepting
     await assert.rejects(run, /Cancelled/); const retained = controller.usageSnapshot(); release(reply("Late success"));
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.deepEqual(controller.usageSnapshot(), retained);
-    assert.equal(events.filter(event => event.type === "model_receipt").length, 0);
+    // The cancelled request is settled at once as outcome unknown (its reservation kept);
+    // the late reply is never accepted as a completed call.
+    const receipts = events.filter(event => event.type === "model_receipt");
+    assert.deepEqual(receipts.map(event => event.data.status), ["outcome_unknown"]);
     assert.equal(controller.state?.status, "active"); assert.equal(controller.busy, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); }
 });
@@ -2356,4 +2371,64 @@ test("search-engine result URLs are recognised and research tool hints fit the 1
   assert.equal(searchEngineQuery("https://duckduckgo.com/"), undefined);
   assert.equal(searchEngineQuery("not a url"), undefined);
   for (const text of Object.values(RESEARCH_TOOL_DESCRIPTIONS)) assert.ok(text.length <= 140, text);
+});
+
+test("after a crash, an interrupted read is settled on resume and only a possible write waits for /reconcile", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-crash-resume-")));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-crash-resume-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const before = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false });
+  await before.start("Build the report");
+  const id = before.sessionId!;
+  // What a process killed mid-call leaves behind: intents with no receipt.
+  const pending = (tool: string, args: unknown) => ({ id: randomUUID(), tool, args, status: "pending", inputHashes: {}, at: new Date().toISOString(), readOnlySourcePaths: [] });
+  const read = pending("read_file", { path: "notes.txt" }), search = pending("run_shell", { command: "grep", args: ["-r", "TODO", "."] }), write = pending("write_file", { path: "out.txt", content: "x" });
+  for (const receipt of [read, search, write]) await (before as unknown as { emit: (type: string, data: unknown) => Promise<void> }).emit("tool_intent", { receipt });
+  const after = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false });
+  const events: SessionEvent[] = [];
+  (after as unknown as { options: { onEvent?: (event: SessionEvent) => void } }).options.onEvent = event => { events.push(event); };
+  await after.resume(id);
+  const resumed = events.find(event => event.type === "session_resumed")!;
+  assert.deepEqual([...(resumed.data.interruptedReads as string[])].sort(), [read.id, search.id].sort());
+  assert.deepEqual(resumed.data.unresolvedInvocations, [write.id]);
+  // The settlement is durable: a second resume sees nothing left to settle.
+  const again = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, docdex: false });
+  const later: SessionEvent[] = [];
+  (again as unknown as { options: { onEvent?: (event: SessionEvent) => void } }).options.onEvent = event => { later.push(event); };
+  await again.resume(id);
+  assert.deepEqual(later.find(event => event.type === "session_resumed")!.data.interruptedReads, []);
+  assert.deepEqual(later.find(event => event.type === "session_resumed")!.data.unresolvedInvocations, [write.id]);
+});
+
+test("a full disk is waited out for the transcript write; other write errors are final", async () => {
+  const { appendWithSpaceWait } = await import("../SessionController.js");
+  let attempts = 0;
+  const full = Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+  assert.equal(await appendWithSpaceWait(async () => { if (++attempts < 3) throw full; return "written"; }, undefined, [1, 1, 1]), "written");
+  assert.equal(attempts, 3);
+  attempts = 0;
+  await assert.rejects(appendWithSpaceWait(async () => { attempts++; throw full; }, undefined, [1, 1]), /no space left/);
+  assert.equal(attempts, 3);
+  attempts = 0;
+  await assert.rejects(appendWithSpaceWait(async () => { attempts++; throw Object.assign(new Error("permission denied"), { code: "EACCES" }); }, undefined, [1, 1]), /permission denied/);
+  assert.equal(attempts, 1);
+});
+
+test("a build whose model service stays down is handed over with a status report, not an error", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codali-outage-handover-")));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-outage-handover-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const { ModelServiceError } = await import("../../providers/ModelServiceError.js");
+  let calls = 0;
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async () => { calls++; throw new ModelServiceError("service_unavailable", 503); } };
+  const events: SessionEvent[] = [];
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  const result = await controller.run("Write notes.txt with a summary.");
+  assert.equal(result.completed, false);
+  assert.match(result.content, /^The model service was unavailable for longer than this run could wait[\s\S]*continue with \/continue \(or codali resume /);
+  assert.ok(calls >= 2, "the outage was retried first");
+  assert.ok(events.some(event => event.type === "turn_stopped_for_outage"));
+  assert.ok(!events.some(event => event.type === "turn_failed"));
+  // The goal stays open for /continue.
+  assert.notEqual(controller.state?.status, "completed");
 });

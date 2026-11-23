@@ -68,6 +68,9 @@ export const runProcess = (command: string, args: string[], context: ToolContext
       const details = { command, args, cwd, exitCode, signal, stdout, stderr, truncated, timedOut };
       if (context.signal?.aborted) { reject(context.signal.reason ?? new Error("Process cancelled")); return; }
       if (timedOut) { reject(new ToolExecutionError("tool_timeout", processFailureMessage("Process deadline exceeded", stdout, stderr), { retryable: false, details })); return; }
+      // Killed from outside (SIGKILL with no timeout of ours: usually the kernel
+      // reclaiming memory on a crowded host), the command itself may be fine.
+      if (signal === "SIGKILL" || exitCode === 137) { reject(new ToolExecutionError("tool_execution_failed", processFailureMessage("Process was killed from outside (SIGKILL, often the system running out of memory). The command itself may be correct; running it again, or with less parallelism, may succeed", stdout, stderr), { retryable: true, details })); return; }
       if (exitCode !== 0 || signal) { reject(new ToolExecutionError("tool_execution_failed", processFailureMessage(`Process terminated (${signal ?? exitCode})`, stdout, stderr), { retryable: false, details })); return; }
       resolve({ output: (stdout || stderr) + (truncated ? "\n[output truncated]" : ""), data: details });
     });

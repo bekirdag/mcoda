@@ -222,7 +222,7 @@ export class TerminalCommand {
       if (closed || epoch !== cancelEpoch) { showPrompt(); return; }
       tui?.update({ busy: true, activity: "Preparing turn", queued: queued.length });
       activeRun = (async () => {
-        try { if (closed || epoch !== cancelEpoch) return; if (newSession && controller.sessionId) await controller.clearSession(); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = prompt ? await controller.interact(prompt) : await controller.run(); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || "mode" in result && result.mode !== "execute" || args.permissions === "plan" ? 0 : 2; }
+        try { if (closed || epoch !== cancelEpoch) return; if (newSession && controller.sessionId) await controller.clearSession(); if (closed || epoch !== cancelEpoch) throw new Error("Cancelled by user before execution"); const result = prompt ? await controller.interact(prompt) : controller.unfinishedInteraction && !(controller.state && controller.state.status !== "completed") ? await controller.continueInteraction() : await controller.run(); if (tui) tui.result(redactSecretValues(result.content)); else if (!args.json) output(`\n${result.content}`); if (!interactive) process.exitCode = result.completed || "mode" in result && result.mode !== "execute" || args.permissions === "plan" ? 0 : 2; }
         catch (error) { const message = redactSecretValues(error instanceof Error ? error.message : String(error)); if (tui) { tui.error(message); tui.update({ activity: "Turn stopped" }); } else if (args.json) output({ schemaVersion: 1, type: "command_failed", sessionId: controller.sessionId, data: { message, completed: false } }); else process.stderr.write(`${terminalText(message)}\n`); if (!interactive) process.exitCode = /cancel/i.test(String(error)) ? 130 : 1; }
         finally {
           pendingApproval?.("deny"); pendingApproval = undefined;
@@ -374,7 +374,7 @@ export class TerminalCommand {
       const [id, ...rest] = args.prompt.split(" "); await controller.resume(id);
       if (args.command === "checkpoint") await controller.checkpoint(rest.join(" "));
       else if (args.command === "amend") await controller.steer(rest.join(" "));
-      else if (args.command === "resume" && !interactive) { if (controller.state?.status === "completed") output(controller.status()); else { run(); await activeRun; } return; }
+      else if (args.command === "resume" && !interactive) { if (controller.state?.status === "completed" && !controller.unfinishedInteraction) output(controller.status()); else { run(); await activeRun; } return; }
       if (args.command === "resume" && interactive) args.prompt = "";
       else { output(controller.status()); return; }
     }

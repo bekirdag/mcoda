@@ -141,3 +141,15 @@ test("a large official PDF is downloaded whole, and other bodies stay bounded", 
   const page = await fetchDirect(`${base}/page`);
   assert.equal(page.body.length, 6 * 1024 * 1024); assert.equal(page.truncated, true);
 });
+
+test("a browser that cannot start does not stop the page from being read", async t => {
+  const server = createServer((_request, response) => { response.writeHead(200, { "content-type": "text/html" }); response.end("<title>Notice</title><main><h1>Notice 7</h1><p>The register reopened on 3 March 2026.</p>" + "<p>Details follow.</p>".repeat(12) + "</main>"); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  // An executable that exits at once stands in for a broken browser install.
+  const [open] = createBrowserTools({ executablePath: "/bin/false" });
+  const data = JSON.parse((await open.handler({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}/notice` }, { workspaceRoot: "." })).output);
+  assert.equal(data.evidenceStatus, "retrieved");
+  assert.match(data.content, /The register reopened on 3 March 2026/);
+  assert.match(data.sourceNotice, /browser could not load this page/);
+});

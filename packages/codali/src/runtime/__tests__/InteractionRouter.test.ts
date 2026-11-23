@@ -2363,3 +2363,64 @@ test("no mid-run draft is written early in a turn or without evidence", async t 
   assert.match((await controller.interact("Research the order and give the date of its amendment.")).content, /2 June 2026/);
   assert.ok(!events.some(event => event.type.startsWith("research_draft")));
 });
+
+test("when the turn's own time limit cuts into a tool call, the evidence gathered so far is still delivered", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 80000, timeoutMs: 3_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  let searches = 0;
+  t.mock.method(DocdexClient.prototype, "webResearch", async (...args: unknown[]) => {
+    if (++searches === 1) return { pages: [{ url: "https://regulator.example/orders/14", content: "Emergency order 14 capped production at 38 aircraft a month from 4 March 2026 until the audit closes." }] };
+    // The second search hangs past the turn's limit (a stuck site, a dead network).
+    const signal = (args.find(arg => arg && typeof arg === "object" && "signal" in (arg as object)) as { signal?: AbortSignal } | undefined)?.signal;
+    return new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("search never answered")), 60_000); timer.unref(); signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); });
+  });
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => {
+    calls++;
+    return { ...reply(""), toolCalls: [{ id: `web${calls}`, name: "codali", args: { name: "docdex_web_research", args: { query: `production cap ${calls}` } } }] };
+  } }, config, undefined, true, { allowWeb: true });
+  const started = Date.now();
+  const answer = await controller.interact("Research the production cap and give its date and level.");
+  assert.ok(Date.now() - started < 20_000);
+  assert.match(answer.content, /^I could not finish writing the answer: the time limit for this answer was reached/);
+  assert.match(answer.content, /capped production at 38 aircraft a month from 4 March 2026/);
+  assert.equal(events.find(event => event.type === "research_evidence_delivered")!.data.reason, "turn_time_limit");
+});
+
+test("a research turn cut off by a crash is continued from its saved evidence and draft after resume", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", maxModelCalls: 14, maxTotalTokens: 200000, timeoutMs: 1_800_000 };
+  t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
+  t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
+  let searches = 0;
+  t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ pages: [{ url: `https://gazette.example/notice/${++searches}`, content: `Notice ${searches}: the order was amended in June 2026 and the regulator published guidance on its scope afterwards.` }] }));
+  const draft = "The order was amended in June 2026 (https://gazette.example/notice/1); the regulator published guidance afterwards (https://gazette.example/notice/2). The exact day of the amendment could not be verified yet.";
+  // First process: two searches, a saved draft, then the process dies mid-call.
+  let calls = 0;
+  const { controller, root, storage } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (/Pause the research for one step/.test(request.messages.at(-1)!.content)) return reply(draft);
+    if (calls <= 2) return { ...reply(""), toolCalls: [{ id: `web${calls}`, name: "codali", args: { name: "docdex_web_research", args: { query: `order amendment ${calls}` } } }] };
+    throw new Error("process killed");
+  } }, config, undefined, true, { allowWeb: true, researchDraftShare: 0 });
+  await assert.rejects(controller.interact("Research the order and give the date of its amendment."), /process killed/);
+  const sessionId = controller.sessionId!;
+  // Second process: resume finds the unfinished answer with its evidence and draft.
+  let resumedCalls = 0; let sawEarlier = false;
+  const resumed = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, docdex: true, allowWeb: true, userInstructionsPath: false,
+    provider: { name: "fixture", supportsToolCalls: true, generate: async request => {
+      resumedCalls++;
+      sawEarlier ||= request.messages.some(message => /was interrupted earlier[\s\S]*gazette\.example\/notice\/2[\s\S]*Draft written before the interruption/.test(message.content));
+      if (resumedCalls === 1) return { ...reply(""), toolCalls: [{ id: "web3", name: "codali", args: { name: "docdex_web_research", args: { query: "order amendment exact day" } } }] };
+      return reply("The order was amended on 2 June 2026 (https://gazette.example/notice/3).");
+    } } });
+  await resumed.resume(sessionId);
+  assert.deepEqual(resumed.unfinishedInteraction, { prompt: "Research the order and give the date of its amendment.", evidence: 2, draft: true });
+  const answer = await resumed.continueInteraction();
+  assert.match(answer.content, /2 June 2026/);
+  assert.ok(sawEarlier, "the continued turn is told what was already gathered");
+  assert.equal(searches, 3, "only the missing point was searched again");
+  assert.equal(resumed.unfinishedInteraction, undefined);
+});
