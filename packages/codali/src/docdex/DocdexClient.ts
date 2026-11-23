@@ -1174,7 +1174,9 @@ export class DocdexClient {
    * and is sent again after short waits (about 27 s in all) instead of failing
    * for the rest of the turn on a health result cached before the restart. */
   async callMcp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number, recovered = false): Promise<T> {
-    const waits = this.options.reconnectWaitsMs ?? DOCDEX_RECONNECT_WAITS_MS;
+    // The optional working-style hint runs before normal answers. An absent
+    // local daemon must not consume the turn's budget before its first call.
+    const waits = method === "docdex_working_style" ? [] : this.options.reconnectWaitsMs ?? DOCDEX_RECONNECT_WAITS_MS;
     let sessionRenewed = false;
     for (let attempt = 0; ; attempt++) {
       const hadSession = !!this.mcpSessionId;
