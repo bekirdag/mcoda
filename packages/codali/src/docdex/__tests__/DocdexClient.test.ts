@@ -945,3 +945,16 @@ test("a Docdex daemon that restarts mid-session is reconnected and the call sent
     await assert.rejects(down.stats(), /health check failed|unavailable/i);
   });
 });
+
+test("an optional working-style lookup on an offline host probes once", { concurrency: false }, async () => {
+  let probes = 0;
+  await withStubbedFetch(url => {
+    assert.ok(url.endsWith("/healthz"));
+    probes++;
+    throw new TypeError("fetch failed");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", reconnectWaitsMs: [1, 1] });
+    await assert.rejects(client.workingStyle("answer", "/tmp/fixture"), /health check failed/);
+  });
+  assert.equal(probes, 1);
+});

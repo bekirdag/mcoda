@@ -4,6 +4,14 @@
 
 ## 0.1.135-codali.42
 
+- Interrupted research can resume from saved source passages and its draft
+  with `/continue` or `codali resume`. Pending operations that may have
+  changed workspace files still require reconciliation.
+- A model outage can be retried for up to six hours, subject to the remaining
+  turn time. Set `CODALI_MODEL_OUTAGE_WAIT_MS` to change the allowance.
+  Retry delays respect the server's requested wait and leave time to deliver
+  saved work. Optional working-style lookups return promptly when Docdex is offline.
+
 - Model requests: every request now has a time allowance (ten minutes, or four
   times the slowest answered request, bounded by what the request could need,
   and doubled each time the same request stalls). A request that does not
