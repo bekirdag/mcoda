@@ -1184,7 +1184,7 @@ export class DocdexClient {
         // A forgotten MCP session means the daemon restarted and is back: renew it once, at once.
         // (A 404 without a session means the daemon has no MCP route at all; callers fall back.)
         if (status === 404 && hadSession && !sessionRenewed) { sessionRenewed = true; this.mcpSessionId = undefined; continue; }
-        const down = error instanceof DocdexRuntimeError ? error.code === "docdex_unavailable" && (status === undefined || [502, 503, 504].includes(status)) : transportFailure(error);
+        const down = error instanceof DocdexRuntimeError ? error.retryable && error.code === "docdex_unavailable" && (status === undefined || [502, 503, 504].includes(status)) : transportFailure(error);
         // A transport failure can arrive after a write committed. Replaying
         // that call could duplicate the entry.
         const operation = MCP_OPERATION_BY_METHOD[method];
@@ -1231,6 +1231,7 @@ export class DocdexClient {
       const code = this.mapResponseErrorCode(500, body);
       throw this.runtimeError(code, raw.error.message ?? "Docdex MCP error", {
         retryable: code === "docdex_unavailable",
+        status: response.status,
         details: { method, rpcCode: raw.error.code },
       });
     }
