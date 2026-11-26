@@ -52,6 +52,31 @@ test("audit evidence retains bounded browser handles and pagination for real fol
   assert.equal(invalid?.nextOffset, null);
 });
 
+test("a findings table whose status cells mark gaps leaves those rows open", async () => {
+  const { openResearchPoints } = await import("../ResearchEvidence.js");
+  const draft = `## Inland waterway toll reform
+| Measure | Status | Source |
+|---|---|---|
+| Toll schedule for barges over 110 m | Published 3 March | Ministry gazette |
+| Exemption for emergency vessels | **Not established** | — |
+| Date the revenue-sharing rule takes effect | Not found in this research | — |
+| Number of locks covered | Unconfirmed | trade press only |
+| Rate cap for 2027 | TBD | — |
+| Bridge 9 | Open | operator site |
+| Dispute over lock 4 fees | Unresolved | court register |
+
+The toll schedule applies from 1 May.`;
+  const open = openResearchPoints(draft);
+  assert.deepEqual(open, [
+    "Exemption for emergency vessels — Not established",
+    "Date the revenue-sharing rule takes effect — Not found in this research",
+    "Number of locks covered — Unconfirmed — trade press only",
+    "Rate cap for 2027 — TBD",
+  ]);
+  // A finished table has none, including statuses that read like gap words.
+  assert.deepEqual(openResearchPoints("| Item | Value |\n|---|---|\n| Not established | 4 |\n| Ferry | Open |\n| Appeal | Not found admissible |"), []);
+});
+
 test("the points a draft leaves open are read from its own words", async () => {
   const { openResearchPoints } = await import("../ResearchEvidence.js");
   const draft = `## Kashiwazaki-Kariwa restart
