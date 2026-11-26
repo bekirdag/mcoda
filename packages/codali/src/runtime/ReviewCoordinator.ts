@@ -27,7 +27,7 @@ const reviewInstructions: ProviderMessage[] = [
   { role: "system", content: "taskAssessments are controller-recorded successful reviews of the identified task criteria at this exact workspaceSnapshotHash during this verification. Their sourcePaths were reviewed in those task scopes and remain available for sourceRequests. Use these assessments for already-reviewed criteria in later scoped reviews as well as integration; inspect the source needed for this task's own behavior and cross-task interactions. For integration, check the complete original goal, global constraints, architecture, cross-task interactions and remaining deliverables using these fresh assessments plus the current evidence. Do not demand an already assessed module's entire source merely to repeat its scoped review; request the specific files needed to investigate an integration defect. An assessment never certifies a different criterion, snapshot or missing deliverable. Empty findings still require sufficient evidence for every obligation." },
   { role: "system", content: "contractChecklist.checks preserves every prepared check. Each check's quoteId refers to the exact sourceId and contractQuote in contractChecklist.quotes. Identical quotations from the same source are stored once; every expectedBehavior remains separate. Follow those references when comparing a check to its authoritative text." },
   { role: "system", content: "When checklistBatch is present, this is one bounded portion of the prepared checklist, with the complete original contract and current evidence retained. Scrutinize every check in this portion and its interactions with the original contract. Other prepared checks are reviewed separately against this same snapshot; the controller requires every portion to pass. Your verdict covers this portion, never acceptance of an unreviewed portion. Do not reject solely because other checklist portions are absent; reject any actual defect or insufficient evidence for the checks you are reviewing. The complete original requirements remain authoritative in every portion." },
-  { role: "system", content: 'An approval must prove every check in contractChecklist.checks. Add "evidence" to a passing verdict: {"passed":true,"findings":[],"evidence":{"<check id>":[{"receipt":"<receipt id>","observed":"text copied exactly from that receipt output"} or {"path":"<sourceRoles path>","quote":"text copied exactly from that file"}]}}. The controller confirms each quotation against the receipt output or the current file and rejects the approval when a check has none that matches. For behaviour a user or client sees (a page, an API response, a refusal, a state after reload), cite receipt output that shows it; a passing test proves only what its output or its assertions show. A source quote proves what that code does: quote the lines that implement the check, not a comment, a plan or the requirement text. When requirements say an action is unavailable or blocked and explained, only a visible disabled control or notice that states the reason meets it; a missing control is a defect. A check you cannot prove from the evidence is a blocking finding, not an approval.' },
+  { role: "system", content: 'An approval must prove every check in contractChecklist.checks. Add "evidence" to a passing verdict: {"passed":true,"findings":[],"evidence":{"<check id>":[{"receipt":"<receipt id>","observed":"text copied exactly from that receipt output"} or {"path":"<sourceRoles path>","quote":"text copied exactly from that file"}]}}. The controller confirms each quotation against the receipt output or the current file and rejects the approval when a check has none that matches. A quotation must be about the check (share its words). For a check that a named file stays unchanged, cite {"unchanged":"<that path>"}; the controller confirms the work did not change it. A non-goal is met by absence and needs no citation; reject the approval if the work does it. For behaviour a user or client sees (a page, an API response, a refusal, a state after reload), cite receipt output that shows it; a passing test proves only what its output or its assertions show. A source quote proves what that code does: quote the lines that implement the check, not a comment, a plan or the requirement text. When requirements say an action is unavailable or blocked and explained, only a visible disabled control or notice that states the reason meets it; a missing control is a defect. A check you cannot prove from the evidence is a blocking finding, not an approval.' },
   { role: "system", content: "Checks whose sourceId starts with delivered: are statements from a document delivered with the work (a README or delivery notes). Pass such a check only when source or receipt evidence shows the statement is true of the current build; a different number, duration or limit, a feature that is absent, or a check that never ran is a blocking finding that names the document and the statement. The document cannot prove its own statements." },
 ];
 
@@ -228,16 +228,25 @@ export async function reviewTaskScope(options: {
       if (!texts.some(text => text.includes(quote))) return `"${quote.slice(0, 80)}" does not appear in ${cited.path}`;
       return whole ? undefined : unrelated(quote);
     }
+    // "Preserve USER_NOTES.md": the controller knows whether the work changed it.
+    if (typeof cited.unchanged === "string") {
+      const file = cited.unchanged;
+      const named = [file, file.split("/").pop()!].some(name => name.length >= 3 && `${contractQuote} ${check.expectedBehavior}`.includes(name));
+      if (!named) return `${file} is not a file this check names`;
+      return options.scope.changedPaths.includes(file) || options.scope.otherTaskChangedPaths.includes(file) ? `${file} was changed by this work` : undefined;
+    }
     if (answerOnly && typeof cited.summary === "string") {
       const quote = quoted(cited.summary);
-      return quote && normalText(options.summary).includes(quote) ? undefined : "the quoted text does not appear in the proposed answer";
+      return quote && normalText(options.summary).includes(quote) ? unrelated(quote) : "the quoted text does not appear in the proposed answer";
     }
-    return 'cite {"receipt","observed"} or {"path","quote"}';
+    return 'cite {"receipt","observed"}, {"path","quote"} or {"unchanged"}';
   };
   const approve = (selected: typeof checks) => async (verdict: Readonly<Record<string, unknown>>) => {
     const evidence = verdict.evidence && typeof verdict.evidence === "object" && !Array.isArray(verdict.evidence) ? verdict.evidence as Record<string, unknown> : {};
     const problems: string[] = [];
     for (const check of selected) {
+      // A non-goal ("add no payroll features") is met by absence: nothing to quote.
+      if (quotes[check.quoteId].sourceId.startsWith("nonGoal:")) continue;
       const value = evidence[check.id];
       const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
       const reasons: string[] = [];

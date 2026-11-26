@@ -302,6 +302,7 @@ test("review portions follow requirement areas and hold at most the per-call num
 // build, not from a document or a receipt that printed the document.
 const lockerApp = () => {
   const state = createWorkState("Build the parcel locker service.");
+  state.nonGoals = ["Add courier payroll features."]; // met by absence: needs no citation
   state.requirements.push({ id: "R2", description: "A courier can reserve a locker for 48 hours.", required: true });
   const task = { ...state.tasks[0], requirementIds: ["R1", "R2"] };
   const files: Record<string, string> = {
