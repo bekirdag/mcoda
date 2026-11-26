@@ -64,15 +64,20 @@ const erfcTail = (z: number): number => {
   return Math.exp(-z * z) / Math.sqrt(Math.PI) / f;
 };
 const erfc = (x: number): number => x >= 2.5 ? erfcTail(x) : 1 - erf(x);
-/** round(x) rounds half up as before; round(x, n) keeps n decimal places, half away from zero. */
-const roundTo = (value: number, places?: number): number => {
-  if (places === undefined) return Math.round(value);
+/** Python's round: the nearest value with n decimal places, ties to even, decided
+ * on the exact binary value (round(2.675, 2) is 2.67 because 2.675 is stored a
+ * hair below the tie; round(2.5) is 2). The same answer run_code's Python gives. */
+const roundTo = (value: number, places = 0): number => {
   if (!Number.isInteger(places) || places < -15 || places > 15) throw new Error("round(x, n) takes a whole number of places from -15 to 15");
-  const scaled = Math.abs(value) * 10 ** places;
-  // Values such as 2.675 are stored a hair below the tie; treat ties within float noise as ties.
-  const fraction = scaled - Math.trunc(scaled);
-  const rounded = Math.abs(fraction - 0.5) < 1e-9 ? Math.trunc(scaled) + 1 : Math.round(scaled);
-  return Math.sign(value) * (places >= 0 ? rounded / 10 ** places : rounded * 10 ** -places);
+  if (places < 0) return roundTo(value / 10 ** -places, 0) * 10 ** -places;
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1e21) return value;
+  // toFixed rounds the exact binary value and takes the larger candidate on a tie.
+  const up = magnitude.toFixed(places), exact = magnitude.toFixed(100);
+  const point = exact.indexOf("."), tail = exact.slice(point + 1 + places);
+  let result = Number(up);
+  if (/^50*$/.test(tail) && Number(up.replace(".", "").at(-1)) % 2 === 1) result = Number((result - 10 ** -places).toFixed(places));
+  return Math.sign(value) * result === 0 ? 0 : Math.sign(value) * result;
 };
 
 const countArgs = (n: number, k: number): void => {
@@ -222,30 +227,43 @@ const evaluateTokens = (tokens: string[], variables?: ReadonlyMap<string, number
 /** A fixed-point iteration or a 12-step recurrence written out takes a few hundred statements. */
 const MAX_STATEMENTS = 1000;
 const MAX_LABELS = 256;
-/** A bare statement that lists values: [a, b, c], (a, b, c) or a, b, c. */
+const SEPARATOR_HINT = "write numbers without thousands separators (1000, not 1,000), or list several results in brackets, such as [a, b]";
+/** A statement that lists values must be bracketed: [a, b, c]. A comma anywhere
+ * else at the top level is refused, never read as a list: "1,000 * 3" is a
+ * thousands separator, and reading it as [1, 0] would be a wrong success. */
 const listItems = (tokens: string[]): string[][] | undefined => {
-  let inner = tokens;
-  const open = tokens[0], close = open === "[" ? "]" : open === "(" ? ")" : undefined;
-  if (close && tokens.at(-1) === close) {
-    // Only when the outer brackets enclose the whole statement: (a+b)*(c+d) is a formula.
-    let depth = 0, enclosing = true;
+  const split = (inner: string[]) => {
+    const items: string[][] = []; let depth = 0, current: string[] = [];
+    for (const token of inner) {
+      if (token === "(" || token === "[") depth++;
+      else if (token === ")" || token === "]") depth--;
+      if (token === "," && depth === 0) { items.push(current); current = []; } else current.push(token);
+    }
+    items.push(current);
+    return items;
+  };
+  let enclosing = tokens[0] === "[" && tokens.at(-1) === "]";
+  if (enclosing) {
+    let depth = 0;
     for (let index = 0; index < tokens.length; index++) {
       if (tokens[index] === "(" || tokens[index] === "[") depth++;
       else if (tokens[index] === ")" || tokens[index] === "]") depth--;
       if (depth === 0 && index < tokens.length - 1) { enclosing = false; break; }
     }
-    if (enclosing) inner = tokens.slice(1, -1);
   }
-  const items: string[][] = []; let depth = 0, current: string[] = [];
-  for (const token of inner) {
-    if (token === "(" || token === "[") depth++;
-    else if (token === ")" || token === "]") depth--;
-    if (token === "," && depth === 0) { items.push(current); current = []; } else current.push(token);
+  if (!enclosing) {
+    // (a, b) or a, b: a comma outside any function call.
+    const top = split(tokens);
+    const grouped = tokens[0] === "(" && tokens.at(-1) === ")" && split(tokens.slice(1, -1)).length > 1;
+    if (top.length > 1 || grouped) throw new Error(`A comma outside a function call is not a list: ${SEPARATOR_HINT}`);
+    return undefined;
   }
-  items.push(current);
-  // (a+b) alone is a formula; [a] is a one-value list.
-  if (items.length < 2 && open !== "[") return undefined;
+  const items = split(tokens.slice(1, -1));
   if (items.some(item => !item.length || item.includes("[") || item.includes("]"))) throw new Error("A result list holds formulas separated by commas, such as [a, b, a*b]; lists cannot be nested or empty");
+  // [12,500] is far more often twelve thousand five hundred than two values.
+  for (let index = 1; index < items.length; index++) {
+    if (items[index].length >= 1 && /^\d{3}$/.test(items[index][0]) && /^\d+$/.test(items[index - 1].at(-1) ?? "")) throw new Error(`Ambiguous list item ${items[index - 1].at(-1)},${items[index][0]}: ${SEPARATOR_HINT}`);
+  }
   return items;
 };
 
@@ -307,7 +325,7 @@ const INEXACT = "An integer above 2^53 was rounded to about 16 significant digit
 
 export const createCalculatorTool = (): ToolDefinition => ({
   name: "calculate", capability: "calculation", readOnly: true,
-  description: `Calculate {expression:'formula'} OR {expressions:{label:'formula'}} (up to ${MAX_LABELS}). An expression may hold up to ${MAX_STATEMENTS} statements separated by ; or line breaks, with names: 'r1 = 6778; v = sqrt(398600/r1); [v, v*2]'; a final [a, b] or (a, b) returns each value. In expressions, labels may use each other in any order. Supports exp,ln/log(natural),log2,log10,pow,sqrt,cbrt,hypot,sin/cos/tan,asin/acos/atan/atan2,sinh/cosh/tanh (radians),abs,floor,ceil,round(x) and round(x,n),trunc,sign,min,max,sum,erf,erfc,normcdf,normpdf,comb/C(n,k),perm/P(n,k),factorial; + - * / %, ^ **, pi (or pi()), e. Math.x and math.x aliases accepted for this allowlist. Numbers only: loops, conditions, strings and imports need run_code. IEEE-754 approximate; exact decimals use decimal_calculate. Tool success checks arithmetic, not whether your formula models the request.`,
+  description: `Calculate {expression:'formula'} OR {expressions:{label:'formula'}} (up to ${MAX_LABELS}). An expression may hold up to ${MAX_STATEMENTS} statements separated by ; or line breaks, with names: 'r1 = 6778; v = sqrt(398600/r1); [v, v*2]'; a final [a, b] returns each value; write numbers without thousands separators. In expressions, labels may use each other in any order. Supports exp,ln/log(natural),log2,log10,pow,sqrt,cbrt,hypot,sin/cos/tan,asin/acos/atan/atan2,sinh/cosh/tanh (radians),abs,floor,ceil,round(x) and round(x,n) (Python: ties to even),trunc,sign,min,max,sum,erf,erfc,normcdf,normpdf,comb/C(n,k),perm/P(n,k),factorial; + - * / %, ^ **, pi (or pi()), e. Math.x and math.x aliases accepted for this allowlist. Numbers only: loops, conditions, strings and imports need run_code. IEEE-754 approximate; exact decimals use decimal_calculate. Tool success checks arithmetic, not whether your formula models the request.`,
   inputSchema: { type: "object", properties: { expression: { type: "string", description: "A numeric formula, e.g. exp(-2)*3, or statements separated by ; such as 'a = 2*3; b = a+4; [a, b, b/2]'. Supply this OR expressions.", minLength: 1, maxLength: MAX_SCRIPT_CHARS },
     expressions: { type: "object", description: "Map labels to complete formula STRINGS, e.g. {total:'base*3+4',base:'2'}. A formula may use any other label as a number. Supply this OR expression.", minProperties: 1, maxProperties: MAX_LABELS, propertyNames: { pattern: "^[A-Za-z][A-Za-z0-9_]{0,63}$" }, additionalProperties: true },
   }, oneOf: [{ required: ["expression"] }, { required: ["expressions"] }], additionalProperties: false },
