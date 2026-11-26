@@ -85,6 +85,8 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
       }
       const context = { workspaceRoot: root, signal, allowedWritePaths: execution.writes ? ['.'] : [], checkPath,
         allowShell: execution.writes, allowDestructiveOperations: false, allowOutsideWorkspace: false,
+        // Same as Codali: the isolated executor confines deletes to the call's writePaths.
+        shellIsolated: isolation.available,
         shellAllowlist: workflowShellAllowlist, shellTimeoutMs: Math.min(execution.deadlineMs,120000), shellMaxTimeoutMs: Math.min(execution.deadlineMs,900000), shellMaxOutputBytes: 64000,
         shellExecutor: (command, args, context) => createIsolatedExecutor({ network: false, status: isolation })(command, args, { ...context, allowedWritePaths: writePaths }) };
       receipt = await registry.execute(call.name, call.args, context);

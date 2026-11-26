@@ -88,3 +88,13 @@ test('raw comparator can discover and read the real builtin planning skill witho
   assert.equal(starts(),0);
   const initial=await fixture(t,base,{initialTools:['skill_list']});assert.ok(initial.tools.schemas().some(tool=>tool.name==='skill_list'));
 });
+
+test('raw shell may delete a scratch file inside its writePaths; the sandbox, not command text, limits deletes', { skip: !executorStatus().available }, async t => {
+  const {workspace,tools} = await fixture(t,{...base,writes:true});
+  await fs.mkdir(path.join(workspace,'tmpdata')); await fs.writeFile(path.join(workspace,'tmpdata','draft.csv'),'a,b'); await fs.writeFile(path.join(workspace,'keep.txt'),'keep');
+  await tools.execute(call('tools_describe',{names:['run_shell']}));
+  const removed = await tools.execute(call('run_shell',{command:'sh',args:['-c','rm tmpdata/draft.csv'],writePaths:['tmpdata']}));
+  assert.equal(removed.ok,true,JSON.stringify(removed.error));await assert.rejects(fs.access(path.join(workspace,'tmpdata','draft.csv')));
+  const outside = await tools.execute(call('run_shell',{command:'sh',args:['-c','rm keep.txt'],writePaths:['tmpdata']}));
+  assert.equal(outside.ok,false);assert.equal(await fs.readFile(path.join(workspace,'keep.txt'),'utf8'),'keep');
+});
