@@ -98,3 +98,11 @@ test('raw shell may delete a scratch file inside its writePaths; the sandbox, no
   const outside = await tools.execute(call('run_shell',{command:'sh',args:['-c','rm keep.txt'],writePaths:['tmpdata']}));
   assert.equal(outside.ok,false);assert.equal(await fs.readFile(path.join(workspace,'keep.txt'),'utf8'),'keep');
 });
+
+test('raw read-only web session declares search and the page reader up front', async t => {
+  const { tools } = await fixture(t, { ...base, web: true });
+  const names = tools.schemas().map(tool => tool.name);
+  for (const name of ['docdex_web_research', 'browser_open', 'browser_read']) assert.ok(names.includes(name), name);
+  const { tools: offline } = await fixture(t, base);
+  assert.ok(!offline.schemas().some(tool => tool.name === 'browser_open'));
+});

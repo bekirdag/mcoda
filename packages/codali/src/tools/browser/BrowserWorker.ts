@@ -2,6 +2,16 @@ import { chromium } from "playwright-core";
 
 // This process runs in a private empty directory with an explicit environment.
 // browser-use reads .env at import time, so never import it in the CLI process.
+
+/** Below this many characters of readable text the page may still be rendering. */
+const RENDER_MIN_CHARS = 200;
+/** Upper bound on waiting for a script-built page, from the end of navigation. */
+const RENDER_WAIT_MS = 10_000;
+const RENDER_NETWORK_IDLE_MS = 6_000;
+/** Text unchanged this long counts as rendered. */
+const RENDER_STABLE_MS = 1_200;
+const RENDER_POLL_MS = 250;
+const COLLAPSED_MARKER = "[Collapsed section, expanded for reading]";
 process.once("message", async (input: { endpoint: string; url: string; scope: "main" | "page" }) => {
   let browser: Awaited<ReturnType<typeof chromium.connect>> | undefined;
   let session: import("browser-use/dist/browser/session.js").BrowserSession | undefined;
@@ -43,6 +53,62 @@ process.once("message", async (input: { endpoint: string; url: string; scope: "m
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
+    // Single-page applications (legislation portals, gazettes) are an empty
+    // shell at DOMContentLoaded and fill in after fetching their data, so an
+    // immediate read returned "empty" for pages that do have text. When the
+    // readable region is still short, wait for the network to settle and the
+    // text to stop growing, within a fixed bound. Pages with text proceed at once.
+    const readableChars = () => tab.evaluate(() => {
+      const main = document.querySelector('main,[role="main"]') as HTMLElement | null;
+      return ((main?.innerText.trim() ? main : document.body)?.innerText ?? "").trim().length;
+    }).catch(() => 0);
+    const notices: string[] = [];
+    const renderStarted = Date.now();
+    const initialChars = await readableChars();
+    if (initialChars < RENDER_MIN_CHARS) {
+      const deadline = renderStarted + RENDER_WAIT_MS;
+      await tab.waitForLoadState("networkidle", { timeout: Math.min(RENDER_NETWORK_IDLE_MS, RENDER_WAIT_MS) }).catch(() => undefined);
+      let last = await readableChars(), stableSince = Date.now();
+      while (Date.now() < deadline && Date.now() - stableSince < RENDER_STABLE_MS) {
+        await tab.waitForTimeout(RENDER_POLL_MS);
+        const current = await readableChars();
+        if (current !== last) { last = current; stableSince = Date.now(); }
+      }
+      if (last > initialChars) notices.push(`The page builds its content with scripts; it was read after waiting ${Math.round((Date.now() - renderStarted) / 100) / 10} s for it to render.`);
+    }
+    // Collapsed sections (closed <details>, accordion panels and inactive tabs
+    // tied to their toggle by aria-controls) are part of the page a reader can
+    // open, but rendered text omits them: a country update read as its heading
+    // only. Reveal them in this disposable DOM without clicking anything, and
+    // mark the text so it is not mistaken for what the page shows by default.
+    // Content hidden for other reasons stays hidden.
+    const expanded = await tab.evaluate(marker => {
+      let count = 0;
+      const mark = (element: Element, after?: Element | null) => {
+        const note = document.createTextNode(`${marker} `);
+        if (after) after.after(note); else element.prepend(note);
+        count++;
+      };
+      for (const details of Array.from(document.querySelectorAll("details:not([open])")).slice(0, 200)) {
+        details.setAttribute("open", "");
+        mark(details, details.querySelector(":scope > summary"));
+      }
+      const toggles = document.querySelectorAll('[aria-controls][aria-expanded="false"], [role="tab"][aria-controls][aria-selected="false"]');
+      for (const toggle of Array.from(toggles).slice(0, 200)) {
+        for (const id of (toggle.getAttribute("aria-controls") ?? "").split(/\s+/).filter(Boolean).slice(0, 8)) {
+          const panel = document.getElementById(id);
+          if (!panel || panel.dataset.codaliExpanded) continue;
+          if (!panel.hidden && getComputedStyle(panel).display !== "none") continue;
+          panel.hidden = false;
+          panel.removeAttribute("hidden");
+          if (getComputedStyle(panel).display === "none") panel.style.setProperty("display", "block", "important");
+          panel.dataset.codaliExpanded = "1";
+          mark(panel);
+        }
+      }
+      return count;
+    }, COLLAPSED_MARKER).catch(() => 0);
+    if (expanded) notices.push(`${expanded} collapsed section${expanded === 1 ? " was" : "s were"} expanded for reading; ${expanded === 1 ? "its" : "their"} text starts with "${COLLAPSED_MARKER}".`);
     // Accessibility snapshots otherwise flatten deleted/struck-through text
     // into apparently current prose. Mark revisions in this disposable DOM;
     // no page action, form submission or remote mutation is performed.
@@ -54,7 +120,10 @@ process.once("message", async (input: { endpoint: string; url: string; scope: "m
       }
     });
     const main = tab.getByRole("main");
-    const useMain = input.scope !== "page" && await main.count() > 0;
+    // A main landmark that stayed empty (the application renders elsewhere)
+    // would read as an empty page; read the body's rendered text instead.
+    const useMain = input.scope !== "page" && await main.count() > 0
+      && !!(await main.first().innerText({ timeout: 5000 }).catch(() => "")).trim();
     const root = useMain ? main.first() : tab.locator("body");
     let content: string;
     let format = "accessibility";
@@ -86,7 +155,7 @@ process.once("message", async (input: { endpoint: string; url: string; scope: "m
       } else content = await root.ariaSnapshot({ timeout: 5000 });
     } else content = await tab.ariaSnapshot({ mode: "default", depth: 20, timeout: 5000 });
     reply = { ok: true, value: { url: tab.url(), httpStatus, contentType, title: (await tab.title()).slice(0, 1000), scope: useMain ? "main" : "page",
-      format, content: content.slice(0, 1000000), truncated: content.length > 1000000 } };
+      format, content: content.slice(0, 1000000), truncated: content.length > 1000000, ...(notices.length ? { notice: notices.join(" ") } : {}) } };
   } catch (error) { reply = { ok: false, message: error instanceof Error ? error.message : String(error) }; }
   finally {
     await session?.stop().catch(() => undefined);

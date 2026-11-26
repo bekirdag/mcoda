@@ -208,3 +208,33 @@ test('raw arm does not start a retry inside its final-answer reserve',async()=>{
   {wait:async ms=>{clock+=ms;},now:()=>clock,deadlineAt:600_000,cutoffAt:1_000}),error=>error.code==='final_answer_reserve'&&error.cutoff===true);
  assert.equal(calls,2,'the 500 ms wait fits before the reserve, the 2 s one does not');
 });
+
+test('raw research session can always reach a page reader without guessing a discovery query',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'appbuild-research-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const research={effort:'low',deadlineMs:10000,writes:false,web:true,media:false};
+ const initialTools=['read_file','calculate','docdex_search','docdex_open','calendar_calculate','transform_text'];
+ const tools=await createWorkflowTools({workspace:root,execution:research,resolved:{config:{}},initialTools,startDocdex:async()=>{throw Error('not needed');}});
+ // A scripted raw model asks a discovery query that does not rank the browser, then opens a page.
+ const requests=[],receipts=[];
+ const execute=async(call,signal)=>{const receipt=await tools.execute(call,signal);receipts.push(receipt);return receipt;};
+ await runRawWorkflow({messages:[{role:'user',content:'Which harbour pilots changed their tide-window rules this spring?'}],limits:{maxSteps:4,maxToolCalls:4,maxOutputTokens:512},contextWindow:65536,tools:{...tools,execute},
+  provider:{generate:async request=>{requests.push(request.tools.map(tool=>tool.name));
+   if(requests.length===1)return {message:{role:'assistant',content:''},toolCalls:[{id:'q',name:'tools_describe',args:{query:'harbour pilot tide window regulations'}}]};
+   if(requests.length===2)return {message:{role:'assistant',content:''},toolCalls:[{id:'o',name:'browser_open',args:{url:'not a url'}}]};
+   return {message:{role:'assistant',content:'done'}};}}});
+ for(const name of ['docdex_web_research','browser_open','browser_read'])assert.ok(requests[0].includes(name),name);
+ // The page reader is callable: it judges the URL, it does not refuse an unadvertised tool.
+ const opened=receipts.at(-1);
+ assert.equal(opened.ok,false);assert.doesNotMatch(opened.error.message,/Unadvertised/);assert.match(opened.error.message,/http or https URL/);
+ // No web permission: no web tools at all.
+ const offline=await createWorkflowTools({workspace:root,execution:{...research,web:false},resolved:{config:{}},initialTools,startDocdex:async()=>{throw Error('not needed');}});
+ assert.ok(!offline.schemas().some(tool=>['docdex_web_research','browser_open','browser_read'].includes(tool.name)));
+ // A writing session discovers web tools; loading search brings the page reader with it, as in the candidate.
+ const build=await createWorkflowTools({workspace:root,execution:{...research,writes:true},resolved:{config:{}},startDocdex:async()=>{throw Error('not needed');}});
+ assert.ok(!build.schemas().some(tool=>tool.name==='browser_open'));
+ assert.equal((await build.execute({id:'d',name:'tools_describe',args:{names:['docdex_web_research']}})).ok,true);
+ assert.ok(build.schemas().some(tool=>tool.name==='browser_open'));assert.ok(build.schemas().some(tool=>tool.name==='browser_read'));
+ // A guessed alias names the usable tools instead of a bare refusal.
+ const guessed=await tools.execute({id:'g',name:'tools_describe',args:{names:['web_search','browser_open']}});
+ assert.equal(guessed.ok,false);assert.match(guessed.error.message,/Available names from this request: \["browser_open"\]/);
+});

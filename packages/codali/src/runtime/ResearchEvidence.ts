@@ -155,6 +155,18 @@ export function evidenceReport(packets: ResearchPacket[], request: string, reaso
 
 const OPEN_POINT = /\b(?:unverified|not (?:been )?(?:independently )?verified|unconfirmed|(?:could not|couldn't|can ?not|cannot|was unable to|were unable to|unable to|failed to|did not manage to) (?:be )?(?:independently )?(?:verif(?:y|ied)|confirm(?:ed)?|find|found|locate[d]?|access(?:ed)?|retrieved?|determined?|establish(?:ed)?|open(?:ed)?)|no (?:primary|official|direct|reliable|authoritative) (?:source|page|document|record|figure|confirmation)s? (?:was|were|has been|have been|could be) (?:found|located|retrieved|identified)|(?:was|were) not found (?:during|in) (?:this|the|my) (?:research|search|investigation|review)|remains? (?:unclear|unconfirmed|to be (?:confirmed|verified|determined))|to be (?:confirmed|determined|verified)|tbd)\b/iu;
 
+/** A whole table cell that says the row's fact was not settled by the research. */
+const GAP_CELL = /^(?:(?:still |yet )?not (?:yet )?(?:been )?(?:established|found|located|confirmed|verified|determined|identified|retrieved)(?: (?:yet|in (?:this|the) (?:research|search)|from (?:a |any )?(?:primary|official) sources?))?|unverified|unconfirmed|no (?:primary |official )?(?:source|data|figure|record)s? found|to be (?:confirmed|determined|verified)|tbd|\?+)[.!]?$/iu;
+
+/** The row of a markdown table one of whose cells is a gap marker, as "cell — cell". */
+function tableGapRow(block: string): string | undefined {
+  const row = block.trim();
+  if (!row.startsWith("|") || /^\|[\s:|-]+\|?$/u.test(row)) return undefined;
+  const cells = row.replace(/^\||\|$/gu, "").split("|").map(cell => cell.replace(/\*\*|__|`/gu, "").replace(/\s+/gu, " ").trim());
+  if (cells.length < 2 || !cells.slice(1).some(cell => GAP_CELL.test(cell))) return undefined;
+  return cells.filter(cell => cell && !/^[-–—/]+$/u.test(cell)).join(" — ").slice(0, 240);
+}
+
 /** The points a research draft itself leaves open: the sentences or list items
  * in which it says something was not found, not verified or only alleged.
  * A draft that says so with time left has not finished its research; in cycle
@@ -164,6 +176,16 @@ export function openResearchPoints(draft: string, limit = 8): string[] {
   const points: string[] = [], seen = new Set<string>();
   for (const block of draft.split(/\n+/u)) {
     const line = block.replace(/^[\s>#*|-]+|[\s*|]+$/gu, "").replace(/\*\*/gu, "");
+    // A table of findings marks its gaps with a bare status cell ("Not
+    // established") rather than a sentence. In cycle 7 a draft with half its
+    // rows in that state was read as having no open points.
+    const gapRow = tableGapRow(block);
+    if (gapRow) {
+      const key = gapRow.toLowerCase().slice(0, 80);
+      if (!seen.has(key)) { seen.add(key); points.push(gapRow); }
+      if (points.length >= limit) return points;
+      continue;
+    }
     if (line.length < 12 || !OPEN_POINT.test(line)) continue;
     // Only the sentences that carry the admission, not the settled ones beside them.
     for (const sentence of line.split(/(?<=[.!?])\s+(?=[\p{Lu}\d"“(])/u).filter(part => OPEN_POINT.test(part))) {

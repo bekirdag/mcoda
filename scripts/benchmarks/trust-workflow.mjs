@@ -10,7 +10,7 @@ import { createShellTool } from '../../packages/codali/dist/tools/shell/ShellToo
 import { createIsolatedExecutor, executorStatus } from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
-import { fullTrustTools } from './trust-full-tools.mjs';
+import { fullTrustTools, exposeResearchWebTools } from './trust-full-tools.mjs';
 
 export const workflowShellAllowlist = ['git', 'rg', 'node', 'npm', 'pnpm', 'npx', 'python3', 'pytest', 'cargo', 'go', 'make', 'cmake', 'tsc', 'sh', 'bash', 'ls', 'cat', 'pwd', 'expr', 'printf', 'head', 'tail', 'sed', 'awk'];
 
@@ -51,6 +51,9 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
     if (name !== 'tools_describe' && !registry.list().some(tool => tool.name === name && tool.readOnly && ['read','web'].includes(permissionKind(toolDescriptorFor(tool))))) throw Error('Initial workflow tool is not permitted');
     exposed.add(name);
   }
+  // Raw-arm parity: a read-only web session is a research session; declare the
+  // candidate research route's web tools up front (search and page reader).
+  exposeResearchWebTools(registry, exposed, { research: execution.web && !execution.writes });
   const discover = registry.list().find(tool => tool.name === 'tools_describe');
   registry.unregister('tools_describe');
   registry.register({ ...discover, description: 'Find capabilities or load up to four named tools. Includes repository/web research, deterministic math/data, documents, planning skills, scoped files and shell, and local media when permitted. Loaded tools become directly callable.' });
@@ -67,12 +70,13 @@ export async function createWorkflowTools({ workspace, execution, resolved, medi
     }
   }
   return { registry, exposed,
-    schemas: () => registry.list().filter(tool => exposed.has(tool.name)).map(tool => ({ name: tool.name, description: tool.description.slice(0,140), inputSchema: compactToolSchema(tool.inputSchema) })),
+    schemas: () => (exposeResearchWebTools(registry, exposed), registry.list().filter(tool => exposed.has(tool.name))).map(tool => ({ name: tool.name, description: tool.description.slice(0,140), inputSchema: compactToolSchema(tool.inputSchema) })),
     async execute(call, signal) {
       signal?.throwIfAborted();
       await onToolEvent('tool_intent', { call });
       let receipt;
       try {
+      exposeResearchWebTools(registry, exposed);
       const tool = registry.list().find(tool => tool.name === call.name);
       if (!tool || !exposed.has(call.name)) throw Error('Unadvertised workflow tool call');
       await gate.authorize(toolDescriptorFor(tool), call.args, signal);

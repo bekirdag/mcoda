@@ -237,3 +237,51 @@ test("reopening a captured URL reuses its snapshot and many snapshots stay reada
   assert.match(JSON.parse((await read.handler({ snapshotId: first.snapshotId, offset: 0 }, { workspaceRoot: "." })).output).content, /Evidence page/);
   await assert.rejects(read.handler({ snapshotId: "missing", offset: 0 }, { workspaceRoot: "." }), /snap-1/);
 });
+
+test("script-rendered pages are read after they render, with collapsed sections expanded and marked", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 60000 }, async t => {
+  const server = createServer((request, response) => {
+    if (request.url === "/api/schedule") {
+      // The page's data arrives well after DOMContentLoaded, as in a single-page application.
+      setTimeout(() => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ rows: ["Container berth fee rises to 310 units per call from 1 April.", "Night pilotage is suspended at the inner basin."] })); }, 1500);
+      return;
+    }
+    response.setHeader("content-type", "text/html");
+    if (request.url === "/shell") {
+      // The main landmark stays empty; the application renders beside it.
+      response.end(`<title>Shell</title><main></main><div id="root"></div><script>setTimeout(()=>{document.getElementById('root').innerHTML='<h1>Port notice 7</h1><p>Anchorage B closes to tankers during dredging works.</p>'},400)</script>`);
+      return;
+    }
+    response.end(`<title>Harbour tariff</title><main><h1>Harbour tariff</h1><div id="app">Loading…</div>
+<details><summary>Regional surcharges</summary><p>Northern zone surcharge is 4.5 per cent.</p></details>
+<button aria-expanded="false" aria-controls="levy">Ferry levy</button><div id="levy" hidden><p>Ferry levy is 12 units per passenger.</p></div>
+<p style="display:none">DECOY HIDDEN CLAIM</p></main>
+<script>fetch('/api/schedule').then(r=>r.json()).then(d=>{document.getElementById('app').innerHTML=d.rows.map(r=>'<p>'+r+'</p>').join('')})</script>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const [open] = createBrowserTools({ executablePath: process.env.CODALI_TEST_BROWSER_BINARY });
+  const page = JSON.parse((await open.handler({ url: `${baseUrl}/` }, { workspaceRoot: "." })).output);
+  assert.equal(page.evidenceStatus, "retrieved");
+  assert.match(page.content, /Container berth fee rises to 310 units/);
+  assert.match(page.content, /Night pilotage is suspended/);
+  assert.match(page.content, /\[Collapsed section, expanded for reading\]\s*Northern zone surcharge is 4\.5 per cent/);
+  assert.match(page.content, /\[Collapsed section, expanded for reading\]\s*Ferry levy is 12 units/);
+  assert.doesNotMatch(page.content, /DECOY HIDDEN CLAIM/);
+  assert.match(page.sourceNotice, /2 collapsed sections were expanded/);
+  assert.match(page.sourceNotice, /builds its content with scripts/);
+  const shell = JSON.parse((await open.handler({ url: `${baseUrl}/shell` }, { workspaceRoot: "." })).output);
+  assert.equal(shell.evidenceStatus, "retrieved");
+  assert.match(shell.content, /Anchorage B closes to tankers/);
+});
+
+test("a short static page is not held back or labelled as script-rendered", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 45000 }, async t => {
+  const server = createServer((_request, response) => { response.setHeader("content-type", "text/html"); response.end("<main><p>Berth 4 is closed.</p></main>"); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const [open] = createBrowserTools({ executablePath: process.env.CODALI_TEST_BROWSER_BINARY });
+  const started = Date.now();
+  const page = JSON.parse((await open.handler({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}/` }, { workspaceRoot: "." })).output);
+  assert.match(page.content, /Berth 4 is closed/);
+  assert.equal(page.sourceNotice, undefined);
+  assert.ok(Date.now() - started < 20000);
+});

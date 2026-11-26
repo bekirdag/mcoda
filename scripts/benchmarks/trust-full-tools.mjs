@@ -37,9 +37,27 @@ export function fullTrustTools(registry, workspace, startDocdex, initialTools) {
     inputSchema:{type:'object',properties:{query:{type:'string',maxLength:500},names:{type:'array',items:{type:'string'},maxItems:4}},additionalProperties:false},
     handler:async({query,names})=>{
       const requested=names??(query?retrieveTools(query,registry.list().filter(tool=>tool.name!=='tools_describe'),4).map(item=>item.tool.name):undefined);
-      if(requested&&(requested.length>4||requested.some(name=>!registry.list().some(tool=>tool.name===name))))throw Error('Unknown tool');
+      if(requested?.length>4)throw Error('Describe at most four tool names per call');
+      // Same feedback as the candidate's tools_describe: name what was usable instead of a bare refusal.
+      if(requested?.some(name=>!registry.list().some(tool=>tool.name===name)))throw Error(`Unknown tool. Available names from this request: ${JSON.stringify(requested.filter(name=>registry.list().some(tool=>tool.name===name)))}. Retry only those names, or use tools_describe with a capability query to discover actual tool names. Do not invent aliases. No new tool was enabled.`);
       if(requested)requested.forEach(name=>exposed.add(name));
       return{output:JSON.stringify(registry.list().filter(tool=>!requested||requested.includes(tool.name)).map(tool=>({name:tool.name,description:tool.description.slice(0,requested?200:80),...(requested?{inputSchema:tool.inputSchema}:{})})))};
     }});
+  return exposed;
+}
+
+/** Web research tools the candidate declares up front on its research route
+ * (search plus the page reader). Kept together as the candidate does: search
+ * results invite opening pages, and opening pages needs search to find them. */
+export const RESEARCH_WEB_TOOLS=['docdex_web_research','browser_open','browser_read'];
+
+/** Raw-arm parity: a read-only web session declares the same web capabilities
+ * the candidate's research route declares, without the candidate's
+ * orchestration. Otherwise the raw model saw a page reader only when a
+ * tools_describe query happened to rank it in the top four. Any session that
+ * has loaded one of these tools also gets its companions, as the candidate does. */
+export function exposeResearchWebTools(registry,exposed,{research=false}={}){
+  const available=RESEARCH_WEB_TOOLS.filter(name=>registry.list().some(tool=>tool.name===name));
+  if(research||available.some(name=>exposed.has(name)))for(const name of available)exposed.add(name);
   return exposed;
 }
