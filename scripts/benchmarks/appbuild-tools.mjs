@@ -165,25 +165,37 @@ const modelErrorCode = error => error instanceof TypeError && error.message === 
 /** The same request again, unchanged: no added guidance, so it is not answer repair.
  * An outage is waited out exactly as Codali does (outageWaitMs: the ladder, then a
  * minute per retry, within 30 minutes and half the time left). */
-export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, now = Date.now, stall = { longestMs: 0 }, stallMs } = {}) {
+/** A regular request (or its retry wait) that would run into the final-answer
+ * reserve. It is given up so the tool-free final turn keeps the whole reserve. */
+const reserveCutoff = () => Object.assign(new Error('Model request reached the final-answer reserve'), { code: 'final_answer_reserve', cutoff: true });
+
+export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, cutoffAt, now = Date.now, stall = { longestMs: 0 }, stallMs } = {}) {
   let stalled = 0;
   for (let attempt = 0; ; attempt++) {
-    // The same allowance Codali gives each of its requests.
-    const allowance = stallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? 65536, stall.longestMs, stalled);
-    const timer = new AbortController(); const handle = setTimeout(() => timer.abort(), allowance); const started = now();
+    // The same allowance Codali gives each of its requests, sized by the time left as Codali does.
+    const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
+    const allowance = stallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? 65536, stall.longestMs, stalled, remainingMs);
+    // Codali bounds a request that is not the final one by its answer reserve; so does the raw arm.
+    const untilCutoff = cutoffAt === undefined ? Infinity : cutoffAt - now();
+    if (untilCutoff <= 0) throw reserveCutoff();
+    const cut = untilCutoff < allowance;
+    const timer = new AbortController(); const handle = setTimeout(() => timer.abort(), cut ? untilCutoff : allowance); const started = now();
     try {
       const dispatched = provider.generate({ ...request, signal: request.signal ? AbortSignal.any([request.signal, timer.signal]) : timer.signal });
       dispatched.catch(() => undefined);
-      const response = await Promise.race([dispatched, new Promise((_, reject) => timer.signal.addEventListener('abort', () => reject(Object.assign(new Error('Model request stalled'), { code: 'service_unavailable', stalled: true })), { once: true }))]);
+      const response = await Promise.race([dispatched, new Promise((_, reject) => timer.signal.addEventListener('abort', () => reject(cut ? reserveCutoff() : Object.assign(new Error('Model request stalled'), { code: 'service_unavailable', stalled: true })), { once: true }))]);
       stall.longestMs = Math.max(stall.longestMs, now() - started);
       return response;
     }
     catch (error) {
+      if (error?.cutoff) throw error;
       if (error?.stalled) stalled++;
       const code = modelErrorCode(error);
       const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
       const waitMs = RAW_OUTAGE_CODES.has(code) ? outageWaitMs(attempt, remainingMs) : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
       if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
+      // A retry that could only start inside the reserve is not made; the final turn follows.
+      if (cutoffAt !== undefined && now() + waitMs >= cutoffAt) throw reserveCutoff();
       await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}) });
       await wait(waitMs);
     }
@@ -191,23 +203,24 @@ export async function generateWithRetry(provider, request, { signal, wait = ms =
   }
 }
 
-export async function runRawWorkflow({ provider, tools, messages, limits, contextWindow = 32768, signal, onResponse = () => {}, onRetry, wait, deadlineAt, now = Date.now }) {
+export async function runRawWorkflow({ provider, tools, messages, limits, contextWindow = 32768, signal, onResponse = () => {}, onRetry, onCutoff = () => {}, wait, deadlineAt, now = Date.now }) {
   const transcript = structuredClone(messages); let toolCalls = 0; const stall = { longestMs: 0 };
   const finalAt = deadlineAt === undefined ? Infinity : deadlineAt - finalAnswerReserveMs(limits.timeoutMs);
+  const finalTurn = async step => {
+    transcript.push({ role: 'user', content: RAW_FINAL_ANSWER_NOTICE });
+    const compressed=compressProviderContext({messages:transcript,tools:[],maxTokens:limits.maxOutputTokens,temperature:0,signal},contextWindow,limits.maxOutputTokens);
+    if(compressed.archived.length){
+      if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
+      await tools.rememberContext(compressed.archived);
+    }
+    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now, stall });
+    await onResponse(response);
+    transcript.push(response.message);
+    return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript, finalizedAtDeadline: true };
+  };
   for (let step = 0; step < limits.maxSteps; step++) {
     signal?.throwIfAborted();
-    if (now() >= finalAt) {
-      transcript.push({ role: 'user', content: RAW_FINAL_ANSWER_NOTICE });
-      const compressed=compressProviderContext({messages:transcript,tools:[],maxTokens:limits.maxOutputTokens,temperature:0,signal},contextWindow,limits.maxOutputTokens);
-      if(compressed.archived.length){
-        if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
-        await tools.rememberContext(compressed.archived);
-      }
-      const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now, stall });
-      await onResponse(response);
-      transcript.push(response.message);
-      return { content: response.message.content, toolCalls, steps: step + 1, messages: transcript, finalizedAtDeadline: true };
-    }
+    if (now() >= finalAt) return finalTurn(step);
     // Keep the complete transcript for restoration; compress only inference input.
     // Include archive schema before budgeting so recovery cannot overflow the window.
     if (tools.registry?.list().some(tool=>tool.name==='context_read'))tools.exposed.add('context_read');
@@ -216,7 +229,16 @@ export async function runRawWorkflow({ provider, tools, messages, limits, contex
       if(!tools.rememberContext)throw Error('Context compression requires retrievable archive storage');
       await tools.rememberContext(compressed.archived);
     }
-    const response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, now, stall });
+    // A request still running when the reserve starts is given up, as Codali
+    // does (inspection_request_abandoned): raw 11 and 23 in cycle 7 sent their
+    // final notice with about 70 s left and ended empty.
+    let response;
+    try { response = await generateWithRetry(provider, compressed.request, { signal, onRetry, wait, deadlineAt, cutoffAt: Number.isFinite(finalAt) ? finalAt : undefined, now, stall }); }
+    catch (error) {
+      if (!error?.cutoff || signal?.aborted) throw error;
+      await onCutoff({ step, reserveMs: Math.max(0, deadlineAt - now()) });
+      return finalTurn(step);
+    }
     await onResponse(response);
     const calls = response.toolCalls ?? response.message.toolCalls ?? [];
     if (!calls.length) {

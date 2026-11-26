@@ -132,8 +132,25 @@ test('a failed follow-up retains earlier answers and usage and never dispatches 
   for(const {result} of results){
     t.after(()=>fs.rm(result.runtimeArchive,{recursive:true,force:true}));assert.match(result.error,/502|fixture failure/);
     assert.equal(result.turns.length,2);assert.equal(result.turns[0].content,'first retained answer');assert.equal(result.turns[0].usage.tokens,10);assert.ok(result.turns[1].error);
-    assert.ok(result.usage.tokens>10);assert.equal(result.usage.estimated,true);// Codali waits out a transient 502 (here bounded to two resends by CODALI_MODEL_OUTAGE_WAIT_MS); the raw arms send it once.
+    // A 502 error response produced nothing, so no arm keeps its reservation (.43; before, each kept an estimate).
+    assert.equal(result.usage.tokens,10);assert.equal(result.usage.estimated,false);assert.deepEqual(result.usage.pendingReservations,[]);// Codali waits out a transient 502 (here bounded to two resends by CODALI_MODEL_OUTAGE_WAIT_MS); the raw arms send it once.
     assert.equal(result.usage.modelCalls,result.arm==='codali_candidate'?4:2);
   }
   assert.ok(!seen.includes('must-never-dispatch'));const calls=seen.length;assert.equal((await run(args)).code,0);assert.equal(seen.length,calls);
+});
+
+test('a raw request that failed with no output releases its reservation, as Codali does',async()=>{
+  const limits={maxTotalTokens:5000,maxModelCalls:5,maxToolCalls:1,maxOutputTokens:400},events=[];
+  const accounting=workflowAccounting(limits,(type,data)=>events.push({type,data}));
+  await accounting.beforeRequest({id:'gateway-504'},{messages:[{role:'user',content:'Summarise the incident log'}],maxTokens:400});
+  assert.ok(accounting.snapshot().tokens>400);
+  assert.equal(await accounting.releaseFailedRequest('gateway-504',504),true);
+  assert.equal(accounting.snapshot().tokens,0);assert.equal(accounting.snapshot().modelCalls,1);
+  assert.deepEqual(accounting.snapshot().pendingReservations,[]);assert.equal(accounting.snapshot().estimated,false);
+  assert.equal(await accounting.releaseFailedRequest('gateway-504',504),false,'released once');
+  const failed=events.find(event=>event.type==='model_request_failed');assert.equal(failed.data.status,504);assert.ok(failed.data.releasedTokens>400);
+  const {benchmarkUsageAccounts}=await import('./trust-usage.mjs');
+  const request={requestId:'gateway-504',messages:[{role:'user',content:'Summarise the incident log'}],maxTokens:400};
+  const accounts=benchmarkUsageAccounts({arm:'raw_tools'},[{type:'model_request',data:{id:'gateway-504',configHash:'c',request}},{type:'model_request_failed',data:{id:'gateway-504',status:504}}]);
+  assert.equal(accounts.get('gateway-504').usage.totalTokens,0);
 });

@@ -22,7 +22,7 @@ import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type EffortBudget, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGrants, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
-import { ModelServiceError } from "../providers/ModelServiceError.js";
+import { ModelServiceError, failedWithoutOutput } from "../providers/ModelServiceError.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport, deadlineReport, interruptedReport } from "./CompletionReport.js";
 import { checkWrittenJavaScript, type WriteSyntaxCheck } from "./WriteSyntaxCheck.js";
@@ -202,12 +202,20 @@ export const appendWithSpaceWait = async <T>(write: () => Promise<T>, signal?: A
 };
 export const answerReserveMs = (timeoutMs: number, longestModelMs: number): number =>
   Math.min(timeoutMs * 0.5, Math.max(timeoutMs * 0.1, longestModelMs * 2.5 + 60_000, 60_000));
-/** First-attempt bound for the finalizing call, or undefined when two attempts
- * of at least 1.5x the slowest call (and 90 s) do not fit in the window. */
+/** First-attempt bound for the finalizing call: half the window when two
+ * attempts of at least 1.5x the slowest call (and 90 s) fit. When they do not,
+ * the first attempt still stops at that 1.5x as long as a retry would keep at
+ * least FINAL_RETRY_MIN_MS: in cycle 7 a final call with 400 s left (slowest
+ * call 151 s) got no bound, never returned, and a 19-minute-old draft was
+ * delivered at the deadline. Undefined when not even that fits. */
 export const finalAttemptMs = (windowMs: number, longestModelMs: number): number | undefined => {
   const attemptMs = Math.max(longestModelMs * 1.5, 90_000);
-  return Number.isFinite(windowMs) && windowMs >= attemptMs * 2 ? Math.round(windowMs / 2) : undefined;
+  if (!Number.isFinite(windowMs)) return undefined;
+  if (windowMs >= attemptMs * 2) return Math.round(windowMs / 2);
+  return windowMs - attemptMs >= FINAL_RETRY_MIN_MS ? Math.round(attemptMs) : undefined;
 };
+/** The least time a retry of a stalled final call is worth starting with. */
+export const FINAL_RETRY_MIN_MS = 60_000;
 const numbersIn = (text: string): number[] => (text.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? []).map(Number).filter(Number.isFinite);
 /** Whether every number in a draft is a value a passing verify_javascript run
  * returned. Such a draft comes from executed code that matched the model's own
@@ -1185,8 +1193,8 @@ export class SessionController {
   }
 
   /** Time one model request may stay unanswered; a method so a host or a test can scale it. */
-  protected stallAllowanceMs(inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts: number): number {
-    return modelStallAllowanceMs(inputTokens, maxOutputTokens, longestModelMs, stalledAttempts);
+  protected stallAllowanceMs(inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts: number, remainingMs = Infinity): number {
+    return modelStallAllowanceMs(inputTokens, maxOutputTokens, longestModelMs, stalledAttempts, remainingMs);
   }
   private provider(binding = "lead", addGoal = true, recoveryAttempt = 0, capacityWaitedMs = 0, stalledAttempts = 0, outageStartedAt?: number): Provider {
     const lead = binding === "lead" && addGoal;
@@ -1345,7 +1353,9 @@ export class SessionController {
       // No request may wait for ever: a stalled one is abandoned and takes the
       // outage path below, which retries it with a longer allowance.
       const stall = new AbortController();
-      const stallMs = this.options.modelStallMs ?? this.stallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts);
+      // A time-limited turn sizes the allowance by the time it has left.
+      const stallRemainingMs = limits.timeoutMs ? Math.max(0, limits.timeoutMs - (Date.now() - this.budgetStartedAt)) : Infinity;
+      const stallMs = this.options.modelStallMs ?? this.stallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts, stallRemainingMs);
       const stallTimer = setTimeout(() => stall.abort(), stallMs);
       // The turn's own signal too: a request must not outlive the turn that sent it
       // (an abandoned final call kept a server slot and its stall timer busy).
@@ -1411,6 +1421,15 @@ export class SessionController {
             this.usage.modelCalls--;
             this.reservations.delete(id);
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("usage", { usage: this.usageSnapshot() });
+          } else if (failedWithoutOutput(error) && this.reservations.has(id)) {
+            // The service answered with a definite failure and no output (a
+            // gateway 504, a scheduler that expired before dispatch): nothing
+            // usable was produced, so its reservation is not spent. The call
+            // itself still counts as made.
+            this.usage.tokens -= this.reservations.get(id)!;
+            this.reservations.delete(id);
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "failed_without_output", releasedTokens: reserve, sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("usage", { usage: this.usageSnapshot() });
           } else {
             // A failed transport may have executed remotely. Keep its reservation

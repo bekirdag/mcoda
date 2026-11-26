@@ -8,6 +8,7 @@ import { SessionController } from '../../packages/codali/dist/runtime/SessionCon
 import { fitOutputBudget } from '../../packages/codali/dist/runtime/ContextCompression.js';
 import { ConfiguredProvider } from '../../packages/codali/dist/providers/ConfiguredProvider.js';
 import { generateWithCapacityWait } from '../../packages/codali/dist/providers/ModelCapacityWait.js';
+import { failedWithoutOutput } from '../../packages/codali/dist/providers/ModelServiceError.js';
 import { connectBenchmarkDocdex } from './shared-docdex.mjs';
 import { MediaJobStore } from '../../packages/codali/dist/connectors/media/MediaJobStore.js';
 import { loadOrchestrationConfig, resolveBinding } from '../../packages/codali/dist/config/OrchestrationConfig.js';
@@ -75,7 +76,10 @@ try{
   const configuredProvider=new ConfiguredProvider(resolved,'lead',{effort:task.execution.effort,
     beforeRequest:(invocation,...rest)=>{lastInvocationId=invocation.id;return accounting.beforeRequest(invocation,...rest);},afterRequest:(...args)=>accounting.afterRequest(...args)});
   // Same remaining-budget negotiation as the candidate, after raw-loop context compression.
-  const provider={name:configuredProvider.name,supportsToolCalls:configuredProvider.supportsToolCalls,generate:request=>generateWithCapacityWait(next=>configuredProvider.generate(fitOutputBudget(next,limits.maxTotalTokens-accounting.snapshot().tokens,limits.maxOutputTokens)),request,{onWait:details=>{accounting.cancelRequest(lastInvocationId);emit('model_capacity_wait',{attempt:details.attempt,waitMs:details.waitMs,waitedMs:details.waitedMs});}})};
+  // A definite service failure with no output releases its reservation, as in Codali.
+  const dispatch=async next=>{lastInvocationId=undefined;try{return await configuredProvider.generate(fitOutputBudget(next,limits.maxTotalTokens-accounting.snapshot().tokens,limits.maxOutputTokens));}
+    catch(cause){if(lastInvocationId&&failedWithoutOutput(cause))await accounting.releaseFailedRequest(lastInvocationId,cause.status??cause.cause?.status);throw cause;}};
+  const provider={name:configuredProvider.name,supportsToolCalls:configuredProvider.supportsToolCalls,generate:request=>generateWithCapacityWait(dispatch,request,{onWait:details=>{accounting.cancelRequest(lastInvocationId);emit('model_capacity_wait',{attempt:details.attempt,waitMs:details.waitMs,waitedMs:details.waitedMs});}})};
   const makeRawTools=()=>createWorkflowTools({workspace,execution:task.execution,resolved,mediaStore:rawStore,initialTools:resolved.config.interaction?.initialTools,
     onToolEvent:(...args)=>accounting.toolEvent(...args),startDocdex:async()=>{
       const client=await connectBenchmarkDocdex({workspace,resolved,signal:abort.signal});
@@ -111,7 +115,7 @@ try{
         if(arm==='raw_direct'){
           const response=await provider.generate({messages,maxTokens:limits.maxOutputTokens,temperature:0,signal:abort.signal});output=response.message.content;messages.push(response.message);
         }else{
-          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,onRetry:retry=>emit('raw_model_retry',retry),contextWindow:Math.min(...resolveBinding(resolved.config,"lead","chat.completions").map(candidate=>candidate.model.contextWindow)),signal:abort.signal,deadlineAt});output=answer.content;messages=answer.messages;
+          rawTools??=await makeRawTools();const answer=await runRawWorkflow({provider,tools:rawTools,messages,limits,onRetry:retry=>emit('raw_model_retry',retry),onCutoff:cut=>emit('raw_request_abandoned',{reason:'final_answer_reserve',...cut}),contextWindow:Math.min(...resolveBinding(resolved.config,"lead","chat.completions").map(candidate=>candidate.model.contextWindow)),signal:abort.signal,deadlineAt});output=answer.content;messages=answer.messages;
         }
         await fs.mkdir(storage,{recursive:true,mode:0o700});await fs.writeFile(path.join(storage,'raw-transcript.json'),JSON.stringify(messages),{mode:0o600});
       }

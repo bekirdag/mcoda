@@ -2175,6 +2175,74 @@ test("the stall allowance follows the model's pace and doubles on every stall of
   assert.ok(modelStallAllowanceMs(67_000, 65_536, 226_000) < 16 * 60_000);
 });
 
+test("a time-limited turn gives a lost request what it is expected to need, not ten minutes", async () => {
+  const { modelStallAllowanceMs } = await import("../OutageWait.js");
+  // A 20-minute ticket-triage turn with 14 minutes left: answered calls took up to 52 s, the
+  // prompt is 70k tokens and every request asks for 65k output. Ten minutes would be 70% of what is left.
+  const triage = modelStallAllowanceMs(70_000, 65_536, 52_000, 0, 14 * 60_000);
+  assert.equal(triage, 120_000 + 70_000);
+  assert.ok(triage < 600_000 / 3);
+  // Three times the slowest call when that is longer than scheduling plus the prompt read.
+  assert.equal(modelStallAllowanceMs(20_000, 65_536, 75_000, 0, 25 * 60_000), 225_000);
+  // Before any call has answered: a quarter of the time left, when that is longer.
+  assert.equal(modelStallAllowanceMs(30_000, 65_536, 0, 0, 22 * 60_000), 330_000);
+  // Never under scheduling plus the prompt read, however fast earlier calls were; a stall still doubles it.
+  assert.equal(modelStallAllowanceMs(1_000, 65_536, 4_000, 0, 5 * 60_000), 121_000);
+  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 1, 10 * 60_000), 380_000);
+  // Long work keeps the full allowance: a build with nine hours left, and an open-ended turn.
+  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 0, 9 * 3_600_000), 600_000);
+  assert.equal(modelStallAllowanceMs(70_000, 65_536, 240_000, 0, 9 * 3_600_000), 960_000);
+  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 0), 600_000);
+  // It is never longer than the open-ended allowance.
+  assert.equal(modelStallAllowanceMs(2_000, 256, 0, 0, 60_000), 122_000);
+  assert.ok(modelStallAllowanceMs(2_000, 256, 0, 0, 60_000) <= modelStallAllowanceMs(2_000, 256, 0));
+});
+
+test("a time-limited turn passes its remaining time to the stall allowance", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", timeoutMs: 18 * 60_000 };
+  const seen: Array<{ remaining: number; allowance: number }> = [];
+  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => reply("Seven.") }, config);
+  const outage = await import("../OutageWait.js");
+  t.mock.method(Object.getPrototypeOf(controller), "stallAllowanceMs", function (this: unknown, input: number, output: number, longest: number, stalls: number, remaining: number) {
+    const allowance = outage.modelStallAllowanceMs(input, output, longest, stalls, remaining);
+    seen.push({ remaining, allowance });
+    return allowance;
+  });
+  assert.equal((await controller.interact("What is 3+4?")).content, "Seven.");
+  assert.ok(seen.length >= 1);
+  assert.ok(seen[0].remaining > 17 * 60_000 && seen[0].remaining <= 18 * 60_000, `remaining ${seen[0].remaining}`);
+  assert.ok(seen[0].allowance < 600_000, `allowance ${seen[0].allowance}`);
+});
+
+test("a gateway failure with no output does not spend its token reservation", async t => {
+  for (const failure of [() => new Response(null, { status: 504 }), () => Response.json({ error: { code: "upstream_timeout" } }, { status: 503 })]) {
+    const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 60000 };
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+      if (++calls <= 2) throw await ModelServiceError.fromResponse(failure());
+      return reply("The shipment left on Tuesday.");
+    } }, config);
+    assert.equal((await controller.interact("When did the shipment leave?")).content, "The shipment left on Tuesday.");
+    assert.equal(calls, 3);
+    const released = events.filter(e => e.type === "model_receipt" && e.data.status === "failed_without_output");
+    assert.equal(released.length, 2);
+    assert.ok(released.every(e => Number(e.data.releasedTokens) > 2048));
+    assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 0);
+    // Only the answered call's reported tokens are spent; both failed calls still count as calls.
+    assert.equal(controller.usageSnapshot().tokens, 320);
+    assert.equal(controller.usageSnapshot().modelCalls, 3);
+    assert.equal(controller.usageSnapshot().estimated, false);
+  }
+  // A lost connection keeps its reservation: the request may have run remotely.
+  const { failedWithoutOutput } = await import("../../providers/ModelServiceError.js");
+  assert.equal(failedWithoutOutput(new TypeError("fetch failed")), false);
+  assert.equal(failedWithoutOutput(new ModelServiceError("service_unavailable", 504, undefined, false, "stalled")), false);
+  const partial = await ModelServiceError.fromResponse(new Response(null, { status: 502 })); partial.partialText = "The shipment";
+  assert.equal(failedWithoutOutput(partial), false);
+  assert.equal(failedWithoutOutput(await ModelServiceError.fromResponse(new Response(null, { status: 429 }))), false);
+});
+
 test("a stalled request does not count as the model's pace, and its retry waits twice as long", async t => {
   const config = structuredClone(base);
   let calls = 0; const allowances: number[] = [];

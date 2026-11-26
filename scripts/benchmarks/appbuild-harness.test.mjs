@@ -182,3 +182,29 @@ test('raw shell deletes a file inside its writePaths, as Codali does, and nothin
  assert.equal(await fs.readFile(path.join(root,'spec','order_spec.rb'),'utf8'),'# keep');
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
+
+test('raw arm gives up a request still running when its final-answer reserve starts',async()=>{
+ const timeoutMs=10_000,deadlineAt=Date.now()+timeoutMs,reserve=finalAnswerReserveMs(timeoutMs);
+ const limits={maxSteps:6,maxToolCalls:5,maxOutputTokens:512,timeoutMs};
+ const requests=[],cutoffs=[];let cutSignal=false;
+ const provider={generate:async request=>{
+  requests.push({tools:request.tools.length,last:request.messages.at(-1).content,leftMs:deadlineAt-Date.now()});
+  if(requests.length===1)return {message:{role:'assistant',content:''},toolCalls:[{id:'a',name:'read_file',args:{path:'ledger.csv'}}]};
+  // The second request never returns on its own; before this fix it held the turn until the deadline.
+  if(requests.length===2)return new Promise((_,reject)=>request.signal.addEventListener('abort',()=>{cutSignal=true;reject(new Error('aborted'));},{once:true}));
+  return {message:{role:'assistant',content:'Totals from the ledger read so far.'}};
+ }};
+ const result=await runRawWorkflow({messages:[{role:'user',content:'Reconcile the ledger'}],limits,contextWindow:65536,deadlineAt,signal:AbortSignal.timeout(timeoutMs),onCutoff:cut=>cutoffs.push(cut),
+  tools:{schemas:()=>[{name:'read_file',description:'',inputSchema:{type:'object'}}],execute:async()=>({ok:true,output:'date,amount'})},provider});
+ assert.equal(result.content,'Totals from the ledger read so far.');assert.equal(result.finalizedAtDeadline,true);
+ assert.ok(cutSignal,'the overrunning request was told to stop');assert.equal(cutoffs.length,1);
+ assert.equal(requests.length,3);assert.equal(requests[2].tools,0);assert.equal(requests[2].last,RAW_FINAL_ANSWER_NOTICE);
+ assert.ok(requests[2].leftMs>=reserve*0.5,`final turn started with ${requests[2].leftMs} ms of a ${reserve} ms reserve`);
+});
+
+test('raw arm does not start a retry inside its final-answer reserve',async()=>{
+ const fail=code=>Object.assign(Error(code),{code});let clock=0,calls=0;
+ await assert.rejects(generateWithRetry({generate:async()=>{calls++;throw fail('service_unavailable');}},{messages:[{role:'user',content:'Q'}]},
+  {wait:async ms=>{clock+=ms;},now:()=>clock,deadlineAt:600_000,cutoffAt:1_000}),error=>error.code==='final_answer_reserve'&&error.cutoff===true);
+ assert.equal(calls,2,'the 500 ms wait fits before the reserve, the 2 s one does not');
+});
