@@ -246,18 +246,34 @@ test("a declared output directory can be removed, recreated and renamed while it
   assert.equal(await fs.readFile(path.join(root, "gen.backup", "inventory_pb2.py"), "utf8"), "kept\n");
 });
 
-test("new files a command leaves next to its write path are removed and named", async t => {
+test("new files a command leaves next to its write path leave the workspace but are never deleted", async t => {
   const status = executorStatus();
   if (!status.available || status.backend !== "bubblewrap") { t.skip("Linux mount regression"); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-stray-root-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const quarantineRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codali-stray-quarantine-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(quarantineRoot, { recursive: true, force: true }); });
   await fs.mkdir(path.join(root, "reports")); await fs.writeFile(path.join(root, "pyproject.toml"), "[project]\n");
-  const execute = createIsolatedExecutor({ status });
-  const context = { workspaceRoot: root, allowedWritePaths: ["reports"], shellTimeoutMs: 5000 };
-  // A test-runner hook and a package-manager config at the root would change every later run.
-  await assert.rejects(execute("sh", ["-c", "echo 'import os' > conftest.py && mkdir -p .cfg && echo x > .cfg/npmrc && echo done > reports/summary.txt"], context),
-    error => /conftest\.py/.test(String(error)) && /Removed .*conftest\.py/.test(String(error)) && /\.cfg/.test(String(error)));
+  const execute = createIsolatedExecutor({ status, quarantineRoot });
+  const context = { workspaceRoot: root, allowedWritePaths: ["reports"], shellTimeoutMs: 10000 };
+  // A test-runner hook at the root would change every later run; meanwhile
+  // the user creates a notes directory there from another process.
+  const userEdit = (async () => {
+    while (!(await fs.stat(path.join(root, "reports", "started")).catch(() => undefined))) await new Promise(resolve => setTimeout(resolve, 20));
+    await fs.mkdir(path.join(root, "user-notes")); await fs.writeFile(path.join(root, "user-notes", "draft.md"), "my draft\n");
+  })();
+  let message = "";
+  await assert.rejects(execute("sh", ["-c", "touch reports/started; while [ ! -e user-notes/draft.md ]; do sleep 0.05; done; echo 'import os' > conftest.py; echo done > reports/summary.txt"], context),
+    error => { message = String(error); return true; });
+  await userEdit;
+  assert.match(message, /conftest\.py/); assert.match(message, /user-notes/);
+  assert.match(message, /Moved .* out of the workspace to /); assert.match(message, /move it back/);
+  // Nothing the command did not declare stays in the workspace...
   assert.deepEqual((await fs.readdir(root)).sort(), ["pyproject.toml", "reports"]);
+  // ...and nothing is lost: both entries sit in one quarantine directory, as they were.
+  const [incident] = await fs.readdir(quarantineRoot);
+  assert.ok(message.includes(path.join(quarantineRoot, incident)));
+  assert.equal(await fs.readFile(path.join(quarantineRoot, incident, "user-notes", "draft.md"), "utf8"), "my draft\n");
+  assert.equal(await fs.readFile(path.join(quarantineRoot, incident, "conftest.py"), "utf8"), "import os\n");
   assert.equal(await fs.readFile(path.join(root, "reports", "summary.txt"), "utf8"), "done\n");
 });
 

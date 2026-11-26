@@ -3339,7 +3339,7 @@ export class SessionController {
           },
           shellAllowlist: DEVELOPMENT_COMMANDS,
           shellIsolated: this.isolation.available,
-          shellExecutor: (command, args, context) => createIsolatedExecutor({ status: this.isolation, cacheRoot: path.join(path.dirname(this.store.storageDir), "package-cache"), scratchRoot: this.sessionId ? path.join(path.dirname(this.store.storageDir), "shell-scratch", this.sessionId) : undefined, network: this.options.allowNetwork ?? this.gate.profile === "full" })(command, args, { ...context, allowedWritePaths: this.currentReceipt?.writePaths ?? [], protectedPaths: [...this.immutableInputs(), ...this.currentReceipt?.readOnlySourcePaths ?? []] }),
+          shellExecutor: (command, args, context) => createIsolatedExecutor({ status: this.isolation, cacheRoot: path.join(path.dirname(this.store.storageDir), "package-cache"), quarantineRoot: path.join(path.dirname(this.store.storageDir), "quarantine"), scratchRoot: this.sessionId ? path.join(path.dirname(this.store.storageDir), "shell-scratch", this.sessionId) : undefined, network: this.options.allowNetwork ?? this.gate.profile === "full" })(command, args, { ...context, allowedWritePaths: this.currentReceipt?.writePaths ?? [], protectedPaths: [...this.immutableInputs(), ...this.currentReceipt?.readOnlySourcePaths ?? []] }),
           recordTouchedFile: file => { this.touched.add(file); },
           onOutput: (stream, content) => { void this.emit("process_output", { stream, content }, false).catch(() => undefined); },
         },
