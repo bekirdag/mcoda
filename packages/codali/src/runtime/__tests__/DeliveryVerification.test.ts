@@ -60,19 +60,20 @@ test("verification names requested delivery documents still missing and rejects 
 });
 
 // A greenhouse controller (written for this test) with ten documented setpoints.
-// Seventeen minutes before the deadline the review may spend two portions;
-// after one rejected review the next one gets half of that.
-test("review portions shrink as the deadline nears and after a rejected review", async t => {
+// Five minutes before the deadline the review may spend one portion. It keeps
+// its fixed size (8 checks) before and after a rejected review; the checks it
+// cannot reach are reported unreviewed, and the rejection does not shrink it.
+test("near the deadline a review keeps portion size, reports unreviewed checks and is not shrunk by a rejection", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-budget-"));
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-budget-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const zones = Array.from({ length: 10 }, (_, i) => `zone${i}`);
-  let step = 0; let attemptId = ""; let reviews = 0; const portionCounts: number[] = []; const results: Record<string, unknown>[] = [];
+  let step = 0; let attemptId = ""; let reviews = 0; const portionSizes: number[] = []; const results: Record<string, unknown>[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
     const contract = contractReviewFixture(request); if (contract) return contract;
     if (!request.tools?.length) {
       const input = JSON.parse(request.messages.at(-1)!.content);
-      portionCounts.push(input.checklistBatch?.count ?? 1);
+      portionSizes.push(input.contractChecklist.checks.length);
       return reply(reviews++ === 0 ? '{"passed":false,"findings":["zone0 setpoint is not shown."]}' : approvedReview(request));
     }
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
@@ -89,9 +90,9 @@ test("review portions shrink as the deadline nears and after a rejected review",
     }
   } };
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace",
-    deadlineAt: Date.now() + 17 * 60_000 });
+    deadlineAt: Date.now() + 5 * 60_000 });
   await controller.run("Write setpoints.txt with the greenhouse setpoints for every zone.");
   assert.equal(results[0].verified, false); assert.equal(results[1].verified, true);
-  assert.equal(portionCounts[0], 2, "eleven checks in two portions while two fit the time left");
-  assert.deepEqual(portionCounts.slice(1), [1], "after a rejection all checks share one portion");
+  assert.deepEqual(portionSizes, [8, 8], "one portion of eight checks each time, never all eleven in one call");
+  assert.match(String(results[1].unreviewedChecks), /3 lower-priority checks were not reviewed \(not rejected\)/);
 });

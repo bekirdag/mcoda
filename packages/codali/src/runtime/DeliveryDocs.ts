@@ -9,8 +9,11 @@ export const isDeliveryDocument = (file: string): boolean => /\.(?:md|markdown|m
 
 // A sentence that asks for a document to be delivered, and a mention that only
 // refers to one ("see the upstream CONTRIBUTING.md", "described in BRIEF.md").
-const DELIVER = /\b(?:deliver|write|create|provide|include|add|produce|ship|prepare|supply|document|update|maintain|keep)\w*\b/i;
-const REFERENCE = /\b(?:see|read|reads|reading|refer(?:s|ring)? to|per|from|according to|(?:described|specified|defined|listed|given) in|as in|upstream|existing|following|like)\s+(?:the\s+|an?\s+)?(?:[\w-]+\s+)?[`'"(\[*]?$/i;
+// "The repo should contain a README.md", "a README.md must explain …" and a list
+// under a "Deliverables:" line ask for one too.
+const DELIVER = /\b(?:deliver(?:able)?s?|deliver\w*|write|writes|written|create|creates|provide|provides|include|includes|add|adds|produce|ship|prepare|supply|document|update|maintain|keep|contain|contains|explain|explains|describe|describes|cover|covers|outputs?|artifacts?|should|must|shall|needs?|requires?|required)\b/i;
+const REFERENCE = /\b(?:see|read|reads|reading|refer(?:s|ring)? to|per|from|according to|(?:described|specified|defined|listed|given) in|as in|upstream|existing|like)\s+(?:the\s+|an?\s+)?(?:[\w-]+\s+)?[`'"(\[*]?$/i;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
 
 /** Markdown files the request asks to be delivered that do not exist yet.
  * Inputs and files the request only refers to are excluded. */
@@ -18,12 +21,22 @@ export function missingDeliveryDocuments(requestTexts: readonly string[], existi
   const existing = new Set(existingPaths.map(file => file.toLowerCase()));
   const inputs = new Set(inputPaths.map(file => file.toLowerCase()));
   const named = new Set<string>();
-  for (const sentence of requestTexts.flatMap(text => text.split(/(?<=[.!?])\s+|\n+/))) {
-    if (!DELIVER.test(sentence)) continue;
-    for (const match of sentence.matchAll(/(?:^|[\s`'"(\[*])((?:[\w-]+\/)*[\w.-]*[\w-]\.md)\b/gi)) {
-      const file = match[1].replace(/^\.\//, "");
-      if (REFERENCE.test(sentence.slice(0, match.index! + match[0].length - match[1].length))) continue;
-      if (!existing.has(file.toLowerCase()) && !inputs.has(file.toLowerCase())) named.add(file);
+  for (const text of requestTexts) {
+    let context = "";
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const item = LIST_ITEM.test(line);
+      if (!item) context = line;
+      // A list item reads with the line that introduces it ("Deliverables:").
+      for (const sentence of line.split(/(?<=[.!?])\s+/)) {
+        const gate = item ? `${context} ${sentence}` : sentence;
+        if (!DELIVER.test(gate)) continue;
+        for (const match of sentence.matchAll(/(?:^|[\s`'"(\[*])((?:[\w-]+\/)*[\w.-]*[\w-]\.md)\b/gi)) {
+          const file = match[1].replace(/^\.\//, "");
+          if (REFERENCE.test(sentence.slice(0, match.index! + match[0].length - match[1].length))) continue;
+          if (!existing.has(file.toLowerCase()) && !inputs.has(file.toLowerCase())) named.add(file);
+        }
+      }
     }
   }
   return [...named];

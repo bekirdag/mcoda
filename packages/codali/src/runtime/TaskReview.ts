@@ -12,8 +12,8 @@ export interface ReviewSourcePage {
 export interface TaskReviewResult {
   passed: boolean;
   findings: string[];
-  /** Set when the portion budget made the review sample delivered statements or enlarge portions. */
-  sampled?: { deliveredReviewed: number; deliveredTotal: number; checksPerPortion: number };
+  /** Checks the portion budget left unreviewed (not rejected). */
+  unreviewed?: { id: string; sourceId: string; expectedBehavior: string }[];
 }
 
 /** Read-only evidence requests share the caller's model budget and acceptance fence. */
