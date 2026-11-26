@@ -6,6 +6,18 @@ import os from 'node:os';
 
 const tmpDir = os.tmpdir();
 
+test('a timed-out command settles even when a descendant outside its group keeps the pipes open', { skip: process.platform !== 'linux' }, async () => {
+  // Fresh variant of the 3-hour run_code hang: the killed process group is gone, but
+  // a setsid'd descendant still holds stdout, so "close" would wait for it (60 s here).
+  const started = Date.now();
+  await assert.rejects(runProcess('/bin/sh', ['-c', 'echo begun; setsid sleep 60 & sleep 60'], { workspaceRoot: tmpDir, shellTimeoutMs: 300 }), (error: Error & { code?: string; details?: { stdout?: string } }) => {
+    assert.equal(error.code, 'tool_timeout');
+    assert.match(String(error.details?.stdout), /begun/);
+    return true;
+  });
+  assert.ok(Date.now() - started < 15_000, `settled after ${Date.now() - started} ms`);
+});
+
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     workspaceRoot: tmpDir,

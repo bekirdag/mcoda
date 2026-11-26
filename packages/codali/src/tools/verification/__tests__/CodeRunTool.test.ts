@@ -13,6 +13,23 @@ const run = (args: Record<string, unknown>) => {
   return registry.execute("run_code", args, { workspaceRoot: os.tmpdir() });
 };
 
+test("run_code always settles, even when the sandbox never returns", async () => {
+  // Simulated hung sandbox/child: the runner ignores the stop signal and never settles.
+  let stopped = false;
+  const registry = new ToolRegistry();
+  registry.register(createCodeRunTool({ settleGraceMs: 200, execute: (_command, _args, context) => {
+    context.signal?.addEventListener("abort", () => { stopped = true; });
+    return new Promise(() => undefined);
+  } }));
+  const started = Date.now();
+  const result = await registry.execute("run_code", { language: "python", source: "print(1)", timeoutSeconds: 1 }, { workspaceRoot: os.tmpdir() });
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(result.ok, true, result.error?.message);
+  const data = JSON.parse(result.output);
+  assert.equal(data.timedOut, true); assert.equal(data.exitCode, null);
+  assert.equal(stopped, true, "the runner is told to stop");
+});
+
 test("run_code is a read-only sandboxed tool", () => {
   assert.equal(permissionKind(toolDescriptorFor(createCodeRunTool())), "read");
 });
@@ -45,6 +62,13 @@ test("run_code runs a JavaScript module offline and bounds time", options, async
   const slow = JSON.parse((await run({ language: "python", source: "while True: pass", timeoutSeconds: 1 })).output);
   assert.equal(slow.timedOut, true);
   assert.equal((await run({ language: "ruby", source: "puts 1" })).ok, false);
+});
+
+test("the Python memory cap leaves room for a program with 200 threads", options, async () => {
+  // Fresh variant: a parallel Monte Carlo with 200 worker threads.
+  const source = "import threading\nresults = []\nlock = threading.Lock()\ndef work(i):\n    with lock:\n        results.append(i * i)\nthreads = [threading.Thread(target=work, args=(i,)) for i in range(200)]\nfor t in threads: t.start()\nfor t in threads: t.join()\nprint(len(results), sum(results))";
+  const data = JSON.parse((await run({ language: "python", source })).output);
+  assert.equal(data.exitCode, 0, data.stderr); assert.equal(data.stdout.trim(), "200 2646700");
 });
 
 test("run_code caps Python memory and reports the failure as a receipt", options, async () => {
