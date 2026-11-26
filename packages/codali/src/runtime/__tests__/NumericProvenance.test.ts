@@ -57,6 +57,23 @@ test("values printed by executed code are protected from a tool-less review; une
   assert.equal(decideReview('{"period": 2.3480}', '{"period": 6.2832}', "", results).verdict, "accept");
 });
 
+test("a review that adds places the receipts contradict is corrected from the receipt", () => {
+  // Fresh variant (regression pack): a buffer pH printed by code as 4.7569703; the draft
+  // dropped a trailing zero (4.757 for "4 dp"), and the review "refined" it to 4.7571.
+  const results = [code(1, "pH = 4.7569703\nvolume = 12.5")];
+  const merged = decideReview('{"bufferPh": 4.757, "volume": 12.5}', '{"bufferPh": 4.7571, "volume": 12.5}', "", results);
+  assert.equal(merged.verdict, "merge");
+  assert.deepEqual(merged.protectedFields.map(item => item.field), ["bufferPh"]);
+  assert.match(merged.answer, /"bufferPh":4\.7570\b/);
+  // Extra places that the receipt does show are a refinement and stand.
+  assert.match(decideReview('{"bufferPh": 4.757}', '{"bufferPh": 4.7570}', "", results).answer, /4\.7570/);
+  // Without an executed value behind the draft there is nothing to contradict.
+  assert.equal(decideReview('{"bufferPh": 4.757}', '{"bufferPh": 4.7571}', "", []).answer, '{"bufferPh": 4.7571}');
+  // Prose cannot be merged: the draft is kept.
+  const prose = decideReview("The buffer pH is 4.757.", "The buffer pH is 4.7571.", "", results);
+  assert.equal(prose.verdict, "keep"); assert.equal(prose.answer, "The buffer pH is 4.757.");
+});
+
 test("a calculated value the review contests is a dispute for an executed check, not a vote", () => {
   // Fresh variant: an M/M/2/4 help line whose draft used an Erlang-B style sum
   // through the calculator; the review proposes the finite-buffer value instead.

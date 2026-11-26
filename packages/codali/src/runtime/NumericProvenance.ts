@@ -225,6 +225,19 @@ const sameValue = (drafted: AnswerValue, revised: AnswerValue): boolean => draft
 /** A review value supports itself only by a direct match at no less precision than the draft. */
 const reviewBacking = (drafted: AnswerValue, revised: AnswerValue, results: ExecutedResult[], prompt: string): Backing | undefined =>
   decimals(revised.token) >= decimals(drafted.token) ? backingOf(revised, results, prompt, true) : undefined;
+/** A review that adds places to a drafted value ("2.004" -> "2.0041") claims the
+ * extra digits. When an executed result backs the drafted value but contradicts
+ * those digits (2.0040083 -> 2.0040), the receipt's value at the review's
+ * precision replaces both; undefined when there is nothing to contradict. */
+const receiptAtReviewPrecision = (drafted: AnswerValue, revised: AnswerValue, results: ExecutedResult[]): string | undefined => {
+  const places = decimals(revised.token);
+  if (places <= decimals(drafted.token) || places > 20 || backingOf(revised, results, "", true)) return undefined;
+  let nearest: number | undefined;
+  for (const result of results) for (const candidate of resultNumbers(result)) {
+    if (matches(drafted.token, drafted.value, candidate, true) && (nearest === undefined || Math.abs(candidate - drafted.value) < Math.abs(nearest - drafted.value))) nearest = candidate;
+  }
+  return nearest === undefined ? undefined : nearest.toFixed(places);
+};
 
 /** Decide a tool-less review's edits field by field, by which side executed
  * results support. A changed value is accepted when the review's value is itself
@@ -246,7 +259,14 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
     try { parsedRevised = parseKeepingTokens(document); } catch { parsedRevised = undefined; }
     for (const item of before.values) {
       const next = revisedByPath.get(item.path);
-      if (next && sameValue(item, next)) { if (next.token !== item.token) refined++; continue; }
+      if (next && sameValue(item, next)) {
+        const corrected = receiptAtReviewPrecision(item, next, results);
+        if (corrected !== undefined) {
+          protectedFields.push({ field: item.path, drafted: item.token, revised: next.token, backing: backingOf(item, results, prompt, true) });
+          restore.set(item.path, corrected); refined++;
+        } else if (next.token !== item.token) refined++;
+        continue;
+      }
       const nextBacking = next ? reviewBacking(item, next, results, prompt) : undefined;
       if (next && nextBacking) { acceptedChanges++; continue; }
       const backing = backingOf(item, results, prompt);
@@ -278,7 +298,13 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
   const introduced = after.values.filter(next => !before.values.some(item => sameValue(item, next)));
   const introducedBacked = introduced.some(next => backingOf(next, results, prompt, true));
   for (const item of before.values) {
-    if (after.values.some(next => sameValue(item, next))) continue;
+    const kept = after.values.find(next => sameValue(item, next));
+    // Extra places the receipts contradict are not a kept value (prose cannot be merged: keep the draft).
+    if (kept && receiptAtReviewPrecision(item, kept, results) !== undefined) {
+      protectedFields.push({ field: item.key ?? item.path, drafted: item.token, revised: kept.token, backing: backingOf(item, results, prompt, true) });
+      continue;
+    }
+    if (kept) continue;
     const backing = backingOf(item, results, prompt);
     if (!backing || introducedBacked) { acceptedChanges++; continue; }
     const dispute = { field: item.key ?? item.path, drafted: item.token, revised: introduced.map(next => next.token).join(", ") || null, backing };
