@@ -84,7 +84,7 @@ import { taskReviewContext } from "./TaskReviewContext.js";
 import { captureWorkspace, changedWorkspacePaths, hashWorkspacePath, workspaceGit, type WorkspaceSnapshot } from "./WorkspaceSnapshot.js";
 import { WorkspaceLedger } from "./WorkspaceLedger.js";
 import { registerSecretValue, StreamingSecretRedactor } from "./SecretRedaction.js";
-import { analysisTarget, isDependencyArtifact, isSourcePath, isWithinScope, missingStructuralEvidence, validAnalysisResult, workspaceRelativePath, writableInventory, type StructuralAnalysis } from "./StructuralEvidence.js";
+import { analysisTarget, isDependencyArtifact, isGeneratedOutput, isSourcePath, isWithinScope, missingStructuralEvidence, validAnalysisResult, workspaceRelativePath, writableInventory, type StructuralAnalysis } from "./StructuralEvidence.js";
 import { redactSecretValues, sanitizeArgs } from "../gateway/GatewayTracer.js";
 import { MediaJobStore } from "../connectors/media/MediaJobStore.js";
 import { createConfiguredMediaTools, mediaJobSummary } from "../connectors/media/ConfiguredMediaTools.js";
@@ -400,6 +400,8 @@ export class SessionController {
   /** Whole-file specialist drafts awaiting write_file, and paths a specialist was asked about. */
   private drafts = new Map<string, { path: string; content: string }>();
   private touched = new Set<string>();
+  /** Content hashes of files this session's own commands wrote inside declared write paths. */
+  private sessionWritten = new Map<string, string>();
   private currentReceipt?: InvocationReceipt;
   private persistence = Promise.resolve();
   private persistenceError?: unknown;
@@ -459,7 +461,7 @@ export class SessionController {
   private get fencePath(): string { return path.join(path.dirname(this.store.storageDir), "workspace-invocation.json"); }
   private resetSessionState(): void {
     this.unfinished = undefined; this.continuation = undefined;
-    this.messages = []; this.conversation = []; this.budgetStart = { tokens: 0, modelCalls: 0, toolCalls: 0 }; this.receipts.clear(); this.observed.clear(); this.touched.clear();
+    this.messages = []; this.conversation = []; this.budgetStart = { tokens: 0, modelCalls: 0, toolCalls: 0 }; this.receipts.clear(); this.observed.clear(); this.touched.clear(); this.sessionWritten.clear();
     this.created.clear(); this.pendingCreation = undefined; this.drafts.clear();
     this.contextArchive.clear();
     this.outputStreams.clear();
@@ -1087,9 +1089,9 @@ export class SessionController {
     // revision only slows a new build. The check above still stops it from
     // overwriting content it has not seen, and later tasks get full checks.
     const running = this.state?.tasks.find(task => task.status === "running");
-    // Build output (build/, dist/, out/, coverage/, minified bundles) is produced
-    // from other files; nothing calls into it, so there is nothing to analyse.
-    const generated = /^(?:build|dist|out|coverage|\.next|\.nuxt)\//.test(file) || /\.min\.(?:js|css)$|\.map$/.test(file);
+    // Build output is produced from other files; nothing calls into it, so
+    // there is nothing to analyse.
+    const generated = isGeneratedOutput(file);
     if (this.docdex && !generated && !(running && this.created.get(file) === running.id)) {
       const missing = missingStructuralEvidence(file, actual, this.receipts.values());
       if (missing.length) throw new ToolExecutionError("tool_permission_denied", `Fresh ${missing.join(" and ")} analysis required for ${file}: call docdex_symbols (or docdex_ast) and docdex_impact_graph before editing. Failed/skipped analysis does not count. ${preparation}`);
@@ -1544,7 +1546,10 @@ export class SessionController {
       Object.assign(this.previousSnapshot.hashes, await writableInventory(this.workspaceRoot, writePaths ?? [], 20_000, this.immutableInputs()));
       const file = typeof data.path === "string" ? path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.path)).split(path.sep).join("/") : undefined;
       if (kind === "shell") for (const [candidate, actual] of Object.entries(this.previousSnapshot.hashes)) {
-        if (isSourcePath(candidate) && !isDependencyArtifact(candidate) && isWithinScope(candidate, writePaths ?? []) && !this.immutableInputs().some(input => candidate === input || candidate.startsWith(`${input}/`))) {
+        // Build output and files this session's own commands produced (and
+        // nothing has changed since) are not authored source to protect.
+        if (isSourcePath(candidate) && !isDependencyArtifact(candidate) && !isGeneratedOutput(candidate) && this.sessionWritten.get(candidate) !== actual
+          && isWithinScope(candidate, writePaths ?? []) && !this.immutableInputs().some(input => candidate === input || candidate.startsWith(`${input}/`))) {
           try { this.assertEditEvidence(candidate, actual); }
           catch (error) {
             // Explicit file edits still require preparation. A broad directory
@@ -1580,19 +1585,38 @@ export class SessionController {
     let workspaceConflict: string | undefined;
     let changedOwnedFiles = false;
     if (invoked && ["write", "shell"].includes(permissionKind(tool))) {
-      const next = await captureWorkspace(this.workspaceRoot);
-      Object.assign(next.hashes, await writableInventory(this.workspaceRoot, pending.writePaths ?? [], 20_000, this.immutableInputs()));
-      // Explicit writes can include ignored files, including files deleted by the command.
-      if (this.previousSnapshot) for (const file of Object.keys(this.previousSnapshot.hashes)) if (!(file in next.hashes)) {
-        const actual = await hashWorkspacePath(this.workspaceRoot, file);
-        if (actual !== "missing") next.hashes[file] = actual;
+      // A conflict found here fails this call only: the model sees which files
+      // changed and how to recover, and the turn goes on.
+      const protectedChanged: string[] = [], outsideChanged: string[] = [];
+      try {
+        const next = await captureWorkspace(this.workspaceRoot);
+        Object.assign(next.hashes, await writableInventory(this.workspaceRoot, pending.writePaths ?? [], 20_000, this.immutableInputs()));
+        // Explicit writes can include ignored files, including files deleted by the command.
+        if (this.previousSnapshot) for (const file of Object.keys(this.previousSnapshot.hashes)) if (!(file in next.hashes)) {
+          const actual = await hashWorkspacePath(this.workspaceRoot, file);
+          if (actual !== "missing") next.hashes[file] = actual;
+        }
+        if (this.previousSnapshot) for (const file of changedWorkspacePaths(this.previousSnapshot, next)) {
+          if (pending.readOnlySourcePaths?.includes(file)) protectedChanged.push(file);
+          else if (!isWithinScope(file, pending.writePaths ?? [])) outsideChanged.push(file);
+          else {
+            this.touched.add(file); changedOwnedFiles = true;
+            const written = next.hashes[file];
+            if (written && written !== "missing") this.sessionWritten.set(file, written); else this.sessionWritten.delete(file);
+          }
+        }
+        this.previousSnapshot = next;
+      } catch (error) {
+        workspaceConflict = `Codali could not check the workspace after ${tool.name}, so this call is not accepted: ${error instanceof Error ? error.message : String(error)}. The command may have changed files inside its write paths. Inspect them (read-only run_shell or read_file), then retry with narrower writePaths or without hard links (copy files instead of linking them).`;
       }
-      if (this.previousSnapshot) for (const file of changedWorkspacePaths(this.previousSnapshot, next)) {
-        if (pending.readOnlySourcePaths?.includes(file)) workspaceConflict = `Protected source changed during ${tool.name}: ${file}. Inspect concurrent edits before continuing.`;
-        else if (!isWithinScope(file, pending.writePaths ?? [])) workspaceConflict = `Workspace changed outside declared write paths during ${tool.name}: ${file}. Inspect concurrent edits before continuing.`;
-        else { this.touched.add(file); changedOwnedFiles = true; }
+      const list = (files: string[]) => files.slice(0, 10).map(file => JSON.stringify(file)).join(", ") + (files.length > 10 ? ` and ${files.length - 10} more` : "");
+      if (protectedChanged.length) workspaceConflict = `Protected source changed during ${tool.name}: ${list(protectedChanged)}. This session had not prepared these source files, so they were mounted read-only, yet their content at that path changed (for example a command moved a directory holding them and recreated it). This call failed; nothing else was rolled back. Before changing such a file, call prepare_edit with its path, then edit it with write_file or name the exact file in writePaths. If the change was not intended, restore the file's previous content first.`;
+      if (outsideChanged.length) workspaceConflict = `${workspaceConflict ? `${workspaceConflict}\n` : ""}Workspace changed outside the declared write paths during ${tool.name}: ${list(outsideChanged)} (writePaths: ${(pending.writePaths ?? []).join(", ") || "none"}). This call failed. Inspect these files; another process may have edited them. If this command changed them, retry with each path in writePaths (within the claimed task scope).`;
+      if (workspaceConflict) {
+        const prior = result.ok ? result.output : result.error?.message;
+        result.ok = false;
+        result.error = new ToolExecutionError("tool_permission_denied", `${workspaceConflict}${prior ? `\n\nCommand output:\n${validationOutputExcerpt(prior, 4000)}` : ""}`, { retryable: false, details: { ...result.error?.details, protectedChanged, outsideChanged } }).toToolError();
       }
-      this.previousSnapshot = next;
       await this.emit("files_touched", { paths: [...this.touched] });
     }
     if (result.ok && tool.name === "read_file" && typeof data.path === "string") this.observed.set((typeof argsObject(result.data).path === "string" ? String(argsObject(result.data).path) : path.relative(this.workspaceRoot, path.resolve(this.workspaceRoot, data.path))).split(path.sep).join("/"), hash(result.output));
@@ -1627,7 +1651,8 @@ export class SessionController {
     }
     if (pending.analysis) pending.analysis.valid = result.ok && pending.analysis.hash === await hashWorkspacePath(this.workspaceRoot, pending.analysis.file) && validAnalysisResult(pending.analysis.kind, result.data, pending.analysis.file);
     if (tool.name === "run_shell" && pending.readOnlySourcePaths?.length) {
-      const guidance = `Source files without current edit preparation were kept read-only (${pending.readOnlySourcePaths.length} files). To change source, use prepare_edit then write_file, or prepare the exact shell write paths. Data/build outputs within the claimed scope remain writable.`;
+      const shown = pending.readOnlySourcePaths.slice(0, 5).join(", ") + (pending.readOnlySourcePaths.length > 5 ? ", ..." : "");
+      const guidance = `Source files without current edit preparation were kept read-only (${pending.readOnlySourcePaths.length} files: ${shown}). They cannot be changed, removed or renamed, nor can a directory that holds them. To change one, call prepare_edit with its path, then use write_file or name the exact file in writePaths. Build output (dist/, coverage/, root build/ and out/, minified bundles, source maps), files this session's commands wrote (until something else changes them) and non-source files in the write paths stay writable.`;
       if (result.ok) result.output += `\n[Scope: ${guidance}]`;
       else if (result.error) result.error.message += `\n${guidance}`;
     }
@@ -1651,7 +1676,6 @@ export class SessionController {
     await this.emit("tool_receipt", { receipt });
     if (uncertain) this.active?.abort(new Error(`Uncertain remote operation ${receipt.id}; reconcile the observed outcome before continuing`));
     else await this.clearFence(receipt.id);
-    if (workspaceConflict) throw new Error(workspaceConflict);
     if (!uncertain && tool.name === "run_shell" && isVerificationCommand(args)) await this.applyVerificationGuide();
     const acceptedVerification = tool.name === "work_verify" && this.state?.tasks.some(task => task.id === data.taskId && task.status === "verified");
     if (result.ok && (changedOwnedFiles || acceptedVerification) && this.finalAttempts > 0) {

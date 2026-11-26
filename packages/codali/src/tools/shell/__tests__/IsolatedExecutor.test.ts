@@ -214,3 +214,56 @@ test("offline Linux commands resolve localhost without access to host loopback s
   const result=await createIsolatedExecutor({status})('node',['-e',script],{workspaceRoot:root,shellTimeoutMs:5000});
   assert.match(result.output,/resolved; host loopback denied/);
 });
+
+test("a declared output directory can be removed, recreated and renamed while its neighbours stay protected", async t => {
+  const status = executorStatus();
+  if (!status.available || status.backend !== "bubblewrap") { t.skip("Linux mount regression"); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-output-root-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "gen")); await fs.mkdir(path.join(root, "proto"));
+  await fs.writeFile(path.join(root, "gen", "inventory_pb2.py"), "# stale generated module\n");
+  await fs.writeFile(path.join(root, "proto", "inventory.proto"), "syntax = \"proto3\";\n");
+  await fs.writeFile(path.join(root, "setup.cfg"), "[metadata]\n");
+  const execute = createIsolatedExecutor({ status });
+  const context = { workspaceRoot: root, allowedWritePaths: ["gen"], shellTimeoutMs: 5000 };
+  // A generator that wipes its own output root before writing it again.
+  const regenerate = "const fs=require('fs');fs.rmSync('gen',{recursive:true,force:true});fs.mkdirSync('gen');fs.writeFileSync('gen/inventory_pb2.py','# regenerated\\n')";
+  await execute("node", ["-e", regenerate], context);
+  await execute("node", ["-e", regenerate], context);
+  assert.equal(await fs.readFile(path.join(root, "gen", "inventory_pb2.py"), "utf8"), "# regenerated\n");
+  await execute("sh", ["-c", "rm -rf gen && mkdir gen && echo again > gen/inventory_pb2.py"], context);
+  for (const script of ["fs.writeFileSync('setup.cfg','changed')", "fs.rmSync('proto',{recursive:true})", "fs.renameSync('proto','proto.old')", "fs.unlinkSync('setup.cfg')"]) {
+    await assert.rejects(execute("node", ["-e", `const fs=require('fs');${script}`], context));
+  }
+  assert.equal(await fs.readFile(path.join(root, "setup.cfg"), "utf8"), "[metadata]\n");
+  assert.equal(await fs.readFile(path.join(root, "proto", "inventory.proto"), "utf8"), "syntax = \"proto3\";\n");
+  // A rename target that does not exist yet may be declared.
+  await execute("sh", ["-c", "mv gen gen.previous && mkdir gen"], { ...context, allowedWritePaths: ["gen", "gen.previous"] });
+  assert.equal(await fs.readFile(path.join(root, "gen.previous", "inventory_pb2.py"), "utf8"), "again\n");
+  // An undeclared new name next to the write path fails the call and names it.
+  await assert.rejects(execute("sh", ["-c", "rm -rf gen.previous; mv gen gen.backup && mkdir gen"], { ...context, allowedWritePaths: ["gen", "gen.previous"] }), /gen\.backup.*outside its writePaths/);
+});
+
+test("a protected file cannot be moved away by renaming a directory that holds it", async t => {
+  const status = executorStatus();
+  if (!status.available || status.backend !== "bubblewrap") { t.skip("Linux mount regression"); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-protected-holder-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "lib", "core"), { recursive: true });
+  await fs.writeFile(path.join(root, "lib", "core", "ledger.rb"), "class Ledger; end\n");
+  const execute = createIsolatedExecutor({ status });
+  const context = { workspaceRoot: root, allowedWritePaths: ["lib"], protectedPaths: ["lib/core/ledger.rb"], shellTimeoutMs: 5000 };
+  await execute("sh", ["-c", "echo 'module Helpers; end' > lib/core/helpers.rb"], context);
+  assert.equal(await fs.readFile(path.join(root, "lib", "core", "helpers.rb"), "utf8"), "module Helpers; end\n");
+  for (const command of ["mv lib/core lib/core.bak && mkdir lib/core && echo replaced > lib/core/ledger.rb", "mv lib lib.bak", "rm -rf lib/core", "rm -f lib/core/ledger.rb"]) {
+    await assert.rejects(execute("sh", ["-c", command], context));
+    assert.equal(await fs.readFile(path.join(root, "lib", "core", "ledger.rb"), "utf8"), "class Ledger; end\n");
+  }
+});
+
+test("Darwin policy keeps directories that hold protected files from being renamed", () => {
+  const profile = darwinSandboxProfile("/Users/test/repo", "/private/tmp/codali-shell-9", ["/Users/test/repo/lib"], [], false, [], ["/Users/test/repo/lib/core/ledger.rb"]);
+  assert.ok(profile.includes('(deny file-write-unlink (literal "/Users/test/repo/lib/core"))'));
+  assert.ok(profile.includes('(deny file-write-unlink (literal "/Users/test/repo/lib"))'));
+  assert.ok(!profile.includes('(deny file-write-unlink (literal "/Users/test/repo"))'));
+});

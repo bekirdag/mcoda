@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync, readdirSync, mkdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
+import { type Dirent, existsSync, realpathSync, statSync, readdirSync, mkdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -42,6 +42,15 @@ export const darwinSandboxProfile = (root: string, scratch: string, writePaths: 
     ...writePaths.map(file => `(allow file-write* (subpath ${quoted(file)}))`),
     ...[".git", ".mcoda"].map(dir => `(deny file-write* (subpath ${quoted(path.join(root, dir))}))`),
     ...protectedPaths.map(file => `(deny file-write* (subpath ${quoted(file)}))`),
+    // Renaming a directory that holds a protected file would move the file
+    // away and let the command recreate its path with other content.
+    ...[...new Set(protectedPaths.flatMap(file => {
+      const holders: string[] = [];
+      for (let directory = path.dirname(file); directory !== root && directory.startsWith(`${root}/`); directory = path.dirname(directory)) {
+        if (writePaths.some(scope => directory === scope || directory.startsWith(`${scope}/`))) holders.push(directory);
+      }
+      return holders;
+    }))].map(directory => `(deny file-write-unlink (literal ${quoted(directory)}))`),
     network ? "(allow network*)" : "(deny network*)",
   ].join("\n");
 };
@@ -117,6 +126,64 @@ const preparePackageCache = async (requested: string, workspace: string, label =
   return real;
 };
 
+const within = (file: string, directory: string): boolean => file === directory || file.startsWith(`${directory}${path.sep}`);
+
+export interface WorkspaceMounts {
+  /** In mount order: a parent always comes before anything inside it. */
+  mounts: Array<{ path: string; writable: boolean }>;
+  /** Write paths mounted on themselves: their contents are writable, the path itself cannot be removed or renamed. */
+  inPlace: string[];
+  /** Entries that appeared during the command in an opened parent and are not write paths. */
+  createdOutside: () => string[];
+}
+
+/**
+ * Linux mount plan for the workspace, which is already mounted read-only.
+ * A write path mounted on itself becomes a mount point: `rm -rf dist` or
+ * `fs.rmSync(outDir)` then fails with EBUSY and `mv dist dist.old` cannot
+ * work. So the parent of a write path is opened instead, and every other entry
+ * of that parent is mounted read-only on itself, which keeps those entries
+ * from being changed, removed or renamed. A parent can still gain new names;
+ * createdOutside reports them after the command. Every directory inside a
+ * write path that holds a protected file is a mount point, so renaming an
+ * ancestor cannot move the protected file away and recreate the path.
+ */
+export const mountWorkspace = (root: string, writePaths: string[], protectedPaths: string[] = [], maxParentEntries = 4096): WorkspaceMounts => {
+  const rank = { "read-only": 0, parent: 1, write: 2 } as const;
+  const marks = new Map<string, keyof typeof rank>();
+  const mark = (file: string, kind: keyof typeof rank) => { const previous = marks.get(file); if (!previous || rank[kind] > rank[previous]) marks.set(file, kind); };
+  const writable = (file: string) => writePaths.some(scope => within(file, scope));
+  const parents = new Map<string, Set<string>>();
+  const inPlace: string[] = [];
+  for (const target of writePaths) {
+    const parent = path.dirname(target);
+    if (target === root) { mark(target, "write"); continue; }
+    if (writable(parent)) continue; // Already writable, and removable, through the enclosing write path.
+    let entries: Dirent[] | undefined;
+    try { entries = within(parent, root) ? readdirSync(parent, { withFileTypes: true }) : undefined; } catch { entries = undefined; }
+    // A symbolic link or special file cannot be protected by a mount on itself.
+    if (!entries || entries.length > maxParentEntries || entries.some(entry => !entry.isFile() && !entry.isDirectory() && !writePaths.includes(path.join(parent, entry.name)))) {
+      if (!existsSync(target)) throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory with create_directory (or file with write_file) before shell execution");
+      mark(target, "write"); inPlace.push(target); continue;
+    }
+    mark(parent, "parent");
+    parents.set(parent, new Set(entries.map(entry => entry.name)));
+    for (const entry of entries) { const file = path.join(parent, entry.name); if (!writePaths.includes(file)) mark(file, "read-only"); }
+  }
+  for (const file of protectedPaths) {
+    for (let directory = path.dirname(file); directory !== root && within(directory, root); directory = path.dirname(directory)) if (writable(directory)) mark(directory, "write");
+  }
+  const depth = (file: string) => file.split(path.sep).length;
+  return {
+    mounts: [...marks].sort(([a], [b]) => depth(a) - depth(b)).map(([file, kind]) => ({ path: file, writable: kind !== "read-only" })),
+    inPlace,
+    createdOutside: () => [...parents].flatMap(([parent, before]) => {
+      let names: string[]; try { names = readdirSync(parent); } catch { return []; }
+      return names.filter(name => !before.has(name) && !writable(path.join(parent, name))).map(name => path.join(parent, name));
+    }),
+  };
+};
+
 export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Host-owned scratch kept between calls of one session; never model arguments. */ scratchRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
   const status = options.status ?? executorStatus();
   return async (command, args, context) => {
@@ -151,8 +218,12 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
       // A declared output directory that does not exist yet (dist/, data/) is
       // created rather than refused; a missing file still has to be written first.
       if (!existsSync(requested) && (/[\\/]$/.test(file) || !path.extname(requested))) mkdirSync(requested, { recursive: true });
-      if (!existsSync(requested)) throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory with create_directory (or file with write_file) before shell execution");
-      const real = realpathSync(requested);
+      // A path the command will create (the target of a rename such as
+      // dist -> dist.old) needs only an existing parent; mountWorkspace decides
+      // whether that parent can be opened for it.
+      const real = existsSync(requested) ? realpathSync(requested)
+        : existsSync(path.dirname(requested)) && statSync(path.dirname(requested)).isDirectory() ? path.join(realpathSync(path.dirname(requested)), path.basename(requested))
+        : (() => { throw new ToolExecutionError("tool_permission_denied", "Create the scoped directory with create_directory (or file with write_file) before shell execution"); })();
       if (real !== root && !real.startsWith(`${root}${path.sep}`)) throw new ToolExecutionError("tool_permission_denied", "Shell write scope resolves outside workspace");
       if ([".git", ".mcoda"].some(dir => real === path.join(root, dir) || real.startsWith(`${root}/${dir}/`))) throw new ToolExecutionError("tool_permission_denied", "Repository control metadata cannot be a write scope");
       if (protectedPaths.some(input => real === input || real.startsWith(`${input}${path.sep}`))) throw new ToolExecutionError("tool_permission_denied", "Authoritative input cannot be a write scope");
@@ -178,7 +249,8 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         for (const runtime of runtimeRoots) launch.push("--dir", path.dirname(runtime), "--ro-bind", runtime, runtime);
         launch.push("--dir", "/tmp/codali-bin");
         for (const runtime of runtimes) launch.push("--symlink", runtime.executable, `/tmp/codali-bin/${runtime.name}`);
-        for (const file of writePaths) launch.push("--bind", file, file);
+        const mounts = mountWorkspace(root, writePaths, protectedPaths);
+        for (const mount of mounts.mounts) launch.push(mount.writable ? "--bind" : "--ro-bind", mount.path, mount.path);
         if (cacheRoot) launch.push("--bind", cacheRoot, "/tmp/codali-cache");
         // The rest of /tmp stays per-call; only $TMPDIR survives between calls.
         if (sessionScratch) launch.push("--bind", sessionScratch, "/tmp/scratch");
@@ -196,7 +268,20 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         for (const dir of [".git", ".mcoda"]) if (existsSync(path.join(root, dir))) launch.push("--ro-bind", path.join(root, dir), path.join(root, dir));
         for (const file of protectedPaths) launch.push("--ro-bind", realpathSync(file), file);
         launch.push("--", command, ...args);
-        return await runProcess("/usr/bin/bwrap", launch, context);
+        let outcome: ToolHandlerResult | undefined, failure: unknown;
+        try { outcome = await runProcess("/usr/bin/bwrap", launch, context); } catch (error) { failure = error; }
+        if (context.signal?.aborted) throw failure ?? context.signal.reason;
+        const created = mounts.createdOutside();
+        if (created.length) {
+          const shown = created.slice(0, 10).map(file => path.relative(root, file));
+          const prior = failure instanceof Error ? failure.message : outcome?.output ?? "";
+          throw new ToolExecutionError("tool_permission_denied", `The command created ${shown.join(", ")}${created.length > shown.length ? ` and ${created.length - shown.length} more` : ""} outside its writePaths (${writePaths.map(file => path.relative(root, file) || ".").join(", ")}). They were left in place. Name every path the command creates in writePaths (a path that does not exist yet is allowed when its parent directory exists), or write inside a declared path.${prior ? `\n\nCommand output:\n${prior.slice(0, 4000)}` : ""}`, { retryable: false, details: { outsideWritePaths: created.map(file => path.relative(root, file)) } });
+        }
+        if (failure) {
+          if (failure instanceof ToolExecutionError && mounts.inPlace.length) failure.message += `\nNote: ${mounts.inPlace.map(file => path.relative(root, file) || ".").join(", ")} could only be mounted in place, because the parent directory holds a symbolic link or special file. The command can change the contents but cannot remove or rename the path itself.`;
+          throw failure;
+        }
+        return outcome!;
       } finally { if (resolverRoot) await fs.rm(resolverRoot, { recursive: true, force: true }); }
     }
     const scratch = realpathSync(await fs.mkdtemp(path.join(os.tmpdir(), "codali-shell-")));

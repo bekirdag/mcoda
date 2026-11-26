@@ -169,3 +169,16 @@ test('raw arm abandons a request that never returns and sends it again', async (
  assert.equal(response.message.content,'ok');assert.equal(n,2);assert.ok(abandoned);
  assert.deepEqual(retries.map(r=>[r.code,r.stalledAfterMs]),[['service_unavailable',30]]);
 });
+
+test('raw shell deletes a file inside its writePaths, as Codali does, and nothing outside them',{skip:!executorStatus().available},async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'appbuild-delete-'));try{
+ await fs.mkdir(path.join(root,'spec'));await fs.writeFile(path.join(root,'spec','stub_spec.rb'),'# placeholder');await fs.writeFile(path.join(root,'spec','order_spec.rb'),'# keep');await fs.writeFile(path.join(root,'Gemfile'),'source');
+ const tools=await createWorkflowTools({workspace:root,execution:{effort:'low',deadlineMs:10000,writes:true,web:false,media:false},resolved:{config:{}},startDocdex:async()=>{throw Error('not needed');}});
+ tools.exposed.add('run_shell');
+ const removed=await tools.execute({id:'rm',name:'run_shell',args:{command:'rm',args:['spec/stub_spec.rb'],writePaths:['spec']}});
+ assert.equal(removed.ok,true,removed.error?.message);assert.equal(await fs.stat(path.join(root,'spec','stub_spec.rb')).catch(()=>null),null);
+ const outside=await tools.execute({id:'rm-out',name:'run_shell',args:{command:'sh',args:['-c','rm Gemfile'],writePaths:['spec']}});
+ assert.equal(outside.ok,false);assert.doesNotMatch(outside.error.message,/Destructive operation blocked/);assert.equal(await fs.readFile(path.join(root,'Gemfile'),'utf8'),'source');
+ assert.equal(await fs.readFile(path.join(root,'spec','order_spec.rb'),'utf8'),'# keep');
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});

@@ -69,7 +69,7 @@ export const createShellTool = (): ToolDefinition => ({
       command: { type: "string", description: "One executable name, without arguments or shell syntax." },
       args: { type: "array", items: { type: "string" } },
       cwd: { type: "string", description: "Existing working directory inside the workspace, relative to its root. Default: workspace root. Does not change the base of writePaths." },
-      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: root-relative existing files/directories to make writable, regardless of cwd. Default: no workspace writes. Must fit the claimed task scope." },
+      writePaths: { type: "array", items: { type: "string" }, description: "Terminal mode: root-relative files/directories to make writable, regardless of cwd; a path the command creates (such as a rename target) may be named when its parent directory exists. Default: no workspace writes. Must fit the claimed task scope." },
       timeoutSeconds: { type: "integer", minimum: 1, maximum: MAX_SHELL_TIMEOUT_SECONDS, description: `Time allowed for this command. Default ${DEFAULT_SHELL_TIMEOUT_SECONDS}; raise it (up to ${MAX_SHELL_TIMEOUT_SECONDS}) for a full test suite, a build or a browser journey that needs longer.` },
     },
   },
