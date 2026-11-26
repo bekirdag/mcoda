@@ -88,3 +88,11 @@ test('raw comparator can discover and read the real builtin planning skill witho
   assert.equal(starts(),0);
   const initial=await fixture(t,base,{initialTools:['skill_list']});assert.ok(initial.tools.schemas().some(tool=>tool.name==='skill_list'));
 });
+
+test('raw read-only web session declares search and the page reader up front', async t => {
+  const { tools } = await fixture(t, { ...base, web: true });
+  const names = tools.schemas().map(tool => tool.name);
+  for (const name of ['docdex_web_research', 'browser_open', 'browser_read']) assert.ok(names.includes(name), name);
+  const { tools: offline } = await fixture(t, base);
+  assert.ok(!offline.schemas().some(tool => tool.name === 'browser_open'));
+});
