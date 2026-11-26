@@ -1843,24 +1843,128 @@ for (const strategy of ["adaptive", "gateway"] as const) test(`${strategy} inspe
   assert.match(controller.state!.objective, /Never deploy/);
 });
 
-test("substantial calculated answers receive one separately metered equation review", async t => {
-  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 5, maxTotalTokens: 64000, calculator: true };
+test("substantial calculated answers receive one equation review, and a disputed calculated value is settled by an executed check", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 8, maxTotalTokens: 200000, calculator: true, timeoutMs: 1_800_000 };
   const prompt = "A trip is 12 km at 4 km/h. Give its elapsed hours and explain the units.";
   const draft = "The trip takes 48 hours. " + "The calculator evaluated multiplication, but this alone does not establish the governing equation. ".repeat(5);
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "calc", name: "codali", args: { name: "calculate", args: { expression: "12*4" } } }] };
     if (calls === 2) return reply(draft);
-    assert.equal(request.toolChoice, "none");
-    const packet = JSON.parse(request.messages[1].content);
-    assert.equal(packet.request, prompt); assert.equal(packet.draft, draft);
-    assert.equal(packet.calculations[0].args.expression, "12*4");
-    assert.match(request.messages[0].content, /governing equation/);
+    if (calls === 3) {
+      assert.equal(request.toolChoice, "none");
+      const packet = JSON.parse(request.messages[1].content);
+      assert.equal(packet.request, prompt); assert.equal(packet.draft, draft);
+      assert.equal(packet.calculations[0].args.expression, "12*4");
+      assert.match(request.messages[0].content, /governing equation/);
+      return reply("The trip takes 3 hours: 12 km / (4 km/h).");
+    }
+    // The review executed nothing, so its 3 does not simply replace the calculated 48:
+    // the model settles the dispute with an executed check, with tools.
+    if (calls === 4) {
+      assert.match(request.messages.at(-1)!.content, /disputes[\s\S]*your answer 48 \(from a calculate result\); the review proposes 3/);
+      assert.ok(request.tools?.length);
+      return { ...reply(""), toolCalls: [{ id: "check", name: "codali", args: { name: "calculate", args: { expression: "12/4" } } }] };
+    }
     return reply("The trip takes 3 hours: 12 km / (4 km/h).");
   } }, config);
   assert.match((await controller.interact(prompt)).content, /3 hours/);
-  assert.equal(calls, 3); assert.equal(controller.turnUsageSnapshot().modelCalls, 3);
-  assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 1);
+  assert.equal(calls, 5); assert.equal(controller.turnUsageSnapshot().modelCalls, 5);
+  assert.equal(events.filter(e => e.type === "calculation_answer_audit_contested").length, 1);
+  assert.equal(events.filter(e => e.type === "numeric_reconcile_requested").length, 1);
+  // One review per turn: the reconciled answer is not reviewed again.
+  assert.equal(events.filter(e => e.type === "calculation_answer_audit").length, 0);
+});
+
+const numericConfig = (initialTools: string[] = ["run_code", "calculate"]) => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "gateway", toolExposure: "native", toolSelection: "progressive", initialTools, calculator: true, maxModelCalls: 12, maxTotalTokens: 200000, timeoutMs: 1_800_000 };
+  return config;
+};
+const sandboxed = { skip: executorStatus().available ? false : executorStatus().reason };
+const runPython = (id: string, lines: string[]) => ({ ...reply(""), toolCalls: [{ id, name: "run_code", args: { language: "python", source: lines.map(line => `print(${JSON.stringify(line)})`).join("\n") } }] });
+
+test("delivered values that no executed run shows, or that a later reduced rerun contradicts, go back to be reconciled", sandboxed, async t => {
+  // Fresh variant: an (s, S) inventory simulation run in full, then rerun in a
+  // reduced form; the draft takes the rerun's count and invents a fill rate.
+  const prompt = "Simulate 30 days of an (s, S) inventory policy with s = 4, S = 12, lead time 2 days and the daily demands 3, 1, 4, 0, 2, 5, 1, 3. Return JSON with stockouts, holdingCost and fillRate.";
+  const reconciled = '{"stockouts": 14, "holdingCost": 382.5, "fillRate": 0.8925}';
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls === 1) return runPython("full", ["stockouts = 14", "holding cost = 382.5"]);
+    if (calls === 2) return runPython("reduced", ["stockouts = 11", "holding cost = 382.5"]);
+    if (calls === 3) return reply('{"stockouts": 11, "holdingCost": 382.5, "fillRate": 0.9137}');
+    if (calls === 4) {
+      const guidance = request.messages.at(-1)!.content;
+      assert.match(guidance, /fillRate: 0\.9137 appears in no program output/);
+      assert.match(guidance, /stockouts: you give 11; executed runs report 14 \(run 1, run_code\) then 11 \(run 2, run_code\)/);
+      return runPython("again", ["stockouts = 14", "holding cost = 382.5", "fill rate = 0.8925"]);
+    }
+    return reply(reconciled);
+  } }, numericConfig());
+  assert.equal((await controller.interact(prompt)).content, reconciled);
+  assert.equal(calls, 5);
+  assert.deepEqual(events.filter(e => e.type === "numeric_reconcile_requested").map(e => e.data.reason), ["values_without_executed_support"]);
+});
+
+test("a computational request answered with no tool call is sent back once to compute", async t => {
+  // Fresh variant: an LRU page trace answered from the model's head.
+  const prompt = "An LRU cache holds 3 pages. The reference string is 4, 7, 1, 4, 9, 7, 2, 4, 1, 9, 7, 2, 4, 6, 1, 7. Count the hits, misses and evictions and give the final cache contents. Reply with JSON only.";
+  const computed = '{"hits": 1, "misses": 15, "evictions": 12, "finalCache": [6, 1, 7]}';
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (calls === 1) return reply('{"hits": 4, "misses": 12, "evictions": 9, "finalCache": [4, 6, 1]}');
+    if (calls === 2) {
+      assert.match(request.messages.at(-1)!.content, /nothing has been computed or executed/);
+      assert.ok(request.tools?.some(tool => tool.name === "calculate"));
+      return { ...reply(""), toolCalls: [{ id: "count", name: "calculate", args: { expression: "hits = 1; misses = 15; evictions = 12; [hits, misses, evictions, 6, 1, 7]" } }] };
+    }
+    // The equation review of the calculated answer finds nothing to change.
+    if (request.toolChoice === "none") return reply(computed);
+    return reply(computed);
+  } }, numericConfig(["calculate"]));
+  assert.equal((await controller.interact(prompt)).content, computed);
+  assert.deepEqual(events.filter(e => e.type === "numeric_reconcile_requested").map(e => e.data.reason), ["computation_without_execution"]);
+  // A request that forbids tools is answered as asked.
+  let direct = 0;
+  const plain = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => { direct++; return reply('{"hits": 4}'); } }, numericConfig(["calculate"]));
+  assert.equal((await plain.controller.interact(`${prompt} Work it out by hand without using any tools.`)).content, '{"hits": 4}');
+  assert.equal(direct, 1);
+});
+
+test("values printed by executed code skip the tool-less review; a review cannot overwrite them", sandboxed, async t => {
+  // Fresh variant: a pendulum period computed by code (2.3480408 s), asked to 4 dp.
+  const prompt = "A simple pendulum is 1.37 m long with g = 9.81 m/s^2. Give its period and frequency to 4 decimal places as JSON.";
+  const draft = '{"period": 2.3480, "frequency": 0.4259}';
+  let calls = 0, reviews = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (request.toolChoice === "none") { reviews++; return reply('{"period": 2.3481, "frequency": 0.4259}'); }
+    if (calls === 1) return { ...reply(""), toolCalls: [{ id: "twopi", name: "calculate", args: { expression: "2*pi" } }] };
+    if (calls === 2) return runPython("period", ["period = 2.3480408", "frequency = 0.4258870"]);
+    return reply(draft);
+  } }, numericConfig());
+  assert.equal((await controller.interact(prompt)).content, draft);
+  assert.equal(reviews, 0);
+  assert.equal(events.find(e => e.type === "calculation_answer_audit_skipped")?.data.reason, "verified_by_executed_code");
+});
+
+test("a review's correction of an unexecuted value is kept while the executed value is restored", sandboxed, async t => {
+  const prompt = "A simple pendulum is 1.37 m long with g = 9.81 m/s^2 and released from 0.5 rad. Give its period to 4 decimal places and its maximum speed in m/s as JSON.";
+  let calls = 0;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++;
+    if (request.toolChoice === "none") return reply('{"period": 2.3481, "maxSpeed": 1.81}');
+    if (calls === 1) return { ...reply(""), toolCalls: [{ id: "twopi", name: "calculate", args: { expression: "2*pi" } }] };
+    if (calls === 2) return runPython("period", ["period = 2.3480408"]);
+    // maxSpeed has no executed support: the provenance check asks once, the model keeps it.
+    if (request.messages.at(-1)!.content.includes("Not delivered yet")) return reply('{"period": 2.3480, "maxSpeed": 1.9}');
+    return reply('{"period": 2.3480, "maxSpeed": 1.9}');
+  } }, numericConfig());
+  assert.deepEqual(JSON.parse((await controller.interact(prompt)).content), { period: 2.348, maxSpeed: 1.81 });
+  assert.equal(events.find(e => e.type === "calculation_answer_audit")?.data.restoredExecutedValues, 1);
 });
 
 const longDesignDraft = "The reservation state machine moves from held to confirmed under a conditional update. ".repeat(40);

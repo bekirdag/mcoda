@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, draftBackedByVerifiedRun, answerReserveMs, finalAttemptMs, overturnsCalculatedDraft, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, answerReserveMs, finalAttemptMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
+import { backedByExecutedCode, decideReview, type ExecutedResult } from "../NumericProvenance.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 import type { ProjectTaskAuthority, ProjectTaskSnapshot } from "@mcoda/shared";
 
@@ -90,26 +91,28 @@ test("the prompt states today's date from the host clock as authoritative", () =
   assert.match(notice, /trust it over any date you assume/);
 });
 
-test("an equation review may correct one calculated value but not overturn most of them", () => {
-  // Cycle 6 case 08: every drafted value came from calculator receipts.
-  const results = ['{"results":{"lam1":5.8,"Ltot":2.6846723,"W":0.53693446,"erlangC":0.21884892086,"scale":2.0689655}}'];
+test("an equation review's edits are decided by executed evidence, value by value", () => {
+  const receipts = (...texts: string[]): ExecutedResult[] => texts.map((text, index) => ({ seq: index + 1, tool: "calculate", kind: "calculation", text }));
+  // Cycle 6 case 08: every drafted value came from calculator receipts; the review
+  // replaced them with unexecuted values and nulls. Nothing executed supports the review.
+  const results = receipts('{"results":{"lam1":5.8,"Ltot":2.6846723,"W":0.53693446,"erlangC":0.21884892086,"scale":2.0689655}}');
   const draft = '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.068966}';
-  assert.equal(overturnsCalculatedDraft(draft, '{"a":8.220339,"b":null,"c":null,"d":null,"e":0.971195}', results), true);
-  assert.equal(overturnsCalculatedDraft(draft, '{"a": 6.1, "b": 2.9, "c": 0.58, "d": 0.218849, "e": 2.068966}', results), true);
-  // One corrected value (cycle 6 case 07, cycle 4 case 06) is kept.
-  assert.equal(overturnsCalculatedDraft(draft, '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.1}', results), false);
-  // A one-value draft can be corrected: the calculated figure may model the wrong quantity.
-  assert.equal(overturnsCalculatedDraft("The trip takes 48 hours.", "The trip takes 3 hours.", ["48"]), false);
-  // Regression pack for .42, case 19: a linear programme solved with a constraint solver. The solver
-  // reports fractions and the shadow price came from a dual check, so most drafted values are not
-  // literal tool results; the draft was right in all five and the review replaced all five.
-  const solver = ['{"status":"sat","model":{"X":"25","Y":"65/4","Z":"85/4","P":"7725/4"}}', '{"result":1931.25,"arithmetic":"IEEE-754 double"}'];
+  for (const revised of ['{"a":8.220339,"b":null,"c":null,"d":null,"e":0.971195}', '{"a": 6.1, "b": 2.9, "c": 0.58, "d": 0.218849, "e": 2.068966}']) {
+    const review = decideReview(draft, revised, "", results);
+    assert.equal(review.verdict, "keep"); assert.ok(review.disputes.length >= 3);
+  }
+  // A single changed calculated value is a dispute too: the count of changes decides nothing.
+  assert.deepEqual(decideReview(draft, '{"a": 5.8, "b": 2.684672, "c": 0.536934, "d": 0.218849, "e": 2.4}', "", results).disputes.map(item => item.field), ["e"]);
+  // Regression pack for .42, case 19: solver fractions ("65/4") back their decimal values.
+  const solver = receipts('{"status":"sat","model":{"X":"25","Y":"65/4","Z":"85/4","P":"7725/4"}}', '{"result":1931.25,"arithmetic":"IEEE-754 double"}');
   const programme = '{"maxProfit": 1931.25, "optimalX": 25, "optimalY": 16.25, "labourShadowPrice": 5.625, "integerMaxProfit": 1925}';
-  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 2007.1429, "optimalX": 37.1429, "optimalY": 7.1429, "labourShadowPrice": 1.6429, "integerMaxProfit": 1995}', solver), true);
-  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1931.25, "optimalX": 25, "optimalY": 16.25, "labourShadowPrice": 5.625, "integerMaxProfit": 1920}', solver), false);
-  // A value is not swapped for null either; without any tool result there is nothing to protect.
-  assert.equal(overturnsCalculatedDraft('{"a": 7.5}', '{"a": null}', results), true);
-  assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1, "optimalX": 2, "optimalY": 3, "labourShadowPrice": 4, "integerMaxProfit": 5}', []), false);
+  assert.equal(decideReview(programme, '{"maxProfit": 2007.1429, "optimalX": 37.1429, "optimalY": 7.1429, "labourShadowPrice": 1.6429, "integerMaxProfit": 1995}', "", solver).disputes.length, 3);
+  // integerMaxProfit 1925 rests on nothing executed: the review may change it, and only it.
+  const corrected = decideReview(programme, '{"maxProfit": 1931.25, "optimalX": 25, "optimalY": 16.25, "labourShadowPrice": 5.625, "integerMaxProfit": 1920}', "", solver);
+  assert.equal(corrected.verdict, "accept"); assert.equal(corrected.acceptedChanges, 1);
+  // A value is never swapped for null; with no executed result at all, the review's values stand.
+  assert.equal(decideReview('{"a": 7.5}', '{"a": null}', "", results).verdict, "keep");
+  assert.equal(decideReview(programme, '{"maxProfit": 1, "optimalX": 2, "optimalY": 3, "labourShadowPrice": 4, "integerMaxProfit": 5}', "", []).verdict, "accept");
 });
 
 test("a stalled final call is bounded to half the window only when a retry fits", () => {
@@ -130,12 +133,14 @@ test("the answer reserve follows the slowest model call instead of a quarter of 
 });
 
 test("a draft whose numbers a passing code run returned is backed by executed code", () => {
-  const verified = [{ avgTurnaround: 19.4, avgWaiting: 13.8, avgResponse: 4.6, contextSwitches: 10 }, { turnaroundWithSwitchCost: 26.8, completions: { P1: 31 } }];
-  assert.equal(draftBackedByVerifiedRun('{"averageTurnaround":19.4,"averageWaiting":13.8,"averageResponse":4.6,"contextSwitches":10,"turnaroundWithSwitchCost":26.8}', verified), true);
+  const verified: ExecutedResult[] = [{ seq: 1, tool: "verify_javascript", kind: "code", text: JSON.stringify([{ avgTurnaround: 19.4, avgWaiting: 13.8, avgResponse: 4.6, contextSwitches: 10 }, { turnaroundWithSwitchCost: 26.8, completions: { P1: 31 } }]) }];
+  assert.equal(backedByExecutedCode('{"averageTurnaround":19.4,"averageWaiting":13.8,"averageResponse":4.6,"contextSwitches":10,"turnaroundWithSwitchCost":26.8}', "", verified), true);
   // The audit's hand trace that replaced it in cycle 4 is not backed.
-  assert.equal(draftBackedByVerifiedRun('{"averageTurnaround":19.6,"averageWaiting":14.2,"averageResponse":5.8,"contextSwitches":9,"turnaroundWithSwitchCost":23.0}', verified), false);
-  assert.equal(draftBackedByVerifiedRun("19.4", []), false);
-  assert.equal(draftBackedByVerifiedRun("no figures here", verified), false);
+  assert.equal(backedByExecutedCode('{"averageTurnaround":19.6,"averageWaiting":14.2,"averageResponse":5.8,"contextSwitches":9,"turnaroundWithSwitchCost":23.0}', "", verified), false);
+  assert.equal(backedByExecutedCode("19.4", "", []), false);
+  assert.equal(backedByExecutedCode("no figures here", "", verified), false);
+  // A calculator receipt is not a program run.
+  assert.equal(backedByExecutedCode('{"a": 19.4}', "", [{ ...verified[0], tool: "calculate", kind: "calculation" }]), false);
 });
 
 test("an outage is waited out for hours when time allows, and stops in time to hand over what exists", async () => {
