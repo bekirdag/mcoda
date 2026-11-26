@@ -193,5 +193,8 @@ test("thousands separators are refused, never read as a result list", async () =
     assert.match(result, /1000, not 1,000[\s\S]*\[a, b\]|Unknown name/, expression);
   }
   assert.deepEqual(await run("x = 4; [x, 1250]"), [4, 1250]);
+  // Three-digit items written with a space after the comma are ordinary list items.
+  assert.deepEqual(await run("[100, 200]"), [100, 200]);
+  assert.deepEqual(await run("[2*50, 300, 4]"), [100, 300, 4]);
   assert.equal(await run("max(1, 250) * 2"), 500);
 });

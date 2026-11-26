@@ -24,6 +24,9 @@ const processFailureMessage = (reason: string, stdout: string, stderr: string): 
   return [reason, stdout && `stdout:\n${excerpt(stdout)}`, stderr && `stderr:\n${excerpt(stderr)}`].filter(Boolean).join("\n\n");
 };
 
+/** How long to wait for a killed process to close its pipes before giving up on it. */
+export const PROCESS_REAP_MS = 5000;
+
 export const runProcess = (command: string, args: string[], context: ToolContext, environment: ProcessEnvironment = {}): Promise<ToolHandlerResult> => {
   context.signal?.throwIfAborted();
   const timeoutMs = context.shellTimeoutMs ?? 120_000;
@@ -37,13 +40,20 @@ export const runProcess = (command: string, args: string[], context: ToolContext
     const child = spawn(command, args, { cwd, env, detached: group, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = ""; let stderr = ""; let captured = 0; let truncated = false; let timedOut = false;
     const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
-    let escalation: NodeJS.Timeout | undefined;
+    let escalation: NodeJS.Timeout | undefined, reaper: NodeJS.Timeout | undefined, settled = false;
     const kill = (signal: NodeJS.Signals) => {
       if (!child.pid) return;
       try { if (group) process.kill(-child.pid, signal); else child.kill(signal); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill(signal); }
     };
-    const stop = () => { kill("SIGTERM"); escalation ??= setTimeout(() => kill("SIGKILL"), 1000); escalation.unref(); };
+    // After SIGKILL the wait for "close" is bounded too: a process stuck in the
+    // kernel, or a descendant outside the group still holding the pipes, would
+    // otherwise keep the caller waiting forever (a run_code test hung for 3 h
+    // under load). The output collected so far is reported.
+    const stop = () => {
+      kill("SIGTERM");
+      escalation ??= setTimeout(() => { kill("SIGKILL"); reaper ??= setTimeout(abandon, PROCESS_REAP_MS); }, 1000);
+    };
     const timeout = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
     const append = (stream: "stdout" | "stderr", text: string) => {
       if (stream === "stdout") stdout += text; else stderr += text;
@@ -59,9 +69,18 @@ export const runProcess = (command: string, args: string[], context: ToolContext
     child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
     context.signal?.addEventListener("abort", stop, { once: true });
     if (context.signal?.aborted) stop();
-    const cleanup = () => { clearTimeout(timeout); if (escalation) clearTimeout(escalation); context.signal?.removeEventListener("abort", stop); };
-    child.once("error", error => { cleanup(); reject(error); });
+    const cleanup = () => { settled = true; clearTimeout(timeout); if (escalation) clearTimeout(escalation); if (reaper) clearTimeout(reaper); context.signal?.removeEventListener("abort", stop); };
+    const abandon = () => {
+      if (settled) return;
+      cleanup();
+      child.stdout.destroy(); child.stderr.destroy(); child.unref();
+      const details = { command, args, cwd, exitCode: null, signal: "SIGKILL", stdout, stderr, truncated, timedOut, abandoned: true };
+      if (context.signal?.aborted) { reject(context.signal.reason ?? new Error("Process cancelled")); return; }
+      reject(new ToolExecutionError("tool_timeout", processFailureMessage("Process deadline exceeded; the process did not exit after SIGKILL and was abandoned", stdout, stderr), { retryable: false, details: { ...details, timedOut: true } }));
+    };
+    child.once("error", error => { if (settled) return; cleanup(); reject(error); });
     child.once("close", (exitCode, signal) => {
+      if (settled) return;
       cleanup();
       append("stdout", decoders.stdout.end()); append("stderr", decoders.stderr.end());
       if (group) kill("SIGKILL");
