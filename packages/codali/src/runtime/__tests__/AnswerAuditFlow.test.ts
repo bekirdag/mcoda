@@ -176,7 +176,7 @@ test("research audit edits correct one claim and keep every section of the draft
 test("an edit list that does not parse is neither applied nor delivered as the answer", async t => {
   const { answer, events } = await research(t, reply('{"edits":[{"find":"Part 1","replace":"Part one"'));
   assert.equal(answer, ferryDraft);
-  assert.equal(events.find(event => event.type === "research_answer_audit_rejected")?.data.reason, "invalid_edits");
+  assert.equal(events.find(event => event.type === "research_answer_audit_rejected")?.data.reason, "invalid_edits", JSON.stringify(events.filter(event => /research_answer_audit|model_failure|stall/.test(event.type)).map(event => [event.type, event.data])));
 });
 
 test("restating a confirmed figure with rounding is not a change to it", async t => {

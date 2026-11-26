@@ -71,7 +71,9 @@ test("the Python memory cap leaves room for a program with 200 threads", options
   assert.equal(data.exitCode, 0, data.stderr); assert.equal(data.stdout.trim(), "200 2646700");
 });
 
-test("run_code caps Python memory and reports the failure as a receipt", options, async () => {
+// RLIMIT_AS is enforced by Linux; macOS accepts setrlimit but does not cap
+// allocations, so the cap (and this check) applies on Linux only.
+test("run_code caps Python memory and reports the failure as a receipt", { skip: process.platform !== "linux" ? "RLIMIT_AS is not enforced on this platform" : options.skip }, async () => {
   const hog = JSON.parse((await run({ language: "python", source: "print('start', flush=True)\nblock = bytearray(4 * 1024 ** 3)\nprint('allocated')" })).output);
   assert.notEqual(hog.exitCode, 0); assert.match(hog.stdout, /start/); assert.doesNotMatch(hog.stdout, /allocated/); assert.match(hog.stderr, /MemoryError/);
 });
