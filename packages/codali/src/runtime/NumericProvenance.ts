@@ -32,19 +32,47 @@ const tolerance = (token: string, value: number): number => 0.5 * 10 ** -decimal
 
 /** Factors that turn one correct figure into another correct one: percent, milli/kilo, minutes/hours/days. */
 const DERIVATIONS = [1, 100, 0.01, 1000, 0.001, 60, 1 / 60, 3600, 1 / 3600, 24, 1 / 24];
-const matches = (token: string, value: number, candidate: number): boolean => {
+/** A whole-number token, or a strict check, matches only the value itself: with
+ * unit factors almost any small integer matches something by chance (25 by 0.25,
+ * 6 by 0.1 minutes), and a chance match must never count as support. */
+const matches = (token: string, value: number, candidate: number, strict = false): boolean => {
   const allowed = tolerance(token, value);
-  return DERIVATIONS.some(factor => Math.abs(Math.abs(candidate * factor) - Math.abs(value)) <= allowed);
+  const factors = strict || decimals(token) === 0 ? [1] : DERIVATIONS;
+  return factors.some(factor => Math.abs(Math.abs(candidate * factor) - Math.abs(value)) <= allowed);
 };
 
 const numbersCache = new WeakMap<ExecutedResult, number[]>();
-/** Every number a result shows, fractions (65/4) evaluated as well. */
+/** Receipt envelope fields: timings, hashes, versions and settings, never computed values. */
+const ENVELOPE_FIELDS = new Set(["elapsedms", "inputsha256", "workersha256", "sourcesha256", "sha256", "version", "library", "precision", "rounding", "arithmetic",
+  "semantics", "scope", "isolation", "warning", "exitcode", "timedout", "index", "passed", "ran", "runonly", "runonlycases", "truncated", "language"]);
+const textNumbers = (text: string): number[] => {
+  const numbers = (text.match(NUMBER) ?? []).map(Number).filter(Number.isFinite);
+  for (const [, a, b] of text.matchAll(FRACTION)) { const value = Number(a) / Number(b); if (Number.isFinite(value)) numbers.push(value); }
+  return numbers;
+};
+/** The numbers a result reports, fractions (65/4) evaluated as well. A JSON
+ * receipt contributes its values, not its envelope (elapsed time, hashes,
+ * library versions); printed output contributes every number it shows. */
 export const resultNumbers = (result: ExecutedResult): number[] => {
   const cached = numbersCache.get(result);
   if (cached) return cached;
   const text = result.text.slice(0, MAX_TEXT);
-  const numbers = (text.match(NUMBER) ?? []).map(Number).filter(Number.isFinite);
-  for (const [, a, b] of text.matchAll(FRACTION)) { const value = Number(a) / Number(b); if (Number.isFinite(value)) numbers.push(value); }
+  let numbers: number[];
+  try {
+    const parsed: unknown = JSON.parse(text);
+    numbers = [];
+    const walk = (value: unknown, key: string | undefined, depth: number) => {
+      if (depth > 16 || key && ENVELOPE_FIELDS.has(normalizedKey(key))) return;
+      if (typeof value === "number") { if (Number.isFinite(value)) numbers.push(value); }
+      else if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (/^[[{]/.test(trimmed)) { try { walk(JSON.parse(trimmed), key, depth + 1); return; } catch { /* Not JSON. */ } }
+        if (new RegExp(`^(?:${NUMBER_SOURCE}|${FRACTION.source})$`).test(trimmed)) numbers.push(...textNumbers(trimmed));
+      } else if (Array.isArray(value)) value.forEach(item => walk(item, key, depth + 1));
+      else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) walk(v, k, depth + 1);
+    };
+    walk(parsed, undefined, 0);
+  } catch { numbers = textNumbers(text); }
   numbersCache.set(result, numbers);
   return numbers;
 };
@@ -105,7 +133,7 @@ export const answerValues = (reply: string, prompt = ""): { json: boolean; value
   }
   const inputs = new Set((prompt.match(NUMBER) ?? []).map(Number));
   const values: AnswerValue[] = [];
-  const text = reply.replace(/```[\s\S]*?```/g, " ");
+  const text = withoutNonQuantities(reply.replace(/```[\s\S]*?```/g, " "));
   const pattern = new RegExp(String.raw`(?:([A-Za-z][A-Za-z_ ()/-]{0,40}?)\s*(?:[:=]|\bis\b|\bequals\b|≈)\s*\**\s*)?(?<![\w.])(${NUMBER_SOURCE})(?![\w.]*\d)`, "g");
   for (const match of text.matchAll(pattern)) {
     const token = match[2], value = Number(token);
@@ -116,10 +144,10 @@ export const answerValues = (reply: string, prompt = ""): { json: boolean; value
 };
 
 /** The executed result (latest first) or prompt input that shows a value at its stated precision. */
-export const backingOf = (item: Pick<AnswerValue, "token" | "value">, results: ExecutedResult[], prompt = ""): Backing | undefined => {
+export const backingOf = (item: Pick<AnswerValue, "token" | "value">, results: ExecutedResult[], prompt = "", strict = false): Backing | undefined => {
   if (decimals(item.token) === 0 && [0, 1].includes(Math.abs(item.value))) return { kind: "input" };
   for (const result of [...results].sort((a, b) => b.seq - a.seq)) {
-    if (resultNumbers(result).some(candidate => matches(item.token, item.value, candidate))) return { kind: result.kind, seq: result.seq, tool: result.tool };
+    if (resultNumbers(result).some(candidate => matches(item.token, item.value, candidate, strict))) return { kind: result.kind, seq: result.seq, tool: result.tool };
   }
   // A restated input backs a value only at the precision the request gave it:
   // "2" in the request does not support a computed "2.000000".
@@ -166,7 +194,7 @@ export const backedByExecutedCode = (reply: string, prompt: string, results: Exe
   const code = results.filter(result => result.kind === "code");
   const { values } = answerValues(reply, prompt);
   if (!values.length || !code.length) return false;
-  return values.every(item => backingOf(item, code, prompt) !== undefined);
+  return values.every(item => backingOf(item, code, prompt, true) !== undefined);
 };
 
 export interface ReviewDispute { field: string; drafted: string; revised: string | null; backing?: Backing; }
@@ -180,7 +208,13 @@ export interface ReviewDecision {
   disputes: ReviewDispute[];
   acceptedChanges: number;
 }
-const sameValue = (a: AnswerValue, b: AnswerValue): boolean => Math.abs(a.value - b.value) <= Math.max(tolerance(a.token, a.value), tolerance(b.token, b.value));
+/** Whether a review kept a drafted value: judged at the draft's own precision. A
+ * review that states fewer places (2.3480 -> 2) changed the value, not kept it. */
+const sameValue = (drafted: AnswerValue, revised: AnswerValue): boolean => drafted.value === revised.value
+  || decimals(revised.token) >= decimals(drafted.token) && Math.abs(drafted.value - revised.value) <= tolerance(drafted.token, drafted.value);
+/** A review value supports itself only by a direct match at no less precision than the draft. */
+const reviewBacking = (drafted: AnswerValue, revised: AnswerValue, results: ExecutedResult[], prompt: string): Backing | undefined =>
+  decimals(revised.token) >= decimals(drafted.token) ? backingOf(revised, results, prompt, true) : undefined;
 
 /** Decide a tool-less review's edits field by field, by which side executed
  * results support. A changed value is accepted when the review's value is itself
@@ -203,7 +237,7 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
     for (const item of before.values) {
       const next = revisedByPath.get(item.path);
       if (next && sameValue(item, next)) { if (next.token !== item.token) refined++; continue; }
-      const nextBacking = next ? backingOf(next, results, prompt) : undefined;
+      const nextBacking = next ? reviewBacking(item, next, results, prompt) : undefined;
       if (next && nextBacking) { acceptedChanges++; continue; }
       const backing = backingOf(item, results, prompt);
       if (next && !backing) { acceptedChanges++; continue; }
@@ -232,7 +266,7 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
   // Prose: values cannot be paired by field. A drafted value the review dropped
   // is contested unless one of the review's new values is itself backed.
   const introduced = after.values.filter(next => !before.values.some(item => sameValue(item, next)));
-  const introducedBacked = introduced.some(next => backingOf(next, results, prompt));
+  const introducedBacked = introduced.some(next => backingOf(next, results, prompt, true));
   for (const item of before.values) {
     if (after.values.some(next => sameValue(item, next))) continue;
     const backing = backingOf(item, results, prompt);
@@ -244,11 +278,26 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
   return { verdict: contested ? "keep" : "accept", answer: contested ? draft : revised, protectedFields, disputes, acceptedChanges };
 };
 
-const COMPUTE_WORDS = /\b(?:simulat|enumerat|comput|calculat|evaluat|determin|estimat|solv|count|tally|probabilit|expect|averag|mean|varian|throughput|utili[sz]|round(?:ed)? to|decimal places?|significant (?:figures|digits))\w*|\bhow (?:many|much|long)\b/i;
+const COMPUTE_WORDS = /\b(?:simulat|enumerat|comput|calculat|estimat|tally|probabilit|throughput|utili[sz]|round(?:ed)? to|decimal places?|significant (?:figures|digits))\w*|\bsolve for\b|\bhow (?:many|much)\b/i;
+/** Words that ask for a number only when a numeric object follows: "the expected
+ * number of", "count the misses", "mean waiting time", not "what do you mean". */
+const OBJECT_WORDS = /\b(?:mean|expect\w*|determin\w*|count\w*|averag\w*|varian\w*|evaluat\w*)\s+(?:(?:the|a|an|of|each|all|total)\s+){0,3}(?:\w+\s+){0,2}?(?:numbers?|values?|totals?|sums?|rates?|times?|costs?|lengths?|sizes?|counts?|probabilit\w*|waits?|waiting|delays?|amounts?|percentages?|fractions?|ratios?|hits?|misses|events?|steps?|orderings?|\d)/i;
 const NO_TOOLS = /\b(?:without (?:using )?(?:any )?(?:tools?|a calculator|code)|(?:do not|don't|never) (?:use|run|call) (?:any )?(?:tools?|code|a calculator)|no tools|by hand|mentally|in your head|from memory)\b/i;
 /** A request whose answer is a computed quantity over several stated inputs (an
  * event trace to simulate, orderings to count, a recurrence): one model call
  * cannot work it out reliably in its head. In cycle 7 a 22-event banker's
  * algorithm trace was answered in 24 seconds with counts that could not add up. */
 export const requestNeedsComputation = (prompt: string): boolean =>
-  COMPUTE_WORDS.test(prompt) && !NO_TOOLS.test(prompt) && (prompt.match(NUMBER) ?? []).length >= 4;
+  (COMPUTE_WORDS.test(prompt) || OBJECT_WORDS.test(prompt)) && !NO_TOOLS.test(prompt) && (withoutNonQuantities(prompt).match(NUMBER) ?? []).length >= 4;
+
+const MONTH = String.raw`(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?`;
+const NON_QUANTITIES = [
+  /\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b/g, /\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, /\b\d{1,2}:\d{2}(?::\d{2})?\b/g,
+  new RegExp(String.raw`\b${MONTH}\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b`, "g"), new RegExp(String.raw`\b\d{1,2}(?:st|nd|rd|th)?\s+${MONTH}(?:\s+\d{4})?\b`, "g"),
+  /\b(?:in|since|by|until|from|before|after|during|of)\s+(?:19|20)\d{2}\b/gi, /\b\d+(?:st|nd|rd|th)\b/gi,
+  /\bv(?:ersion\s*)?\d+(?:\.\d+)*\b/gi, /\b\d+\.\d+\.\d+(?:\.\d+)*\b/g,
+  // Named protocols and products with their versions: TLS 1.2 or 1.3, HTTP/2 vs 3, Python 3.12.
+  /\b(?:[A-Z]{2,}[A-Za-z]*|Python|Node(?:\.js)?|Java|Ubuntu|Debian|Windows|macOS|iOS|Android|Postgres(?:QL)?|MySQL|Redis|Kafka|Chrome|Firefox|Safari)(?:\/|-|\s)?\d+(?:\.\d+)*(?:\s*(?:,|or|and|vs\.?|versus|to|\/)\s*\d+(?:\.\d+)*)*/g,
+];
+/** Text with dates, times of day, ordinals and version numbers blanked out: they are labels, not quantities. */
+export const withoutNonQuantities = (text: string): string => NON_QUANTITIES.reduce((rest, pattern) => rest.replace(pattern, match => " ".repeat(match.length)), text);

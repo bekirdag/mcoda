@@ -46,3 +46,8 @@ test("run_code runs a JavaScript module offline and bounds time", options, async
   assert.equal(slow.timedOut, true);
   assert.equal((await run({ language: "ruby", source: "puts 1" })).ok, false);
 });
+
+test("run_code caps Python memory and reports the failure as a receipt", options, async () => {
+  const hog = JSON.parse((await run({ language: "python", source: "print('start', flush=True)\nblock = bytearray(4 * 1024 ** 3)\nprint('allocated')" })).output);
+  assert.notEqual(hog.exitCode, 0); assert.match(hog.stdout, /start/); assert.doesNotMatch(hog.stdout, /allocated/); assert.match(hog.stderr, /MemoryError/);
+});

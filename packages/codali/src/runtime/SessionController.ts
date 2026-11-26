@@ -221,9 +221,13 @@ export const finalAttemptMs = (windowMs: number, longestModelMs: number): number
 const CODE_EVIDENCE_TOOLS = new Set(["run_code", "verify_javascript", "verify_tests"]);
 export const executedResultText = (tool: string, result: ToolExecutionResult): string | undefined => {
   if (!result.ok) return undefined;
-  const data = result.data as { stdout?: unknown; stderr?: unknown; actuals?: unknown } | undefined;
-  if (tool === "run_code" && typeof data?.stdout === "string") return `${data.stdout}\n${typeof data.stderr === "string" ? data.stderr : ""}`;
-  if (tool === "verify_javascript" && Array.isArray(data?.actuals)) return JSON.stringify(data.actuals);
+  const data = result.data as { stdout?: unknown; exitCode?: unknown; timedOut?: unknown; actuals?: unknown } | undefined;
+  // Only what a program printed when it ran to completion: a crashed run's
+  // traceback ("line 42", "table[17]") and a test report ("12 passed in 2876 ms")
+  // are not computed values.
+  if (tool === "run_code") return data?.exitCode === 0 && data.timedOut !== true && typeof data.stdout === "string" ? data.stdout : undefined;
+  if (tool === "verify_javascript") return Array.isArray(data?.actuals) ? JSON.stringify(data.actuals) : undefined;
+  if (tool === "verify_tests") return undefined;
   return result.output;
 };
 /** What the model is asked when delivered values lack executed support. */
