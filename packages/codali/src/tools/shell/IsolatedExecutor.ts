@@ -146,8 +146,9 @@ export interface WorkspaceMounts {
  * work. So the parent of a write path is opened instead, and every other entry
  * of that parent is mounted read-only on itself, which keeps those entries
  * from being changed, removed or renamed. A parent can still gain new names;
- * createdOutside reports them after the command, and the executor removes
- * them and fails the call. Every directory inside a
+ * createdOutside reports them after the command, and the executor moves
+ * them to a quarantine outside the workspace (never deleting) and fails the
+ * call. Every directory inside a
  * write path that holds a protected file is a mount point, so renaming an
  * ancestor cannot move the protected file away and recreate the path.
  */
@@ -193,7 +194,21 @@ export const mountWorkspace = (root: string, writePaths: string[], protectedPath
   };
 };
 
-export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Host-owned scratch kept between calls of one session; never model arguments. */ scratchRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[] } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
+/** A fresh private directory outside the workspace for one call's quarantined entries. */
+const quarantineDirectory = async (requested: string | undefined, workspace: string): Promise<string> => {
+  let base = requested ? path.resolve(requested) : path.join(os.tmpdir(), "codali-quarantine");
+  if (base === workspace || base.startsWith(`${workspace}${path.sep}`) || workspace.startsWith(`${base}${path.sep}`)) base = path.join(os.tmpdir(), "codali-quarantine");
+  await fs.mkdir(base, { recursive: true, mode: 0o700 });
+  return fs.mkdtemp(path.join(base, `${new Date().toISOString().replace(/[:.]/g, "-")}-`));
+};
+
+/** rename(2) only: nothing is copied and then deleted, so the content always survives in one place. */
+const moveOut = async (from: string, to: string): Promise<void> => {
+  await fs.mkdir(path.dirname(to), { recursive: true, mode: 0o700 });
+  await fs.rename(from, to);
+};
+
+export const createIsolatedExecutor = (options: { network?: boolean; status?: ExecutorStatus; /** Host-owned disposable cache; never model arguments. */ cacheRoot?: string; /** Host-owned scratch kept between calls of one session; never model arguments. */ scratchRoot?: string; /** Trusted installed libraries only; never model arguments. */ readOnlyRuntimeRoots?: string[]; /** Host-owned directory outside the workspace for entries a command left outside its write paths. */ quarantineRoot?: string } = {}): ((command: string, args: string[], context: ToolContext) => Promise<ToolHandlerResult>) => {
   const status = options.status ?? executorStatus();
   return async (command, args, context) => {
     if (!status.available) throw new ToolExecutionError("tool_permission_denied", status.reason ?? "Isolation unavailable");
@@ -280,20 +295,27 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         let outcome: ToolHandlerResult | undefined, failure: unknown;
         try { outcome = await runProcess("/usr/bin/bwrap", launch, context); } catch (error) { failure = error; }
         // Names that appeared next to a write path did not exist when the
-        // mounts were planned, so the command made them outside its scope
-        // (a conftest.py or .npmrc there would change later runs). Remove them.
+        // mounts were planned. A conftest.py or .npmrc left there would change
+        // later runs, so they leave the workspace; but another process may have
+        // made them during the run, so they are moved to a quarantine outside
+        // the workspace, never deleted.
         const created = mounts.createdOutside();
-        const removed: string[] = [], kept: string[] = [];
+        const quarantined: string[] = [], kept: string[] = [];
         const moved = created.filter(file => mounts.movedFromScope(file));
+        let quarantine: string | undefined;
         for (const file of created) {
           if (moved.includes(file)) continue;
-          try { await fs.rm(file, { recursive: true, force: true }); removed.push(file); } catch { kept.push(file); }
+          try {
+            quarantine ??= await quarantineDirectory(options.quarantineRoot, root);
+            await moveOut(file, path.join(quarantine, path.relative(root, file)));
+            quarantined.push(file);
+          } catch { kept.push(file); }
         }
         if (context.signal?.aborted) throw failure ?? context.signal.reason;
         if (created.length) {
           const names = (files: string[]) => files.slice(0, 10).map(file => path.relative(root, file)).join(", ") + (files.length > 10 ? ` and ${files.length - 10} more` : "");
           const prior = failure instanceof Error ? failure.message : outcome?.output ?? "";
-          throw new ToolExecutionError("tool_permission_denied", `The command created ${names(created)} outside its writePaths (${writePaths.map(file => path.relative(root, file) || ".").join(", ")}).${removed.length ? ` Removed ${names(removed)}: they did not exist when the command started.` : ""}${moved.length ? ` Kept ${names(moved)}: it holds content moved out of a write path; declare it in writePaths to keep it, or move it back.` : ""}${kept.length ? ` Could not remove ${names(kept)}; delete them before continuing.` : ""} Any other effects of the command inside its writePaths remain. Name every path the command creates in writePaths (a path that does not exist yet is allowed when its parent directory exists), or write inside a declared path.${prior ? `\n\nCommand output:\n${prior.slice(0, 4000)}` : ""}`, { retryable: false, details: { outsideWritePaths: created.map(file => path.relative(root, file)), removed: removed.map(file => path.relative(root, file)) } });
+          throw new ToolExecutionError("tool_permission_denied", `The command created ${names(created)} outside its writePaths (${writePaths.map(file => path.relative(root, file) || ".").join(", ")}).${quarantined.length ? ` Moved ${names(quarantined)} out of the workspace to ${quarantine}: they did not exist when the command started. If another process (not this command) made any of them, move it back, e.g. mv ${JSON.stringify(path.join(quarantine!, path.relative(root, quarantined[0])))} ${JSON.stringify(quarantined[0])}.` : ""}${moved.length ? ` Kept ${names(moved)}: it holds content moved out of a write path; declare it in writePaths to keep it, or move it back.` : ""}${kept.length ? ` Could not move ${names(kept)} out of the workspace (rename failed, for example because the quarantine is on another filesystem); inspect them and decide whether to keep them before continuing.` : ""} Any other effects of the command inside its writePaths remain. Name every path the command creates in writePaths (a path that does not exist yet is allowed when its parent directory exists), or write inside a declared path.${prior ? `\n\nCommand output:\n${prior.slice(0, 4000)}` : ""}`, { retryable: false, details: { outsideWritePaths: created.map(file => path.relative(root, file)), quarantined: quarantined.map(file => path.relative(root, file)), ...(quarantine ? { quarantine } : {}) } });
         }
         if (failure) {
           if (failure instanceof ToolExecutionError && mounts.inPlace.length) failure.message += `\nNote: ${mounts.inPlace.map(file => path.relative(root, file) || ".").join(", ")} could only be mounted in place, because the parent directory holds a symbolic link or special file. The command can change the contents but cannot remove or rename the path itself.`;
