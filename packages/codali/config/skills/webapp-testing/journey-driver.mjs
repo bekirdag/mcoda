@@ -9,7 +9,7 @@
 // page shows. In allow, list what the step expects: an HTTP status, or a RegExp
 // for one entry: "STATUS METHOD URL" (a response, e.g. /^401 GET \S+\/api\/me$/),
 // "network METHOD URL ERROR", "console TEXT" or "exception TEXT".
-// Requests to remote origins (a CDN font in an offline sandbox)
+// Requests to public internet hosts (a CDN font in an offline sandbox)
 // are reported as kind "external" in problems() and on the PASS line, but do
 // not fail a step.
 //
@@ -71,18 +71,21 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
   let id = 0;
   const pending = new Map();
   const problems = [], methods = new Map(), loads = [];
-  let appOrigin;
+  const appOrigins = new Set();
   const originOf = url => { try { return new URL(url).origin; } catch { return undefined; } };
-  // A request to a remote origin (not the app's, not this machine) is reported,
-  // never fatal: the sandbox may have no network. Local services still count.
+  // Only public internet hosts are remote. The app's own origins (every page it
+  // served or the journey opened), loopback, private networks and single-label
+  // or local names (a compose service such as http://api:3000) are the app.
+  const localHost = host => /^(?:localhost|0\.0\.0\.0|127(?:\.\d+){3}|10(?:\.\d+){3}|192\.168(?:\.\d+){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){2}|169\.254(?:\.\d+){2})$/.test(host)
+    || /^\[(?:::1?|f[cd][0-9a-f]*:.*|fe80:.*)\]$/i.test(host) || !host.includes('.') || /\.(?:local|localhost|internal|lan|home\.arpa|test)$/i.test(host);
   const remote = url => { try { const u = new URL(url);
-    return /^https?:$/.test(u.protocol) && u.origin !== appOrigin && !/^(?:localhost|127(?:\.\d+){3}|\[::1\])$/.test(u.hostname); } catch { return false; } };
+    return /^https?:$/.test(u.protocol) && !appOrigins.has(u.origin) && !localHost(u.hostname); } catch { return false; } };
   const record = problem => problems.push({ ...problem,
     ...(problem.url && /^(?:http|network)$/.test(problem.kind) && remote(problem.url) ? { kind: 'external', was: problem.kind } : {}),
     at: Date.now() });
   const events = {
     'Page.loadEventFired': () => loads.splice(0).forEach(r => r()),
-    'Page.frameNavigated': p => { if (!p.frame.parentId) appOrigin = originOf(p.frame.url) ?? appOrigin; },
+    'Page.frameNavigated': p => { const origin = !p.frame.parentId && originOf(p.frame.url); if (origin && origin !== 'null') appOrigins.add(origin); },
     'Network.requestWillBeSent': p => methods.set(p.requestId, { method: p.request.method, url: p.request.url }),
     'Network.responseReceived': p => { const { status, url } = p.response;
       if (status >= 400 && !/\/favicon\.ico(?:$|\?)/.test(url)) record({ kind: 'http', status, method: methods.get(p.requestId)?.method ?? 'GET', url }); },
@@ -141,7 +144,7 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
     cdp, evaluate, waitFor, unlabelledControls,
     /** Everything recorded since launch: { kind: http|network|console|exception, ... }. */
     problems: () => [...problems],
-    goto: url => load(`load of ${url}`, () => cdp('Page.navigate', { url })),
+    goto: url => { const origin = originOf(url); if (origin && origin !== 'null') appOrigins.add(origin); return load(`load of ${url}`, () => cdp('Page.navigate', { url })); },
     /** Reload the current page (the session cookie stays), then wait for the load. */
     reload: () => load('reload', () => cdp('Page.reload', { ignoreCache: true })),
     /** Run one scenario step. It fails on a console error, uncaught exception,

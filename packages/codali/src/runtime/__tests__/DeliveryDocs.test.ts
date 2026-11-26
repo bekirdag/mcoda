@@ -69,3 +69,10 @@ test("documents the request only refers to are not required deliverables", () =>
   assert.deepEqual(missingDeliveryDocuments([goal], [], []), ["OPERATIONS.md"]);
   assert.deepEqual(missingDeliveryDocuments(["Document setup in SETUP.md."], [], []), ["SETUP.md"]);
 });
+
+test("deliverable lists, 'the following' and should/must phrasing name required documents", () => {
+  assert.deepEqual(missingDeliveryDocuments(["# Clinic rota\n\nDeliverables:\n- HANDBOOK.md\n- RUNBOOK.md\n\nNotes:\n- see LEGACY.md"], [], []), ["HANDBOOK.md", "RUNBOOK.md"]);
+  assert.deepEqual(missingDeliveryDocuments(["Write the following RELEASE.md with the upgrade steps."], [], []), ["RELEASE.md"]);
+  assert.deepEqual(missingDeliveryDocuments(["The rota service should contain a SUPPORT.md."], [], []), ["SUPPORT.md"]);
+  assert.deepEqual(missingDeliveryDocuments(["A HANDOFF.md must explain the start steps."], [], []), ["HANDOFF.md"]);
+});

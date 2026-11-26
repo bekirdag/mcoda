@@ -25,6 +25,7 @@ interface Page {
   step(name: string, run: () => Promise<void>, options?: { allow?: (number | RegExp)[]; labels?: boolean }): Promise<void>;
   unlabelledControls(): Promise<string[]>;
   problems(): { kind: string; status?: number }[];
+  evaluate(expression: string): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -181,5 +182,22 @@ test("an unreachable remote asset is reported but does not fail a step; allow co
     await page.step("signed-out overview", async () => { await page.goto(url); await page.waitForText("Sensor overview"); },
       { allow: [/^401 GET \S+\/api\/me$/, /^console not signed in$/] });
     assert.ok(page.problems().some(problem => problem.kind === "external"), "the unreachable stylesheet is still reported");
+  } finally { await page.close(); server.close(); }
+});
+
+// The same dashboard talking to its own backends by a compose service name and
+// by 0.0.0.0: those are the app, so their failures fail the step.
+test("failures of the app's own backends on service names and unspecified addresses fail a step", { skip, timeout: 60_000 }, async () => {
+  const closed = createServer(); const closedUrl = await listen(closed); closed.close();
+  const port = new URL(closedUrl).port;
+  const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><p>ready</p>"); });
+  const url = await listen(server);
+  const page = await (await import(driverUrl) as Driver).launch({ chrome });
+  try {
+    await page.goto(url);
+    await assert.rejects(page.step("sensor service by name", async () => { await page.evaluate("fetch('http://sensors:3000/readings').catch(() => {})"); await new Promise(r => setTimeout(r, 500)); }),
+      /GET http:\/\/sensors:3000\/readings failed/);
+    await assert.rejects(page.step("sensor service on 0.0.0.0", async () => { await page.evaluate(`fetch('http://0.0.0.0:${port}/readings').catch(() => {})`); await new Promise(r => setTimeout(r, 500)); }),
+      /0\.0\.0\.0.*failed/);
   } finally { await page.close(); server.close(); }
 });

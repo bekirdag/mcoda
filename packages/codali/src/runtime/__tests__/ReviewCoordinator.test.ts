@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkState } from "../../session/WorkState.js";
 import { taskReviewContext } from "../TaskReviewContext.js";
-import { REVIEW_CHECKS_PER_CALL, reviewTaskScope, reviewWorkspaceHash } from "../ReviewCoordinator.js";
+import { REVIEW_CHECKS_PER_CALL, reviewTaskScope, reviewWorkspaceHash, sharesContent } from "../ReviewCoordinator.js";
 import type { ProviderRequest } from "../../providers/ProviderTypes.js";
 import { approvedReview, contractReviewFixture } from "../../eval/fixtures/ContractReviewProvider.js";
 
@@ -190,7 +190,7 @@ for (const rejectLast of [false, true]) test(`oversized checklists retain every 
   assert.deepEqual(result, rejectLast ? { passed: false, findings: ["The last obligation is violated."] } : { passed: true, findings: [] });
 });
 
-test("unbounded checklist batching fails before any partial verdict can establish acceptance", async () => {
+test("unbounded checklists are reviewed up to the portion ceiling and report the rest unreviewed", async () => {
   const { task, scope, hashes } = fixture(); let reviews = 0;
   const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review all.",
     maxInputChars: 22_000, maxOutputTokens: 8192, diff: async () => "",
@@ -204,8 +204,10 @@ test("unbounded checklist batching fails before any partial verdict can establis
       }
       reviews++; return { message: { role: "assistant", content: approvedReview(request) } };
     } } });
-  assert.equal(result.passed, false); assert.equal(reviews, 0);
-  assert.match(result.findings.join(" "), /too many bounded.*batches/i);
+  // Past the 64-portion ceiling the remaining checks are unreviewed, never a
+  // permanent rejection, and no portion grows to hold them.
+  assert.equal(result.passed, true); assert.ok(reviews <= 64);
+  assert.ok(result.unreviewed && result.unreviewed.length > 0);
 });
 
 // A library-loan app (written for this test): the session endpoint must return
@@ -349,10 +351,32 @@ test("a delivered statement is not proven by another delivered document or by a 
   assert.deepEqual(code.result, { passed: true, findings: [] });
 });
 
-test("over the portion budget, delivered statements are sampled and portions grow instead of blocking", async () => {
+test("over the portion budget, portions keep their size and the lowest-priority checks are left unreviewed, not rejected", async () => {
   const claims = Array.from({ length: 120 }, (_, i) => ({ path: "README.md", text: `Locker bay ${i} accepts parcels from couriers.` }));
-  const { result } = await lockerReview(() => ({ path: "src/lockers.js", quote: "export function reserveLocker(courier)" }), { deliveredClaims: claims, maxPortions: 3 });
+  const sizes: number[] = [];
+  const { result } = await lockerReview(check => ({ path: "src/lockers.js", quote: "export function reserveLocker(courier)", check: check.id }), {
+    deliveredClaims: claims, maxPortions: 3, onPortion: () => sizes.push(0) });
   assert.equal(result.passed, true);
-  assert.ok(result.sampled, "the result says the review was bounded");
-  assert.ok(result.sampled!.deliveredReviewed < 120 && result.sampled!.deliveredTotal === 120);
+  assert.equal(sizes.length, 3, "three portions, no more");
+  assert.ok(result.unreviewed && result.unreviewed.length > 90, "most delivered statements did not fit");
+  assert.ok(result.unreviewed!.every(check => check.sourceId.startsWith("delivered:") || check.sourceId.startsWith("nonGoal:")), "requirements and constraints are reviewed first");
+});
+
+test("status codes and identifiers count as content words", () => {
+  assert.equal(sharesContent("if (!req.user) return res.sendStatus(401);", "Unauthenticated requests to the parcel API get 401."), true);
+  assert.equal(sharesContent("const lockerTimeoutMs = 30_000;", "A locker request times out."), true);
+  assert.equal(sharesContent("export const pad = value => String(value)", "Unauthenticated requests get 401."), false);
+});
+
+test("app output that shows a delivered statement proves it; a command that reads the document does not", async () => {
+  const claims = [{ path: "README.md", text: "Couriers reserve a locker for 48 hours." }];
+  const cite = (receipt: string) => (check: { sourceId: string }) => check.sourceId.startsWith("delivered:")
+    ? { receipt, observed: "Couriers reserve a locker for 48 hours." } : { path: "src/lockers.js", quote: "export function reserveLocker(courier)" };
+  const receipts = [
+    { id: "r-page", tool: "run_shell", args: { command: "curl", args: ["-s", "http://127.0.0.1:3000/help"] }, status: "success", output: "<p>Couriers reserve a locker for 48 hours.</p>" },
+    { id: "r-head", tool: "run_shell", args: { command: "bash", args: ["-c", "head -5 ./README.md"] }, status: "success", output: "Couriers reserve a locker for 48 hours." },
+  ];
+  assert.deepEqual((await lockerReview(cite("r-page"), { deliveredClaims: claims, receipts })).result, { passed: true, findings: [] });
+  const read = (await lockerReview(cite("r-head"), { deliveredClaims: claims, receipts })).result;
+  assert.equal(read.passed, false); assert.match(read.findings[0], /prints the document's statement/);
 });

@@ -41,11 +41,12 @@ const normalText = (text: string) => text.replace(/\s+/g, " ").trim();
 const STOP_WORDS = new Set(("the and for with that this from must should shall will when each are not any all its into than then them they their "
   + "has have had was were been being can may also only does did done use used uses using via per such other more most some same "
   + "const let var function return export import async await true false null undefined new class def self this end").split(" "));
-/** Content words of a text, stemmed to five letters: identifiers are split
- * at camelCase and snake_case, numbers and common words are dropped. */
-export const contentWords = (text: string): Set<string> => new Set(text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()
-  .split(/[^a-z]+/).filter(word => word.length >= 3 && !STOP_WORDS.has(word))
-  .map(word => (word.length > 4 ? word.replace(/(?:ing|ed|es|s)$/, "") : word).slice(0, 5)));
+/** Content words of a text: identifiers are split at camelCase and
+ * snake_case, words are stemmed to five letters, numbers of three or more
+ * digits (a status code, a port, a limit) are kept, common words dropped. */
+export const contentWords = (text: string): Set<string> => new Set(text.replace(/([a-z])([A-Z0-9])|([0-9])([A-Za-z])/g, "$1$3 $2$4").toLowerCase()
+  .split(/[^a-z0-9]+/).filter(word => /^\d{3,}$/.test(word) || /^[a-z]{3,}$/.test(word) && !STOP_WORDS.has(word))
+  .map(word => /^\d/.test(word) ? word : (word.length > 4 ? word.replace(/(?:ing|ed|es|s)$/, "") : word).slice(0, 5)));
 /** Whether a cited quotation is about the check at all: it shares a content word with it. */
 export const sharesContent = (quote: string, reference: string): boolean => {
   const words = contentWords(reference);
@@ -67,10 +68,12 @@ export async function reviewTaskScope(options: {
   authoritativeInputs?: readonly ReviewContractSource[];
   /** Statements from delivered documents; whole-goal review checks each one. */
   deliveredClaims?: readonly { path: string; text: string }[];
-  /** At most this many review portions (calls before paging and repair). The
-   * caller lowers it as the deadline nears or reviews keep failing. When the
-   * checks need more, portions grow and delivered statements are sampled. */
+  /** At most this many review portions (calls before paging and repair); the
+   * caller lowers it as the deadline nears. Checks that do not fit are
+   * returned as unreviewed, highest priority reviewed first. */
   maxPortions?: number;
+  /** Called once per review portion, so a caller can share one budget across reviews. */
+  onPortion?: () => void;
   readSource: (file: string, maxChars: number) => Promise<{ content: string; truncated: boolean }>;
   readSourcePage: (file: string, offset: number) => Promise<ReviewSourcePage>;
   diff: (files: string[]) => Promise<string>;
@@ -160,23 +163,32 @@ export async function reviewTaskScope(options: {
     if (batch.length) planned.push(batch);
     return planned;
   };
-  // Over the portion budget, sample delivered statements first (the contract
-  // checks are never dropped), then review more checks per portion.
-  const contractCount = contract.checks.length;
-  let perCall = REVIEW_CHECKS_PER_CALL;
-  let batches = plan(checks, perCall);
-  while (batches !== "oversized" && batches.length > portionLimit) {
-    if (checks.length > contractCount) checks = allChecks.slice(0, contractCount + Math.floor((checks.length - contractCount) / 2));
-    else if (perCall < 256) perCall *= 2;
-    else break;
-    batches = plan(checks, perCall);
+  // Portions never grow past REVIEW_CHECKS_PER_CALL: one call over dozens of
+  // checks is the failure this review replaced. Over the portion budget, the
+  // highest-priority checks are reviewed and the rest are reported unreviewed
+  // (not rejected): requirements first, then inputs, constraints, delivered
+  // statements (those with numbers first) and non-goals.
+  const priority = (check: (typeof checks)[number]) => {
+    const source = quotes[check.quoteId].sourceId;
+    return /^(?:requirement|goal)\b/.test(source) ? 0 : source.startsWith("input:") ? 1 : source.startsWith("constraint:") ? 2 : source.startsWith("delivered:") ? 3 : 4;
+  };
+  const ordered = allChecks.map((check, order) => ({ check, order })).sort((a, b) => priority(a.check) - priority(b.check) || a.order - b.order).map(({ check }) => check);
+  let batches = plan(checks, REVIEW_CHECKS_PER_CALL);
+  if (batches !== "oversized" && batches.length > portionLimit) {
+    let low = 0; let high = ordered.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      const candidate = plan(ordered.slice(0, middle), REVIEW_CHECKS_PER_CALL);
+      if (candidate !== "oversized" && candidate.length <= portionLimit) low = middle; else high = middle - 1;
+    }
+    checks = ordered.slice(0, low);
+    batches = plan(checks, REVIEW_CHECKS_PER_CALL);
   }
   if (batches === "oversized") return { passed: false,
     findings: ["Required review authority and one checklist item exceed the configured evidence budget. Split the task or select a larger compatible reviewer; acceptance is not established."] };
-  if (batches.length > portionLimit) return { passed: false,
-    findings: ["Review requires too many bounded checklist batches. Split the task or select a larger compatible reviewer; acceptance is not established."] };
-  const sampled = checks.length < allChecks.length || perCall > REVIEW_CHECKS_PER_CALL
-    ? { deliveredReviewed: checks.length - contractCount, deliveredTotal: allChecks.length - contractCount, checksPerPortion: perCall } : undefined;
+  const reviewedIds = new Set(checks.map(check => check.id));
+  const unreviewed = allChecks.filter(check => !reviewedIds.has(check.id))
+    .map(check => ({ id: check.id, sourceId: quotes[check.quoteId].sourceId, expectedBehavior: check.expectedBehavior }));
   // Every cited quotation must exist in the receipt output or current file.
   // A file too large to read whole is checked against the pages shown.
   const shown = new Map<string, string[]>();
@@ -211,8 +223,10 @@ export async function reviewTaskScope(options: {
       if (!observed) return `quote at least ${MIN_QUOTE_CHARS} characters of receipt ${cited.receipt} output in observed`;
       const output = normalText(receipt.output ?? "");
       if (!output.includes(observed)) return `receipt ${cited.receipt} output does not contain "${observed.slice(0, 80)}"`;
-      // Output that prints the statement itself (cat README.md) is not evidence for it.
-      if (statement && output.includes(normalText(contractQuote))) return `receipt ${cited.receipt} prints the document's statement; it does not show the build doing it`;
+      // A command that reads a delivery document (cat README.md) is not evidence
+      // for the document's statements; app output that shows the same text is.
+      const readsDocument = (JSON.stringify(receipt.args ?? "").match(/[\w./-]+\.(?:md|markdown|mdx|rst)\b/gi) ?? []).some(file => isDeliveryDocument(file.replace(/^\.\//, "")));
+      if (statement && readsDocument && output.includes(normalText(contractQuote))) return `receipt ${cited.receipt} prints the document's statement; it does not show the build doing it`;
       return unrelated(observed);
     }
     if (typeof cited.path === "string") {
@@ -262,6 +276,7 @@ export async function reviewTaskScope(options: {
     return problems;
   };
   for (const [index, batch] of batches.entries()) {
+    options.onPortion?.();
     options.signal?.throwIfAborted();
     input.contractChecklist = checklist(batch);
     input.checklistBatch = batches.length > 1 ? { index, count: batches.length, totalChecks: checks.length } : undefined;
@@ -286,5 +301,5 @@ export async function reviewTaskScope(options: {
       messages: messages(), signal: options.signal, approve: approve(batch) });
     if (!result.passed) return result;
   }
-  return sampled ? { passed: true, findings: [], sampled } : { passed: true, findings: [] };
+  return unreviewed.length ? { passed: true, findings: [], unreviewed } : { passed: true, findings: [] };
 }

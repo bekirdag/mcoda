@@ -346,8 +346,6 @@ export class SessionController {
   private budgetStartedAt = Date.now();
   private longestModelMs = 0;
   private verificationGuideApplied = false;
-  /** Rejected reviews per task since its last acceptance; each halves the next review's portion budget. */
-  private readonly reviewRejections = new Map<string, number>();
   private ownsWorkspaceLock = false;
   private async renewContinuousTask(): Promise<void> {
     if (!this.options.continuous || !this.ownsWorkspaceLock || !this.state) return;
@@ -2102,13 +2100,13 @@ export class SessionController {
         if (input.content === undefined) throw new Error(`Authoritative input ${input.path} could not be captured completely; verification cannot omit its requirements.`);
         return { id: `input:${input.path}`, text: input.content };
       }).filter(input => input.text.trim());
-    // Review spend is bounded: about a quarter of the time left, at roughly two
-    // minutes a portion, halved after each rejected review of this task. Over
-    // the budget, portions grow and delivered statements are sampled.
+    // Review spend is bounded per verification: about a quarter of the time
+    // left at roughly two minutes a portion, shared by the re-assessments and
+    // the final review. Portions keep their fixed size; checks the budget does
+    // not reach are reported unreviewed, never rejected.
     const timeLeft = this.options.deadlineAt ? Math.max(0, this.options.deadlineAt - Date.now()) : undefined;
-    const maxPortions = Math.max(1, Math.floor(Math.min(64, timeLeft === undefined ? 64 : timeLeft * 0.25 / 120_000)
-      / 2 ** Math.min(this.reviewRejections.get(task.id) ?? 0, 4)));
-    const rejected = (findings: string[]) => { this.reviewRejections.set(task.id, (this.reviewRejections.get(task.id) ?? 0) + 1); return findings; };
+    let portionsLeft = Math.max(1, Math.floor(Math.min(64, timeLeft === undefined ? 64 : timeLeft * 0.25 / 120_000)));
+    const unreviewed: { taskId: string; id: string; sourceId: string; expectedBehavior: string }[] = [];
     const assess = (owner: WorkTask, ownerScope: ReturnType<typeof taskReviewContext>, summary: string,
       prior?: readonly TaskReviewAssessment[], deliveredClaims?: { path: string; text: string }[]) => reviewTaskScope({ provider: this.provider("reviewer"),
       scope: ownerScope, task: owner, hashes: current, receipts: receipts.map(receipt => receipt!),
@@ -2116,14 +2114,16 @@ export class SessionController {
       readSource: (file, maxChars) => readReviewSource(this.workspaceRoot, file, current[file] ?? "missing", maxChars),
       readSourcePage: (file, offset) => readReviewSourcePage(this.workspaceRoot, file, current[file] ?? "missing", offset),
       diff: files => this.workspaceLedger().diff(files),
-      maxInputChars: reviewInputChars, maxOutputTokens: reviewOutputTokens, maxPortions, signal: this.active?.signal });
+      maxInputChars: reviewInputChars, maxOutputTokens: reviewOutputTokens, maxPortions: Math.max(1, portionsLeft),
+      onPortion: () => { portionsLeft--; }, signal: this.active?.signal })
+      .then(result => { unreviewed.push(...(result.unreviewed ?? []).map(check => ({ taskId: owner.id, ...check }))); return result; });
     if (integrationCoverage) {
       for (const owner of this.state!.tasks.filter(candidate => candidate.id !== task.id && candidate.status === "verified")) {
         const ownerScope = reviewScope(owner);
         const previous = [...this.state!.evidence].reverse().find(e => owner.evidenceIds.includes(e.id) && e.ok);
         const assessment = await assess(owner, ownerScope, previous?.summary ?? "Reassess the assigned criteria against the final workspace.", assessments);
         if (!assessment.passed) return { verified: false, receiptRefs,
-          findings: rejected(assessment.findings.map(finding => `Final assessment of ${owner.id}: ${finding}`)) };
+          findings: assessment.findings.map(finding => `Final assessment of ${owner.id}: ${finding}`) };
         assessments.push({ taskId: owner.id, criterionIds: [...owner.requirementIds],
           sourcePaths: ownerScope.reviewPaths.filter(file => ownerScope.sourceRoles[file] !== "read_only_context"),
           workspaceSnapshotHash: reviewWorkspaceHash(current) });
@@ -2134,9 +2134,9 @@ export class SessionController {
     const claims = scope.reviewScope === "whole_goal" ? deliveryDocs.flatMap(doc => deliveryClaims(doc.text).map(text => ({ path: doc.path, text }))) : [];
     if (claims.length > 200) await this.emit("delivery_claims_bounded", { taskId: task.id, claims: claims.length, reviewed: 200 }, false);
     const review = await assess(task, scope, args.summary, assessments, claims.slice(0, 200));
-    if (review.sampled) await this.emit("review_bounded", { taskId: task.id, maxPortions, ...review.sampled }, false);
-    if (review.passed !== true || !Array.isArray(review.findings) || review.findings.length) return { verified: false, receiptRefs, findings: rejected(review.findings ?? ["Review did not provide valid acceptance evidence"]) };
-    this.reviewRejections.delete(task.id);
+    if (review.passed !== true || !Array.isArray(review.findings) || review.findings.length) return { verified: false, receiptRefs, findings: review.findings ?? ["Review did not provide valid acceptance evidence"] };
+    if (unreviewed.length) await this.emit("review_unreviewed", { taskId: task.id, checks: unreviewed }, false);
+    const unreviewedNote = unreviewed.length ? { unreviewedChecks: `The review time budget covered the highest-priority checks; ${unreviewed.length} lower-priority checks were not reviewed (not rejected): ${unreviewed.slice(0, 5).map(check => `${check.sourceId}: ${check.expectedBehavior.slice(0, 80)}`).join(" | ")}. Name them as unverified in the delivery notes.` } : {};
     const afterReview = (await captureWorkspace(this.workspaceRoot)).hashes;
     for (const [file, value] of Object.entries(current)) if ((afterReview[file] ?? await hashWorkspacePath(this.workspaceRoot, file)) !== value) throw new Error("Review inputs changed during review; rerun validation against the current files");
     await this.update(state => {
@@ -2152,9 +2152,9 @@ export class SessionController {
     const missing: string[] = [];
     for (const file of named) if (await fs.access(path.join(this.workspaceRoot, file)).then(() => false, () => true)) missing.push(file);
     if (missing.length && this.state!.tasks.some(owner => !["verified", "cancelled", "superseded"].includes(owner.status))) {
-      return { verified: true, taskId: task.id, receiptRefs, deliveryDocuments: `The request names ${missing.join(", ")}, which do not exist yet. Write them in the next task you claim (add them to its allowedPaths) with the current start steps, settings and known limits, and update them as features land, so an interrupted run still leaves accurate instructions.` };
+      return { verified: true, taskId: task.id, receiptRefs, ...unreviewedNote, deliveryDocuments: `The request names ${missing.join(", ")}, which do not exist yet. Write them in the next task you claim (add them to its allowedPaths) with the current start steps, settings and known limits, and update them as features land, so an interrupted run still leaves accurate instructions.` };
     }
-    return { verified: true, taskId: task.id, receiptRefs };
+    return { verified: true, taskId: task.id, receiptRefs, ...unreviewedNote };
   }
 
   private async auditModelRequest(id: string, binding: string, request: ProviderRequest): Promise<void> {
