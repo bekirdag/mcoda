@@ -24,6 +24,11 @@ export function researchPacket(tool: string, input: unknown, output: string): Re
   return output.trim() ? { source: tool, passage: output.slice(0, 4000), tool, query } : undefined;
 }
 
+/** A page's identity across link spellings (scheme, www., trailing slash, fragment). */
+const sourceKey = (value: string): string => {
+  try { const url = new URL(value); return `${url.host.toLowerCase().replace(/^www\./u, "")}${url.pathname.replace(/\/+$/u, "")}${url.search}`; }
+  catch { return value.trim().toLowerCase(); }
+};
 const squash = (text: string): string => text.toLowerCase().replace(/[‘’]/gu, "'").replace(/[“”]/gu, '"').replace(/[‐-―−]/gu, "-").replace(/\s+/gu, " ");
 
 /** Exact quotes and specific figures/identifiers in a draft: the claims an
@@ -53,10 +58,42 @@ export function selectResearchEvidence(packets: ResearchPacket[], request: strin
     const overlap = [...terms].filter(term => words.has(term)).length;
     return { packet, index, score: overlap / Math.sqrt(Math.max(1, terms.size)) + (packet.query ? 1 : 0) };
   }).sort((a, b) => b.score - a.score || a.index - b.index);
-  // Greedy cover of the draft's anchors, within part of the budget.
-  const anchors = draftAnchors(draft), uncovered = new Set(anchors), anchored: typeof ranked = [];
-  const passages = new Map(ranked.map(value => [value.index, squash(value.packet.passage)]));
+  // The pages the draft cites come first: for each, its passages that share
+  // most with the lines citing it. In cycle 7 the audit was not shown the
+  // passage behind a cited claim with no figure in it ("a further three
+  // months") and rewrote the claim as unsupported.
+  const anchored: typeof ranked = [];
   let anchorChars = 0;
+  const citing = new Map<string, Set<string>>();
+  for (const line of draft.split(/\n+/u)) {
+    for (const url of line.match(/https?:\/\/[^\s<>()\[\]"'`\\]+/gu) ?? []) {
+      const key = sourceKey(url.replace(/[.,;:!?*]+$/u, ""));
+      const words = citing.get(key) ?? new Set<string>();
+      for (const word of line.toLowerCase().match(/[\p{L}\p{N}_]{4,}/gu) ?? []) words.add(word);
+      citing.set(key, words);
+    }
+  }
+  if (citing.size) {
+    const cited = ranked.map(value => {
+      const words = citing.get(sourceKey(value.packet.source));
+      if (!words) return undefined;
+      const terms = new Set(value.packet.passage.toLowerCase().match(/[\p{L}\p{N}_]{4,}/gu) ?? []);
+      return { value, key: sourceKey(value.packet.source), overlap: [...words].filter(word => terms.has(word)).length };
+    }).filter(item => item !== undefined).sort((a, b) => b.overlap - a.overlap || a.value.index - b.value.index);
+    // Best passage of every cited page first, then further passages of them.
+    const firsts = new Set<string>();
+    const order = [...cited.filter(item => !firsts.has(item.key) && firsts.add(item.key)), ...cited];
+    for (const { value } of order) {
+      if (anchored.includes(value)) continue;
+      const size = JSON.stringify(value.packet).length + 1;
+      if (anchorChars + size > maxChars * 0.35) continue;
+      anchorChars += size; anchored.push(value);
+    }
+  }
+  // Greedy cover of the draft's anchors, within part of the budget.
+  const anchors = draftAnchors(draft), uncovered = new Set(anchors);
+  const passages = new Map(ranked.map(value => [value.index, squash(value.packet.passage)]));
+  for (const value of anchored) for (const anchor of [...uncovered]) if (passages.get(value.index)!.includes(anchor)) uncovered.delete(anchor);
   while (uncovered.size) {
     let best: (typeof ranked)[number] | undefined, bestHits = 0;
     for (const value of ranked) {
@@ -67,7 +104,7 @@ export function selectResearchEvidence(packets: ResearchPacket[], request: strin
     }
     if (!best) break;
     const size = JSON.stringify(best.packet).length + 1;
-    if (anchorChars + size > maxChars * 0.6) break;
+    if (anchorChars + size > maxChars * 0.7) break;
     anchorChars += size; anchored.push(best);
     for (const anchor of [...uncovered]) if (passages.get(best.index)!.includes(anchor)) uncovered.delete(anchor);
   }
