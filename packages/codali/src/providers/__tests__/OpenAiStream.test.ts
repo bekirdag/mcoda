@@ -92,3 +92,27 @@ test('fragmented tool arguments across data events assemble valid JSON', { concu
     globalThis.fetch = originalFetch;
   }
 });
+
+test('a streamed response reports progress for text, tool-argument and reasoning chunks', { concurrency: false }, async () => {
+  const provider = new OpenAiCompatibleProvider({ model: 'test', supportsTools: true });
+  const chunk = (delta: Record<string, unknown>, finish?: string) => `data: ${JSON.stringify({ choices: [{ delta, ...(finish ? { finish_reason: finish } : {}) }] })}\n\n`;
+  const sseBody = [
+    chunk({ reasoning_content: 'Plan the patch.' }),
+    chunk({ content: 'Writing ' }),
+    chunk({ tool_calls: [{ index: 0, id: 'w1', function: { name: 'write_file', arguments: '{"path":"inv.ts",' } }] }),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: '"content":"export {}"}' } }] }, 'tool_calls'),
+    ': keepalive\n\n',
+    'data: [DONE]\n\n',
+  ].join('');
+  const originalFetch = globalThis.fetch;
+  let progress = 0;
+  try {
+    globalThis.fetch = async () => new Response(sseBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    const response = await provider.generate({ messages: [{ role: 'user', content: 'go' }], stream: true, onProgress: () => { progress++; } });
+    assert.equal(response.toolCalls?.[0]?.name, 'write_file');
+    // Four generated chunks; the keepalive comment is not progress.
+    assert.equal(progress, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

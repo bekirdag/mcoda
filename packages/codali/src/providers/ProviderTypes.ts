@@ -71,6 +71,10 @@ export interface ProviderRequest {
   stream?: boolean;
   onEvent?: (event: AgentEvent) => void;
   onToken?: (token: string) => void;
+  /** Called whenever a streaming response delivers more generated output
+   * (text, tool arguments or reasoning), so a caller can tell a live long
+   * generation from a stalled request. */
+  onProgress?: () => void;
   streamFlushMs?: number;
 }
 

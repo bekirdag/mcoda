@@ -16,10 +16,12 @@ export class ModelServiceError extends Error {
   partialText?: string;
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
-  /** The service answered with a definite failure instead of output: an HTTP
-   * 5xx error response, or a relay reporting that its scheduler expired before
-   * dispatch. Never set for a lost connection or a request abandoned as
-   * stalled, whose remote outcome is unknown. */
+  /** The service answered with a definite failure before generating: an HTTP
+   * 502 or 503 (bad gateway, unavailable), or a relay reporting that its
+   * scheduler expired before dispatch. Not set for a 504 or other 5xx, which a
+   * gateway often returns after the upstream has generated (and billed), nor
+   * for a lost connection or a request abandoned as stalled: their remote
+   * outcome is unknown and their reservation stays counted. */
   failedWithoutOutput?: boolean;
   constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
     readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream" | "capacity_busy" | "stalled") {
@@ -67,16 +69,17 @@ export class ModelServiceError extends Error {
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
     const error = new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : capacityBusy ? 2 : undefined, nativeRefused, capacityBusy ? "capacity_busy" : undefined);
-    if (code === "service_unavailable") error.failedWithoutOutput = true;
+    if (code === "service_unavailable" && (response.status === 502 || response.status === 503)) error.failedWithoutOutput = true;
     return error;
   }
 }
 
 /** Whether a failed model request returned nothing that could have been used
  * or billed, so its token reservation can be released: a definite service
- * failure with no partial text and no reported usage. Kept otherwise: in
- * cycle 7 each gateway 504 left about 110k reserved tokens counted against
- * the turn's token budget. */
+ * failure before generation with no partial text and no reported usage
+ * (see ModelServiceError.failedWithoutOutput). Kept otherwise, including for a
+ * gateway 504: in cycle 7 strata finished a prompt whose client still got a
+ * 504, so those tokens may have been generated and must stay within budget. */
 export const failedWithoutOutput = (error: unknown): boolean => {
   const service = error instanceof ModelServiceError ? error : (error as { cause?: unknown } | undefined)?.cause instanceof ModelServiceError ? (error as { cause: ModelServiceError }).cause : undefined;
   return !!service?.failedWithoutOutput && service.responseReason !== "stalled" && !service.partialText && !service.responseUsage;

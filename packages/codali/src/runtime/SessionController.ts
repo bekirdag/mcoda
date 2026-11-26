@@ -36,7 +36,7 @@ import { preparedDocdexMessage } from "./PreparedDocdex.js";
 import { budgetInspection } from "./InspectionBudget.js";
 import { InspectionConvergence } from "./InspectionConvergence.js";
 import { capacityRetryDelayMs, isCapacityRefusal, MODEL_CAPACITY_WAIT_MS } from "../providers/ModelCapacityWait.js";
-import { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, outageRetryDelayMs, modelStallAllowanceMs, transportOutage } from "./OutageWait.js";
+import { PREFLIGHT_RECOVERY_WAITS_MS, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, outageRetryDelayMs, modelStallAllowanceMs, modelStreamGapAllowanceMs, transportOutage } from "./OutageWait.js";
 /** Today's date from the host clock, stated as authoritative. Without it a
  * research answer dated itself from the model's own belief (2026-08-24 on
  * 2026-11-13) and called the real dates in retrieved pages suspect. Day
@@ -202,20 +202,15 @@ export const appendWithSpaceWait = async <T>(write: () => Promise<T>, signal?: A
 };
 export const answerReserveMs = (timeoutMs: number, longestModelMs: number): number =>
   Math.min(timeoutMs * 0.5, Math.max(timeoutMs * 0.1, longestModelMs * 2.5 + 60_000, 60_000));
-/** First-attempt bound for the finalizing call: half the window when two
- * attempts of at least 1.5x the slowest call (and 90 s) fit. When they do not,
- * the first attempt still stops at that 1.5x as long as a retry would keep at
- * least FINAL_RETRY_MIN_MS: in cycle 7 a final call with 400 s left (slowest
- * call 151 s) got no bound, never returned, and a 19-minute-old draft was
- * delivered at the deadline. Undefined when not even that fits. */
+/** First-attempt bound for the finalizing call, or undefined when two attempts
+ * of at least 1.5x the slowest call (and 90 s) do not fit in the window. The
+ * retry always gets as long as the first attempt: a shorter first attempt
+ * would cut a live final answer that is slower than 1.5x the slowest call
+ * and leave the retry too little time to write it either. */
 export const finalAttemptMs = (windowMs: number, longestModelMs: number): number | undefined => {
   const attemptMs = Math.max(longestModelMs * 1.5, 90_000);
-  if (!Number.isFinite(windowMs)) return undefined;
-  if (windowMs >= attemptMs * 2) return Math.round(windowMs / 2);
-  return windowMs - attemptMs >= FINAL_RETRY_MIN_MS ? Math.round(attemptMs) : undefined;
+  return Number.isFinite(windowMs) && windowMs >= attemptMs * 2 ? Math.round(windowMs / 2) : undefined;
 };
-/** The least time a retry of a stalled final call is worth starting with. */
-export const FINAL_RETRY_MIN_MS = 60_000;
 const numbersIn = (text: string): number[] => (text.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? []).map(Number).filter(Number.isFinite);
 /** Whether every number in a draft is a value a passing verify_javascript run
  * returned. Such a draft comes from executed code that matched the model's own
@@ -1191,8 +1186,12 @@ export class SessionController {
   }
 
   /** Time one model request may stay unanswered; a method so a host or a test can scale it. */
-  protected stallAllowanceMs(inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts: number, remainingMs = Infinity): number {
-    return modelStallAllowanceMs(inputTokens, maxOutputTokens, longestModelMs, stalledAttempts, remainingMs);
+  protected stallAllowanceMs(inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts: number): number {
+    return modelStallAllowanceMs(inputTokens, maxOutputTokens, longestModelMs, stalledAttempts);
+  }
+  /** Silence allowed between chunks of a streaming request; a method so a host or a test can scale it. */
+  protected streamGapAllowanceMs(fullAllowanceMs: number, longestModelMs: number): number {
+    return modelStreamGapAllowanceMs(fullAllowanceMs, longestModelMs);
   }
   private provider(binding = "lead", addGoal = true, recoveryAttempt = 0, capacityWaitedMs = 0, stalledAttempts = 0, outageStartedAt?: number): Provider {
     const lead = binding === "lead" && addGoal;
@@ -1351,10 +1350,17 @@ export class SessionController {
       // No request may wait for ever: a stalled one is abandoned and takes the
       // outage path below, which retries it with a longer allowance.
       const stall = new AbortController();
-      // A time-limited turn sizes the allowance by the time it has left.
-      const stallRemainingMs = limits.timeoutMs ? Math.max(0, limits.timeoutMs - (Date.now() - this.budgetStartedAt)) : Infinity;
-      const stallMs = this.options.modelStallMs ?? this.stallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts, stallRemainingMs);
-      const stallTimer = setTimeout(() => stall.abort(), stallMs);
+      const stallMs = this.options.modelStallMs ?? this.stallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? limits.maxOutputTokens, this.longestModelMs, stalledAttempts);
+      let stallTimer = setTimeout(() => stall.abort(), stallMs);
+      // A request that is streaming its generation is not stalled: every chunk
+      // restarts the timer, and only a stream that goes silent is abandoned,
+      // after a shorter gap than the full allowance (cycle 7 lost 10 minutes
+      // per silent request). Until the first chunk the full allowance holds.
+      const gapMs = this.options.modelStallMs ?? this.streamGapAllowanceMs(stallMs, this.longestModelMs);
+      const progressed = () => {
+        if (stall.signal.aborted) return;
+        clearTimeout(stallTimer); stallTimer = setTimeout(() => stall.abort(), gapMs);
+      };
       // The turn's own signal too: a request must not outlive the turn that sent it
       // (an abandoned final call kept a server slot and its stall timer busy).
       const owners = AbortSignal.any([request.signal, turn?.signal, stall.signal].filter((value): value is AbortSignal => !!value));
@@ -1368,7 +1374,8 @@ export class SessionController {
         if (owners.aborted) settle(); else owners.addEventListener("abort", settle, { once: true });
       });
       stalled.catch(() => undefined);
-      const dispatched = configured.generate({ ...request, requestId: id, signal: owners });
+      // Streamed wherever the route declares streaming (supportsStreaming), so progress is visible.
+      const dispatched = configured.generate({ ...request, stream: request.stream ?? true, requestId: id, signal: owners, onProgress: () => { progressed(); request.onProgress?.(); } });
       dispatched.catch(() => undefined);
       const response = await Promise.race([dispatched, stalled]).finally(() => clearTimeout(stallTimer)).then(response => {
         if (outageSince !== undefined && recoveryAttempt >= 3) void this.emit("model_outage_ended", { binding, since: new Date(outageSince).toISOString(), lastedMs: Date.now() - outageSince, attempts: recoveryAttempt + 1 }).catch(() => undefined);
@@ -1421,8 +1428,8 @@ export class SessionController {
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("usage", { usage: this.usageSnapshot() });
           } else if (failedWithoutOutput(error) && this.reservations.has(id)) {
-            // The service answered with a definite failure and no output (a
-            // gateway 504, a scheduler that expired before dispatch): nothing
+            // The service answered with a definite failure and no output (an
+            // HTTP 502/503, a scheduler that expired before dispatch): nothing
             // usable was produced, so its reservation is not spent. The call
             // itself still counts as made.
             this.usage.tokens -= this.reservations.get(id)!;

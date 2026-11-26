@@ -112,22 +112,23 @@ test("an equation review may correct one calculated value but not overturn most 
   assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1, "optimalX": 2, "optimalY": 3, "labourShadowPrice": 4, "integerMaxProfit": 5}', []), false);
 });
 
-test("a stalled final call is bounded to half the window when two attempts fit", () => {
+test("a stalled final call is bounded to half the window only when a retry fits", () => {
   // Cycle 5 case 50 (.41 pack): 335 s left after the delivery margin, slowest call 104 s.
   assert.equal(finalAttemptMs(335_000, 104_000), 167_500);
+  assert.equal(finalAttemptMs(170_000, 10_000), undefined);
+  assert.equal(finalAttemptMs(400_000, 200_000), undefined);
   assert.equal(finalAttemptMs(Infinity, 0), undefined);
 });
 
-test("a final call in a window too short for two full attempts still stops at 1.5x the slowest call", () => {
-  // A contract-review answer with 330 s left and a slowest call of 120 s: the first attempt
-  // stops at 180 s, so a hung request leaves 150 s for a fresh one instead of running to the deadline.
-  assert.equal(finalAttemptMs(330_000, 120_000), 180_000);
-  // The 90-second minimum applies to fast models too; the retry keeps 80 s.
-  assert.equal(finalAttemptMs(170_000, 10_000), 90_000);
-  assert.equal(finalAttemptMs(400_000, 200_000), 300_000);
-  // No bound when a retry would start with under a minute: one attempt gets the whole window.
-  assert.equal(finalAttemptMs(200_000, 100_000), undefined);
-  assert.equal(finalAttemptMs(80_000, 10_000), undefined);
+test("a final answer slower than 1.5x the slowest call is not cut when the retry could not hold it", () => {
+  // A grant-report synthesis needs 250 s; 400 s are left and the slowest call so far took 151 s.
+  // Stopping the first attempt at 1.5x (227 s) would kill it and leave the retry 173 s: it would fail twice.
+  assert.equal(finalAttemptMs(400_000, 151_000), undefined, "the whole window goes to one attempt");
+  // Whenever a bound is set, the retry gets at least as long as the first attempt.
+  for (const windowMs of [180_000, 260_000, 335_000, 500_000, 900_000]) for (const longest of [0, 40_000, 104_000, 151_000, 300_000]) {
+    const first = finalAttemptMs(windowMs, longest);
+    if (first !== undefined) assert.ok(windowMs - first >= first, `window ${windowMs}, slowest ${longest}`);
+  }
 });
 
 test("the answer reserve follows the slowest model call instead of a quarter of the timeout", () => {
