@@ -73,3 +73,33 @@ test("a request that needs computing is recognised; one that forbids tools or st
   assert.equal(requestNeedsComputation("What is 2 + 3?"), false);
   assert.equal(requestNeedsComputation("Summarise the meeting of 3 May with 4 people in 2 lines and 5 bullets."), false);
 });
+
+test("chance matches, receipt envelopes and lower-precision reviews are not support", () => {
+  // Fresh variants for the review findings. Whole numbers match only themselves:
+  // 25 is not 0.25 x 100 and 6 is not 0.1 x 60.
+  const rates = [code(1, "share 0.25\nrate 0.1\nratio 0.875")];
+  assert.equal(backingOf({ token: "25", value: 25 }, rates), undefined);
+  assert.equal(backingOf({ token: "6", value: 6 }, rates), undefined);
+  assert.ok(backingOf({ token: "87.5", value: 87.5 }, rates), "a stated decimal may still be a percent");
+  // A deterministic receipt's timing, hashes and library version are not values.
+  const receipt = calc(1, JSON.stringify({ result: "4.2", precision: 50, library: "decimal.js", version: "10.6.0", elapsedMs: 2876, inputSha256: "9f12a07c55e3", isolation: "offline" }));
+  assert.ok(backingOf({ token: "4.2", value: 4.2 }, [receipt]));
+  for (const token of ["2876", "50", "10.6", "12"]) assert.equal(backingOf({ token, value: Number(token) }, [receipt]), undefined, token);
+  // "Backed by executed code" admits no unit factors: 2.346 is not 0.0391 x 60.
+  assert.equal(backedByExecutedCode('{"x": 2.346}', "", [code(1, "rate 0.0391")]), false);
+  // A review is judged at the draft's precision: 2.3480 -> 2 is a change, and a review value
+  // matched only through a unit factor does not outweigh code output.
+  const period = [code(1, "period 2.3480408"), calc(2, '{"result":0.0391}')];
+  for (const revised of ['{"period": 2}', '{"period": 2.346}']) {
+    const review = decideReview('{"period": 2.3480}', revised, "", period);
+    assert.equal(review.verdict, "keep", revised); assert.deepEqual(review.protectedFields.map(item => item.field), ["period"]);
+  }
+});
+
+test("ordinary chat with versions and dates is not a computation, and labels are not values", () => {
+  assert.equal(requestNeedsComputation("Should we move from HTTP 2 to 3, and from TLS 1.2 or 1.3? What do you mean by 0-RTT, and what did the 2024 RFC determine?"), false);
+  assert.equal(requestNeedsComputation("Python 3.12 or 3.13 on Ubuntu 24.04: which do you expect to be faster to count on?"), false);
+  assert.equal(requestNeedsComputation("A coin lands heads with p = 0.3, 0.5, 0.7 or 0.9. Give the expected number of tosses until two heads in a row."), true);
+  const prose = answerValues("In the 3rd quarter of 2024, on 2024-05-01 at 10:30, TLS 1.3 and HTTP/2 cut handshakes (v2.4.1); mean latency: 42.5 ms.");
+  assert.deepEqual(prose.values.map(item => item.token), ["42.5"]);
+});

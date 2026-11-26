@@ -43,7 +43,7 @@ test("calculator handles precedence, numeric notation, functions and units expre
     ["2 + 3 * 4", 14], ["(2 + 3) * 4", 20], ["2^3^2", 512], ["-2**2", -4], ["2^-3", 0.125],
     ["12 / 3 / 2", 2], [".5 + 1. + 2e-2", 1.52], ["sum(2, 3*4, -1)", 13],
     ["sqrt(81)+abs(-2)+ceil(1.1)+floor(1.9)", 14], ["min(2,5,-3)+max(1,8)", 5],
-    ["(17*3+29*2)/(3+2)", 21.8], ["(2*60+15)*60", 8100], ["round(-1.5)", -1], ["-7 % 3", -1],
+    ["(17*3+29*2)/(3+2)", 21.8], ["(2*60+15)*60", 8100], ["round(-1.5)", -2], ["-7 % 3", -1],
   ] as const) assert.equal(evaluateCalculation(expression), expected, expression);
   assert.ok(Math.abs(evaluateCalculation("pi * 2") - 2 * Math.PI) < 1e-12);
 });
@@ -149,9 +149,8 @@ test("the calculator accepts the forms models write: a result list, pi(), round(
   const r = 0.066 / 12, payment = 18000 * r / (1 - (1 + r) ** -48);
   const listed = await run({ expression: "P = 18000; r = 0.066/12; n = 48\npay = P*r/(1-(1+r)^-n)\ntotal = pay*n - P\n[pay, round(total, 2), P*r]" });
   assert.equal(listed.ok, true, String(listed.body));
-  assert.deepEqual(listed.body.result, [payment, Math.round((payment * 48 - 18000) * 100) / 100, 18000 * r]);
-  assert.deepEqual((await run({ expression: "a = 3; b = 4\n(a, b, hypot(a, b))" })).body.result, [3, 4, 5]);
-  assert.deepEqual((await run({ expression: "a = 3; a, a*2" })).body.result, [3, 6]);
+  assert.deepEqual(listed.body.result, [payment, Number((payment * 48 - 18000).toFixed(2)), 18000 * r]);
+  assert.deepEqual((await run({ expression: "a = 3; b = 4\n[a, b, hypot(a, b)]" })).body.result, [3, 4, 5]);
   // A parenthesised formula is still one value.
   assert.equal((await run({ expression: "a = 3; (a+1)*(a-1)" })).body.result, 8);
   // Labels resolve in dependency order, whatever order they are written in.
@@ -164,9 +163,9 @@ test("the calculator accepts the forms models write: a result list, pi(), round(
   assert.equal(evaluateCalculation("pi()*2"), 2 * Math.PI);
   assert.equal(evaluateCalculation("math.sqrt(16) + math.pi - pi"), 4);
   assert.equal(evaluateCalculation("round(2.34565, 4)"), 2.3457);
-  assert.equal(evaluateCalculation("round(-1.005, 2)"), -1.01);
-  assert.equal(evaluateCalculation("round(1234.5, -2)"), 1200);
-  assert.equal(evaluateCalculation("round(2.5)"), 3);
+  // round is Python's: ties to even on the exact binary value, the same as run_code's Python.
+  for (const [formula, expected] of [["round(-1.005, 2)", -1], ["round(1234.5, -2)", 1200], ["round(1250, -2)", 1200], ["round(2.5)", 2], ["round(-2.5)", -2], ["round(-2.5, 0)", -2],
+    ["round(2.675, 2)", 2.67], ["round(0.125, 2)", 0.12], ["round(0.375, 2)", 0.38], ["round(7.45, 1)", 7.5]] as const) assert.equal(evaluateCalculation(formula), expected, formula);
   for (const [formula, expected] of [["erf(0.5)", 0.5204998778130465], ["erf(1)", 0.8427007929497149], ["erf(-2)", -0.9953222650189527],
     ["erfc(3)", 2.209049699858544e-5], ["erfc(-1)", 1.8427007929497148], ["normcdf(1.96)", 0.9750021048517795], ["normcdf(0)", 0.5], ["normpdf(0)", 0.3989422804014327]] as const) {
     assert.ok(Math.abs(evaluateCalculation(formula) - expected) <= 1e-14 * Math.max(1, Math.abs(expected)) + 1e-18, `${formula} = ${evaluateCalculation(formula)}`);
@@ -182,4 +181,17 @@ test("the calculator accepts the forms models write: a result list, pi(), round(
   assert.match(String((await run({ expressions: { a: "2", b: "a + q" } })).body), /Formula b .*Unknown name q/);
   // The single-formula API stays a single formula.
   assert.throws(() => evaluateCalculation("[1, 2]"));
+});
+
+test("thousands separators are refused, never read as a result list", async () => {
+  // Fresh variant (review finding): a comma inside a number gave [1, 0] as a successful receipt.
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  const run = async (expression: string) => { const r = await registry.execute("calculate", { expression }, { workspaceRoot: "." }); return r.ok ? JSON.parse(r.output).result : r.error!.message; };
+  for (const expression of ["1,000 * 3", "12,500 / 5", "price = 2,450\nprice*2", "(3, 4)", "a = 3; a, a*2", "[12,500]", "[x, 1,250]"]) {
+    const result = await run(expression);
+    assert.equal(typeof result, "string", `${expression} -> ${JSON.stringify(result)}`);
+    assert.match(result, /1000, not 1,000[\s\S]*\[a, b\]|Unknown name/, expression);
+  }
+  assert.deepEqual(await run("x = 4; [x, 1250]"), [4, 1250]);
+  assert.equal(await run("max(1, 250) * 2"), 500);
 });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, answerReserveMs, finalAttemptMs, searchEngineQuery, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
+import { SessionController, outageWaitsMs, outageWaitMs, MODEL_OUTAGE_WAIT_MS, PREFLIGHT_RECOVERY_WAITS_MS, todayNotice, answerReserveMs, finalAttemptMs, searchEngineQuery, executedResultText, RESEARCH_TOOL_DESCRIPTIONS, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { backedByExecutedCode, decideReview, type ExecutedResult } from "../NumericProvenance.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
@@ -141,6 +141,19 @@ test("the answer reserve follows the slowest model call instead of a quarter of 
   assert.equal(answerReserveMs(45 * 60_000, 10_000), 270_000);
   assert.equal(answerReserveMs(4 * 60_000, 200_000), 120_000);
   assert.equal(answerReserveMs(5 * 60_000, 0), 60_000);
+});
+
+test("only completed program output and returned values count as executed code evidence", () => {
+  // Fresh variant (review finding): a crashed queue model's traceback named line 42
+  // and table[17], which then "backed" {servers: 42, queueLength: 17}.
+  const crashed = { ok: true, output: "", data: { exitCode: 1, timedOut: false, stdout: "", stderr: 'Traceback:\n  File "main.py", line 42, in <module>\n    print(table[17])\nIndexError: list index out of range' } };
+  assert.equal(executedResultText("run_code", crashed), undefined);
+  assert.equal(executedResultText("run_code", { ...crashed, data: { ...crashed.data, exitCode: 0, timedOut: true, stdout: "servers 42" } }), undefined);
+  assert.equal(executedResultText("run_code", { ...crashed, data: { ...crashed.data, exitCode: 0, stdout: "servers 3\nqueue 1.25\n" } }), "servers 3\nqueue 1.25\n");
+  // A test report's counts and timings are not computed values.
+  assert.equal(executedResultText("verify_tests", { ok: true, output: '{"passed":true,"total":12,"passedTests":12,"elapsedMs":2876,"diagnostic":"12 passed"}' }), undefined);
+  assert.equal(executedResultText("verify_javascript", { ok: true, output: "{}", data: { actuals: [{ queue: 1.25 }] } }), '[{"queue":1.25}]');
+  assert.equal(backedByExecutedCode('{"servers": 42, "queueLength": 17}', "", []), false);
 });
 
 test("a draft whose numbers a passing code run returned is backed by executed code", () => {
