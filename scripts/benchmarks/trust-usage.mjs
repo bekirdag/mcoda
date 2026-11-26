@@ -13,6 +13,8 @@ export function benchmarkUsageAccounts(result, events) {
       const reservedTokens = Math.ceil(JSON.stringify([data.request.messages, data.request.tools]).length / 3) + (data.request.maxTokens ?? 2048);
       normalized.push({ type: 'model_intent', data: { id: data.id, clientRequestId: data.id, configHash: data.configHash, reservedTokens } });
       normalized.push({ type: 'model_route', data });
+    } else if (event.type === 'model_request_failed') {
+      normalized.push({ type: 'model_receipt', data: { id: data.id, status: 'failed_without_output', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } } });
     } else if (event.type === 'model_response') {
       normalized.push({ type: 'model_receipt', data: { id: data.id, status: 'completed', usage: { ...data.usage, estimated: !verifiedTokenUsage(data.usage) } } });
     } else if (['embedding_intent', 'embedding_receipt'].includes(event.type)) normalized.push(event);

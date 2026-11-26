@@ -118,6 +118,9 @@ export function workflowAccounting(limits, emit = () => {}) {
   return {
     // An explicit capacity refusal ran no inference; never charge it to the arm.
     cancelRequest: id => {const entry=pending.get(id);if(!entry)return;pending.delete(id);usage.tokens-=entry.count;usage.modelCalls--;},
+    // A definite service failure with no output (a gateway 504) spent no tokens; Codali
+    // releases the same reservations (failed_without_output). The call still counts.
+    releaseFailedRequest: async (id, status) => {const entry=pending.get(id);if(!entry||entry.type!=='model')return false;pending.delete(id);usage.tokens-=entry.count;await emit('model_request_failed',{id,status,releasedTokens:entry.count});return true;},
     snapshot: () => ({...usage,estimated:usage.estimated||pending.size>0,pendingReservations:[...pending.keys()]}),
     beforeRequest: async (invocation,request) => { const count=Math.ceil(JSON.stringify({messages:request.messages,tools:request.tools}).length/3)+(request.maxTokens??limits.maxOutputTokens);reserve(invocation.id,count,'model');await emit('model_request',{...invocation,reservedTokens:count,request:{...request,signal:undefined}}); },
     afterRequest: async (invocation,response) => { const measured=response.usage;settle(invocation.id,measured?.totalTokens??(Number.isSafeInteger(measured?.inputTokens)&&Number.isSafeInteger(measured?.outputTokens)?measured.inputTokens+measured.outputTokens:undefined),measured?.inputTokens,measured?.outputTokens);await emit('model_response',{...invocation,message:response.message,toolCalls:response.toolCalls,usage:measured}); },

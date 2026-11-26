@@ -236,9 +236,14 @@ const median = values => { const sorted = [...values].sort((a, b) => a - b); ret
 /**
  * Tokens and wall time per category and arm, over attempts that produced a
  * result. Token figures are verified (input + output reported by the model
- * service); Codali also reserves an estimate for calls whose outcome is
- * unknown (e.g. a request in flight when a node died), shown apart as
- * unverifiedTokens and never used for the ratio.
+ * service). Both arms reserve an estimate (prompt size + maxTokens) for each
+ * request and keep it when the outcome is unknown: a lost connection, a
+ * request abandoned as stalled or at a reserve, one cut by the deadline. Those
+ * reservations are shown apart as unverifiedTokens and never used for the
+ * ratio. In cycle 7 they were all such failed calls (about 100k tokens each on
+ * long contexts). Since .43 a definite service failure with no output (a
+ * gateway 5xx) releases its reservation in both arms, so unverifiedTokens
+ * counts only calls whose outcome is truly unknown.
  */
 export const costReport = (attempts, gold) => {
   const rubrics = new Map(gold.map(item => [item.id, item])), groups = {};
