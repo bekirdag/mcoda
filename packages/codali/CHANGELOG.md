@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.135-codali.44
+
+- Same changes as the unpublished 0.1.135-codali.43 below, plus test fixes for
+  macOS and loaded CI runners. The .43 tag was cut but its release failed
+  before publishing, so .43 was never on npm.
+
 ## 0.1.135-codali.43
 
 - Shell safety: a command that changes a protected file now fails only that
