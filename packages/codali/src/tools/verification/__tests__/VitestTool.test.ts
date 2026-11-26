@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -7,6 +8,9 @@ import { completeTestFiles, createVitestTool, isTestFile, testFailureSummary } f
 import { ToolRegistry } from "../../ToolRegistry.js";
 import { executorStatus } from "../../shell/IsolatedExecutor.js";
 const status = executorStatus(); const options = { skip: !status.available && status.reason };
+// Python carry-over reads the sandbox Python's stdlib names; without python3 nothing is carried (by design).
+const pythonStdlib = (() => { try { execFileSync("python3", ["-I", "-c", "import sys;sys.stdlib_module_names"], { stdio: "ignore", timeout: 5000 }); return true; } catch { return false; } })();
+const pythonOptions = { skip: !pythonStdlib && "python3 with sys.stdlib_module_names is not available" };
 test("verification diagnostics preserve timeout and caused-by evidence beyond runner stacks", () => {
   const message = "Error: STACK_TRACE_ERROR\n" + "    at runner (/runtime/runner.js:11:22)\n".repeat(80) + "Caused by: Test timed out in 1000ms";
   assert.match(testFailureSummary(message), /timed out in 1000ms/);
@@ -186,9 +190,11 @@ test("test-file recognition covers the runner conventions and nothing else", () 
 // on the missing module. Fresh variant: a later call that omits the module.
 test("a test sent without the module it imports gets the session's latest version of it", () => {
   const earlier = new Map([["tally.py", "def tally(xs):\n    return len(xs)\n"], ["lib/fmt.js", "export const f = 1;"]]);
-  const python = completeTestFiles({ runner: "python", files: [{ path: "test_tally.py", content: "import unittest\nfrom tally import tally\n" }] }, earlier);
-  assert.deepEqual(python.carried, ["tally.py"]);
-  assert.deepEqual((python.args as { files: Array<{ path: string }> }).files.map(item => item.path), ["test_tally.py", "tally.py"]);
+  if (pythonStdlib) {
+    const python = completeTestFiles({ runner: "python", files: [{ path: "test_tally.py", content: "import unittest\nfrom tally import tally\n" }] }, earlier);
+    assert.deepEqual(python.carried, ["tally.py"]);
+    assert.deepEqual((python.args as { files: Array<{ path: string }> }).files.map(item => item.path), ["test_tally.py", "tally.py"]);
+  }
   const node = completeTestFiles({ runner: "node", files: [{ path: "lib/fmt.test.js", content: "import {f} from './fmt.js';" }] }, earlier);
   assert.deepEqual(node.carried, ["lib/fmt.js"]);
   // A module sent again is never replaced; unknown imports are left alone.
@@ -217,7 +223,7 @@ test("a run whose only files are helpers is refused or reported as zero tests, n
 
 // Review of .43 (WP-F item 10). Fresh variant: a session file named like a
 // standard-library module must not shadow it.
-test("Python carry-over never brings in a file named like a standard-library module", () => {
+test("Python carry-over never brings in a file named like a standard-library module", pythonOptions, () => {
   const earlier = new Map([["json.py", "def loads(s):\n    return 'shadow'\n"], ["ledger.py", "def total(xs):\n    return sum(xs)\n"]]);
   const carried = completeTestFiles({ runner: "python", files: [{ path: "test_ledger.py", content: "import json\nimport unittest\nfrom ledger import total\n" }] }, earlier);
   assert.deepEqual(carried.carried, ["ledger.py"]);

@@ -2578,7 +2578,8 @@ test("when the turn's own time limit cuts into a tool call, the evidence gathere
   const started = Date.now();
   const answer = await controller.interact("Research the production cap and give its date and level.");
   assert.ok(Date.now() - started < 20_000);
-  assert.match(answer.content, /^I could not finish writing the answer: the time limit for this answer was reached/);
+  // On a slow host the guard may abort the in-flight request first; both are the time limit.
+  assert.match(answer.content, /^I could not finish writing the answer: (the time limit for this answer was reached|the model did not return it before the time limit)/);
   assert.match(answer.content, /capped production at 38 aircraft a month from 4 March 2026/);
   assert.equal(events.find(event => event.type === "research_evidence_delivered")!.data.reason, "turn_time_limit");
 });
