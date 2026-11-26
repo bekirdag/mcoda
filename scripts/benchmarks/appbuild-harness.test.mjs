@@ -130,7 +130,7 @@ test('raw arm retries a malformed model reply with the same request, at most twi
  const request={messages:[{role:'user',content:'Q'}]};
  const response=await generateWithRetry(provider,request,{wait:async()=>{},onRetry:r=>retries.push(r)});
  assert.equal(response.message.content,'ok');assert.equal(seen.length,3);
- assert.ok(seen.every(r=>r.messages===request.messages&&Object.keys(r).every(key=>key==='signal'||r[key]===request[key])),'retry must not add guidance');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
+ assert.ok(seen.every(r=>r.messages===request.messages&&Object.keys(r).every(key=>['signal','stream','onProgress'].includes(key)||r[key]===request[key])),'retry must not add guidance (transport fields only: signal, streaming, progress)');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
  let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('invalid_response');}},request,{wait:async()=>{}}),/invalid_response/);assert.equal(m,3);
  let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw fail('invalid_request');}},request,{wait:async()=>{}}),/invalid_request/);assert.equal(k,1);
 });
@@ -194,4 +194,11 @@ test('raw arm does not start a retry inside its final-answer reserve',async()=>{
  await assert.rejects(generateWithRetry({generate:async()=>{calls++;throw fail('service_unavailable');}},{messages:[{role:'user',content:'Q'}]},
   {wait:async ms=>{clock+=ms;},now:()=>clock,deadlineAt:600_000,cutoffAt:1_000}),error=>error.code==='final_answer_reserve'&&error.cutoff===true);
  assert.equal(calls,2,'the 500 ms wait fits before the reserve, the 2 s one does not');
+});
+
+test('raw arm, like Codali, never cuts a request that is still streaming output',async()=>{
+ let calls=0,streamed;
+ const provider={generate:async r=>{calls++;streamed=r.stream;for(let i=0;i<10;i++){await new Promise(resolve=>setTimeout(resolve,40));if(r.signal.aborted)throw new Error('aborted');r.onProgress?.();}return {message:{role:'assistant',content:'long report'}};}};
+ const response=await generateWithRetry(provider,{messages:[{role:'user',content:'Write the report'}]},{wait:async()=>{},stallMs:120});
+ assert.equal(response.message.content,'long report');assert.equal(calls,1);assert.equal(streamed,true);
 });

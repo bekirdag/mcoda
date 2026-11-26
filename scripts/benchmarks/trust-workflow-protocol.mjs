@@ -118,7 +118,7 @@ export function workflowAccounting(limits, emit = () => {}) {
   return {
     // An explicit capacity refusal ran no inference; never charge it to the arm.
     cancelRequest: id => {const entry=pending.get(id);if(!entry)return;pending.delete(id);usage.tokens-=entry.count;usage.modelCalls--;},
-    // A definite service failure with no output (a gateway 504) spent no tokens; Codali
+    // A definite service failure with no output (HTTP 502/503, never a 504) spent no tokens; Codali
     // releases the same reservations (failed_without_output). The call still counts.
     releaseFailedRequest: async (id, status) => {const entry=pending.get(id);if(!entry||entry.type!=='model')return false;pending.delete(id);usage.tokens-=entry.count;await emit('model_request_failed',{id,status,releasedTokens:entry.count});return true;},
     snapshot: () => ({...usage,estimated:usage.estimated||pending.size>0,pendingReservations:[...pending.keys()]}),

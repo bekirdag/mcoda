@@ -241,8 +241,9 @@ const median = values => { const sorted = [...values].sort((a, b) => a - b); ret
  * request abandoned as stalled or at a reserve, one cut by the deadline. Those
  * reservations are shown apart as unverifiedTokens and never used for the
  * ratio. In cycle 7 they were all such failed calls (about 100k tokens each on
- * long contexts). Since .43 a definite service failure with no output (a
- * gateway 5xx) releases its reservation in both arms, so unverifiedTokens
+ * long contexts). Since .43 a failure before generation (HTTP 502/503, or a
+ * scheduler that expired before dispatch) releases its reservation in both arms;
+ * a 504 keeps it, since the upstream may have generated. unverifiedTokens then
  * counts only calls whose outcome is truly unknown.
  */
 export const costReport = (attempts, gold) => {
