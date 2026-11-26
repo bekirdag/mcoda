@@ -1,4 +1,6 @@
 import type { ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
+import { sharesContent } from "../../runtime/ReviewCoordinator.js";
+import { isDeliveryDocument } from "../../runtime/DeliveryDocs.js";
 
 /** A deterministic provider response for lifecycle fixtures, not quality evidence. */
 export function contractReviewFixture(request: ProviderRequest): ProviderResponse | undefined {
@@ -27,14 +29,28 @@ export function approvedReview(request: ProviderRequest): string {
       usable(page.content) || (page.offset === 0 && !page.truncated && whole(page.content)))
       .map((page: { path: string; content: string }) => [page.path, page.content]))]
     .filter((entry): entry is [string, string] => !inputs.has(entry[0] as string));
-  const receipt = (input.receipts ?? []).find((value: { output?: unknown }) => usable(value.output));
+  const receipts = (input.receipts ?? []).filter((value: { output?: unknown }) => usable(value.output)) as { id: string; output: string }[];
+  // Prefer a line about the check (one sharing a content word with it), as the
+  // controller requires; a file shorter than a quotation is cited whole.
+  const related = (text: string, reference: string) => text.split("\n").map(line => line.trim())
+    .map(line => line.slice(0, 200)).find(line => line.length >= 8 && sharesContent(line, reference));
   const evidence: Record<string, unknown> = {};
-  for (const check of input.contractChecklist.checks as { id: string; quoteId: string }[]) {
-    const sourceId = input.contractChecklist.quotes[check.quoteId]?.sourceId as string | undefined;
-    const source = sources.find(([file]) => sourceId !== `delivered:${file}`);
-    evidence[check.id] = source ? { path: source[0], quote: source[1].trim().slice(0, 40) }
-      : receipt ? { receipt: receipt.id, observed: receipt.output.trim().slice(0, 40) }
-      : { summary: String(input.claimedSummary ?? "").trim().slice(0, 40) };
+  for (const check of input.contractChecklist.checks as { id: string; quoteId: string; expectedBehavior: string }[]) {
+    const { sourceId, contractQuote } = input.contractChecklist.quotes[check.quoteId] as { sourceId: string; contractQuote: string };
+    const reference = `${contractQuote} ${check.expectedBehavior}`;
+    const candidates = sources.filter(([file]) => !sourceId.startsWith("delivered:") || !isDeliveryDocument(file));
+    const short = candidates.find(([, text]) => text.trim().length < 8);
+    let cite: unknown;
+    for (const [file, text] of candidates) { const quote = related(text, reference); if (quote) { cite = { path: file, quote }; break; } }
+    for (const receipt of cite ? [] : receipts) { const observed = related(receipt.output, reference); if (observed) { cite = { receipt: receipt.id, observed }; break; } }
+    // A check that names a file the work left alone ("Preserve NOTES.md").
+    const untouched = (reference.match(/[\w./-]+\.\w+/g) ?? []).find(file => !(input.changedPaths ?? []).includes(file) && !(input.otherTaskChangedPaths ?? []).includes(file));
+    if (!cite && untouched) cite = { unchanged: untouched };
+    const answer = !(input.changedPaths ?? []).length ? related(String(input.claimedSummary ?? ""), reference) : undefined;
+    if (!cite && answer) cite = { summary: answer };
+    evidence[check.id] = cite ?? (short ? { path: short[0], quote: short[1] }
+      : candidates[0] ? { path: candidates[0][0], quote: candidates[0][1].trim().slice(0, 40) }
+      : { summary: String(input.claimedSummary ?? "").trim().slice(0, 40) });
   }
   return JSON.stringify({ passed: true, findings: [], evidence });
 }

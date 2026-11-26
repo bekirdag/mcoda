@@ -71,7 +71,7 @@ test("large source reserves paging space without dropping original contract or s
   let reviews = 0; let expectedOffset = -1;
   const result = await reviewTaskScope({ task, scope, hashes, receipts: [], summary: "Review both modules.",
     maxInputChars: 22_000, maxOutputTokens: 2048, diff: async () => "",
-    readSource: async (_file, limit) => ({ content: "x".repeat(limit), truncated: true }),
+    readSource: async (_file, limit) => ({ content: "export const errorMessage = \"exact\"; // dependencies: none\n".repeat(Math.ceil(limit / 60)).slice(0, limit), truncated: true }),
     readSourcePage: async (file, offset) => {
       assert.equal(file, "a.mjs"); assert.equal(offset, expectedOffset);
       return { path: file, offset, content: "final bounded source page", truncated: false };
@@ -267,10 +267,10 @@ test("the requirement document and a delivered document's own text are not evide
   const { result } = await loanReview(input => JSON.stringify({ passed: true, findings: [], evidence: Object.fromEntries(input.contractChecklist.checks.map((check: { id: string; quoteId: string }) =>
     [check.id, input.contractChecklist.quotes[check.quoteId].sourceId.startsWith("delivered:")
       ? { path: "README.md", quote: "Renewing an overdue loan shows the reason inline." }
-      : { path: "server/routes.js", quote: "app.post('/loans/:id/renew', renewLoan);" }])) }), { deliveredClaims: claims });
+      : [{ path: "server/routes.js", quote: "app.post('/loans/:id/renew', renewLoan);" }, { path: "server/routes.js", quote: "res.json({ member: req.member })" }]])) }), { deliveredClaims: claims });
   assert.equal(result.passed, false);
   assert.equal(result.findings.length, 1);
-  assert.match(result.findings[0], /^Unproven C\d+ \(delivered:README\.md: .*README\.md cannot prove its own statement/);
+  assert.match(result.findings[0], /^Unproven C\d+ \(delivered:README\.md: .*README\.md is a delivered document/);
 });
 
 test("review portions follow requirement areas and hold at most the per-call number of checks", async () => {
@@ -295,4 +295,64 @@ test("review portions follow requirement areas and hold at most the per-call num
   assert.equal(portions.flat().length, 16);
   // The 11 R2 checks span two portions; no other area is split.
   for (const area of ["requirement:R1", "requirement:R3"]) assert.equal(portions.filter(portion => portion.some(check => check.sourceId === area)).length, 1);
+});
+
+// A parcel-locker app (written for this test) for the citation rules: a quote
+// must be about the check, and a delivered statement needs evidence from the
+// build, not from a document or a receipt that printed the document.
+const lockerApp = () => {
+  const state = createWorkState("Build the parcel locker service.");
+  state.nonGoals = ["Add courier payroll features."]; // met by absence: needs no citation
+  state.requirements.push({ id: "R2", description: "A courier can reserve a locker for 48 hours.", required: true });
+  const task = { ...state.tasks[0], requirementIds: ["R1", "R2"] };
+  const files: Record<string, string> = {
+    "src/lockers.js": "export const RESERVATION_HOURS = 48;\nexport function reserveLocker(courier) { return { courier, hours: RESERVATION_HOURS }; }",
+    "src/format.js": "export const pad = value => String(value).padStart(2, '0');",
+    "README.md": "Couriers reserve a locker for 48 hours.",
+    "docs/OPERATIONS.md": "Couriers reserve a locker for 48 hours.",
+  };
+  const hashes = Object.fromEntries(Object.keys(files).map(file => [file, file]));
+  const scope = taskReviewContext(state, task, { changedPaths: Object.keys(files), observedPaths: [], contextPaths: [], currentHashes: hashes });
+  const receipts = [{ id: "r-cat", tool: "run_shell", args: { command: "cat", args: ["README.md"] }, status: "success", output: files["README.md"] }];
+  return { task, scope, hashes, files, receipts };
+};
+const lockerReview = (cite: (check: { id: string; sourceId: string }) => unknown, extra: Partial<Parameters<typeof reviewTaskScope>[0]> = {}) => {
+  const { task, scope, hashes, files, receipts } = lockerApp();
+  return reviewTaskScope({ task, scope, hashes, receipts, summary: "Lockers done.", maxInputChars: 60_000, maxOutputTokens: 4096,
+    diff: async () => "", readSource: async file => ({ content: files[file], truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: files[file], truncated: false }), ...extra,
+    provider: { name: "same-model", generate: async request => {
+      const prepared = contractReviewFixture(request); if (prepared) return prepared;
+      const input = JSON.parse(request.messages.find(message => message.role === "user")!.content);
+      return { message: { role: "assistant", content: JSON.stringify({ passed: true, findings: [], evidence: Object.fromEntries(input.contractChecklist.checks.map((check: { id: string; quoteId: string }) =>
+        [check.id, cite({ id: check.id, sourceId: input.contractChecklist.quotes[check.quoteId].sourceId })])) }) } };
+    } } }).then(result => ({ result }));
+};
+
+test("a quotation that exists but is not about the check does not prove it", async () => {
+  const { result } = await lockerReview(() => ({ path: "src/format.js", quote: "export const pad" }));
+  assert.equal(result.passed, false);
+  assert.ok(result.findings.every(finding => /shares no words with this check/.test(finding)));
+  const related = await lockerReview(() => ({ path: "src/lockers.js", quote: "export function reserveLocker(courier)" }));
+  assert.deepEqual(related.result, { passed: true, findings: [] });
+});
+
+test("a delivered statement is not proven by another delivered document or by a receipt that printed it", async () => {
+  const claims = [{ path: "README.md", text: "Couriers reserve a locker for 48 hours." }];
+  const other = await lockerReview(check => check.sourceId.startsWith("delivered:")
+    ? { path: "docs/OPERATIONS.md", quote: "Couriers reserve a locker for 48 hours." } : { path: "src/lockers.js", quote: "export function reserveLocker(courier)" }, { deliveredClaims: claims });
+  assert.equal(other.result.passed, false); assert.match(other.result.findings[0], /docs\/OPERATIONS\.md is a delivered document/);
+  const printed = await lockerReview(check => check.sourceId.startsWith("delivered:")
+    ? { receipt: "r-cat", observed: "Couriers reserve a locker for 48 hours." } : { path: "src/lockers.js", quote: "export function reserveLocker(courier)" }, { deliveredClaims: claims });
+  assert.equal(printed.result.passed, false); assert.match(printed.result.findings[0], /prints the document's statement/);
+  const code = await lockerReview(() => ({ path: "src/lockers.js", quote: "export function reserveLocker(courier)" }), { deliveredClaims: claims });
+  assert.deepEqual(code.result, { passed: true, findings: [] });
+});
+
+test("over the portion budget, delivered statements are sampled and portions grow instead of blocking", async () => {
+  const claims = Array.from({ length: 120 }, (_, i) => ({ path: "README.md", text: `Locker bay ${i} accepts parcels from couriers.` }));
+  const { result } = await lockerReview(() => ({ path: "src/lockers.js", quote: "export function reserveLocker(courier)" }), { deliveredClaims: claims, maxPortions: 3 });
+  assert.equal(result.passed, true);
+  assert.ok(result.sampled, "the result says the review was bounded");
+  assert.ok(result.sampled!.deliveredReviewed < 120 && result.sampled!.deliveredTotal === 120);
 });

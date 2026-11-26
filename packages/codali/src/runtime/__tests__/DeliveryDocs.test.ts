@@ -48,3 +48,24 @@ test("claims are prose lines and list items, not headings, fences or table rules
   const text = "# Kiosk\n\n```sh\nnpm start -- --port 8080\n```\n| a | b |\n|---|---|\n- Staff can void a sale within the shift.\n1. Run npm start to open the kiosk.\nOK.\n";
   assert.deepEqual(deliveryClaims(text), ["| a | b |", "Staff can void a sale within the shift.", "Run npm start to open the kiosk."]);
 });
+
+test("a value on an unrelated setting line does not ground a lifetime", () => {
+  const kiosk = { path: "src/kiosk.ts", text: "export const KIOSK_SESSION_MS = 4 * 60 * 60 * 1000;\nexport const MAX_UPLOAD_RETRIES = 6; // per hour\n" };
+  const findings = ungroundedDurations([{ path: "DELIVERY.md", text: "Kiosk sessions last 6 hours." }], [kiosk], []);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0], /^DELIVERY\.md:1 states 6 hours .*src\/kiosk\.ts:1 export const KIOSK_SESSION_MS/);
+  assert.deepEqual(ungroundedDurations([{ path: "DELIVERY.md", text: "Kiosk sessions last 4 hours." }], [kiosk], []), []);
+});
+
+test("run times and a named library's own defaults are not settings claims", () => {
+  const sources = [{ path: "src/cache.ts", text: "export const CACHE_TTL_MS = 5 * 60 * 1000;\n" }];
+  assert.deepEqual(ungroundedDurations([{ path: "README.md", text: "The e2e suite takes about 45 seconds; the cache token check runs in 2 seconds." }], sources, []), []);
+  assert.deepEqual(ungroundedDurations([{ path: "README.md", text: "Connections use the Redis client's default connect timeout of 10 seconds." }], sources, []), []);
+  assert.equal(ungroundedDurations([{ path: "README.md", text: "Cached quotes expire after 10 minutes." }], sources, []).length, 1);
+});
+
+test("documents the request only refers to are not required deliverables", () => {
+  const goal = "Build the ticket desk. Follow the conventions in the upstream SECURITY.md and see GUIDE.md for tone. Write OPERATIONS.md with the start steps.";
+  assert.deepEqual(missingDeliveryDocuments([goal], [], []), ["OPERATIONS.md"]);
+  assert.deepEqual(missingDeliveryDocuments(["Document setup in SETUP.md."], [], []), ["SETUP.md"]);
+});

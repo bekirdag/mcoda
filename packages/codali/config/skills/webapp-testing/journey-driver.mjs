@@ -6,8 +6,12 @@
 // Page methods: goto, reload, step(name, run, { allow, labels }), click, type,
 // text, waitForSelector, waitForText, waitFor (any expression), evaluate,
 // screenshot, unlabelledControls, problems. A wait that fails reports what the
-// page shows. In allow, list a status or a RegExp for "STATUS METHOD URL" that
-// the step expects, such as a signed-out session probe: /^401 GET \S+\/api\/me$/.
+// page shows. In allow, list what the step expects: an HTTP status, or a RegExp
+// for one entry: "STATUS METHOD URL" (a response, e.g. /^401 GET \S+\/api\/me$/),
+// "network METHOD URL ERROR", "console TEXT" or "exception TEXT".
+// Requests to remote origins (a CDN font in an offline sandbox)
+// are reported as kind "external" in problems() and on the PASS line, but do
+// not fail a step.
 //
 // Usage (one run_shell call; every role gets a reload-then-act step):
 //   import { launch, startServer } from './journey-driver.mjs';
@@ -67,9 +71,18 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
   let id = 0;
   const pending = new Map();
   const problems = [], methods = new Map(), loads = [];
-  const record = problem => problems.push({ ...problem, at: Date.now() });
+  let appOrigin;
+  const originOf = url => { try { return new URL(url).origin; } catch { return undefined; } };
+  // A request to a remote origin (not the app's, not this machine) is reported,
+  // never fatal: the sandbox may have no network. Local services still count.
+  const remote = url => { try { const u = new URL(url);
+    return /^https?:$/.test(u.protocol) && u.origin !== appOrigin && !/^(?:localhost|127(?:\.\d+){3}|\[::1\])$/.test(u.hostname); } catch { return false; } };
+  const record = problem => problems.push({ ...problem,
+    ...(problem.url && /^(?:http|network)$/.test(problem.kind) && remote(problem.url) ? { kind: 'external', was: problem.kind } : {}),
+    at: Date.now() });
   const events = {
     'Page.loadEventFired': () => loads.splice(0).forEach(r => r()),
+    'Page.frameNavigated': p => { if (!p.frame.parentId) appOrigin = originOf(p.frame.url) ?? appOrigin; },
     'Network.requestWillBeSent': p => methods.set(p.requestId, { method: p.request.method, url: p.request.url }),
     'Network.responseReceived': p => { const { status, url } = p.response;
       if (status >= 400 && !/\/favicon\.ico(?:$|\?)/.test(url)) record({ kind: 'http', status, method: methods.get(p.requestId)?.method ?? 'GET', url }); },
@@ -93,6 +106,8 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
     try {
       const result = await start();
       if (result?.errorText) throw new Error(`${what} failed: ${result.errorText}`);
+      // A same-document navigation (a hash route) fires no load event.
+      if (result && 'frameId' in result && !result.loaderId) return;
       await loaded;
     } finally { clearTimeout(timer); }
   };
@@ -118,7 +133,10 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
     && !(e.getAttribute('aria-labelledby') ?? '').split(/\\s+/).some(i => document.getElementById(i)?.innerText.trim())
   ).map(e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : e.name ? '[name=' + e.name + ']' : ''))`);
   const describe = p => p.kind === 'http' ? `${p.method} ${p.url} returned ${p.status}`
-    : p.kind === 'network' ? `${p.method} ${p.url} failed: ${p.error}` : `${p.kind} error: ${p.text}`;
+    : p.kind === 'network' ? `${p.method} ${p.url} failed: ${p.error}`
+    : p.kind === 'external' ? `${p.method} ${p.url} ${p.error ? 'failed: ' + p.error : 'returned ' + p.status}` : `${p.kind} error: ${p.text}`;
+  const entry = p => p.kind === 'http' ? `${p.status} ${p.method} ${p.url}` : p.kind === 'network' ? `network ${p.method} ${p.url} ${p.error}`
+    : p.kind === 'external' ? `external ${p.method} ${p.url} ${p.error ?? p.status}` : `${p.kind} ${p.text}`;
   return {
     cdp, evaluate, waitFor, unlabelledControls,
     /** Everything recorded since launch: { kind: http|network|console|exception, ... }. */
@@ -128,18 +146,18 @@ export async function launch({ chrome = process.env.CHROME_BIN } = {}) {
     reload: () => load('reload', () => cdp('Page.reload', { ignoreCache: true })),
     /** Run one scenario step. It fails on a console error, uncaught exception,
      * failed request or 4xx/5xx response during the step and on unlabelled
-     * controls. For a response the step expects (a refusal, a signed-out session
-     * probe), list its status or a RegExp for "STATUS METHOD URL" in allow. */
+     * controls. List what the step expects in allow (see the header). */
     step: async (name, run, { allow = [], labels = true } = {}) => {
       const start = problems.length;
-      const expected = p => p.kind === 'http' && allow.some(a => a instanceof RegExp ? a.test(`${p.status} ${p.method} ${p.url}`) : a === p.status);
+      const expected = p => p.kind === 'external' || allow.some(a => a instanceof RegExp ? a.test(entry(p)) : p.kind === 'http' && a === p.status);
       const unexpected = () => problems.slice(start).filter(p => !expected(p)).map(describe).join('; ');
+      const external = () => problems.slice(start).filter(p => p.kind === 'external').map(describe);
       try {
         await run(); await sleep(300);
         if (unexpected()) throw new Error(unexpected());
         const unlabelled = labels ? await unlabelledControls() : [];
         if (unlabelled.length) throw new Error(`form controls without a label: ${unlabelled.join(', ')}`);
-        console.log(`PASS ${name}`);
+        console.log(`PASS ${name}${external().length ? ` (other origins not reached: ${external().join('; ')})` : ''}`);
       } catch (error) {
         // A wait that timed out often hides the refused request behind it.
         const seen = unexpected();

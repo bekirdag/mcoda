@@ -145,3 +145,41 @@ test("form controls without an accessible name are listed and fail a step", { sk
     await assert.rejects(page.step("loan form", async () => undefined), /form controls without a label: select#branch/);
   } finally { await page.close(); server.close(); }
 });
+
+// A greenhouse-sensor dashboard (written for this test): a hash router, a
+// stylesheet from a CDN the offline sandbox cannot reach, and a signed-out
+// session probe whose 401 the client also logs as a console error.
+const greenhouse = () => createServer((req, res) => {
+  if (req.url === "/api/me") { res.writeHead(401, { "content-type": "application/json" }); res.end("{}"); return; }
+  res.writeHead(200, { "content-type": "text/html" });
+  res.end(`<!doctype html><link rel="stylesheet" href="http://fonts.greenhouse-cdn.invalid/sensors.css">
+<main id="view"></main><script>
+const route = () => { document.getElementById('view').textContent = location.hash === '#/settings' ? 'Sensor settings' : 'Sensor overview'; };
+addEventListener('hashchange', route); route();
+fetch('/api/me').then(r => { if (r.status === 401) console.error('not signed in'); });
+</script>`);
+});
+
+test("a hash-route goto resolves without a load event", { skip, timeout: 60_000 }, async () => {
+  const server = greenhouse(); const url = await listen(server);
+  const page = await (await import(driverUrl) as Driver).launch({ chrome });
+  try {
+    await page.goto(url);
+    const started = Date.now();
+    await page.goto(`${url}#/settings`);
+    assert.ok(Date.now() - started < 5000, "a same-document navigation must not wait for a load event");
+    await page.waitForText("Sensor settings");
+  } finally { await page.close(); server.close(); }
+});
+
+test("an unreachable remote asset is reported but does not fail a step; allow covers console entries", { skip, timeout: 60_000 }, async () => {
+  const server = greenhouse(); const url = await listen(server);
+  const page = await (await import(driverUrl) as Driver).launch({ chrome });
+  try {
+    await assert.rejects(page.step("401 allowed, its console error not", () => page.goto(url), { allow: [/^401 GET \S+\/api\/me$/] }),
+      /console error: not signed in/);
+    await page.step("signed-out overview", async () => { await page.goto(url); await page.waitForText("Sensor overview"); },
+      { allow: [/^401 GET \S+\/api\/me$/, /^console not signed in$/] });
+    assert.ok(page.problems().some(problem => problem.kind === "external"), "the unreachable stylesheet is still reported");
+  } finally { await page.close(); server.close(); }
+});
