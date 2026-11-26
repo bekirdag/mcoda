@@ -214,3 +214,67 @@ test('recurrence: a class that loses again after its fix shipped is flagged', ()
   assert.deepEqual(out.find(e => e.class === 'format-contract').recurredAfterFix, []);
   assert.equal(out.find(e => e.class === 'design-arithmetic-error').fixes.length, 0);
 });
+
+// Fresh variants (not from any cycle): a 20-minute planning task and a 40-minute survey.
+const ev = (at, type, data = {}) => ({ at: `2026-03-02T09:${at}Z`, type, data });
+
+test('model-service loss: raw retries that hang near the deadline make a deadline-bound attempt infrastructure-affected', async () => {
+  const raw = [
+    ev('00:00.000', 'model_request', { id: 'a' }), ev('06:40.000', 'raw_model_retry', { attempt: 1, code: 'invalid_response', waitMs: 500 }),
+    ev('06:40.600', 'model_request', { id: 'b' }), ev('07:00.000', 'model_response'),
+    ev('07:05.000', 'model_request', { id: 'c' }), ev('13:45.000', 'raw_model_retry', { attempt: 1, code: 'service_unavailable', waitMs: 2000 }),
+    ev('13:47.000', 'model_request', { id: 'd' }), ev('20:00.000', 'attempt_error', { error: 'Error: Common workflow deadline exceeded' }),
+  ];
+  const loss = tools.modelServiceLoss(raw);
+  assert.equal(Math.round(loss.lostMs / 1000), 400 + 1 + 400 + 2, 'request-to-failure plus backoff for each retry');
+  assert.equal(loss.failures.length, 2);
+  // A Codali attempt: failure matched to its own request id, an outage span overlapping it is not counted twice.
+  const codali = [
+    ev('00:00.000', 'model_request', { id: 'x' }), ev('01:00.000', 'model_request', { id: 'y' }), ev('01:10.000', 'model_response'),
+    ev('10:00.000', 'model_failure', { id: 'x', code: 'service_unavailable', httpStatus: 504 }), ev('10:00.010', 'model_recovery', { attempt: 1, waitMs: 500 }),
+    ev('10:00.600', 'model_request', { id: 'x' }), ev('11:00.000', 'model_outage_ended', { since: '2026-03-02T09:09:00.000Z' }),
+    ev('11:30.000', 'model_capacity_wait', { waitMs: 3000 }),
+  ];
+  assert.equal(Math.round(tools.modelServiceLoss(codali).lostMs / 1000), 660 + 3, 'the 0:00-11:00 span merged with the outage, plus a 3 s capacity wait');
+
+  const task = id => ({ id, execution: { deadlineMs: 20 * 60000 } });
+  const attempts = new Map([
+    ['pl-1', { task: task('pl-1'), run: 'main', arms: { raw_tools: { directory: 'r1', result: { error: 'Error: Common workflow deadline exceeded', elapsedMs: 1200000 } }, after: { directory: 'a1', result: { elapsedMs: 600000, content: 'ok' } } } }],
+    ['pl-2', { task: { id: 'pl-2', execution: { deadlineMs: 40 * 60000 } }, run: 'main', arms: { after: { directory: 'a2', result: { elapsedMs: 1500000, content: 'ok' } } } }],
+  ]);
+  const files = { r1: raw, a1: [ev('00:00.000', 'model_request', { id: 'q' }), ev('03:00.000', 'model_failure', { id: 'q', code: 'service_unavailable' })], a2: codali };
+  const report = await tools.serviceLossReport(attempts, { readEvents: async dir => files[dir] });
+  assert.deepEqual(report.rows.map(row => [row.id, row.arm, row.deadlineBound, row.infraAffected]), [['pl-1', 'raw_tools', true, true], ['pl-2', 'after', false, false], ['pl-1', 'after', false, false]],
+    'a large loss on an attempt that finished early is reported but not flagged; the deadline-bound one is');
+  assert.equal(report.rows[0].lostShare, 0.669);
+  // Cutting work for the deadline also counts as deadline-bound.
+  assert.equal(tools.deadlineBound({ result: { elapsedMs: 100 }, events: [ev('00:00.000', 'research_answer_audit_skipped', { reason: 'deadline' })], deadlineMs: 1000 }), true);
+  assert.equal(tools.deadlineBound({ result: { elapsedMs: 100 }, events: [ev('00:00.000', 'inspection_request_abandoned', { reason: 'answer_reserve' })], deadlineMs: 1000 }), true);
+});
+
+test('receipts: raw {ok} and Codali {status} shapes are each read correctly', () => {
+  const events = [
+    { type: 'tool_receipt', data: { call: { name: 'run_shell' }, receipt: { ok: true, output: 'x' } } },
+    { type: 'tool_receipt', data: { call: { name: 'run_shell' }, receipt: { ok: false, error: { code: 'tool_execution_failed' } } } },
+    { type: 'tool_receipt', data: { call: { name: 'web_search' }, receipt: { ok: true } } },
+  ];
+  const codali = [{ type: 'tool_receipt', data: { receipt: { tool: 'read_file', status: 'success' } } }, { type: 'tool_receipt', data: { receipt: { tool: 'read_file', status: 'failed' } } }];
+  assert.deepEqual(tools.receiptOutcome(events[0]), { tool: 'run_shell', shape: 'raw', ok: true });
+  assert.deepEqual(tools.receiptCounts([{ arm: 'raw_tools', events }, { arm: 'after', events: codali }]), {
+    raw_tools: { receipts: 3, failed: 1, byTool: { run_shell: { receipts: 2, failed: 1 }, web_search: { receipts: 1, failed: 0 } } },
+    after: { receipts: 2, failed: 1, byTool: { read_file: { receipts: 2, failed: 1 } } },
+  });
+});
+
+test('losses --write: classified losses become ledger rows once; unclassified and unknown cases are reported', () => {
+  const ledger = [{ type: 'loss', cycle: 9, caseId: 'k9-02', class: 'old-class' }, { type: 'fix', class: 'old-class', release: '.1', afterCycle: 8 }];
+  const losses = [
+    { cycle: 9, caseId: 'k9-01', category: 'numeric', codali: 40, raw: 80, infraLost: false, serviceAffected: true },
+    { cycle: 9, caseId: 'k9-02', category: 'design', codali: 60, raw: 70 },
+    { cycle: 9, caseId: 'k9-03', category: 'code', codali: 90, raw: 100 },
+  ];
+  const out = tools.appendLosses(ledger, losses, { 'k9-01': { class: 'numeric-model-error', note: 'wrong recurrence' }, 'k9-02': 'design-deferred-decision', 'k9-77': 'x' }, { source: 'test' });
+  assert.deepEqual(out.rows, [{ type: 'loss', cycle: 9, caseId: 'k9-01', category: 'numeric', class: 'numeric-model-error', codali: 40, raw: 80, note: 'wrong recurrence', infrastructure: { infraLost: false, serviceAffected: true }, source: 'test' }]);
+  assert.deepEqual(out.duplicates, ['k9-02']); assert.deepEqual(out.unclassified, ['k9-03']); assert.deepEqual(out.unknown, ['k9-77']);
+  assert.throws(() => tools.appendLosses([], losses, { 'k9-01': 'Not A Class' }), /kebab-case/);
+});
