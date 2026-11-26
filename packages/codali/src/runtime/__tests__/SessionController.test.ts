@@ -112,12 +112,22 @@ test("an equation review may correct one calculated value but not overturn most 
   assert.equal(overturnsCalculatedDraft(programme, '{"maxProfit": 1, "optimalX": 2, "optimalY": 3, "labourShadowPrice": 4, "integerMaxProfit": 5}', []), false);
 });
 
-test("a stalled final call is bounded to half the window only when a retry fits", () => {
+test("a stalled final call is bounded to half the window when two attempts fit", () => {
   // Cycle 5 case 50 (.41 pack): 335 s left after the delivery margin, slowest call 104 s.
   assert.equal(finalAttemptMs(335_000, 104_000), 167_500);
-  assert.equal(finalAttemptMs(170_000, 10_000), undefined);
-  assert.equal(finalAttemptMs(400_000, 200_000), undefined);
   assert.equal(finalAttemptMs(Infinity, 0), undefined);
+});
+
+test("a final call in a window too short for two full attempts still stops at 1.5x the slowest call", () => {
+  // A contract-review answer with 330 s left and a slowest call of 120 s: the first attempt
+  // stops at 180 s, so a hung request leaves 150 s for a fresh one instead of running to the deadline.
+  assert.equal(finalAttemptMs(330_000, 120_000), 180_000);
+  // The 90-second minimum applies to fast models too; the retry keeps 80 s.
+  assert.equal(finalAttemptMs(170_000, 10_000), 90_000);
+  assert.equal(finalAttemptMs(400_000, 200_000), 300_000);
+  // No bound when a retry would start with under a minute: one attempt gets the whole window.
+  assert.equal(finalAttemptMs(200_000, 100_000), undefined);
+  assert.equal(finalAttemptMs(80_000, 10_000), undefined);
 });
 
 test("the answer reserve follows the slowest model call instead of a quarter of the timeout", () => {

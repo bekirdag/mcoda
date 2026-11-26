@@ -70,6 +70,9 @@ export const transportOutage = (error: unknown): boolean => {
   return false;
 };
 
+/** The share of a time-limited turn's remaining time one stall may take before
+ * the allowance is sized by the request's expected duration instead. */
+export const STALL_SHARE_OF_REMAINING = 0.2;
 /** How long one model request may stay unanswered before it is abandoned and
  * retried. A request whose connection was lost, or that a scheduler dropped,
  * never returns: a 12-hour build sat on one such review call for 158 minutes
@@ -81,9 +84,23 @@ export const transportOutage = (error: unknown): boolean => {
  * 1,000 tokens a second and the full output at 25. It doubles with every stall
  * of the same request, without an upper bound short of an hour, so a model
  * slower than those rates is waited for longer each time instead of being cut
- * off at the same point for ever. */
-export const modelStallAllowanceMs = (inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts = 0): number => {
+ * off at the same point for ever.
+ *
+ * The ten-minute floor protects long legitimate generations in open-ended
+ * work (an app build writing a large file early on). When the turn has a time
+ * limit and that allowance would take more than a fifth of what is left, one
+ * lost request would cost a third of a 30-minute task (cycle 7): the base is
+ * then what this request is expected to need, three times the slowest answered
+ * request (or, before any, a quarter of the time left), and never less than
+ * scheduling plus the prompt read. A build with hours left keeps the
+ * full allowance; doubling on every stall still lets a slow request through. */
+export const modelStallAllowanceMs = (inputTokens: number, maxOutputTokens: number, longestModelMs: number, stalledAttempts = 0, remainingMs = Infinity): number => {
   const ceiling = 120_000 + Math.max(0, inputTokens) + Math.max(0, maxOutputTokens) * 40;
-  const base = Math.max(60_000, Math.min(Math.max(600_000, longestModelMs * 4), ceiling));
+  let base = Math.max(60_000, Math.min(Math.max(600_000, longestModelMs * 4), ceiling));
+  if (Number.isFinite(remainingMs) && base > Math.max(0, remainingMs) * STALL_SHARE_OF_REMAINING) {
+    const promptMs = 120_000 + Math.max(0, inputTokens);
+    const expected = longestModelMs > 0 ? Math.max(longestModelMs * 3, promptMs) : Math.max(promptMs, Math.max(0, remainingMs) * 0.25);
+    base = Math.min(base, expected);
+  }
   return Math.min(base * 2 ** Math.min(Math.max(0, stalledAttempts), 6), Math.max(base, 3_600_000));
 };
