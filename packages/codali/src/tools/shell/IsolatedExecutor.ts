@@ -1,4 +1,4 @@
-import { type Dirent, existsSync, realpathSync, statSync, readdirSync, mkdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
+import { type Dirent, existsSync, lstatSync, realpathSync, statSync, readdirSync, mkdirSync, mkdtempSync, rmSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -135,6 +135,8 @@ export interface WorkspaceMounts {
   inPlace: string[];
   /** Entries that appeared during the command in an opened parent and are not write paths. */
   createdOutside: () => string[];
+  /** Whether a new entry is a write path, or an entry directly inside one, moved out by the command. */
+  movedFromScope: (file: string) => boolean;
 }
 
 /**
@@ -144,7 +146,8 @@ export interface WorkspaceMounts {
  * work. So the parent of a write path is opened instead, and every other entry
  * of that parent is mounted read-only on itself, which keeps those entries
  * from being changed, removed or renamed. A parent can still gain new names;
- * createdOutside reports them after the command. Every directory inside a
+ * createdOutside reports them after the command, and the executor removes
+ * them and fails the call. Every directory inside a
  * write path that holds a protected file is a mount point, so renaming an
  * ancestor cannot move the protected file away and recreate the path.
  */
@@ -155,6 +158,7 @@ export const mountWorkspace = (root: string, writePaths: string[], protectedPath
   const writable = (file: string) => writePaths.some(scope => within(file, scope));
   const parents = new Map<string, Set<string>>();
   const inPlace: string[] = [];
+  const scopeInodes = new Set<string>();
   for (const target of writePaths) {
     const parent = path.dirname(target);
     if (target === root) { mark(target, "write"); continue; }
@@ -168,6 +172,10 @@ export const mountWorkspace = (root: string, writePaths: string[], protectedPath
     }
     mark(parent, "parent");
     parents.set(parent, new Set(entries.map(entry => entry.name)));
+    // A rename out of scope (mv dist dist.old) must not lose that content.
+    for (const file of [target, ...(() => { try { return readdirSync(target).slice(0, maxParentEntries).map(name => path.join(target, name)); } catch { return []; } })()]) {
+      try { const stat = lstatSync(file); scopeInodes.add(`${stat.dev}:${stat.ino}`); } catch { /* Not created yet. */ }
+    }
     for (const entry of entries) { const file = path.join(parent, entry.name); if (!writePaths.includes(file)) mark(file, "read-only"); }
   }
   for (const file of protectedPaths) {
@@ -181,6 +189,7 @@ export const mountWorkspace = (root: string, writePaths: string[], protectedPath
       let names: string[]; try { names = readdirSync(parent); } catch { return []; }
       return names.filter(name => !before.has(name) && !writable(path.join(parent, name))).map(name => path.join(parent, name));
     }),
+    movedFromScope: file => { try { const stat = lstatSync(file); return scopeInodes.has(`${stat.dev}:${stat.ino}`); } catch { return false; } },
   };
 };
 
@@ -270,12 +279,21 @@ export const createIsolatedExecutor = (options: { network?: boolean; status?: Ex
         launch.push("--", command, ...args);
         let outcome: ToolHandlerResult | undefined, failure: unknown;
         try { outcome = await runProcess("/usr/bin/bwrap", launch, context); } catch (error) { failure = error; }
-        if (context.signal?.aborted) throw failure ?? context.signal.reason;
+        // Names that appeared next to a write path did not exist when the
+        // mounts were planned, so the command made them outside its scope
+        // (a conftest.py or .npmrc there would change later runs). Remove them.
         const created = mounts.createdOutside();
+        const removed: string[] = [], kept: string[] = [];
+        const moved = created.filter(file => mounts.movedFromScope(file));
+        for (const file of created) {
+          if (moved.includes(file)) continue;
+          try { await fs.rm(file, { recursive: true, force: true }); removed.push(file); } catch { kept.push(file); }
+        }
+        if (context.signal?.aborted) throw failure ?? context.signal.reason;
         if (created.length) {
-          const shown = created.slice(0, 10).map(file => path.relative(root, file));
+          const names = (files: string[]) => files.slice(0, 10).map(file => path.relative(root, file)).join(", ") + (files.length > 10 ? ` and ${files.length - 10} more` : "");
           const prior = failure instanceof Error ? failure.message : outcome?.output ?? "";
-          throw new ToolExecutionError("tool_permission_denied", `The command created ${shown.join(", ")}${created.length > shown.length ? ` and ${created.length - shown.length} more` : ""} outside its writePaths (${writePaths.map(file => path.relative(root, file) || ".").join(", ")}). They were left in place. Name every path the command creates in writePaths (a path that does not exist yet is allowed when its parent directory exists), or write inside a declared path.${prior ? `\n\nCommand output:\n${prior.slice(0, 4000)}` : ""}`, { retryable: false, details: { outsideWritePaths: created.map(file => path.relative(root, file)) } });
+          throw new ToolExecutionError("tool_permission_denied", `The command created ${names(created)} outside its writePaths (${writePaths.map(file => path.relative(root, file) || ".").join(", ")}).${removed.length ? ` Removed ${names(removed)}: they did not exist when the command started.` : ""}${moved.length ? ` Kept ${names(moved)}: it holds content moved out of a write path; declare it in writePaths to keep it, or move it back.` : ""}${kept.length ? ` Could not remove ${names(kept)}; delete them before continuing.` : ""} Any other effects of the command inside its writePaths remain. Name every path the command creates in writePaths (a path that does not exist yet is allowed when its parent directory exists), or write inside a declared path.${prior ? `\n\nCommand output:\n${prior.slice(0, 4000)}` : ""}`, { retryable: false, details: { outsideWritePaths: created.map(file => path.relative(root, file)), removed: removed.map(file => path.relative(root, file)) } });
         }
         if (failure) {
           if (failure instanceof ToolExecutionError && mounts.inPlace.length) failure.message += `\nNote: ${mounts.inPlace.map(file => path.relative(root, file) || ".").join(", ")} could only be mounted in place, because the parent directory holds a symbolic link or special file. The command can change the contents but cannot remove or rename the path itself.`;

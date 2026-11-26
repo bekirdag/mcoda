@@ -241,7 +241,24 @@ test("a declared output directory can be removed, recreated and renamed while it
   await execute("sh", ["-c", "mv gen gen.previous && mkdir gen"], { ...context, allowedWritePaths: ["gen", "gen.previous"] });
   assert.equal(await fs.readFile(path.join(root, "gen.previous", "inventory_pb2.py"), "utf8"), "again\n");
   // An undeclared new name next to the write path fails the call and names it.
-  await assert.rejects(execute("sh", ["-c", "rm -rf gen.previous; mv gen gen.backup && mkdir gen"], { ...context, allowedWritePaths: ["gen", "gen.previous"] }), /gen\.backup.*outside its writePaths/);
+  await assert.rejects(execute("sh", ["-c", "rm -rf gen.previous; echo kept > gen/inventory_pb2.py; mv gen gen.backup && mkdir gen"], { ...context, allowedWritePaths: ["gen", "gen.previous"] }), /gen\.backup.*outside its writePaths.*Kept gen\.backup/s);
+  // Content moved out of the write path is kept, not deleted.
+  assert.equal(await fs.readFile(path.join(root, "gen.backup", "inventory_pb2.py"), "utf8"), "kept\n");
+});
+
+test("new files a command leaves next to its write path are removed and named", async t => {
+  const status = executorStatus();
+  if (!status.available || status.backend !== "bubblewrap") { t.skip("Linux mount regression"); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-stray-root-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "reports")); await fs.writeFile(path.join(root, "pyproject.toml"), "[project]\n");
+  const execute = createIsolatedExecutor({ status });
+  const context = { workspaceRoot: root, allowedWritePaths: ["reports"], shellTimeoutMs: 5000 };
+  // A test-runner hook and a package-manager config at the root would change every later run.
+  await assert.rejects(execute("sh", ["-c", "echo 'import os' > conftest.py && mkdir -p .cfg && echo x > .cfg/npmrc && echo done > reports/summary.txt"], context),
+    error => /conftest\.py/.test(String(error)) && /Removed .*conftest\.py/.test(String(error)) && /\.cfg/.test(String(error)));
+  assert.deepEqual((await fs.readdir(root)).sort(), ["pyproject.toml", "reports"]);
+  assert.equal(await fs.readFile(path.join(root, "reports", "summary.txt"), "utf8"), "done\n");
 });
 
 test("a protected file cannot be moved away by renaming a directory that holds it", async t => {
