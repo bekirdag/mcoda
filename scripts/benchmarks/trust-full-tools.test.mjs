@@ -8,7 +8,7 @@ test('full direct-tool baseline is lazy and grants the same compute/evidence cap
   const registry=new ToolRegistry();let starts=0;
   const exposed=fullTrustTools(registry,os.tmpdir(),async()=>{starts++;throw Error('not needed');});
   assert.equal(starts,0);assert.equal(hasToolBaseline({domain:'general',toolParity:'full'}),true);
-  for(const name of ['decimal_calculate','symbolic_math','solve_constraints','query_data','transform_data','validate_json','verify_javascript','verify_tests','extract_entities','server_time','browser_open','document_read','docdex_batch_search','docdex_kg_search_nodes'])assert.ok(registry.list().some(tool=>tool.name===name),name);
+  for(const name of ['decimal_calculate','symbolic_math','solve_constraints','query_data','transform_data','validate_json','verify_javascript','verify_tests','run_code','extract_entities','server_time','browser_open','document_read','docdex_batch_search','docdex_kg_search_nodes'])assert.ok(registry.list().some(tool=>tool.name===name),name);
   assert.ok(!registry.list().some(tool=>tool.name==='docdex_kg_clear'));
   assert.ok(!registry.list().some(tool=>tool.name==='document_create'));
   const result=await registry.execute('tools_describe',{names:['decimal_calculate','verify_tests']},{workspaceRoot:os.tmpdir()});

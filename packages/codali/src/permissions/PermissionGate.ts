@@ -24,7 +24,7 @@ export const permissionKind = (tool: ToolDescriptor): PermissionKind => {
   if (["tools_discover", "tools_enable"].includes(tool.name)) return "read";
   if (tool.name === "tools_describe" && tool.capability === "discovery" && tool.readOnly) return "read";
   if ((tool.name === "calculate" || tool.name === "calendar_calculate") && tool.capability === "calculation" && tool.readOnly) return "read";
-  if (["verify_javascript", "verify_tests"].includes(tool.name) && tool.capability === "verification" && tool.readOnly) return "read";
+  if (["verify_javascript", "verify_tests", "run_code"].includes(tool.name) && tool.capability === "verification" && tool.readOnly) return "read";
   if (["transform_text", "decimal_calculate", "numerical_calculate", "validate_json", "symbolic_math", "solve_constraints", "query_data", "transform_data"].includes(tool.name) && tool.capability === "deterministic" && tool.readOnly) return "read";
   if (tool.name === "server_time" && tool.capability === "clock" && tool.readOnly) return "read";
   if (tool.name === "extract_entities" && tool.capability === "entity_hints" && tool.readOnly) return "read";

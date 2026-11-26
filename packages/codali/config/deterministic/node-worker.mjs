@@ -11,9 +11,22 @@ function integer(value, low, high) {
   if (!Number.isInteger(value) || value < low || value > high) throw Error(`Expected integer ${low}..${high}`);
   return value;
 }
+const DECIMAL = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d{1,4})?`;
 function decimal(value, D) {
-  if (typeof value !== 'string' || value.length > 512 || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d{1,4})?$/i.test(value)) throw Error('Use bounded decimal strings, never binary floats');
-  const result = new D(value);
+  if (typeof value === 'number' && Number.isFinite(value)) throw Error(`Operands are decimal strings: write "${value}" in quotes, or a fraction such as "20/11"; JSON numbers are binary floats and are not accepted`);
+  if (typeof value !== 'string' || value.length > 512) throw Error('Operands are decimal strings such as "12.50", or fractions such as "20/11"');
+  const text = value.trim();
+  // A rational operand "a/b" is divided at the working precision, so 20/11 needs no hand-typed digits.
+  const fraction = text.match(new RegExp(`^(${DECIMAL})\\s*/\\s*(${DECIMAL})$`, 'i'));
+  if (fraction) {
+    const denominator = new D(fraction[2]);
+    if (denominator.isZero()) throw Error(`Fraction ${text} divides by zero`);
+    const result = new D(fraction[1]).dividedBy(denominator);
+    if (!result.isFinite() || Math.abs(result.e) > 1000) throw Error('Decimal exponent out of range');
+    return result;
+  }
+  if (!new RegExp(`^${DECIMAL}$`, 'i').test(text)) throw Error(`Operand ${JSON.stringify(text.slice(0, 40))} is not a decimal string; use digits such as "12.50" or a fraction such as "20/11", and compute formulas with calculate`);
+  const result = new D(text);
   if (!result.isFinite() || Math.abs(result.e) > 1000) throw Error('Decimal exponent out of range');
   return result;
 }

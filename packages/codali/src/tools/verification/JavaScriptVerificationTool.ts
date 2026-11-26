@@ -32,18 +32,23 @@ export const javaScriptAnswerSource = (answer: string): string => {
   return fences[0][2].trim();
 };
 
+/** The tool's own cases may omit expected: such a case only runs and reports its
+ * actual value. Answer checks (final_answer checks) still need expectations. */
+const toolCasesSchema = { ...javaScriptChecksSchema.properties.cases, items: { ...javaScriptChecksSchema.properties.cases.items, required: ["args"] } };
+const ACTUAL_CHARS = 4000;
+
 export const createJavaScriptVerificationTool = (): ToolDefinition => ({
   name: "verify_javascript", capability: "verification", readOnly: true,
-  description: "Run a self-contained synchronous JavaScript ES module against explicit JSON cases. Named export entry receives each args array. Compares actual JSON with expected; optional preserveInput checks mutation. No imports, workspace, credentials or network. Passing supplied cases is limited evidence, not proof of general correctness.",
-  inputSchema: { type: "object", properties: { source: { type: "string", minLength: 1, maxLength: 24000 }, ...javaScriptChecksSchema.properties },
+  description: "Run a self-contained synchronous JavaScript ES module against JSON cases. Named export entry receives each args array. A case with expected compares the actual JSON with it; a case without expected only runs and returns its actual value (use that to compute values, never a placeholder expectation). Optional preserveInput checks mutation. No imports, workspace, credentials or network. Passing supplied cases is limited evidence, not proof of general correctness.",
+  inputSchema: { type: "object", properties: { source: { type: "string", minLength: 1, maxLength: 24000 }, ...javaScriptChecksSchema.properties, cases: toolCasesSchema },
     required: ["source", ...javaScriptChecksSchema.required], additionalProperties: false },
   handler: async (raw, context) => {
     context.signal?.throwIfAborted();
     const args = raw as JavaScriptChecks & { source: string };
     if (typeof args.source !== "string" || !args.source.trim() || args.source.length > 24000 || !/^[A-Za-z_$][\w$]{0,99}$/.test(args.entry)
       || !Array.isArray(args.cases) || args.cases.length < 1 || args.cases.length > 16
-      || args.cases.some(test => !test || !Array.isArray(test.args) || test.args.length > 16 || !Object.prototype.hasOwnProperty.call(test, "expected"))) {
-      throw new ToolExecutionError("tool_invalid_args", "Expected bounded source, a named export, and 1-16 JSON test cases");
+      || args.cases.some(test => !test || !Array.isArray(test.args) || test.args.length > 16)) {
+      throw new ToolExecutionError("tool_invalid_args", "Expected bounded source, a named export, and 1-16 JSON cases of the form {args:[...]} or {args:[...], expected:...}");
     }
     const payload = JSON.stringify({ source: args.source, entry: args.entry, inputs: args.cases.map(test => test.args) });
     if (payload.length > 64000 || JSON.stringify(args.cases).length > 64000) throw new ToolExecutionError("tool_invalid_args", "Verification input exceeds 64000 characters");
@@ -59,16 +64,22 @@ export const createJavaScriptVerificationTool = (): ToolDefinition => ({
       if (data.truncated) throw new ToolExecutionError("tool_execution_failed", "Verification observations exceeded the output limit");
       const observed = JSON.parse(data.stdout) as { observations: Array<{ actual?: unknown; inputPreserved?: boolean; error?: string }> };
       if (!Array.isArray(observed.observations) || observed.observations.length !== args.cases.length) throw new ToolExecutionError("tool_execution_failed", "Incomplete verification observations");
+      const expects = (test: { expected?: unknown }) => Object.prototype.hasOwnProperty.call(test, "expected");
       const checks = args.cases.map((test, index) => {
         const observation = observed.observations[index];
-        const passed = !observation.error && Object.prototype.hasOwnProperty.call(observation, "actual") && isDeepStrictEqual(observation.actual, test.expected)
-          && (!args.preserveInput || observation.inputPreserved === true);
+        const ran = !observation.error && Object.prototype.hasOwnProperty.call(observation, "actual");
+        // A run-only case reports what the code returned; there is nothing to pass or fail.
+        if (!expects(test)) return { index, runOnly: true, ran, ...(ran ? { actual: JSON.stringify(observation.actual).slice(0, ACTUAL_CHARS) } : { reason: observation.error }) };
+        const passed = ran && isDeepStrictEqual(observation.actual, test.expected) && (!args.preserveInput || observation.inputPreserved === true);
         return { index, passed, ...(!passed ? { reason: observation.error ?? (args.preserveInput && !observation.inputPreserved ? "Input was mutated" : "Actual result differs"),
-          actual: JSON.stringify(observation.actual)?.slice(0, 200), expected: JSON.stringify(test.expected).slice(0, 200) } : {}) };
+          actual: JSON.stringify(observation.actual)?.slice(0, ACTUAL_CHARS), expected: JSON.stringify(test.expected).slice(0, 200) } : {}) };
       });
-      const result = { passed: checks.every(check => check.passed), checks, sourceSha256: createHash("sha256").update(args.source).digest("hex"),
-        scope: "Only the supplied cases; synchronous JSON values, fresh module per case, no imports" };
-      return { output: JSON.stringify(result), data: result };
+      const checked = checks.filter(check => !("runOnly" in check));
+      const result = { ...(checked.length ? { passed: checked.every(check => "passed" in check && check.passed) } : {}), ...(checked.length < checks.length ? { runOnlyCases: checks.length - checked.length } : {}), checks,
+        sourceSha256: createHash("sha256").update(args.source).digest("hex"),
+        scope: checked.length ? "Only the supplied cases; synchronous JSON values, fresh module per case, no imports" : "Run only: values the code returned for the supplied inputs; nothing was compared" };
+      // The full returned values stay in the receipt data (the output shows them clipped).
+      return { output: JSON.stringify(result), data: { ...result, actuals: observed.observations.map(observation => observation.actual) } };
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   },
 });

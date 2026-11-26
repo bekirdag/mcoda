@@ -25,6 +25,12 @@ test("decimal operations avoid binary float error and report finite precision", 
   assert.equal((await data("decimal_calculate", { operation: "round", values: ["2.5"] })).result, "2");
   assert.equal((await run("decimal_calculate", { operation: "divide", values: ["1", "0"] })).ok, false);
   assert.equal((await run("decimal_calculate", { operation: "add", values: [0.1, 0.2] })).ok, false);
+  // Fresh variant: rational operands are divided at the working precision, not refused.
+  assert.equal((await data("decimal_calculate", { operation: "add", values: ["7/16", "1/3"], precision: 12 })).result, "0.770833333333");
+  assert.equal((await data("decimal_calculate", { operation: "multiply", values: ["-20/8", "1.2"] })).result, "-3");
+  const bad = await run("decimal_calculate", { operation: "add", values: ["1/0", "1"] });
+  assert.equal(bad.ok, false); assert.match(bad.error!.message, /divides by zero/);
+  assert.match((await run("decimal_calculate", { operation: "add", values: ["sqrt(2)", "1"] })).error!.message, /fraction such as "20\/11"/);
 });
 
 test("math.js solves an independent linear system and reports numerical semantics", options, async () => {

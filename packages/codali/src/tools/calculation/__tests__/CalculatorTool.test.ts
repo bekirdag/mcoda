@@ -33,7 +33,7 @@ test("calculator batches named formulas atomically without allowing code or ambi
   assert.equal(result.ok, true, result.output);
   assert.deepEqual(JSON.parse(result.output).results, { total: 126, ratio: 0.75 });
   for (const args of [{}, { expression: "1", expressions: { a: "2" } }, { expressions: {} },
-    { expressions: { a: "1", b: "process.env" } }, { expressions: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`a${i}`, "1"])) }]) {
+    { expressions: { a: "1", b: "process.env" } }, { expressions: Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`a${i}`, "1"])) }]) {
     assert.equal((await run(args)).ok, false);
   }
 });
@@ -58,7 +58,7 @@ test("calculator rejects unsupported code, incomplete syntax and ambiguous impli
 
 test("calculator refuses nonfinite results, unsafe integers and resource exhaustion", () => {
   for (const expression of ["1/0", "0/0", "1%0", "sqrt(-1)", "(-1)^.5", "1e309", "9007199254740993", "2^53",
-    "sum(9007199254740991,1)", " ".repeat(4096) + "1", "1+".repeat(520) + "1", "(".repeat(40) + "1" + ")".repeat(40),
+    "sum(9007199254740991,1)", " ".repeat(32000) + "1", "1+".repeat(520) + "1", "(".repeat(40) + "1" + ")".repeat(40),
     "-".repeat(40) + "1", "sum(" + Array(129).fill("1").join(",") + ")"]) assert.throws(() => evaluateCalculation(expression), Error, expression);
 });
 
@@ -119,7 +119,7 @@ test("a calculation may name intermediate values and reuse them", async () => {
   assert.equal(batch.body.results.k29, 103.68 * 29);
   // Still numbers only: nothing here is evaluated as code.
   for (const expression of ["a = [1,2]", "a = 'x'", "import os; 1", "a = 1; a.constructor", "a = 1; a(2)", "x = y + 1", "for i in range(3): 1", "a == 1", "a = b = 1", "1a = 2", "__proto__ = 1", "constructor = 1; constructor.constructor",
-    Array.from({ length: 65 }, (_, i) => `v${i} = ${i}`).join(";")]) {
+    Array.from({ length: 1001 }, (_, i) => `v${i} = ${i}`).join(";")]) {
     assert.equal((await run({ expression })).ok, false, expression);
   }
   assert.match(String((await run({ expression: "x = y + 1" })).body), /Unknown name y/);
@@ -140,4 +140,46 @@ test("inverse and hyperbolic functions and large capacity integers are available
   assert.equal(JSON.parse((await registry.execute("calculate", { expression: "2+3" }, { workspaceRoot: "." })).output).warning, undefined);
   // The strict single-formula API still refuses an inexact integer.
   assert.throws(() => evaluateCalculation("80000*1500*1440*600*365"), /exact supported range/);
+});
+
+test("the calculator accepts the forms models write: a result list, pi(), round(x, n), erf and labels in any order", async () => {
+  // Fresh variant: a 48-month loan at 6.6% a year, written the way a model writes it.
+  const registry = new ToolRegistry(); registry.register(createCalculatorTool());
+  const run = async (args: unknown) => { const r = await registry.execute("calculate", args, { workspaceRoot: "." }); return { ok: r.ok, body: r.ok ? JSON.parse(r.output) : r.error!.message }; };
+  const r = 0.066 / 12, payment = 18000 * r / (1 - (1 + r) ** -48);
+  const listed = await run({ expression: "P = 18000; r = 0.066/12; n = 48\npay = P*r/(1-(1+r)^-n)\ntotal = pay*n - P\n[pay, round(total, 2), P*r]" });
+  assert.equal(listed.ok, true, String(listed.body));
+  assert.deepEqual(listed.body.result, [payment, Math.round((payment * 48 - 18000) * 100) / 100, 18000 * r]);
+  assert.deepEqual((await run({ expression: "a = 3; b = 4\n(a, b, hypot(a, b))" })).body.result, [3, 4, 5]);
+  assert.deepEqual((await run({ expression: "a = 3; a, a*2" })).body.result, [3, 6]);
+  // A parenthesised formula is still one value.
+  assert.equal((await run({ expression: "a = 3; (a+1)*(a-1)" })).body.result, 8);
+  // Labels resolve in dependency order, whatever order they are written in.
+  const labels = await run({ expressions: { payment: "P*r/(1-(1+r)^-n)", r: "rate/12", rate: "0.066", P: "18000", n: "48" } });
+  assert.equal(labels.ok, true, String(labels.body));
+  assert.deepEqual(Object.keys(labels.body.results), ["payment", "r", "rate", "P", "n"]);
+  assert.equal(labels.body.results.payment, payment);
+  assert.match(String((await run({ expressions: { a: "b+1", b: "a+1" } })).body), /cycle/);
+  // pi(), Python's math. prefix, round to places, and the normal distribution.
+  assert.equal(evaluateCalculation("pi()*2"), 2 * Math.PI);
+  assert.equal(evaluateCalculation("math.sqrt(16) + math.pi - pi"), 4);
+  assert.equal(evaluateCalculation("round(2.34565, 4)"), 2.3457);
+  assert.equal(evaluateCalculation("round(-1.005, 2)"), -1.01);
+  assert.equal(evaluateCalculation("round(1234.5, -2)"), 1200);
+  assert.equal(evaluateCalculation("round(2.5)"), 3);
+  for (const [formula, expected] of [["erf(0.5)", 0.5204998778130465], ["erf(1)", 0.8427007929497149], ["erf(-2)", -0.9953222650189527],
+    ["erfc(3)", 2.209049699858544e-5], ["erfc(-1)", 1.8427007929497148], ["normcdf(1.96)", 0.9750021048517795], ["normcdf(0)", 0.5], ["normpdf(0)", 0.3989422804014327]] as const) {
+    assert.ok(Math.abs(evaluateCalculation(formula) - expected) <= 1e-14 * Math.max(1, Math.abs(expected)) + 1e-18, `${formula} = ${evaluateCalculation(formula)}`);
+  }
+  // A fixed-point iteration written out statement by statement fits.
+  const iteration = await run({ expression: ["x = 1", ...Array.from({ length: 300 }, () => "x = cos(x)"), "x"].join("\n") });
+  assert.equal(iteration.ok, true, String(iteration.body)); assert.ok(Math.abs(iteration.body.result - 0.7390851332151607) < 1e-12);
+  // Errors name the failing statement and say how to rewrite it.
+  const failed = String((await run({ expression: "a = 2\nb = a > 1\nb" })).body);
+  assert.match(failed, /Statement 2 of 3 \("b = a > 1"\): Unsupported character ">"/);
+  assert.match(failed, /run_code/);
+  assert.match(String((await run({ expression: "v = [1, 2]" })).body), /last statement/);
+  assert.match(String((await run({ expressions: { a: "2", b: "a + q" } })).body), /Formula b .*Unknown name q/);
+  // The single-formula API stays a single formula.
+  assert.throws(() => evaluateCalculation("[1, 2]"));
 });
