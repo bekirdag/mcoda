@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { missingStructuralEvidence, validAnalysisResult, writableInventory } from "../StructuralEvidence.js";
+import { isGeneratedOutput, missingStructuralEvidence, validAnalysisResult, writableInventory } from "../StructuralEvidence.js";
 import { captureWorkspace } from "../WorkspaceSnapshot.js";
 
 test("protected toolchains are not writable inventory, but aliases cannot evade protection",async t=>{
@@ -71,4 +71,9 @@ test("writable inventory includes ignored sources and rejects alias, hard-link a
     await fs.link(path.join(root, "copy.ts"), path.join(root, ".git", "shared"));
     await assert.rejects(writableInventory(root, ["."]), /Hard-linked/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("build output is recognised at the root and, for unambiguous names, inside packages", () => {
+  for (const file of ["dist/app.js", "out/index.js", "build/main.js", "packages/web/dist/chunk.js", "apps/site/.next/server/page.js", "coverage/lcov-report/x.js", "src/vendor/lib.min.js", "src/app.js.map"]) assert.equal(isGeneratedOutput(file), true, file);
+  for (const file of ["src/app.ts", "tools/build/release.js", "src/out/writer.py", "distribution/main.go", "lib/distance.js"]) assert.equal(isGeneratedOutput(file), false, file);
 });

@@ -13,6 +13,15 @@ export interface StructuralAnalysis {
 
 export const isSourcePath = (file: string): boolean => /\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|kts|c|cc|cpp|cxx|h|hpp|cs|rb|php|swift|sh|bash|lua|ex|exs|scala|sc|vue|svelte)$/i.test(file);
 
+/**
+ * Build output (build/, dist/, out/, coverage/, framework caches, minified
+ * bundles, source maps) is produced from other files: nothing calls into it and
+ * a build replaces it wholesale. dist/, coverage/, .next/ and .nuxt/ are output
+ * at any depth (packages/web/dist/); build/ and out/ only at the root, since
+ * nested folders of those names often hold authored build scripts.
+ */
+export const isGeneratedOutput = (file: string): boolean => /^(?:build|out)\/|(?:^|\/)(?:dist|coverage|\.next|\.nuxt)\//.test(file) || /\.min\.(?:js|css)$|\.map$/.test(file);
+
 /** Installed dependencies/toolchains are inventoried for isolation, not authored source. */
 export const isDependencyArtifact = (file: string): boolean => file.split("/").some(part => ["node_modules", ".gradle", ".npm-cache", ".pnpm-store", ".toolchain"].includes(part));
 

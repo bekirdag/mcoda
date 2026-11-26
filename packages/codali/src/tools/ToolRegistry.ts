@@ -471,8 +471,14 @@ export class ToolRegistry {
         error: normalizeExecutionError(error),
       };
     }
-    // Persistence failures must stop the run, not silently acknowledge a side effect.
-    await context.afterTool?.(toolDescriptorFor(tool), sanitized.value, execution);
+    // Persistence failures must stop the run, not silently acknowledge a side
+    // effect. A ToolExecutionError from the host's check of this call (a scope
+    // or workspace conflict) fails only this call; the model sees it.
+    try { await context.afterTool?.(toolDescriptorFor(tool), sanitized.value, execution); }
+    catch (error) {
+      if (!(error instanceof ToolExecutionError) || context.signal?.aborted) throw error;
+      execution = { ok: false, output: "", error: normalizeExecutionError(error) };
+    }
     context.signal?.throwIfAborted();
     return execution;
   }
