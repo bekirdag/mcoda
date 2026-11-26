@@ -82,13 +82,21 @@ export const postRunNotice = ({ cycleDir, reason, ended, steps, packets, reviews
  */
 export const watchCycle = async ({
   cycleDir, unit, tools = path.join(import.meta.dirname, 'cycle-tools.mjs'), node = process.execPath,
-  intervalMs = 300000, stallMs = 45 * 60000, stallPostRunMs = 180 * 60000, processFilter = 'strata|llama', postRun = true,
+  intervalMs = 300000, stallMs = 45 * 60000, stallPostRunMs = 180 * 60000, startGraceMs = 30 * 60000, processFilter = 'strata|llama', postRun = true,
   unitState, run = runCommand, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => Date.now(), log = line => console.log(line),
   maxPasses = Infinity,
 }) => {
   unitState ??= systemdUnitState(run);
   const C = cycleDir, results = path.join(C, 'results');
   const stamp = () => new Date(now()).toISOString();
+  // A finished evaluation is never repeated by a restarted or second watcher.
+  const finalStatus = path.join(C, 'post-run', 'status.json');
+  if (postRun && (await readJson(finalStatus, null))?.final) { log(`ALREADY_EVALUATED ${stamp()} ${finalStatus}`); return { skipped: 'already_evaluated' }; }
+  const lock = await acquireLock(path.join(C, 'cycle-watch.lock'), { unit, at: stamp() });
+  if (!lock.acquired) { log(`LOCKED ${stamp()} another watcher (pid ${lock.holder?.pid}) holds ${path.join(C, 'cycle-watch.lock')}`); return { skipped: 'locked', holder: lock.holder }; }
+  try { return await watchLocked(); } finally { await lock.release(); }
+
+  async function watchLocked() {
   const notify = async (kind, detail) => {
     const entry = { at: stamp(), kind, ...detail };
     log(`${kind.toUpperCase()} ${entry.at} ${detail.message ?? ''}`.trimEnd());
@@ -123,25 +131,32 @@ export const watchCycle = async ({
     }
     const serviceAffected = (await readJson(path.join(C, 'outages.json'), {}))?.serviceLoss?.affected ?? [];
     await fs.writeFile(path.join(C, 'POST-RUN-NOTICE.md'), postRunNotice({ cycleDir: C, reason, ended, steps, packets, reviews, serviceAffected }));
-    await writeJson(path.join(out, 'status.json'), { reason, at: stamp(), steps });
+    // Only the evaluation after the run ended is final; a stall evaluation is partial and repeated at the end.
+    await writeJson(ended ? finalStatus : path.join(out, 'stall-status.json'), { reason, at: stamp(), final: !!ended, steps });
+    if (ended) await writeJson(path.join(C, 'RUN-ENDED.json'), { ...ended, postRunCompletedAt: stamp() });
     await notify('post_run_done', { message: `${reason}: ${steps.map(step => `${step.name}=${step.code}`).join(' ')}; see POST-RUN-NOTICE.md`, reason, steps });
     return steps;
   };
 
-  // Wait for the results directory instead of failing on the first pass.
+  // The run has ended only after its unit was seen active (remembered across watcher restarts in
+  // watch-state.json) or the ledger says run_complete. A mistyped or not-yet-started unit
+  // (inactive / not-found) is waited for, with one notification after the start grace period.
+  const statePath = path.join(C, 'watch-state.json'), startedAt = now();
+  const watchState = await readJson(statePath, {});
+  let seenActive = watchState.unit === unit && !!watchState.seenActiveAt, notSeenNotified = false;
   let passes = 0, stallNotified = false, stallPostRunDone = false;
-  while (!await exists(results)) {
-    const state = await unitState(unit);
-    if (!state.active) break;
-    if (++passes >= maxPasses) return { ended: false };
-    await sleep(Math.min(intervalMs, 60000));
-  }
-  passes = 0;
   for (;;) {
     try {
       // 1. Unit state first.
       const state = await unitState(unit);
-      if (!state.active) {
+      if (state.active && state.state !== 'unknown' && !seenActive) { seenActive = true; await writeJson(statePath, { unit, seenActiveAt: stamp() }); }
+      const complete = !state.active && !seenActive && (await counts()).complete;
+      if (!state.active && !seenActive && !complete) {
+        if (!notSeenNotified && now() - startedAt > startGraceMs) {
+          notSeenNotified = true;
+          await notify('unit_not_seen', { message: `unit ${unit} is ${state.state}${state.loaded ? `/${state.loaded}` : ''} and has not been seen active in ${Math.round((now() - startedAt) / 60000)} min; check the unit name. Still waiting; no evaluation runs until it has run.` });
+        }
+      } else if (!state.active) {
         const { results: done, errors, complete } = await counts();
         const ended = { state: complete ? 'finished' : 'died', at: stamp(), unit, unitState: state.state, unitResult: state.result, status: state.status != null ? Number(state.status) : null, results: done, errors };
         await writeJson(path.join(C, 'RUN-ENDED.json'), ended);
@@ -149,8 +164,8 @@ export const watchCycle = async ({
         const steps = postRun ? await runPostRun(complete ? 'run finished' : 'run ended without run_complete', ended) : [];
         return { ended, steps };
       }
-      // 2. Triage flags.
-      if (await exists(results)) {
+      // 2. Triage flags (nothing to scan until the results directory exists).
+      if (!await exists(results)) { /* waiting for the study to start */ } else {
         const statePath = path.join(C, 'triage-seen.json'), seen = new Set(await readJson(statePath, []));
         const fresh = (await triageStudy(results)).filter(item => !seen.has(`${item.directory}:${item.code}`));
         if (fresh.length) {
@@ -158,6 +173,7 @@ export const watchCycle = async ({
           for (const item of fresh) await notify('triage', { message: `${item.severity.toUpperCase()} ${item.code} ${item.key} - ${item.detail}`, severity: item.severity, code: item.code, key: item.key });
         }
       }
+      if (await exists(results)) {
       // 3. OOM kills during attempts and attempts that lost their deadline to the model service.
       const outages = await run(node, [tools, 'outages', '--cycle', C, ...(processFilter ? ['--process', processFilter] : [])], { cwd: path.dirname(tools) });
       const lines = outages.stdout.split('\n').filter(line => (/ oom_kill /.test(line) && !/affected=-$/.test(line)) || / INFRA_AFFECTED$/.test(line));
@@ -193,6 +209,7 @@ export const watchCycle = async ({
         await fs.rm(path.join(C, 'RUN-STALLED.json'), { force: true });
         await notify('resumed', { message: 'attempt events resumed' });
       }
+      }
     } catch (error) {
       // Never stop watching on a tool error; log it and try again next pass.
       log(`WATCH_ERROR ${stamp()} ${String(error?.stack ?? error).split('\n').slice(0, 3).join(' | ')}`);
@@ -200,6 +217,26 @@ export const watchCycle = async ({
     if (++passes >= maxPasses) return { ended: false };
     await sleep(intervalMs);
   }
+  }
+};
+
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+
+/** Exclusive lockfile holding {pid, ...}; a lock whose process is gone is taken over. */
+export const acquireLock = async (file, info = {}) => {
+  const token = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      await fs.writeFile(file, JSON.stringify({ pid: process.pid, token, ...info }) + '\n', { flag: 'wx' });
+      return { acquired: true, release: async () => { if ((await readJson(file, null))?.token === token) await fs.rm(file, { force: true }); } };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const holder = await readJson(file, null);
+      if (holder?.pid && alive(holder.pid)) return { acquired: false, holder };
+      await fs.rm(file, { force: true });
+    }
+  }
+  return { acquired: false, holder: await readJson(file, null) };
 };
 
 const option = (args, name) => { const index = args.indexOf(`--${name}`); return index >= 0 ? args[index + 1] : undefined; };
@@ -207,7 +244,7 @@ const option = (args, name) => { const index = args.indexOf(`--${name}`); return
 const main = async () => {
   const args = process.argv.slice(2);
   const cycleDir = option(args, 'cycle'), unit = option(args, 'unit');
-  if (!cycleDir || !unit) throw Error('Usage: node cycle-watch.mjs --cycle DIR --unit UNIT [--interval-s 300] [--stall-min 45] [--stall-post-run-min 180] [--tools FILE] [--process RE] [--no-post-run]');
+  if (!cycleDir || !unit) throw Error('Usage: node cycle-watch.mjs --cycle DIR --unit UNIT [--interval-s 300] [--stall-min 45] [--stall-post-run-min 180] [--start-grace-min 30] [--tools FILE] [--process RE] [--no-post-run]');
   const stop = signal => { console.log(`WATCHER_STOPPED ${new Date().toISOString()} ${signal}`); fs.appendFile(path.join(cycleDir, 'notifications.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind: 'watcher_stopped', signal }) + '\n').finally(() => process.exit(0)); };
   process.on('SIGTERM', () => stop('SIGTERM')); process.on('SIGINT', () => stop('SIGINT'));
   console.log(`WATCHING ${new Date().toISOString()} ${path.resolve(cycleDir)} unit=${unit}`);
@@ -217,6 +254,7 @@ const main = async () => {
     intervalMs: Number(option(args, 'interval-s') ?? 300) * 1000,
     stallMs: Number(option(args, 'stall-min') ?? 45) * 60000,
     stallPostRunMs: Number(option(args, 'stall-post-run-min') ?? 180) * 60000,
+    startGraceMs: Number(option(args, 'start-grace-min') ?? 30) * 60000,
     processFilter: option(args, 'process') ?? 'strata|llama',
     postRun: !args.includes('--no-post-run'),
   });
