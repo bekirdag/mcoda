@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-## 0.1.135-codali.45
+## 0.1.135-codali.46
 
-- Same changes as 0.1.135-codali.43 below, plus test fixes for macOS and
-  loaded CI runners. The .43 and .44 tags were cut but their releases failed
-  in test jobs before publishing, so neither was ever on npm.
+- Same changes as 0.1.135-codali.43 below, plus test fixes for macOS, loaded CI
+  runners and tests that reached the host Docdex daemon. The .43, .44 and .45
+  tags were cut but their releases failed in test jobs before publishing, so
+  none of them was ever on npm.
 
 ## 0.1.135-codali.43
 

@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.135-codali.45
+## 0.1.135-codali.46
 
-- Ships with @mcoda/codali 0.1.135-codali.45 (no other changes in this package).
+- Ships with @mcoda/codali 0.1.135-codali.46 (no other changes in this package).
 
 ## 0.1.135-codali.43
 

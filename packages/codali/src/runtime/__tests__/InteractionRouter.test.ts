@@ -22,7 +22,9 @@ const fixture = async (t: test.TestContext, provider: Provider, config = base, r
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-interaction-state-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   const events: SessionEvent[] = [];
-  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e), ...options });
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved: { config, hash: orchestrationHash(config), source: "test" }, provider, docdex, userInstructionsPath: false, runContext, onEvent: e => events.push(e),
+    // Hermetic: the working-style lookup would reach the host Docdex daemon (WorkingStyle.test covers it).
+    workingStyle: false, ...options });
   return { controller, events, root, storage };
 };
 
