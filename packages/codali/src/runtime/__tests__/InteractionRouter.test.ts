@@ -415,7 +415,7 @@ test("adaptive replies directly in one call without initializing a tool runtime"
   const config = structuredClone(base); config.interaction = { strategy: "adaptive" };
   let calls = 0;
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]); assert.equal(request.toolChoice, "auto"); return reply("Hello!");
+    calls++; assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.toolChoice, "auto"); return reply("Hello!");
   } }, config);
   assert.equal((await controller.interact("Hello!")).content, "Hello!");
   assert.equal(calls, 1); assert.equal(controller.turnUsageSnapshot().toolCalls, 0);
@@ -430,7 +430,7 @@ test("adaptive directly invokes a real tool and preserves the original instructi
     assert.ok(request.messages.some(message => message.role === "user" && message.content === original));
     assert.match(request.messages[0].content, /WORKSPACE_MARKER/);
     assert.ok(request.messages.some(message => message.content.includes("CUSTOM_ROUTING_MARKER")));
-    assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]);
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]);
     if (++calls === 1) {
       assert.equal(request.toolChoice, "auto");
       assert.match(request.messages[0].content, /only native codali\(\{name,args\}\)/);
@@ -468,7 +468,7 @@ test(`${strategy}/${toolExposure} finalizes from real evidence with final delive
     const evidence = JSON.parse(request.messages.find(message => message.role === "tool")!.content);
     assert.equal(evidence.tool, "calculate"); assert.equal(JSON.parse(evidence.content).result, 5);
     return reply('{"sum":5}');
-  } }, config);
+  } }, config, undefined, false, { permissions: "workspace" });
   await fs.writeFile(path.join(root, "AGENTS.md"), "KEEP_PROJECT_POLICY");
   assert.equal((await controller.interact(prompt)).content, '{"sum":5}');
   assert.equal(calls, 2); assert.equal(controller.turnUsageSnapshot().toolCalls, 1);
@@ -585,7 +585,7 @@ test("gateway invokes the calculator and audits its short answer with retained p
     assert.match(request.messages[0].content, /CUSTOM_ANSWER_POLICY/);
     assert.match(request.messages[0].content, /GATEWAY_WORKSPACE_RULE/);
     if (++calls === 1) {
-      assert.deepEqual(request.tools?.map(tool => tool.name), ["codali", "start_work"]); assert.equal(request.responseFormat, undefined);
+      assert.deepEqual(request.tools?.map(tool => tool.name), ["codali"]); assert.equal(request.responseFormat, undefined);
       assert.deepEqual(request.toolChoice, { name: "codali" });
       return { ...reply(""), toolCalls: [{ id: "sum", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
     }
@@ -674,7 +674,7 @@ test("configured empty exposure preserves discovery and host-denied tools stay u
   let calls = 0;
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) {
-      assert.deepEqual(request.tools?.map(tool => tool.name).sort(), ["final_answer", "start_work", "tools_describe"]);
+      assert.deepEqual(request.tools?.map(tool => tool.name).sort(), ["final_answer", "tools_describe"]);
       return { ...reply(""), toolCalls: [{ id: "discover", name: "tools_describe", args: { names: ["calculate"] } }] };
     }
     assert.ok(!request.tools?.some(tool => tool.name === "calculate"));
@@ -825,7 +825,7 @@ test("gateway cannot bypass failed checks with an unchecked final reply", async 
 test("gateway final-budget boundary cannot execute another tool", async t => {
   const config = structuredClone(base); config.interaction = { strategy: "gateway", maxModelCalls: 1 };
   const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
-    assert.deepEqual(request.tools?.map(tool => tool.name), ["start_work", "final_answer"]); assert.equal(request.toolChoice, "auto");
+    assert.deepEqual(request.tools?.map(tool => tool.name), ["final_answer"]); assert.equal(request.toolChoice, "auto");
     return { ...reply(""), toolCalls: [{ id: "ignored", name: "codali", args: { name: "calculate", args: { expression: "2+3" } } }] };
   } }, config);
   await assert.rejects(controller.interact("Calculate 2+3."), /Only final delivery or the execution handoff/);
@@ -1318,7 +1318,7 @@ for (const input of [{ names: ["write_file"] }, { query: "write file content wor
     assert.match(tool.content, /start_work/);
     assert.ok(!request.tools?.some(tool => tool.name === "write_file"));
     return reply("Writing requires the execution stage and the original user's authorization.");
-  } }, config);
+  } }, config, undefined, false, { permissions: "workspace" });
   assert.match((await controller.interact("Explain the file-writing capability without modifying anything.")).content, /execution stage/);
   assert.equal(events.filter(event => event.type === "tool_receipt" && (event.data.receipt as { tool: string }).tool === "write_file").length, 0);
   assert.equal(await fs.stat(path.join(root, "unauthorized.txt")).then(() => true, () => false), false);
@@ -2597,4 +2597,53 @@ test("a research turn cut off by a crash is continued from its saved evidence an
   assert.ok(sawEarlier, "the continued turn is told what was already gathered");
   assert.equal(searches, 3, "only the missing point was searched again");
   assert.equal(resumed.unfinishedInteraction, undefined);
+});
+
+// Cycle 7 (.43 WP-F1/F4). Fresh variants: the gateway envelope mixed with a
+// native calculate call, a nameless codali call, and an answer-only session.
+test("mixed gateway/native call forms run, a nameless codali call says how to fix it, and answer-only sessions do not offer start_work", async t => {
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 8, maxTotalTokens: 64000 };
+  let calls = 0; const toolLists: string[][] = []; let rejection = "";
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    toolLists.push((request.tools ?? []).map(tool => tool.name));
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "a", name: "codali", args: { name: "codali", args: { name: "calculate", expression: "17*3" } } }] };
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "b", name: "calculate", args: { name: "calculate", args: { expression: "51+9" } } }] };
+    if (calls === 3) return { ...reply(""), toolCalls: [{ id: "c", name: "codali", args: { name: "codali", args: { expression: "60/4" } } }] };
+    rejection = request.messages.filter(message => message.role === "tool").at(-1)!.content;
+    return reply("15");
+  } }, config);
+  assert.equal((await controller.interact("Compute 17*3, add 9, then divide by 4.")).content, "15");
+  const ran = events.filter(event => event.type === "tool_receipt").map(event => event.data.receipt as { tool: string; status: string });
+  assert.deepEqual(ran.map(receipt => [receipt.tool, receipt.status]), [["calculate", "success"], ["calculate", "success"]]);
+  assert.ok(events.some(event => event.type === "interaction_call_unwrapped" && event.data.name === "calculate"));
+  assert.match(rejection, /names no tool to run: [\\"]*codali[\\"]* is the gateway itself/);
+  assert.match(rejection, /calculate/);
+  assert.doesNotMatch(rejection, /Final answers\/work transitions/);
+  for (const tools of toolLists) assert.ok(!tools.includes("start_work"), tools.join(","));
+});
+
+// Cycle 7 (.43 WP-F3). Fresh variant: a test-only verify call after one that
+// carried the module, then final code re-typed differently but still correct.
+test("a test-only verify call reuses the session's module, and re-typed final code that passes is delivered without another round", async t => {
+  if (!executorStatus().available) { t.skip("OS isolation unavailable"); return; }
+  const config = structuredClone(base);
+  config.interaction = { strategy: "adaptive", toolExposure: "native", toolSelection: "progressive", maxModelCalls: 8, maxTotalTokens: 64000 };
+  const tests = "import unittest\nfrom clampmod import clamp\n\nclass T(unittest.TestCase):\n    def test_clamp(self):\n        self.assertEqual(clamp(9, 0, 5), 5)\n        self.assertEqual(clamp(-2, 0, 5), 0)\n";
+  let calls = 0, carriedSeen = "";
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "discover", name: "codali", args: { name: "tools_describe", args: { names: ["verify_tests"] } } }] };
+    if (calls === 2) return { ...reply(""), toolCalls: [{ id: "full", name: "verify_tests", args: { runner: "python", files: [{ path: "clampmod.py", content: "def clamp(x, lo, hi):\n    return max(lo, min(x, hi))\n" }, { path: "test_clampmod.py", content: tests }] } }] };
+    if (calls === 3) return { ...reply(""), toolCalls: [{ id: "only-test", name: "verify_tests", args: { runner: "python", files: [{ path: "test_clampmod.py", content: tests + "    def test_inside(self):\n        self.assertEqual(clamp(3, 0, 5), 3)\n" }] } }] };
+    carriedSeen = request.messages.filter(message => message.role === "tool").at(-1)!.content;
+    return reply("```python\ndef clamp(x, lo, hi):\n    if x < lo:\n        return lo\n    return hi if x > hi else x\n```\n");
+  } }, config);
+  const answer = await controller.interact("Write clamp(x, lo, hi) in Python and test it.");
+  assert.match(carriedSeen, /clampmod\.py was not in this call/);
+  assert.match(carriedSeen, /\\"passed\\":true/);
+  assert.ok(events.some(event => event.type === "test_files_carried"));
+  const rerun = events.find(event => event.type === "final_code_rerun");
+  assert.equal(rerun?.data.passed, true);
+  assert.match(answer.content, /if x < lo/);
+  assert.equal(calls, 4, "the passing re-typed code needed no further model round");
 });

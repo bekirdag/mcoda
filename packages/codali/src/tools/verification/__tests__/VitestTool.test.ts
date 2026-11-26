@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createVitestTool, testFailureSummary } from "../VitestTool.js";
+import { completeTestFiles, createVitestTool, isTestFile, testFailureSummary } from "../VitestTool.js";
 import { ToolRegistry } from "../../ToolRegistry.js";
 import { executorStatus } from "../../shell/IsolatedExecutor.js";
 const status = executorStatus(); const options = { skip: !status.available && status.reason };
@@ -145,4 +145,58 @@ def test_needs_fixture(tmp_path):
 `);
   assert.equal(fixture.body?.passed, false);
   assert.match(fixture.body.diagnostic, /fixture tmp_path is not available/);
+});
+
+// Cycle 7 (.43 WP-F2): test_x.js with runner node was refused by a message
+// that never named the naming rule. Fresh variant: a ring buffer.
+test("node runs explicitly listed tests named by common conventions", options, async () => {
+  const registry = new ToolRegistry(); registry.register(createVitestTool());
+  const source = { path: "ringbuffer.js", content: "export class Ring{constructor(n){this.n=n;this.items=[]}push(x){this.items.push(x);if(this.items.length>this.n)this.items.shift()}toArray(){return [...this.items]}}" };
+  const tests = "import test from 'node:test';import assert from 'node:assert/strict';import {Ring} from './ringbuffer.js';test('drops oldest',()=>{const r=new Ring(2);r.push(1);r.push(2);r.push(3);assert.deepEqual(r.toArray(),[2,3])});";
+  for (const [name, content] of [["test_ringbuffer.js", tests], ["test-ringbuffer.mjs", tests], ["ringbuffer_test.js", tests], ["checks/ring_cases.js", tests.replace("./ringbuffer.js", "../ringbuffer.js")]]) {
+    const result = await registry.execute("verify_tests", { runner: "node", files: [source, { path: name, content }] }, { workspaceRoot: os.tmpdir() });
+    assert.equal(result.ok, true, `${name}: ${result.error?.message}`);
+    assert.equal(JSON.parse(result.output).passed, true, name);
+    assert.equal(JSON.parse(result.output).total, 1, name);
+  }
+});
+
+test("verify_tests rejections name the file and the rule it broke", async () => {
+  const registry = new ToolRegistry(); registry.register(createVitestTool());
+  const reject = async (args: unknown) => { const result = await registry.execute("verify_tests", args, { workspaceRoot: os.tmpdir() }); assert.equal(result.ok, false); return result.error!.message; };
+  assert.match(await reject({ runner: "python", files: [{ path: "probe_ledger.py", content: "print(1)\n" }] }), /probe_ledger\.py is recognized as a test.*test_<name>\.py or <name>_test\.py/);
+  assert.match(await reject({ runner: "node", files: [{ path: "ledger.ts", content: "export {}" }, { path: "ledger.test.js", content: "import test from 'node:test'" }] }), /"ledger\.ts": runner node cannot load TypeScript/);
+  assert.match(await reject({ runner: "node", files: [{ path: "ledger.test.js", content: "import test from 'node:test';import {total} from './ledger.js';" }] }), /ledger\.test\.js imports "\.\/ledger\.js", which is not among the files; include ledger\.js/);
+  assert.match(await reject({ runner: "python", files: [{ path: "test_ledger.py", content: "x" }, { path: "test_ledger.py", content: "y" }] }), /same path/);
+});
+
+test("test-file recognition covers the runner conventions and nothing else", () => {
+  const file = (name: string, content = "") => ({ path: name, content });
+  for (const name of ["a.test.js", "a.spec.mjs", "test_a.cjs", "test-a.js", "a_test.js", "a-test.js", "test.js", "test/a.js"]) assert.equal(isTestFile(file(name), "node"), true, name);
+  for (const name of ["a.js", "contest.js", "latest_build.js", "attest.mjs"]) assert.equal(isTestFile(file(name), "node"), false, name);
+  assert.equal(isTestFile(file("cases.js", "import test from 'node:test'"), "node"), true);
+  assert.equal(isTestFile(file("cases.ts", "import {test} from \"vitest\""), "vitest"), true);
+  assert.equal(isTestFile(file("ledger_test.py"), "python"), true);
+  assert.equal(isTestFile(file("ledger.py"), "python"), false);
+});
+
+// Cycle 7 (.43 WP-F3): five verify rounds sent only the test file and failed
+// on the missing module. Fresh variant: a later call that omits the module.
+test("a test sent without the module it imports gets the session's latest version of it", () => {
+  const earlier = new Map([["tally.py", "def tally(xs):\n    return len(xs)\n"], ["lib/fmt.js", "export const f = 1;"]]);
+  const python = completeTestFiles({ runner: "python", files: [{ path: "test_tally.py", content: "import unittest\nfrom tally import tally\n" }] }, earlier);
+  assert.deepEqual(python.carried, ["tally.py"]);
+  assert.deepEqual((python.args as { files: Array<{ path: string }> }).files.map(item => item.path), ["test_tally.py", "tally.py"]);
+  const node = completeTestFiles({ runner: "node", files: [{ path: "lib/fmt.test.js", content: "import {f} from './fmt.js';" }] }, earlier);
+  assert.deepEqual(node.carried, ["lib/fmt.js"]);
+  // A module sent again is never replaced; unknown imports are left alone.
+  const fresh = { runner: "python", files: [{ path: "tally.py", content: "def tally(xs):\n    return 0\n" }, { path: "test_tally.py", content: "import os\nfrom tally import tally\n" }] };
+  assert.deepEqual(completeTestFiles(fresh, earlier), { args: fresh, carried: [] });
+});
+
+test("a Python run missing the code under test says to include it", options, async () => {
+  const registry = new ToolRegistry(); registry.register(createVitestTool());
+  const result = await registry.execute("verify_tests", { runner: "python", files: [{ path: "test_tally.py", content: "import unittest\nfrom tally import tally\nclass T(unittest.TestCase):\n def test_a(self): self.assertEqual(tally([1]),1)\n" }] }, { workspaceRoot: os.tmpdir() });
+  assert.equal(result.ok, false);
+  assert.match(result.error!.message, /Module 'tally' is not among the files.*include tally\.py/);
 });
