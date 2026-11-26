@@ -2215,6 +2215,34 @@ test("a time-limited turn passes its remaining time to the stall allowance", asy
   assert.ok(seen[0].allowance < 600_000, `allowance ${seen[0].allowance}`);
 });
 
+test("a gateway failure with no output does not spend its token reservation", async t => {
+  for (const failure of [() => new Response(null, { status: 504 }), () => Response.json({ error: { code: "upstream_timeout" } }, { status: 503 })]) {
+    const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 60000 };
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+      if (++calls <= 2) throw await ModelServiceError.fromResponse(failure());
+      return reply("The shipment left on Tuesday.");
+    } }, config);
+    assert.equal((await controller.interact("When did the shipment leave?")).content, "The shipment left on Tuesday.");
+    assert.equal(calls, 3);
+    const released = events.filter(e => e.type === "model_receipt" && e.data.status === "failed_without_output");
+    assert.equal(released.length, 2);
+    assert.ok(released.every(e => Number(e.data.releasedTokens) > 2048));
+    assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 0);
+    // Only the answered call's reported tokens are spent; both failed calls still count as calls.
+    assert.equal(controller.usageSnapshot().tokens, 320);
+    assert.equal(controller.usageSnapshot().modelCalls, 3);
+    assert.equal(controller.usageSnapshot().estimated, false);
+  }
+  // A lost connection keeps its reservation: the request may have run remotely.
+  const { failedWithoutOutput } = await import("../../providers/ModelServiceError.js");
+  assert.equal(failedWithoutOutput(new TypeError("fetch failed")), false);
+  assert.equal(failedWithoutOutput(new ModelServiceError("service_unavailable", 504, undefined, false, "stalled")), false);
+  const partial = await ModelServiceError.fromResponse(new Response(null, { status: 502 })); partial.partialText = "The shipment";
+  assert.equal(failedWithoutOutput(partial), false);
+  assert.equal(failedWithoutOutput(await ModelServiceError.fromResponse(new Response(null, { status: 429 }))), false);
+});
+
 test("a stalled request does not count as the model's pace, and its retry waits twice as long", async t => {
   const config = structuredClone(base);
   let calls = 0; const allowances: number[] = [];

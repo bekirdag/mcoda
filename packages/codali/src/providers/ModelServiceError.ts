@@ -16,6 +16,11 @@ export class ModelServiceError extends Error {
   partialText?: string;
   /** Set by Runner, not inferred from an HTTP status or upstream payload. */
   completedModelCalls?: number;
+  /** The service answered with a definite failure instead of output: an HTTP
+   * 5xx error response, or a relay reporting that its scheduler expired before
+   * dispatch. Never set for a lost connection or a request abandoned as
+   * stalled, whose remote outcome is unknown. */
+  failedWithoutOutput?: boolean;
   constructor(readonly code: ModelServiceErrorCode, readonly status: number, readonly retryAfterSeconds?: number,
     readonly nativeContextRefused = false, readonly responseReason?: "output_limit" | "incomplete_stream" | "capacity_busy" | "stalled") {
     super(`Model service HTTP ${status}: ${code}${responseReason === "output_limit" ? "; the model reached its per-response output limit before finishing. No partial tool call was executed; continue with smaller file patches" : responseReason === "incomplete_stream" ? "; the response stream ended before completion. No partial tool call was executed" : code === "authentication_failed" ? "; authenticate with codali login" : code === "context_length_exceeded" ? "; checkpoint and reduce context before continuing" : ""}`);
@@ -29,7 +34,7 @@ export class ModelServiceError extends Error {
   static fromRelayError(error: unknown): ModelServiceError | undefined {
     if (!error || typeof error !== "object") return undefined;
     const code = (error as Record<string, unknown>).code;
-    if (code === "timeout" && (error as Record<string, unknown>).message === "Self-hosted scheduler reservation expired before dispatch completed") return new ModelServiceError("service_unavailable", 200);
+    if (code === "timeout" && (error as Record<string, unknown>).message === "Self-hosted scheduler reservation expired before dispatch completed") return Object.assign(new ModelServiceError("service_unavailable", 200), { failedWithoutOutput: true });
     if (code === "context_length_exceeded" || code === "invalid_response" || code === "rate_limited") return new ModelServiceError(code, 200);
     return undefined;
   }
@@ -61,6 +66,18 @@ export class ModelServiceError extends Error {
       : response.status === 409 ? "request_conflict"
       : response.status >= 500 ? "service_unavailable" : "invalid_request";
     const retry = Number(response.headers.get("retry-after"));
-    return new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : capacityBusy ? 2 : undefined, nativeRefused, capacityBusy ? "capacity_busy" : undefined);
+    const error = new ModelServiceError(code, response.status, response.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0 ? Math.min(retry, 3600) : capacityBusy ? 2 : undefined, nativeRefused, capacityBusy ? "capacity_busy" : undefined);
+    if (code === "service_unavailable") error.failedWithoutOutput = true;
+    return error;
   }
 }
+
+/** Whether a failed model request returned nothing that could have been used
+ * or billed, so its token reservation can be released: a definite service
+ * failure with no partial text and no reported usage. Kept otherwise: in
+ * cycle 7 each gateway 504 left about 110k reserved tokens counted against
+ * the turn's token budget. */
+export const failedWithoutOutput = (error: unknown): boolean => {
+  const service = error instanceof ModelServiceError ? error : (error as { cause?: unknown } | undefined)?.cause instanceof ModelServiceError ? (error as { cause: ModelServiceError }).cause : undefined;
+  return !!service?.failedWithoutOutput && service.responseReason !== "stalled" && !service.partialText && !service.responseUsage;
+};

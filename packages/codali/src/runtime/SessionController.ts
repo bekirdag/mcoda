@@ -22,7 +22,7 @@ import { verifiedTokenUsage } from "../providers/ConfiguredModelScope.js";
 import type { Provider, ProviderMessage, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
 import { effortBudget, pinOrchestrationConfig, resolveBinding, type EffortLevel, type EffortBudget, type ResolvedOrchestrationConfig } from "../config/OrchestrationConfig.js";
 import { PermissionGate, permissionKind, isExecutionWorkTool, type PermissionGrants, type PermissionProfile, type PermissionPrompt } from "../permissions/PermissionGate.js";
-import { ModelServiceError } from "../providers/ModelServiceError.js";
+import { ModelServiceError, failedWithoutOutput } from "../providers/ModelServiceError.js";
 import { validationOutputExcerpt } from "./ValidationOutput.js";
 import { completionReport, deadlineReport, interruptedReport } from "./CompletionReport.js";
 import { checkWrittenJavaScript, type WriteSyntaxCheck } from "./WriteSyntaxCheck.js";
@@ -1419,6 +1419,15 @@ export class SessionController {
             this.usage.modelCalls--;
             this.reservations.delete(id);
             await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "not_dispatched", sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
+            await this.emit("usage", { usage: this.usageSnapshot() });
+          } else if (failedWithoutOutput(error) && this.reservations.has(id)) {
+            // The service answered with a definite failure and no output (a
+            // gateway 504, a scheduler that expired before dispatch): nothing
+            // usable was produced, so its reservation is not spent. The call
+            // itself still counts as made.
+            this.usage.tokens -= this.reservations.get(id)!;
+            this.reservations.delete(id);
+            await this.emit("model_receipt", { id, clientRequestId: id, binding, configHash: this.options.resolved.hash, status: "failed_without_output", releasedTokens: reserve, sessionUsage: this.usageSnapshot(), usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } });
             await this.emit("usage", { usage: this.usageSnapshot() });
           } else {
             // A failed transport may have executed remotely. Keep its reservation
