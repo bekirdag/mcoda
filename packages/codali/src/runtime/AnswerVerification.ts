@@ -1,3 +1,5 @@
+import { isTestFile } from "../tools/verification/VitestTool.js";
+
 export interface ExecutedAnswerCode { language: "sql" | "javascript" | "typescript" | "python"; content: string; }
 
 /** Detect presentation drift, not semantic correctness. A passing execution
@@ -15,7 +17,8 @@ export function unmatchedExecutedCode(text: string, executed: ExecutedAnswerCode
 }
 
 export interface TestRun { runner?: string; files: Array<{ path: string; content: string }>; }
-const TEST_PATH = /(^|\/)(test_[^/]*\.py|[^/]*_test\.py|[^/]*\.(test|spec)\.[cm]?[jt]s)$/;
+// The same test-file rule verify_tests applies (test_x.js, x.test.js, ...).
+const isTest = (file: { path: string; content: string }, runner?: string) => isTestFile(file, runner === "python" || runner === "node" ? runner : file.path.endsWith(".py") ? "python" : "vitest");
 const LANGUAGE_OF = (path: string) => path.endsWith(".py") ? "python" : /\.[cm]?[jt]s$/.test(path) ? "code-js" : undefined;
 
 /** The session's last test run with the final answer's code in place of its
@@ -26,7 +29,7 @@ const LANGUAGE_OF = (path: string) => path.endsWith(".py") ? "python" : /\.[cm]?
  * files, and one answer code block in that language that differs from it. */
 export function finalCodeRerun(text: string, last: TestRun | undefined): TestRun | undefined {
   if (!last?.files?.length) return;
-  const sources = last.files.filter(file => !TEST_PATH.test(file.path));
+  const sources = last.files.filter(file => !isTest(file, last.runner));
   if (sources.length !== 1 || sources.length === last.files.length) return;
   const language = LANGUAGE_OF(sources[0].path);
   if (!language) return;

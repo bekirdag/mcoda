@@ -92,26 +92,116 @@ mark=_Mark()
 def __getattr__(name): raise AttributeError('pytest.'+name+' is not available in this runner (stand-in provides raises, approx, fail and mark.parametrize); use the standard library')
 `;
 
+type TestRunner = "vitest" | "node" | "python";
+interface TestFile { path: string; content: string; }
+
+/** Which supplied files are tests. Explicitly listed files are run whatever
+ * convention they follow: node's default names (x.test.js, x-test.js, x_test.js,
+ * test-x.js, test.js, test/…), test_x.js, a file importing node:test or vitest;
+ * Python test_x.py or x_test.py. Cycle 7 lost five runs to test_x.js. */
+export function isTestFile(file: TestFile, runner: TestRunner): boolean {
+  if (runner === "python") return /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/.test(file.path);
+  const named = /(?:^|\/)(?:[^/]+[._-](?:test|spec)|test[_-][^/]+|test)\.[cm]?[jt]s$|(?:^|\/)tests?\/[^/].*\.[cm]?[jt]s$/.test(file.path);
+  return named || (runner === "node" ? /["']node:test["']/ : /["']vitest["']/).test(file.content ?? "");
+}
+
+/** Files a test imports from its own directory tree, with the paths that
+ * would satisfy each import. Python names cannot be told from the standard
+ * library, so they are reported as candidates, never as definite misses. */
+export function localImports(files: TestFile[], runner: TestRunner): Array<{ file: string; specifier: string; candidates: string[] }> {
+  const found: Array<{ file: string; specifier: string; candidates: string[] }> = [];
+  for (const file of files) {
+    if (typeof file?.content !== "string" || typeof file.path !== "string") continue;
+    if (runner === "python") {
+      const modules = [...file.content.matchAll(/^[ \t]*from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b/gm)].map(match => match[1])
+        .concat([...file.content.matchAll(/^[ \t]*import[ \t]+([A-Za-z_][\w.]*(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*)*)/gm)].flatMap(match => match[1].split(",").map(item => item.trim())));
+      for (const module of new Set(modules)) {
+        const nested = module.replace(/\./g, "/"), top = module.split(".")[0];
+        found.push({ file: file.path, specifier: module, candidates: [...new Set([`${nested}.py`, `${nested}/__init__.py`, `${top}.py`, `${top}/__init__.py`])] });
+      }
+      continue;
+    }
+    const base = path.posix.dirname(file.path);
+    for (const match of file.content.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)["'](\.{1,2}\/[^"'\n]+)["']/g)) {
+      const resolved = path.posix.normalize(path.posix.join(base, match[1]));
+      if (resolved.startsWith("..")) continue;
+      const extension = path.posix.extname(resolved);
+      const candidates = [".js", ".mjs", ".cjs", ".ts"].includes(extension)
+        ? [resolved, ...(runner === "vitest" && extension !== ".ts" ? [resolved.slice(0, -extension.length) + ".ts"] : [])]
+        : extension ? [] : [".js", ".mjs", ".cjs", ...(runner === "vitest" ? [".ts"] : [])].flatMap(ext => [resolved + ext, `${resolved}/index${ext}`]);
+      if (candidates.length) found.push({ file: file.path, specifier: match[1], candidates });
+    }
+  }
+  return found;
+}
+
+/** The sandbox keeps nothing between calls. A test sent without the module it
+ * imports, when an earlier call in the same session sent that module, gets the
+ * session's latest version of it (cycle 7: 5 of 26 runs sent only the test).
+ * Only an import that names the file is filled; nothing else is inferred. */
+export function completeTestFiles(args: unknown, earlier: ReadonlyMap<string, string>): { args: unknown; carried: string[] } {
+  const value = args as { runner?: TestRunner; files?: TestFile[] } | undefined;
+  if (!value || !Array.isArray(value.files) || !earlier.size) return { args, carried: [] };
+  const runner = value.runner ?? "vitest";
+  if (!["vitest", "node", "python"].includes(runner)) return { args, carried: [] };
+  const files = [...value.files], carried: string[] = [];
+  for (const item of localImports(value.files, runner)) {
+    if (item.candidates.some(candidate => files.some(file => file?.path === candidate))) continue;
+    const reuse = item.candidates.find(candidate => earlier.has(candidate));
+    if (!reuse || files.length >= 12) continue;
+    files.push({ path: reuse, content: earlier.get(reuse)! }); carried.push(reuse);
+  }
+  return carried.length ? { args: { ...value, files }, carried } : { args, carried };
+}
+
+const invalidRequest = (args: { runner?: unknown; files?: unknown }, runner: unknown, payload: string): string | undefined => {
+  const problems: string[] = [];
+  if (!["vitest", "node", "python"].includes(runner as string)) problems.push(`runner must be "vitest", "node" or "python", not ${JSON.stringify(runner)}`);
+  if (payload.length > 96000) problems.push(`the request is ${payload.length} characters; the limit is 96000`);
+  const files = args.files as TestFile[];
+  if (!Array.isArray(files) || !files.length) problems.push("files must list the implementation and its tests (1 to 12 {path, content} objects)");
+  else {
+    if (files.length > 12) problems.push(`${files.length} files were sent; the limit is 12`);
+    for (const file of files) {
+      const name = JSON.stringify(typeof file?.path === "string" ? file.path : file?.path ?? null);
+      if (typeof file?.path !== "string" || !/^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.(?:[cm]?js|ts|py)$/.test(file.path)) problems.push(`${name} is not a relative path ending in .js, .mjs, .cjs, .ts or .py`);
+      else if (runner === "python" && !file.path.endsWith(".py")) problems.push(`${name}: runner python takes only .py files`);
+      else if (runner !== "python" && file.path.endsWith(".py")) problems.push(`${name}: .py files need runner "python"`);
+      else if (runner === "node" && file.path.endsWith(".ts")) problems.push(`${name}: runner node cannot load TypeScript; use runner "vitest"`);
+      else if (file.path.split("/").some(segment => segment === "node_modules" || segment.startsWith("."))) problems.push(`${name}: node_modules and dot-directories are not allowed`);
+      else if (/(?:^|\/)(?:vite|vitest)\.config\./.test(file.path)) problems.push(`${name}: runner configs are not accepted`);
+      if (typeof file?.content !== "string") problems.push(`${name} has no string content`);
+      else if (file.content.length > 24000) problems.push(`${name} is ${file.content.length} characters; the limit per file is 24000`);
+    }
+    if (new Set(files.map(file => file?.path)).size !== files.length) problems.push("two files have the same path");
+    if (!problems.length && ["vitest", "node", "python"].includes(runner as string) && !files.some(file => isTestFile(file, runner as TestRunner))) {
+      problems.push(`none of ${files.map(file => file.path).join(", ")} is recognized as a test for runner ${runner}: ${runner === "python"
+        ? "name the test file test_<name>.py or <name>_test.py"
+        : `name it <name>.test.js, test_<name>.js or test-<name>.js, or import ${runner === "node" ? "node:test" : "vitest"} in it`}`);
+    }
+    if (!problems.length && runner !== "python") {
+      const missing = localImports(files, runner as TestRunner).filter(item => !item.candidates.some(candidate => files.some(file => file.path === candidate)));
+      for (const item of missing.slice(0, 4)) problems.push(`${item.file} imports "${item.specifier}", which is not among the files; include ${item.candidates[0]} with the implementation`);
+    }
+  }
+  return problems.length ? `verify_tests did not run: ${problems.join("; ")}. Each call starts from an empty sandbox: send the implementation together with its tests.` : undefined;
+};
+
 export const createVitestTool = (): ToolDefinition => ({
   name: "verify_tests", readOnly: true, capability: "verification",
-  description: "Run supplied tests offline: runner vitest (default) for JS/TS, node for node:test, python for unittest classes and pytest-style test_ functions or Test classes in test_*.py (pytest.raises/approx/parametrize only; no fixtures, async tests or plugins). Use the requested language/runner without translating tests. No workspace/config/credentials. Reports supplied-test results, not independent proof.",
-  inputSchema: { type: "object", properties: { runner: { type: "string", enum: ["vitest", "node", "python"] }, files: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", properties: {
+  description: "Run supplied tests offline: runner vitest (default) for JS/TS, node for node:test, python for unittest classes and pytest-style test_ functions or Test classes in test_*.py/*_test.py (pytest.raises/approx/parametrize only; no fixtures, async tests or plugins). JS tests: *.test.js, test_*.js, test-*.js or any file importing node:test/vitest. Send the implementation with its tests in every call. Use the requested language/runner without translating tests. No workspace/config/credentials. Reports supplied-test results, not independent proof.",
+  inputSchema: { type: "object", properties: { runner: { type: "string", enum: ["vitest", "node", "python"] }, files: { type: "array", minItems: 1, maxItems: 12,
+    description: "The implementation and its tests together; nothing persists between calls. Tests: Python test_*.py or *_test.py; JS *.test.js, test_*.js, test-*.js or a file importing node:test/vitest.", items: { type: "object", properties: {
     path: { type: "string", minLength: 1, maxLength: 160 }, content: { type: "string", maxLength: 24000 },
   }, required: ["path", "content"], additionalProperties: false } } }, required: ["files"], additionalProperties: false },
   handler: async (raw, context) => {
     context.signal?.throwIfAborted();
     const args = raw as { runner?: "vitest" | "node" | "python"; files: Array<{ path: string; content: string }> };
     const runner = args.runner ?? "vitest";
-    const testPattern = runner === "python" ? /(?:^|\/)test_[^/]+\.py$/ : /\.test\.(?:[cm]?js|ts)$/;
     const payload = JSON.stringify(args);
-    if (!["vitest", "node", "python"].includes(runner) || payload.length > 96000 || !Array.isArray(args.files) || !args.files.length || args.files.length > 12
-      || args.files.some(file => !/^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.(?:[cm]?js|ts|py)$/.test(file.path)
-        || (runner === "python" ? !file.path.endsWith(".py") : file.path.endsWith(".py") || runner === "node" && file.path.endsWith(".ts"))
-        || file.path.split("/").some(segment => segment === "node_modules" || segment.startsWith(".")) || /(?:^|\/)(?:vite|vitest)\.config\./.test(file.path)
-        || typeof file.content !== "string" || file.content.length > 24000)
-      || new Set(args.files.map(file => file.path)).size !== args.files.length || !args.files.some(file => testPattern.test(file.path))) {
-      throw new ToolExecutionError("tool_invalid_args", "Supply up to 12 bounded relative source/test files for the chosen runner: *.test.js/ts for Vitest, *.test.js/mjs/cjs for Node, test_*.py for Python. No configs or node_modules");
-    }
+    const invalid = invalidRequest(args, runner, payload);
+    if (invalid) throw new ToolExecutionError("tool_invalid_args", invalid);
+    const testPaths = args.files.filter(file => isTestFile(file, runner)).map(file => file.path);
     const runtime = runner === "vitest" ? await runnerRuntime() : undefined;
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-vitest-"));
     const started = Date.now();
@@ -123,7 +213,7 @@ export const createVitestTool = (): ToolDefinition => ({
       await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}');
       await fs.mkdir(path.join(root, "artifacts"));
       if (runner !== "vitest") {
-        const tests = args.files.filter(file => testPattern.test(file.path)).map(file => path.join(root, file.path));
+        const tests = testPaths.map(file => path.join(root, file));
         // Models write pytest-style tests (plain test_* functions, pytest.raises,
         // approx, parametrize) far more often than unittest classes; cycle 6 lost
         // twelve test runs to "pytest is not installed". A small stand-in covers
@@ -180,7 +270,12 @@ sys.exit(0 if result.wasSuccessful() and data['total']>0 and data['pendingTests'
         const reportPath = path.join(root, "artifacts", "native-report.json");
         if (runner === "python") {
           const stat = await fs.lstat(reportPath).catch(() => undefined);
-          if (!stat) throw new ToolExecutionError("tool_execution_failed", `Python tests could not start. This runner loads unittest.TestCase classes and plain test_* functions, with a stand-in for pytest.raises, pytest.approx and pytest.mark.parametrize; other third-party packages are not installed. Fix the reported import/syntax error.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
+          // A module missing from files is usually the implementation itself:
+          // nothing persists between calls (cycle 7: five runs sent only tests).
+          const absent = /ModuleNotFoundError: No module named '([A-Za-z_][\w.]*)'/.exec(output)?.[1];
+          const missing = absent && !args.files.some(file => [`${absent.replace(/\./g, "/")}.py`, `${absent.split(".")[0]}.py`, `${absent.split(".")[0]}/__init__.py`].includes(file.path))
+            ? ` Module '${absent}' is not among the files: each call starts from an empty sandbox, so if it is the code under test, include ${absent.replace(/\./g, "/")}.py in files together with the tests.` : "";
+          if (!stat) throw new ToolExecutionError("tool_execution_failed", `Python tests could not start.${missing} This runner loads unittest.TestCase classes and plain test_* functions, with a stand-in for pytest.raises, pytest.approx and pytest.mark.parametrize; other third-party packages are not installed. Fix the reported import/syntax error.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16000) throw new Error("Invalid test report");
         }
         const report = runner === "node" ? { total: count("tests"), passedTests: count("pass"), failedTests: count("fail"), pendingTests: count("skipped") + count("todo") + count("cancelled") }
@@ -194,7 +289,7 @@ sys.exit(0 if result.wasSuccessful() and data['total']>0 and data['pendingTests'
       }
       if (!runtime) throw new Error("Vitest runtime unavailable");
       await fs.mkdir(path.join(root, "node_modules")); await fs.symlink(runtime.entry, path.join(root, "node_modules", "vitest"));
-      const config = { cacheDir: path.join(root, "artifacts", "cache"), server: { host: "127.0.0.1", hmr: false }, test: { include: ["**/*.test.{js,ts,mjs,cjs}"], environment: "node", globals: false,
+      const config = { cacheDir: path.join(root, "artifacts", "cache"), server: { host: "127.0.0.1", hmr: false }, test: { include: testPaths, environment: "node", globals: false,
         // macOS denies signaling separate child processes inside this sandbox.
         // Threads retain the same OS boundary without requiring signal grants.
         pool: "threads", maxWorkers: 1, fileParallelism: false, testTimeout: 1000, hookTimeout: 1000, passWithNoTests: false, reporters: ["json"], outputFile: path.join(root, "artifacts", "report.json") } };
