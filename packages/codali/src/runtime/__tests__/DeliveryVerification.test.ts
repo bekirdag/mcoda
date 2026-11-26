@@ -31,7 +31,7 @@ test("verification names requested delivery documents still missing and rejects 
     if (!request.tools?.length) return reply(approvedReview(request));
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     switch (step++) {
-      case 0: return call("work_refine", { requirements: [{ id: "R2", description: "config/app.ini sets the sign-up link lifetime." }, { id: "R3", description: "README.md describes the settings." }], constraints: [], nonGoals: [], tasks: [
+      case 0: return call("work_refine", { requirements: [{ id: "R2", description: "config/app.ini sets the sign-up link lifetime." }, { id: "R3", description: "README.md describes the sign-up link lifetime." }], constraints: [], nonGoals: [], tasks: [
         { id: "settings", title: "Settings", requirementIds: ["R2"], dependsOn: [], allowedPaths: ["config/app.ini"] },
         { id: "docs", title: "README", requirementIds: ["R3"], dependsOn: ["settings"], allowedPaths: ["README.md"] },
         { id: "integration", title: "Final review", requirementIds: ["R1"], dependsOn: ["docs"], allowedPaths: [] },
@@ -57,4 +57,41 @@ test("verification names requested delivery documents still missing and rejects 
   assert.match((results[1].findings as string[])[0], /^README\.md:3 states 24 hours .*config\/app\.ini:2 link_ttl_hours = 48/);
   assert.equal(results[2].verified, true);
   assert.equal(results[2].deliveryDocuments, undefined);
+});
+
+// A greenhouse controller (written for this test) with ten documented setpoints.
+// Seventeen minutes before the deadline the review may spend two portions;
+// after one rejected review the next one gets half of that.
+test("review portions shrink as the deadline nears and after a rejected review", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-budget-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-review-budget-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  const zones = Array.from({ length: 10 }, (_, i) => `zone${i}`);
+  let step = 0; let attemptId = ""; let reviews = 0; const portionCounts: number[] = []; const results: Record<string, unknown>[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    if (!request.tools?.length) {
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      portionCounts.push(input.checklistBatch?.count ?? 1);
+      return reply(reviews++ === 0 ? '{"passed":false,"findings":["zone0 setpoint is not shown."]}' : approvedReview(request));
+    }
+    const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
+    switch (step++) {
+      case 0: return call("work_refine", { requirements: zones.map((zone, i) => ({ id: `R${i + 2}`, description: `setpoints.txt lists the ${zone} greenhouse setpoint.` })),
+        constraints: [], nonGoals: [], tasks: [{ id: "T2", title: "Setpoints", requirementIds: ["R1", ...zones.map((_, i) => `R${i + 2}`)], dependsOn: [], allowedPaths: ["setpoints.txt"] }] });
+      case 1: return call("work_claim", { taskId: "T2" });
+      case 2: attemptId = JSON.parse(previous()).attemptId;
+        return call("write_file", { path: "setpoints.txt", content: zones.map(zone => `${zone} greenhouse setpoint 21C`).join("\n") + "\n" });
+      case 3: return call("work_verify", { taskId: "T2", attemptId, invocationIds: [], summary: "All setpoints listed." });
+      case 4: results.push(JSON.parse(previous())); return call("work_verify", { taskId: "T2", attemptId, invocationIds: [], summary: "All setpoints listed." });
+      case 5: results.push(JSON.parse(previous())); return call("work_complete", {});
+      default: return reply("Setpoints listed.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace",
+    deadlineAt: Date.now() + 17 * 60_000 });
+  await controller.run("Write setpoints.txt with the greenhouse setpoints for every zone.");
+  assert.equal(results[0].verified, false); assert.equal(results[1].verified, true);
+  assert.equal(portionCounts[0], 2, "eleven checks in two portions while two fit the time left");
+  assert.deepEqual(portionCounts.slice(1), [1], "after a rejection all checks share one portion");
 });

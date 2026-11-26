@@ -9,7 +9,12 @@ export interface ReviewSourcePage {
   unavailable?: boolean;
 }
 
-export interface TaskReviewResult { passed: boolean; findings: string[] }
+export interface TaskReviewResult {
+  passed: boolean;
+  findings: string[];
+  /** Set when the portion budget made the review sample delivered statements or enlarge portions. */
+  sampled?: { deliveredReviewed: number; deliveredTotal: number; checksPerPortion: number };
+}
 
 /** Read-only evidence requests share the caller's model budget and acceptance fence. */
 export async function runTaskReview(options: {

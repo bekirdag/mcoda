@@ -7,14 +7,22 @@ import { isTestSourcePath } from "./RequestedTestEvidence.js";
 export const isDeliveryDocument = (file: string): boolean => /\.(?:md|markdown|mdx|rst)$/i.test(file)
   && !isDependencyArtifact(file) && !/^(?:build|dist|out|coverage)\//.test(file) && !/(?:^|\/)(?:CHANGELOG|LICEN[CS]E)[^/]*$/i.test(file);
 
-/** Markdown file names the request mentions that do not exist yet. Inputs are excluded. */
+// A sentence that asks for a document to be delivered, and a mention that only
+// refers to one ("see the upstream CONTRIBUTING.md", "described in BRIEF.md").
+const DELIVER = /\b(?:deliver|write|create|provide|include|add|produce|ship|prepare|supply|document|update|maintain|keep)\w*\b/i;
+const REFERENCE = /\b(?:see|read|reads|reading|refer(?:s|ring)? to|per|from|according to|(?:described|specified|defined|listed|given) in|as in|upstream|existing|following|like)\s+(?:the\s+|an?\s+)?(?:[\w-]+\s+)?[`'"(\[*]?$/i;
+
+/** Markdown files the request asks to be delivered that do not exist yet.
+ * Inputs and files the request only refers to are excluded. */
 export function missingDeliveryDocuments(requestTexts: readonly string[], existingPaths: readonly string[], inputPaths: readonly string[]): string[] {
   const existing = new Set(existingPaths.map(file => file.toLowerCase()));
   const inputs = new Set(inputPaths.map(file => file.toLowerCase()));
   const named = new Set<string>();
-  for (const text of requestTexts) {
-    for (const match of text.matchAll(/(?:^|[\s`'"(\[*])((?:[\w-]+\/)*[\w.-]*[\w-]\.md)\b/gi)) {
+  for (const sentence of requestTexts.flatMap(text => text.split(/(?<=[.!?])\s+|\n+/))) {
+    if (!DELIVER.test(sentence)) continue;
+    for (const match of sentence.matchAll(/(?:^|[\s`'"(\[*])((?:[\w-]+\/)*[\w.-]*[\w-]\.md)\b/gi)) {
       const file = match[1].replace(/^\.\//, "");
+      if (REFERENCE.test(sentence.slice(0, match.index! + match[0].length - match[1].length))) continue;
       if (!existing.has(file.toLowerCase()) && !inputs.has(file.toLowerCase())) named.add(file);
     }
   }
@@ -46,6 +54,24 @@ const DURATION = /(\d+(?:\.\d+)?)(?:\s*(milliseconds?|ms|secs?|seconds?|mins?|mi
 const SETTING = /(?:^|[^a-z])(ttl|timeouts?|expir\w*|lifetime|sessions?|idle|lock\w*|limits?|max\w*|min(?:imum)?|intervals?|retention|cache\w*|window|throttl\w*|rate|debounce|poll\w*|refresh\w*|cookies?|tokens?|retr(?:y|ies)|backoff|delay|duration|age|valid\w*)(?![a-z])/i;
 const UNIT_HINT = /(?:^|[^a-z])(ms|millis\w*|secs?|seconds?|mins?|minutes?|hours?|hrs?|days?|weeks?|ttl|timeout|expir\w*|age|interval|delay|duration|window)(?![a-z])/i;
 const words = (line: string) => line.replace(/([a-z0-9])([A-Z])/g, "$1_$2");
+// A grounding setting must be about the same thing as the document line: one
+// topic in common, or one content word. "MAX_RETRIES = 8; // per hour" does not
+// ground "sessions last 8 hours".
+const TOPICS = [/ttl|expir|lifetime|session|valid|(?:^|_|\b)age|idle|inactiv|cookie|token|logout|sign.?out/,
+  /lock|throttl|rate|attempt|brute|window|limit/, /retr|backoff|delay|attempt/, /timeout|deadline|wait/,
+  /interval|poll|refresh|cache|retention|debounce|schedule|cron|every|purge|cleanup/];
+const IGNORED_WORDS = new Set("milli millis second seconds minute minutes hour hours days week weeks after every about with from that this than then into only each once must will const export default value values setting settings config".split(" "));
+const topicWords = (text: string) => new Set(words(text).toLowerCase().split(/[^a-z]+/)
+  .filter(word => word.length >= 4 && !IGNORED_WORDS.has(word)).map(word => word.replace(/(?:es|s)$/, "").slice(0, 5)));
+const sameSubject = (doc: string, source: string) => {
+  const a = words(doc).toLowerCase(), b = words(source).toLowerCase();
+  if (TOPICS.some(topic => topic.test(a) && topic.test(b))) return true;
+  const shared = topicWords(source);
+  return [...topicWords(doc)].some(word => shared.has(word));
+};
+// Lines about how long a run takes, or a named library's own default.
+const RUN_TIME = /\b(?:takes?|took|lasts?|runs?|finish(?:es)?|completes?)\b[^.]*\b(?:about|around|roughly|approximately|under|less than|up to)\b|\b(?:tests?|suite|build|install(?:ation)?|ci|npm|pnpm|yarn|journey|script|command)\b[^.]*\b(?:takes?|took|runs? (?:in|for)|finish(?:es)? in|completes? in)\b/i;
+const LIBRARY_DEFAULT = /\b(?:library|driver|framework|browser|package|module|upstream|sdk|client|engine|runtime)(?:'s)?\b[^.]*\bdefaults?\b|\bdefaults?\b[^.]*\bof (?:the )?(?:library|driver|framework|browser|package|module)\b/i;
 
 function durations(line: string): { text: string; seconds: number }[] {
   return [...line.matchAll(DURATION)].map(match => ({ text: match[0], seconds: Number(match[1]) * SECONDS[(match[2] ?? match[3]).toLowerCase()] }));
@@ -87,12 +113,12 @@ export function ungroundedDurations(docs: readonly { path: string; text: string 
   for (const doc of docs) {
     for (const [index, raw] of doc.text.split(/\r?\n/).entries()) {
       const line = raw.trim();
-      if (!SETTING.test(words(line))) continue;
+      if (!SETTING.test(words(line)) || RUN_TIME.test(line) || LIBRARY_DEFAULT.test(line)) continue;
       for (const stated of durations(line)) {
         if (observed.some(value => same(value, stated.seconds))) continue;
-        if (settings.some(setting => sourceValues(setting.text).some(value => matches(value, stated.seconds)))) continue;
+        if (settings.some(setting => sameSubject(line, setting.text) && sourceValues(setting.text).some(value => matches(value, stated.seconds)))) continue;
         const keywords = [...words(line).toLowerCase().matchAll(new RegExp(SETTING.source, "gi"))].map(match => match[1]);
-        const sharing = settings.filter(setting => keywords.some(keyword => words(setting.text).toLowerCase().includes(keyword)));
+        const sharing = settings.filter(setting => sameSubject(line, setting.text) || keywords.some(keyword => words(setting.text).toLowerCase().includes(keyword)));
         const related = (sharing.length ? sharing : settings).slice(0, 3).map(setting => `${setting.path}:${setting.line} ${setting.text.slice(0, 120)}`);
         findings.push(`${doc.path}:${index + 1} states ${stated.text} ("${line.slice(0, 160)}"), but no source setting has that duration and no receipt shows it.`
           + (related.length ? ` Related settings in the code: ${related.join(" | ")}.` : "")
