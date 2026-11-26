@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+## 0.1.135-codali.43
+
+- Shell safety: a command that changes a protected file now fails only that
+  call, with the files named and how to prepare them; it no longer ends the
+  session. Build output (`dist/`, `out/`, `coverage/`, generated files) inside
+  a declared write path stays writable unless Git tracks it, declared output
+  directories can be removed or renamed, and renaming a directory that holds
+  protected source is refused. New files a command leaves next to its write
+  path are moved to a quarantine directory outside the workspace (never
+  deleted) and the error says how to restore them. Unreconciled conflicts are
+  listed in the completion report.
+- Numeric answers: a new `run_code` tool runs Python or JavaScript in the
+  sandbox and returns stdout, stderr and the exit code; its successful output
+  counts as executed evidence. Before a short numeric answer is delivered, each
+  value is checked against this turn's executed results; unsupported or
+  contradicted values get one reconcile turn. A computational request answered
+  with nothing executed is sent back once to compute. The equation review now
+  decides value by value from evidence and cannot replace a code-backed value
+  or add unbacked precision. `calculate` accepts bracketed result lists,
+  `pi()`, `math.*`, `round(x, n)` (Python rounding), `erf`/`normcdf`, labels in
+  any order and up to 1000 statements, and refuses thousands separators such
+  as `1,000`. Every `run_code` wait is bounded.
+- Answer audits: research and design audits return targeted find/replace
+  edits instead of rewriting the answer. An edit must match exactly once and
+  never inside a link or code span. A research rewrite that is cut off or
+  shrinks sharply is rejected. Figures the calculator confirmed are protected
+  and re-checked after the audit; figure expressions carry units (including
+  k/M/bn scales), conflicting statements are reported, stated targets are
+  checked, and an explicit length limit in the request is respected.
+- Model requests: a streaming request is judged by silence, so a live long
+  generation is never cut; a gateway 504 keeps its token reservation.
+- App builds: completion review runs in portions of at most eight checks, each
+  approval citing receipt output or source text that shares content with the
+  check; checks the time budget cannot cover are reported as unreviewed. The
+  journey driver can reload the page and records console errors and failed
+  requests (with an `allow` list); every role needs a reload-then-act step,
+  form controls must be labelled, actions the requirements call "unavailable
+  and explained" must show the reason, and durations stated in delivery
+  documents must match a source setting. Delivery documents are written early.
+- Tools: mixed gateway/native tool-call forms are unwrapped when unambiguous
+  and rejections state the real problem. `verify_tests` accepts common test
+  file names, reports zero executed tests as a failure, and carries the
+  session's latest module into a test-only run (never shadowing the standard
+  library). `start_work` is hidden when the session cannot change files.
+- Browser: script-rendered pages are read after they render, collapsed
+  sections behind a visible toggle are expanded and marked (capped), and an
+  empty main region falls back to the page body. A findings-table row marked
+  "not found" or "unconfirmed" counts as an open research point.
+
 ## 0.1.135-codali.42
 
 - Interrupted research can resume from saved source passages and its draft
