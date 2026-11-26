@@ -29,7 +29,7 @@ const schemas: Record<string, ToolInputSchema> = {
   }, ["operation"]), 16) }, ["rows", "steps"]),
 };
 const descriptions: Record<string, string> = {
-  decimal_calculate: "Decimal.js arithmetic on decimal STRING operands, default 50 significant digits, half-even rounding. Exact decimal representation with reported precision; use for money and decimal calculations.",
+  decimal_calculate: "Decimal.js arithmetic on decimal STRING operands (\"12.50\") or fraction strings (\"20/11\"), default 50 significant digits, half-even rounding. Exact decimal representation with reported precision; use for money and decimal calculations.",
   numerical_calculate: "math.js numerical vectors/matrices: determinant, inverse, multiply, transpose, linear solve, statistics, dot/cross. args is the function argument list; IEEE-754 approximations, not exact symbolic math.",
   validate_json: "Ajv validates data against JSON Schema draft-07, without mutation/coercion, remote refs or format checks. Returns valid/errors. Offline and bounded.",
   symbolic_math: "SymPy exact symbolic algebra/calculus. Declare symbols; expression uses + - * / ** and sin/cos/tan/exp/log/sqrt/Abs, pi/E. solve treats expression as zero; variable required for solve/differentiate/integrate.",
