@@ -260,10 +260,6 @@ const listItems = (tokens: string[]): string[][] | undefined => {
   }
   const items = split(tokens.slice(1, -1));
   if (items.some(item => !item.length || item.includes("[") || item.includes("]"))) throw new Error("A result list holds formulas separated by commas, such as [a, b, a*b]; lists cannot be nested or empty");
-  // [12,500] is far more often twelve thousand five hundred than two values.
-  for (let index = 1; index < items.length; index++) {
-    if (items[index].length >= 1 && /^\d{3}$/.test(items[index][0]) && /^\d+$/.test(items[index - 1].at(-1) ?? "")) throw new Error(`Ambiguous list item ${items[index - 1].at(-1)},${items[index][0]}: ${SEPARATOR_HINT}`);
-  }
   return items;
 };
 
@@ -292,6 +288,10 @@ export const evaluateCalculationScript = (script: string, options: CalculationOp
   try {
     for (const [index, statement] of statements.entries()) {
       try {
+        // In a result list, [12,500] is far more often twelve thousand five hundred
+        // than two values. Tokens carry no spacing, so read the source: [100, 200] is a list.
+        const separator = /^\[/.test(statement) ? statement.match(/\d,\d{3}(?!\d)/) : null;
+        if (separator) throw new Error(`Ambiguous list item ${separator[0]}: ${SEPARATOR_HINT}, with a space after each comma`);
         const tokens = tokenize(statement);
         if (tokens[1] === "=") {
           const name = tokens[0];

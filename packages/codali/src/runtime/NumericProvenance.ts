@@ -12,7 +12,7 @@
 export type EvidenceKind = "code" | "calculation";
 /** One successful execution: a program's printed or returned output (code) or a calculator/solver receipt (calculation). */
 export interface ExecutedResult { seq: number; tool: string; kind: EvidenceKind; text: string; }
-export interface AnswerValue { path: string; key?: string; token: string; value: number; }
+export interface AnswerValue { path: string; key?: string; token: string; value: number; /** A unit stated with the value (%, ms, min, h, s, d), which permits unit factors for whole numbers. */ unit?: string; }
 export interface Backing { kind: EvidenceKind | "input"; seq?: number; tool?: string; }
 export interface ReceiptConflict { key: string; drafted: string; runs: Array<{ seq: number; tool: string; value: number }>; latestDisagrees: boolean; }
 
@@ -35,9 +35,10 @@ const DERIVATIONS = [1, 100, 0.01, 1000, 0.001, 60, 1 / 60, 3600, 1 / 3600, 24, 
 /** A whole-number token, or a strict check, matches only the value itself: with
  * unit factors almost any small integer matches something by chance (25 by 0.25,
  * 6 by 0.1 minutes), and a chance match must never count as support. */
-const matches = (token: string, value: number, candidate: number, strict = false): boolean => {
+const matches = (token: string, value: number, candidate: number, strict = false, unit?: string): boolean => {
   const allowed = tolerance(token, value);
-  const factors = strict || decimals(token) === 0 ? [1] : DERIVATIONS;
+  // A whole number with its unit stated ("25%", "120 minutes") is a conversion, not a chance match.
+  const factors = strict || decimals(token) === 0 && !unit ? [1] : DERIVATIONS;
   return factors.some(factor => Math.abs(Math.abs(candidate * factor) - Math.abs(value)) <= allowed);
 };
 
@@ -105,6 +106,14 @@ const jsonDocument = (reply: string): string | undefined => {
   const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/i)?.[1] ?? trimmed;
   return /^[[{]/.test(fenced.trim()) ? fenced.trim() : undefined;
 };
+const UNIT_SOURCE = String.raw`%|percent|per cent|ms|milliseconds?|msec|s|secs?|seconds?|min|mins|minutes?|h|hrs?|hours?|d|days?`;
+const UNIT_NAMES: Array<[RegExp, string]> = [[/^(?:%|percent|per cent)$/i, "%"], [/^(?:ms|msec|milliseconds?)$/i, "ms"], [/^(?:s|secs?|seconds?)$/i, "s"],
+  [/^(?:min|mins|minutes?)$/i, "min"], [/^(?:h|hrs?|hours?)$/i, "h"], [/^(?:d|days?)$/i, "d"]];
+const textUnit = (text: string): string | undefined => { const word = text.trim(); return UNIT_NAMES.find(([pattern]) => pattern.test(word))?.[1]; };
+/** A unit named by a JSON field ("utilisationPercent", "waitMinutes", "latency_ms"). */
+const keyUnit = (key?: string): string | undefined => !key ? undefined
+  : /(?:percent|pct)$/i.test(key) ? "%" : /(?:ms|millis|milliseconds)$/i.test(key) ? "ms" : /(?:minutes|mins)$/i.test(key) ? "min"
+  : /(?:hours|hrs)$/i.test(key) ? "h" : /(?:seconds|secs)$/i.test(key) ? "s" : /days$/i.test(key) ? "d" : undefined;
 const TOKEN_MARK = "\u0000num:";
 /** Parse JSON keeping each number's own text, so "2.8910" keeps its four places. */
 const parseKeepingTokens = (document: string): unknown => {
@@ -121,9 +130,10 @@ export const answerValues = (reply: string, prompt = ""): { json: boolean; value
     try {
       const values: AnswerValue[] = [];
       const walk = (value: unknown, path: string, key: string | undefined) => {
-        if (typeof value === "number") values.push({ path, key, token: String(value), value });
-        else if (typeof value === "string" && value.startsWith(TOKEN_MARK)) { const token = value.slice(TOKEN_MARK.length); values.push({ path, key, token, value: Number(token) }); }
-        else if (typeof value === "string" && new RegExp(`^${NUMBER_SOURCE}$`).test(value.trim())) values.push({ path, key, token: value.trim(), value: Number(value) });
+        const unit = keyUnit(key);
+        if (typeof value === "number") values.push({ path, key, token: String(value), value, unit });
+        else if (typeof value === "string" && value.startsWith(TOKEN_MARK)) { const token = value.slice(TOKEN_MARK.length); values.push({ path, key, token, value: Number(token), unit }); }
+        else if (typeof value === "string" && new RegExp(`^${NUMBER_SOURCE}\\s*(?:${UNIT_SOURCE})?$`, "i").test(value.trim())) { const token = value.trim().match(NUMBER)![0]; values.push({ path, key, token, value: Number(token), unit: unit ?? textUnit(value.trim().slice(token.length)) }); }
         else if (Array.isArray(value)) value.forEach((item, index) => walk(item, `${path}[${index}]`, key));
         else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) walk(v, path ? `${path}.${k}` : k, k);
       };
@@ -134,20 +144,20 @@ export const answerValues = (reply: string, prompt = ""): { json: boolean; value
   const inputs = new Set((prompt.match(NUMBER) ?? []).map(Number));
   const values: AnswerValue[] = [];
   const text = withoutNonQuantities(reply.replace(/```[\s\S]*?```/g, " "));
-  const pattern = new RegExp(String.raw`(?:([A-Za-z][A-Za-z_ ()/-]{0,40}?)\s*(?:[:=]|\bis\b|\bequals\b|≈)\s*\**\s*)?(?<![\w.])(${NUMBER_SOURCE})(?![\w.]*\d)`, "g");
+  const pattern = new RegExp(String.raw`(?:([A-Za-z][A-Za-z_ ()/-]{0,40}?)\s*(?:[:=]|\bis\b|\bequals\b|≈)\s*\**\s*)?(?<![\w.])(${NUMBER_SOURCE})(?![\w.]*\d)(\s*(?:${UNIT_SOURCE})(?![A-Za-z]))?`, "gi");
   for (const match of text.matchAll(pattern)) {
     const token = match[2], value = Number(token);
     if (!Number.isFinite(value) || inputs.has(value)) continue;
-    values.push({ path: `#${values.length}`, key: match[1]?.trim() || undefined, token, value });
+    values.push({ path: `#${values.length}`, key: match[1]?.trim() || undefined, token, value, unit: match[3] ? textUnit(match[3]) : undefined });
   }
   return { json: false, values };
 };
 
 /** The executed result (latest first) or prompt input that shows a value at its stated precision. */
-export const backingOf = (item: Pick<AnswerValue, "token" | "value">, results: ExecutedResult[], prompt = "", strict = false): Backing | undefined => {
+export const backingOf = (item: Pick<AnswerValue, "token" | "value" | "unit">, results: ExecutedResult[], prompt = "", strict = false): Backing | undefined => {
   if (decimals(item.token) === 0 && [0, 1].includes(Math.abs(item.value))) return { kind: "input" };
   for (const result of [...results].sort((a, b) => b.seq - a.seq)) {
-    if (resultNumbers(result).some(candidate => matches(item.token, item.value, candidate, strict))) return { kind: result.kind, seq: result.seq, tool: result.tool };
+    if (resultNumbers(result).some(candidate => matches(item.token, item.value, candidate, strict, item.unit))) return { kind: result.kind, seq: result.seq, tool: result.tool };
   }
   // A restated input backs a value only at the precision the request gave it:
   // "2" in the request does not support a computed "2.000000".
@@ -281,7 +291,7 @@ export const decideReview = (draft: string, revised: string, prompt: string, res
 const COMPUTE_WORDS = /\b(?:simulat|enumerat|comput|calculat|estimat|tally|probabilit|throughput|utili[sz]|round(?:ed)? to|decimal places?|significant (?:figures|digits))\w*|\bsolve for\b|\bhow (?:many|much)\b/i;
 /** Words that ask for a number only when a numeric object follows: "the expected
  * number of", "count the misses", "mean waiting time", not "what do you mean". */
-const OBJECT_WORDS = /\b(?:mean|expect\w*|determin\w*|count\w*|averag\w*|varian\w*|evaluat\w*)\s+(?:(?:the|a|an|of|each|all|total)\s+){0,3}(?:\w+\s+){0,2}?(?:numbers?|values?|totals?|sums?|rates?|times?|costs?|lengths?|sizes?|counts?|probabilit\w*|waits?|waiting|delays?|amounts?|percentages?|fractions?|ratios?|hits?|misses|events?|steps?|orderings?|\d)/i;
+const OBJECT_WORDS = /\b(?:mean|expect\w*|determin\w*|count\w*|averag\w*|varian\w*|evaluat\w*)\s+(?:(?:the|a|an|of|each|all|total)\s+){0,3}(?:\w+\s+){0,2}?(?:numbers?|values?|totals?|sums?|rates?|times?|costs?|lengths?|sizes?|counts?|probabilit\w*|waits?|waiting|delays?|amounts?|percentages?|fractions?|ratios?|hits?|misses|events?|steps?|orderings?)\b/i;
 const NO_TOOLS = /\b(?:without (?:using )?(?:any )?(?:tools?|a calculator|code)|(?:do not|don't|never) (?:use|run|call) (?:any )?(?:tools?|code|a calculator)|no tools|by hand|mentally|in your head|from memory)\b/i;
 /** A request whose answer is a computed quantity over several stated inputs (an
  * event trace to simulate, orderings to count, a recurrence): one model call
@@ -290,14 +300,19 @@ const NO_TOOLS = /\b(?:without (?:using )?(?:any )?(?:tools?|a calculator|code)|
 export const requestNeedsComputation = (prompt: string): boolean =>
   (COMPUTE_WORDS.test(prompt) || OBJECT_WORDS.test(prompt)) && !NO_TOOLS.test(prompt) && (withoutNonQuantities(prompt).match(NUMBER) ?? []).length >= 4;
 
+const VERSIONED = String.raw`(?:TLS|SSL|SSH|HTTP|IPv|TCP|QUIC|OAuth|USB|PCIe|DDR|Wi-?Fi|Bluetooth|Python|Node(?:\.js)?|Java|Go|Rust|Ruby|PHP|Perl|Ubuntu|Debian|RHEL|CentOS|Fedora|Alpine|Windows|macOS|iOS|Android|Postgres(?:QL)?|MySQL|MariaDB|SQLite|Redis|Kafka|Kubernetes|Docker|Chrome|Firefox|Safari|Edge|React|Angular|Vue|Django|Rails|Spring|Spark|Hadoop|Elasticsearch|MongoDB|Cassandra|Nginx|Apache|OpenSSL|Linux|v)`;
+const WHOLE_VERSIONED = String.raw`(?:HTTP|IPv|USB|DDR|PCIe|Java|Windows|iOS|Android|Python)`;
 const MONTH = String.raw`(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?`;
 const NON_QUANTITIES = [
   /\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b/g, /\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, /\b\d{1,2}:\d{2}(?::\d{2})?\b/g,
   new RegExp(String.raw`\b${MONTH}\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b`, "g"), new RegExp(String.raw`\b\d{1,2}(?:st|nd|rd|th)?\s+${MONTH}(?:\s+\d{4})?\b`, "g"),
-  /\b(?:in|since|by|until|from|before|after|during|of)\s+(?:19|20)\d{2}\b/gi, /\b\d+(?:st|nd|rd|th)\b/gi,
+  /\b(?:in|since|by|until|from|before|after|during)\s+(?:19|20)\d{2}\b/gi, /\b\d+(?:st|nd|rd|th)\b/gi,
   /\bv(?:ersion\s*)?\d+(?:\.\d+)*\b/gi, /\b\d+\.\d+\.\d+(?:\.\d+)*\b/g,
-  // Named protocols and products with their versions: TLS 1.2 or 1.3, HTTP/2 vs 3, Python 3.12.
-  /\b(?:[A-Z]{2,}[A-Za-z]*|Python|Node(?:\.js)?|Java|Ubuntu|Debian|Windows|macOS|iOS|Android|Postgres(?:QL)?|MySQL|Redis|Kafka|Chrome|Firefox|Safari)(?:\/|-|\s)?\d+(?:\.\d+)*(?:\s*(?:,|or|and|vs\.?|versus|to|\/)\s*\d+(?:\.\d+)*)*/g,
+  // Named products with version-shaped numbers: TLS 1.2 or 1.3, Python 3.12, Ubuntu 24.04. Only a
+  // name, never any capitalised word: "MTBF 2000", "SLA 99.9" and "CPU 4, 8 and 16" are quantities.
+  new RegExp(String.raw`\b${VERSIONED}(?:\/|-|\s)?\d+\.\d+(?:\.\d+)*(?:\s*(?:,|or|and|vs\.?|versus|to|\/)\s*\d+\.\d+(?:\.\d+)*)*`, "g"),
+  // Products whose versions are whole numbers: HTTP/2 vs 3, IPv6, Java 21, Windows 11.
+  new RegExp(String.raw`\b${WHOLE_VERSIONED}(?:\/|-|\s)?\d+(?:\.\d+)*(?:\s*(?:,|or|and|vs\.?|versus|to|\/)\s*\d+(?:\.\d+)*)*`, "g"),
 ];
 /** Text with dates, times of day, ordinals and version numbers blanked out: they are labels, not quantities. */
 export const withoutNonQuantities = (text: string): string => NON_QUANTITIES.reduce((rest, pattern) => rest.replace(pattern, match => " ".repeat(match.length)), text);

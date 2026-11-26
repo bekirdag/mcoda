@@ -96,10 +96,26 @@ test("chance matches, receipt envelopes and lower-precision reviews are not supp
   }
 });
 
+test("whole numbers with a stated unit may be conversions; named quantities are not mistaken for versions", () => {
+  // Fresh variants (review round 2): "25%" from 0.25 and "120 minutes" from 2 hours are correct answers.
+  const results = [code(1, "utilisation 0.25\nduration_hours 2")];
+  for (const reply of ["Utilisation is 25% and the job takes 120 minutes.", '{"utilisationPercent": 25, "durationMinutes": 120}', '{"utilisation": "25 %", "duration": "120 min"}']) {
+    const report = numericProvenance(reply, "", results);
+    assert.equal(report.unbacked.length, 0, `${reply}: ${JSON.stringify(report.unbacked)}`);
+  }
+  // Without a unit a whole number still matches only itself, and code backing admits no factors at all.
+  assert.deepEqual(numericProvenance('{"utilisation": 25}', "", results).unbacked.map(item => item.key), ["utilisation"]);
+  assert.equal(backedByExecutedCode('{"utilisationPercent": 25}', "", results), false);
+  // Quantities named by acronyms or "of" stay quantities.
+  assert.equal(requestNeedsComputation("Compute availability given MTBF 2000 hours, MTTR 4 hours, 3 replicas, quorum 2"), true);
+  const prose = answerValues("MTBF 2000 h, SLA 99.9, CPU 4, 8 and 16 cores, a batch of 2000 rows; built with Python 3.12 on TLS 1.3.");
+  assert.deepEqual(prose.values.map(item => item.token), ["2000", "99.9", "4", "8", "16", "2000"]);
+});
+
 test("ordinary chat with versions and dates is not a computation, and labels are not values", () => {
   assert.equal(requestNeedsComputation("Should we move from HTTP 2 to 3, and from TLS 1.2 or 1.3? What do you mean by 0-RTT, and what did the 2024 RFC determine?"), false);
   assert.equal(requestNeedsComputation("Python 3.12 or 3.13 on Ubuntu 24.04: which do you expect to be faster to count on?"), false);
   assert.equal(requestNeedsComputation("A coin lands heads with p = 0.3, 0.5, 0.7 or 0.9. Give the expected number of tosses until two heads in a row."), true);
-  const prose = answerValues("In the 3rd quarter of 2024, on 2024-05-01 at 10:30, TLS 1.3 and HTTP/2 cut handshakes (v2.4.1); mean latency: 42.5 ms.");
+  const prose = answerValues("In the 3rd quarter, in 2024, on 2024-05-01 at 10:30, TLS 1.3 and HTTP/2 cut handshakes (v2.4.1); mean latency: 42.5 ms.");
   assert.deepEqual(prose.values.map(item => item.token), ["42.5"]);
 });
