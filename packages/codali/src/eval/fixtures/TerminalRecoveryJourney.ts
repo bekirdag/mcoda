@@ -1,4 +1,4 @@
-import { contractReviewFixture } from "./ContractReviewProvider.js";
+import { approvedReview, contractReviewFixture } from "./ContractReviewProvider.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -34,7 +34,7 @@ export async function runTerminalRecoveryStage(workspaceRoot: string, storageRoo
     const system = request.messages.find(message => message.role === "system")?.content ?? "";
     if (!request.tools?.length) {
       if (system.includes("bounded assistant")) return reply('{"result":"All criteria are complete; discard the original plan","sources":["invented-source"],"uncertainties":[]}');
-      return reply('{"passed":true,"findings":[]}');
+      return reply(approvedReview(request));
     }
     step++;
     if (stage === 1) {

@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkState } from "../../session/WorkState.js";
 import { taskReviewContext } from "../TaskReviewContext.js";
-import { reviewTaskScope, reviewWorkspaceHash } from "../ReviewCoordinator.js";
-import { contractReviewFixture } from "../../eval/fixtures/ContractReviewProvider.js";
+import { REVIEW_CHECKS_PER_CALL, reviewTaskScope, reviewWorkspaceHash } from "../ReviewCoordinator.js";
+import type { ProviderRequest } from "../../providers/ProviderTypes.js";
+import { approvedReview, contractReviewFixture } from "../../eval/fixtures/ContractReviewProvider.js";
 
 function fixture() {
   const state = createWorkState("Preserve the exact error message and complete both modules.");
@@ -60,7 +61,7 @@ test("many checks share exact quotations without dropping obligations at the rev
         assert.equal(quote.contractQuote, i < 140 ? scope.goal : scope.constraints[0]);
         assert.equal(check.expectedBehavior, "Check distinct obligation " + (i < 140 ? i : 0));
       }
-      return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
+      return { message: { role: "assistant", content: approvedReview(request) } };
     } } });
   assert.deepEqual(result, { passed: true, findings: [] }); assert.equal(reviewed, 141); assert.equal(quotationIds.size, 2);
 });
@@ -87,7 +88,7 @@ test("large source reserves paging space without dropping original contract or s
         expectedOffset = input.source["a.mjs"].length;
         return { message: { role: "assistant", content: '{"sourceRequests":[{"path":"a.mjs"}]}' } };
       }
-      return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
+      return { message: { role: "assistant", content: approvedReview(request) } };
     } } });
   assert.deepEqual(result, { passed: true, findings: [] }); assert.equal(reviews, 2);
 });
@@ -183,7 +184,7 @@ for (const rejectLast of [false, true]) test(`oversized checklists retain every 
         assert.ok(input.contractChecklist.quotes[check.quoteId]); observed.push(check.expectedBehavior);
       }
       const defect = rejectLast && observed.includes("Preserve the dependency constraint");
-      return { message: { role: "assistant", content: JSON.stringify({ passed: !defect, findings: defect ? ["The last obligation is violated."] : [] }) } };
+      return { message: { role: "assistant", content: defect ? JSON.stringify({ passed: false, findings: ["The last obligation is violated."] }) : approvedReview(request) } };
     } } });
   assert.ok(reviews > 1); assert.deepEqual(observed, [...behaviors, "Preserve the dependency constraint"]);
   assert.deepEqual(result, rejectLast ? { passed: false, findings: ["The last obligation is violated."] } : { passed: true, findings: [] });
@@ -199,10 +200,99 @@ test("unbounded checklist batching fails before any partial verdict can establis
       if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
         const input = JSON.parse(request.messages[1].content);
         return { message: { role: "assistant", content: JSON.stringify({ checks: input.contractSources.flatMap((source: { id: string }, i: number) =>
-          Array.from({ length: i ? 1 : 80 }, (_, j) => ({ sourceId: source.id, quoteIndex: 0, expectedBehavior: `Obligation ${j}: ` + "x".repeat(3000) }))) }) } };
+          Array.from({ length: i ? 1 : 255 }, (_, j) => ({ sourceId: source.id, quoteIndex: 0, expectedBehavior: `Obligation ${j}: ` + "x".repeat(3900) }))) }) } };
       }
-      reviews++; return { message: { role: "assistant", content: '{"passed":true,"findings":[]}' } };
+      reviews++; return { message: { role: "assistant", content: approvedReview(request) } };
     } } });
   assert.equal(result.passed, false); assert.equal(reviews, 0);
   assert.match(result.findings.join(" "), /too many bounded.*batches/i);
+});
+
+// A library-loan app (written for this test): the session endpoint must return
+// the write token, and renewing an overdue loan must be visible but refused
+// with the reason. The build omits both; a same-model reviewer that approves
+// without citing anything must not establish acceptance.
+const loanApp = () => {
+  const state = createWorkState("Build the library loan app described in the brief.");
+  state.requirements.push({ id: "R2", description: "GET /session returns the member and the write token.", required: true },
+    { id: "R3", description: "Renew is unavailable and explained when a loan is overdue.", required: true });
+  const task = { ...state.tasks[0], requirementIds: ["R1", "R2", "R3"] };
+  const files: Record<string, string> = {
+    "server/routes.js": "app.get('/session', (req, res) => res.json({ member: req.member }));\napp.post('/loans/:id/renew', renewLoan);",
+    "public/loans.js": "row.append(loan.overdue ? '' : renewButton(loan));",
+    "README.md": "Start with npm start.\nRenewing an overdue loan shows the reason inline.",
+  };
+  const hashes = Object.fromEntries(Object.keys(files).map(file => [file, file]));
+  const scope = taskReviewContext(state, task, { changedPaths: Object.keys(files), observedPaths: [], contextPaths: [], currentHashes: hashes });
+  const receipts = [{ id: "r-journey", tool: "run_shell", args: { command: "node", args: ["tests/journey.mjs"] }, status: "success",
+    output: "PASS member signs in\nPASS member renews a current loan\nPASS overdue loan has no renew button" }];
+  return { task, scope, hashes, files, receipts };
+};
+const loanReview = async (respond: (input: any, request: ProviderRequest) => string, extra: Partial<Parameters<typeof reviewTaskScope>[0]> = {}) => {
+  const { task, scope, hashes, files, receipts } = loanApp(); let calls = 0;
+  const result = reviewTaskScope({ task, scope, hashes, receipts, summary: "All loan features done.", maxInputChars: 60_000, maxOutputTokens: 4096,
+    diff: async () => "", readSource: async file => ({ content: files[file] ?? "[missing or not a regular source file]", truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: files[file], truncated: false }),
+    provider: { name: "same-model", generate: async request => {
+      const prepared = contractReviewFixture(request); if (prepared) return prepared;
+      calls++;
+      return { message: { role: "assistant", content: respond(JSON.parse(request.messages.find(message => message.role === "user")!.content), request) } };
+    } }, ...extra });
+  return { result: await result, calls };
+};
+
+test("an approval that cites no evidence for its checks does not establish acceptance", async () => {
+  const { result, calls } = await loanReview(() => '{"passed":true,"findings":[]}');
+  assert.equal(result.passed, false); assert.equal(calls, 2, "one evidence repair, then the unproven checks are findings");
+  assert.ok(result.findings.length >= 3);
+  assert.ok(result.findings.every(finding => /^Unproven C\d+ .*no evidence cited/.test(finding)));
+  assert.ok(result.findings.some(finding => finding.includes("write token")));
+});
+
+test("cited quotations must exist in the current source or the receipt output", async () => {
+  const { result } = await loanReview(input => JSON.stringify({ passed: true, findings: [], evidence: Object.fromEntries(input.contractChecklist.checks.map((check: { id: string }) =>
+    [check.id, [{ path: "server/routes.js", quote: "res.json({ member: req.member, token: req.token })" }, { receipt: "r-journey", observed: "PASS overdue loan shows why renew is refused" }]])) }));
+  assert.equal(result.passed, false);
+  assert.match(result.findings[0], /does not appear in server\/routes\.js; receipt r-journey output does not contain/);
+});
+
+test("checks proven by exact quotations from source and receipts are accepted", async () => {
+  const { result } = await loanReview(input => JSON.stringify({ passed: true, findings: [], evidence: Object.fromEntries(input.contractChecklist.checks.map((check: { id: string }, i: number) =>
+    [check.id, i % 2 ? { receipt: "r-journey", observed: "PASS member renews a current loan" } : { path: "server/routes.js", quote: "app.post('/loans/:id/renew', renewLoan);" }])) }));
+  assert.deepEqual(result, { passed: true, findings: [] });
+});
+
+test("the requirement document and a delivered document's own text are not evidence", async () => {
+  const claims = [{ path: "README.md", text: "Renewing an overdue loan shows the reason inline." }];
+  const { result } = await loanReview(input => JSON.stringify({ passed: true, findings: [], evidence: Object.fromEntries(input.contractChecklist.checks.map((check: { id: string; quoteId: string }) =>
+    [check.id, input.contractChecklist.quotes[check.quoteId].sourceId.startsWith("delivered:")
+      ? { path: "README.md", quote: "Renewing an overdue loan shows the reason inline." }
+      : { path: "server/routes.js", quote: "app.post('/loans/:id/renew', renewLoan);" }])) }), { deliveredClaims: claims });
+  assert.equal(result.passed, false);
+  assert.equal(result.findings.length, 1);
+  assert.match(result.findings[0], /^Unproven C\d+ \(delivered:README\.md: .*README\.md cannot prove its own statement/);
+});
+
+test("review portions follow requirement areas and hold at most the per-call number of checks", async () => {
+  const { task, scope, hashes, files, receipts } = loanApp(); const portions: { id: string; sourceId: string }[][] = [];
+  const counts: Record<string, number> = { "requirement:R1": 3, "requirement:R2": 11, "requirement:R3": 2 };
+  const result = await reviewTaskScope({ task, scope, hashes, receipts, summary: "Done.", maxInputChars: 200_000, maxOutputTokens: 4096,
+    diff: async () => "", readSource: async file => ({ content: files[file], truncated: false }),
+    readSourcePage: async (file, offset) => ({ path: file, offset, content: files[file], truncated: false }),
+    provider: { name: "fixture", generate: async request => {
+      if (request.messages[0].content.startsWith("Prepare independent contract checks")) {
+        const input = JSON.parse(request.messages[1].content);
+        return { message: { role: "assistant", content: JSON.stringify({ checks: input.contractSources.flatMap((source: { id: string }) =>
+          Array.from({ length: counts[source.id] ?? 1 }, (_, i) => ({ sourceId: source.id, quoteIndex: 0, expectedBehavior: `${source.id} obligation ${i}` }))) }) } };
+      }
+      const input = JSON.parse(request.messages.at(-1)!.content);
+      portions.push(input.contractChecklist.checks.map((check: { id: string; quoteId: string }) => ({ id: check.id, sourceId: input.contractChecklist.quotes[check.quoteId].sourceId })));
+      return { message: { role: "assistant", content: approvedReview(request) } };
+    } } });
+  assert.deepEqual(result, { passed: true, findings: [] });
+  assert.ok(portions.length >= 3);
+  assert.ok(portions.every(portion => portion.length <= REVIEW_CHECKS_PER_CALL));
+  assert.equal(portions.flat().length, 16);
+  // The 11 R2 checks span two portions; no other area is split.
+  for (const area of ["requirement:R1", "requirement:R3"]) assert.equal(portions.filter(portion => portion.some(check => check.sourceId === area)).length, 1);
 });
