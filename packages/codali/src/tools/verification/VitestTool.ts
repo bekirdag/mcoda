@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { createIsolatedExecutor } from "../shell/IsolatedExecutor.js";
@@ -102,8 +103,25 @@ interface TestFile { path: string; content: string; }
 export function isTestFile(file: TestFile, runner: TestRunner): boolean {
   if (runner === "python") return /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/.test(file.path);
   const named = /(?:^|\/)(?:[^/]+[._-](?:test|spec)|test[_-][^/]+|test)\.[cm]?[jt]s$|(?:^|\/)tests?\/[^/].*\.[cm]?[jt]s$/.test(file.path);
-  return named || (runner === "node" ? /["']node:test["']/ : /["']vitest["']/).test(file.content ?? "");
+  // A name alone is not enough: test-fixtures.js or test/helpers.js with no
+  // test call would run as one passing file-level "test" (review of .43).
+  const declaresTests = /(?:^|[^\w.$])(?:test|it|describe|suite)(?:\.(?:only|skip|todo|each|concurrent|sequential))?\s*\(/m.test(file.content ?? "");
+  return declaresTests && (named || (runner === "node" ? /["']node:test["']/ : /["']vitest["']/).test(file.content ?? ""));
 }
+
+let stdlibModules: Set<string> | null | undefined;
+/** The sandbox interpreter's standard-library module names, computed once.
+ * Undefined when Python is unavailable: then nothing is carried for Python. */
+const pythonStdlib = (): Set<string> | undefined => {
+  if (stdlibModules === undefined) {
+    try {
+      const names = execFileSync("python3", ["-I", "-c", "import sys;print(' '.join(sorted(sys.stdlib_module_names)))"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+      stdlibModules = new Set(names.split(/\s+/).filter(Boolean));
+      if (!stdlibModules.size) stdlibModules = null;
+    } catch { stdlibModules = null; }
+  }
+  return stdlibModules ?? undefined;
+};
 
 /** Files a test imports from its own directory tree, with the paths that
  * would satisfy each import. Python names cannot be told from the standard
@@ -145,7 +163,12 @@ export function completeTestFiles(args: unknown, earlier: ReadonlyMap<string, st
   const runner = value.runner ?? "vitest";
   if (!["vitest", "node", "python"].includes(runner)) return { args, carried: [] };
   const files = [...value.files], carried: string[] = [];
+  // A Python import of a standard-library name (json, math, ...) must not
+  // pull in a same-named session file that would shadow the library.
+  const stdlib = runner === "python" ? pythonStdlib() : undefined;
+  if (runner === "python" && !stdlib) return { args, carried: [] };
   for (const item of localImports(value.files, runner)) {
+    if (stdlib?.has(item.specifier.split(".")[0])) continue;
     if (item.candidates.some(candidate => files.some(file => file?.path === candidate))) continue;
     const reuse = item.candidates.find(candidate => earlier.has(candidate));
     if (!reuse || files.length >= 12) continue;
@@ -177,7 +200,7 @@ const invalidRequest = (args: { runner?: unknown; files?: unknown }, runner: unk
     if (!problems.length && ["vitest", "node", "python"].includes(runner as string) && !files.some(file => isTestFile(file, runner as TestRunner))) {
       problems.push(`none of ${files.map(file => file.path).join(", ")} is recognized as a test for runner ${runner}: ${runner === "python"
         ? "name the test file test_<name>.py or <name>_test.py"
-        : `name it <name>.test.js, test_<name>.js or test-<name>.js, or import ${runner === "node" ? "node:test" : "vitest"} in it`}`);
+        : `name it <name>.test.js, test_<name>.js or test-<name>.js, or import ${runner === "node" ? "node:test" : "vitest"} in it, and declare cases with test(), it() or describe()`}`);
     }
     if (!problems.length && runner !== "python") {
       const missing = localImports(files, runner as TestRunner).filter(item => !item.candidates.some(candidate => files.some(file => file.path === candidate)));
@@ -278,9 +301,14 @@ sys.exit(0 if result.wasSuccessful() and data['total']>0 and data['pendingTests'
           if (!stat) throw new ToolExecutionError("tool_execution_failed", `Python tests could not start.${missing} This runner loads unittest.TestCase classes and plain test_* functions, with a stand-in for pytest.raises, pytest.approx and pytest.mark.parametrize; other third-party packages are not installed. Fix the reported import/syntax error.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16000) throw new Error("Invalid test report");
         }
-        const report = runner === "node" ? { total: count("tests"), passedTests: count("pass"), failedTests: count("fail"), pendingTests: count("skipped") + count("todo") + count("cancelled") }
+        // node:test reports a file that declares no test as one passing test
+        // named after the file. That is not a test case: leave it out, so a
+        // helper-only run is "zero tests", never a pass.
+        const fileLevelPasses = runner === "node" ? [...output.matchAll(/^ok \d+ - (.+?)\s*$/gm)].filter(match =>
+          testPaths.some(file => match[1] === file || match[1] === path.join(root, file) || match[1].endsWith(`/${file}`))).length : 0;
+        const report = runner === "node" ? { total: count("tests") - fileLevelPasses, passedTests: count("pass") - fileLevelPasses, failedTests: count("fail"), pendingTests: count("skipped") + count("todo") + count("cancelled") }
           : JSON.parse(await fs.readFile(reportPath, "utf8"));
-        if (!Object.values(report).every(value => Number.isSafeInteger(value) && Number(value) >= 0) || report.total < 1) throw new ToolExecutionError("tool_execution_failed", `No complete test results were produced. Python requires test_* functions or unittest.TestCase methods named test_*; Node requires node:test cases. Zero executed tests cannot establish correctness.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
+        if (!Object.values(report).every(value => Number.isSafeInteger(value) && Number(value) >= 0) || report.total < 1) throw new ToolExecutionError("tool_execution_failed", `No complete test results were produced. Python requires test_* functions or unittest.TestCase methods named test_*; Node requires node:test cases declared with test(), it() or describe(); a file without them is not a test. Zero executed tests cannot establish correctness.\n${testFailureSummary(output)}`, { details: { exitCode, output } });
         const result = { library: runner === "node" ? "node:test" : "unittest", ...report,
           passed: exitCode === 0 && report.failedTests === 0 && report.pendingTests === 0 && report.passedTests === report.total,
           diagnostic: testFailureSummary(output).slice(0, 1800), sourceSha256: createHash("sha256").update(payload).digest("hex"), elapsedMs: Date.now() - started,

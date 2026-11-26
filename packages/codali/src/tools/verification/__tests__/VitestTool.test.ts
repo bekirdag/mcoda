@@ -65,7 +65,7 @@ test("Vitest cannot read workspace neighbors or credentials and honors cancellat
   const result = await run(`import {test,expect} from 'vitest'; import fs from 'node:fs';test('boundary',()=>{expect(()=>fs.readFileSync(${JSON.stringify(secret)})).toThrow();expect(process.env.MCODA_MSWARM_API_KEY).toBeUndefined();});`);
   assert.equal(result.ok, true, result.error?.message || result.output); assert.equal(JSON.parse(result.output).passed, true);
   const abort = new AbortController(); const timer = setTimeout(() => abort.abort(Error("cancel tests")), 30);
-  try { await assert.rejects(run("while(true){}", abort.signal), /cancel tests/); } finally { clearTimeout(timer); }
+  try { await assert.rejects(run("import {test} from 'vitest'; test('spins', () => { while(true){} });", abort.signal), /cancel tests/); } finally { clearTimeout(timer); }
 });
 
 test("the Python runner accepts pytest-style tests without pytest installed", options, async () => {
@@ -166,16 +166,18 @@ test("verify_tests rejections name the file and the rule it broke", async () => 
   const reject = async (args: unknown) => { const result = await registry.execute("verify_tests", args, { workspaceRoot: os.tmpdir() }); assert.equal(result.ok, false); return result.error!.message; };
   assert.match(await reject({ runner: "python", files: [{ path: "probe_ledger.py", content: "print(1)\n" }] }), /probe_ledger\.py is recognized as a test.*test_<name>\.py or <name>_test\.py/);
   assert.match(await reject({ runner: "node", files: [{ path: "ledger.ts", content: "export {}" }, { path: "ledger.test.js", content: "import test from 'node:test'" }] }), /"ledger\.ts": runner node cannot load TypeScript/);
-  assert.match(await reject({ runner: "node", files: [{ path: "ledger.test.js", content: "import test from 'node:test';import {total} from './ledger.js';" }] }), /ledger\.test\.js imports "\.\/ledger\.js", which is not among the files; include ledger\.js/);
+  assert.match(await reject({ runner: "node", files: [{ path: "ledger.test.js", content: "import test from 'node:test';import {total} from './ledger.js';test('sums',()=>total([1]));" }] }), /ledger\.test\.js imports "\.\/ledger\.js", which is not among the files; include ledger\.js/);
   assert.match(await reject({ runner: "python", files: [{ path: "test_ledger.py", content: "x" }, { path: "test_ledger.py", content: "y" }] }), /same path/);
 });
 
 test("test-file recognition covers the runner conventions and nothing else", () => {
-  const file = (name: string, content = "") => ({ path: name, content });
+  const file = (name: string, content = "test('x', () => {});") => ({ path: name, content });
   for (const name of ["a.test.js", "a.spec.mjs", "test_a.cjs", "test-a.js", "a_test.js", "a-test.js", "test.js", "test/a.js"]) assert.equal(isTestFile(file(name), "node"), true, name);
   for (const name of ["a.js", "contest.js", "latest_build.js", "attest.mjs"]) assert.equal(isTestFile(file(name), "node"), false, name);
-  assert.equal(isTestFile(file("cases.js", "import test from 'node:test'"), "node"), true);
-  assert.equal(isTestFile(file("cases.ts", "import {test} from \"vitest\""), "vitest"), true);
+  // A test-like name without any test call is a helper, not a test (review of .43).
+  for (const name of ["test-utils.js", "test/helpers.js", "fixtures.test.js"]) assert.equal(isTestFile(file(name, "export const rows = [1, 2];"), "node"), false, name);
+  assert.equal(isTestFile(file("cases.js", "import test from 'node:test'; test('a', () => {});"), "node"), true);
+  assert.equal(isTestFile(file("cases.ts", "import {test} from \"vitest\"; test('a', () => {});"), "vitest"), true);
   assert.equal(isTestFile(file("ledger_test.py"), "python"), true);
   assert.equal(isTestFile(file("ledger.py"), "python"), false);
 });
@@ -192,6 +194,33 @@ test("a test sent without the module it imports gets the session's latest versio
   // A module sent again is never replaced; unknown imports are left alone.
   const fresh = { runner: "python", files: [{ path: "tally.py", content: "def tally(xs):\n    return 0\n" }, { path: "test_tally.py", content: "import os\nfrom tally import tally\n" }] };
   assert.deepEqual(completeTestFiles(fresh, earlier), { args: fresh, carried: [] });
+});
+
+// Review of .43 (WP-F item 3). Fresh variant: a buggy clamp with only a
+// fixtures file must never be reported as passing.
+test("a run whose only files are helpers is refused or reported as zero tests, never as a pass", options, async () => {
+  const registry = new ToolRegistry(); registry.register(createVitestTool());
+  const clamp = { path: "clamp.js", content: "export const clamp = (x, lo, hi) => x;" };
+  const byName = await registry.execute("verify_tests", { runner: "node", files: [clamp, { path: "test-fixtures.js", content: "export const rows = [[9, 0, 5, 5]];" }] }, { workspaceRoot: os.tmpdir() });
+  assert.equal(byName.ok, false);
+  assert.match(byName.error!.message, /none of clamp\.js, test-fixtures\.js is recognized as a test.*declare cases with test\(\)/);
+  // Passes the static check (imports node:test, mentions test( in a comment)
+  // but declares no case: node's file-level entry is not counted.
+  const noCases = await registry.execute("verify_tests", { runner: "node", files: [clamp, { path: "checks/clamp_cases.js", content: "import test from 'node:test';\nimport { clamp } from '../clamp.js';\n// test('clamps high', ...) to be written\nexport const used = clamp;\n" }] }, { workspaceRoot: os.tmpdir() });
+  assert.equal(noCases.ok && JSON.parse(noCases.output).passed, false, noCases.output);
+  assert.match(noCases.error?.message ?? "", /Zero executed tests/);
+  // A real case in the same layout still counts exactly once.
+  const real = await registry.execute("verify_tests", { runner: "node", files: [clamp, { path: "checks/clamp_cases.js", content: "import test from 'node:test';import assert from 'node:assert/strict';import { clamp } from '../clamp.js';test('clamps high',()=>assert.equal(clamp(9,0,5),5));" }] }, { workspaceRoot: os.tmpdir() });
+  assert.equal(real.ok, true, real.error?.message);
+  assert.deepEqual([JSON.parse(real.output).total, JSON.parse(real.output).failedTests, JSON.parse(real.output).passed], [1, 1, false]);
+});
+
+// Review of .43 (WP-F item 10). Fresh variant: a session file named like a
+// standard-library module must not shadow it.
+test("Python carry-over never brings in a file named like a standard-library module", () => {
+  const earlier = new Map([["json.py", "def loads(s):\n    return 'shadow'\n"], ["ledger.py", "def total(xs):\n    return sum(xs)\n"]]);
+  const carried = completeTestFiles({ runner: "python", files: [{ path: "test_ledger.py", content: "import json\nimport unittest\nfrom ledger import total\n" }] }, earlier);
+  assert.deepEqual(carried.carried, ["ledger.py"]);
 });
 
 test("a Python run missing the code under test says to include it", options, async () => {

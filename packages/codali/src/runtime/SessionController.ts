@@ -2539,6 +2539,8 @@ export class SessionController {
       if (source && executedAnswerCode.some(item => item.content.replace(/\r\n/g, "\n").includes(source.content.trim()))) return { decision };
       finalRerunDone = true;
       const result = await execute("verify_tests", run).catch(() => undefined);
+      // The rerun carries the newest code; a later test-only call must reuse it.
+      for (const file of run.files) testFileHistory.set(file.path, file.content);
       const data = result?.data as { passed?: boolean; total?: number; failedTests?: number; diagnostic?: string } | undefined;
       await this.emit("final_code_rerun", { executed: Boolean(result?.ok), passed: data?.passed === true, total: data?.total, failedTests: data?.failedTests, files: run.files.map(file => file.path) }, false);
       if (!result?.ok || data?.passed === true) {
