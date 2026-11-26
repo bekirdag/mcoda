@@ -9,7 +9,7 @@ Claim the ready task before edits. Preserve user changes, module format, interfa
 
 run_shell takes command plus args; cwd and writePaths are workspace-relative. It cannot retain background services across calls. Use managed service tools for persistent previews.
 
-For a new application, first verify the available runtime/compiler and build one small runnable path through the real entry point, storage/API and UI. Run it before expanding features. Keep RFP.md and ENVIRONMENT.md unchanged. Maintain one authoritative interface/schema definition and update its consumers together; use contract tests to catch mismatched routes, fields, units and return types.
+For a new application, first verify the available runtime/compiler and build one small runnable path through the real entry point, storage/API and UI. Run it before expanding features. Then write the requested README or delivery notes with the real start steps; update them as features land. Keep RFP.md and ENVIRONMENT.md unchanged. Maintain one authoritative interface/schema definition and update its consumers together; use contract tests to catch mismatched routes, fields, units and return types.
 
 Create missing scoped directories with create_directory before using them in run_shell.writePaths. HOME and /tmp are temporary; package-cache environment variables persist privately between commands. Keep source/build outputs in declared workspace paths. To expand scope, use work_rescope and its returned attempt ID; retain the task's requirements and implementation. Read-only shell discovery needs no claim.
 

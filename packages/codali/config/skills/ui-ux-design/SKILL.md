@@ -7,7 +7,7 @@ Start with the user's task, audience, primary action and success state. Inspect 
 
 For a new screen, define a coherent visual direction: hierarchy, type scale, spacing rhythm, color roles, content density and reusable components. For an existing screen, fix the strongest problems first and reuse its design system. Make primary actions and important information easy to find. Use decoration and motion purposefully; do not apply the same fashionable template to every product.
 
-Map the main journey and navigation before styling details. Use familiar labels, readable content, clear feedback and recoverable errors. Cover empty, loading, success, error and disabled states. Prevent accidental destructive actions without adding friction to routine actions. Keep form input when validation fails.
+Map the main journey and navigation before styling details. Use familiar labels, readable content, clear feedback and recoverable errors. Cover empty, loading, success, error and disabled states. An action required to be unavailable and explained stays visible but disabled, with its reason. Prevent accidental destructive actions without adding friction to routine actions. Keep form input when validation fails.
 
 Design responsive behavior explicitly: narrow/wide layouts, wrapping, overflow and touch targets. Include semantic controls, keyboard operation, visible focus, labels, contrast and reduced-motion behavior. Check the applicable accessibility criteria rather than asserting compliance from appearance.
 

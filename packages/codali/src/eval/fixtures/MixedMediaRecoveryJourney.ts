@@ -1,4 +1,4 @@
-import { contractReviewFixture } from "./ContractReviewProvider.js";
+import { approvedReview, contractReviewFixture } from "./ContractReviewProvider.js";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -39,7 +39,7 @@ export async function runMixedMediaRecoveryStage(workspaceRoot: string, storageR
       assert.match(input.source["value.mjs"], /value = 2/);
       assert.ok(input.changedPaths.includes("assets/pixel.png"));
       assert.ok(input.receipts.some((r: { status: string; tool: string; output: string }) => r.status === "success" && r.tool === "run_shell" && /# pass 1/.test(r.output)));
-      reviewed = true; return reply('{"passed":true,"findings":[]}');
+      reviewed = true; return reply(approvedReview(request));
     }
     const previous = () => [...request.messages].reverse().find(message => message.role === "tool")!.content;
     const previousData = () => JSON.parse(previous().split("\n")[0]);

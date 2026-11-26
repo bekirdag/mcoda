@@ -26,7 +26,17 @@ const reviewInstructions: ProviderMessage[] = [
   { role: "system", content: "taskAssessments are controller-recorded successful reviews of the identified task criteria at this exact workspaceSnapshotHash during this verification. Their sourcePaths were reviewed in those task scopes and remain available for sourceRequests. Use these assessments for already-reviewed criteria in later scoped reviews as well as integration; inspect the source needed for this task's own behavior and cross-task interactions. For integration, check the complete original goal, global constraints, architecture, cross-task interactions and remaining deliverables using these fresh assessments plus the current evidence. Do not demand an already assessed module's entire source merely to repeat its scoped review; request the specific files needed to investigate an integration defect. An assessment never certifies a different criterion, snapshot or missing deliverable. Empty findings still require sufficient evidence for every obligation." },
   { role: "system", content: "contractChecklist.checks preserves every prepared check. Each check's quoteId refers to the exact sourceId and contractQuote in contractChecklist.quotes. Identical quotations from the same source are stored once; every expectedBehavior remains separate. Follow those references when comparing a check to its authoritative text." },
   { role: "system", content: "When checklistBatch is present, this is one bounded portion of the prepared checklist, with the complete original contract and current evidence retained. Scrutinize every check in this portion and its interactions with the original contract. Other prepared checks are reviewed separately against this same snapshot; the controller requires every portion to pass. Your verdict covers this portion, never acceptance of an unreviewed portion. Do not reject solely because other checklist portions are absent; reject any actual defect or insufficient evidence for the checks you are reviewing. The complete original requirements remain authoritative in every portion." },
+  { role: "system", content: 'An approval must prove every check in contractChecklist.checks. Add "evidence" to a passing verdict: {"passed":true,"findings":[],"evidence":{"<check id>":[{"receipt":"<receipt id>","observed":"text copied exactly from that receipt output"} or {"path":"<sourceRoles path>","quote":"text copied exactly from that file"}]}}. The controller confirms each quotation against the receipt output or the current file and rejects the approval when a check has none that matches. For behaviour a user or client sees (a page, an API response, a refusal, a state after reload), cite receipt output that shows it; a passing test proves only what its output or its assertions show. A source quote proves what that code does: quote the lines that implement the check, not a comment, a plan or the requirement text. When requirements say an action is unavailable or blocked and explained, only a visible disabled control or notice that states the reason meets it; a missing control is a defect. A check you cannot prove from the evidence is a blocking finding, not an approval.' },
+  { role: "system", content: "Checks whose sourceId starts with delivered: are statements from a document delivered with the work (a README or delivery notes). Pass such a check only when source or receipt evidence shows the statement is true of the current build; a different number, duration or limit, a feature that is absent, or a check that never ran is a blocking finding that names the document and the statement. The document cannot prove its own statements." },
 ];
+
+/** Checks of one requirement area are reviewed together, and one call reviews
+ * at most this many. A single call over 52 checks passed a build that omitted
+ * two of them; smaller portions keep each clause in view. */
+export const REVIEW_CHECKS_PER_CALL = 8;
+const MAX_REVIEW_BATCHES = 64;
+const MIN_QUOTE_CHARS = 8;
+const normalText = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** Review one scope without loading every sibling's source into the prompt.
  * Assessments are created only by the controller after separate successful
@@ -41,6 +51,8 @@ export async function reviewTaskScope(options: {
   summary: string;
   assessments?: readonly TaskReviewAssessment[];
   authoritativeInputs?: readonly ReviewContractSource[];
+  /** Statements from delivered documents; whole-goal review checks each one. */
+  deliveredClaims?: readonly { path: string; text: string }[];
   readSource: (file: string, maxChars: number) => Promise<{ content: string; truncated: boolean }>;
   readSourcePage: (file: string, offset: number) => Promise<ReviewSourcePage>;
   diff: (files: string[]) => Promise<string>;
@@ -59,14 +71,16 @@ export async function reviewTaskScope(options: {
   if ("findings" in contract) return { passed: false, findings: contract.findings };
   const quotes: Record<string, { sourceId: string; contractQuote: string }> = {};
   const quoteIds = new Map<string, string>();
-  const checks = contract.checks.map(({ sourceId, contractQuote, expectedBehavior }) => {
+  const delivered = options.scope.reviewScope === "whole_goal" ? (options.deliveredClaims ?? []).map(claim => ({ sourceId: `delivered:${claim.path}`,
+    contractQuote: claim.text, expectedBehavior: "This statement in the delivered document is true of the current build." })) : [];
+  const checks = [...contract.checks, ...delivered].map(({ sourceId, contractQuote, expectedBehavior }, index) => {
     const key = JSON.stringify([sourceId, contractQuote]);
     let quoteId = quoteIds.get(key);
     if (quoteId === undefined) {
       quoteId = "quote" + quoteIds.size; quoteIds.set(key, quoteId);
       quotes[quoteId] = { sourceId, contractQuote };
     }
-    return { quoteId, expectedBehavior };
+    return { id: `C${index + 1}`, quoteId, expectedBehavior };
   });
   const assessedPaths = new Set(assessments.flatMap(value => value.sourcePaths));
   // A later report/integration review can inspect an already assessed module
@@ -96,26 +110,96 @@ export async function reviewTaskScope(options: {
   // Bound generated aids independently of authoritative requirements. Every
   // batch retains the full contract and requires its own successful verdict;
   // a large checklist cannot crowd out all source or silently lose checks.
+  // Batches follow requirement areas (the checks' source) and hold at most
+  // REVIEW_CHECKS_PER_CALL checks.
   const checklistLimit = options.maxInputChars - Math.min(16_000, Math.floor(options.maxInputChars / 4));
+  const areas = new Map<string, typeof checks>();
+  for (const check of checks) {
+    const area = quotes[check.quoteId].sourceId;
+    areas.set(area, [...areas.get(area) ?? [], check]);
+  }
+  const chunks = [...areas.values()].flatMap(area => Array.from({ length: Math.ceil(area.length / REVIEW_CHECKS_PER_CALL) },
+    (_, i) => area.slice(i * REVIEW_CHECKS_PER_CALL, (i + 1) * REVIEW_CHECKS_PER_CALL)));
+  input.checklistBatch = checks.length > REVIEW_CHECKS_PER_CALL ? { index: MAX_REVIEW_BATCHES - 1, count: MAX_REVIEW_BATCHES, totalChecks: checks.length } : undefined;
+  const fits = (selected: typeof checks) => { input.contractChecklist = checklist(selected); return JSON.stringify(messages()).length <= checklistLimit; };
   const batches: (typeof checks)[] = [];
-  if (JSON.stringify(messages()).length <= checklistLimit) batches.push(checks);
-  else {
-    input.checklistBatch = { index: 15, count: 16, totalChecks: checks.length };
-    let batch: typeof checks = [];
-    for (const check of checks) {
-      input.contractChecklist = checklist([...batch, check]);
-      if (JSON.stringify(messages()).length > checklistLimit) {
-        if (batch.length) { batches.push(batch); batch = []; }
-        input.contractChecklist = checklist([check]);
-        if (JSON.stringify(messages()).length > checklistLimit) return { passed: false,
-          findings: ["Required review authority and one checklist item exceed the configured evidence budget. Split the task or select a larger compatible reviewer; acceptance is not established."] };
-      }
+  let batch: typeof checks = [];
+  for (const chunk of chunks) {
+    if (batch.length && (batch.length + chunk.length > REVIEW_CHECKS_PER_CALL || !fits([...batch, ...chunk]))) { batches.push(batch); batch = []; }
+    for (const check of chunk) {
+      if (batch.length && !fits([...batch, check])) { batches.push(batch); batch = []; }
+      if (!batch.length && !fits([check])) return { passed: false,
+        findings: ["Required review authority and one checklist item exceed the configured evidence budget. Split the task or select a larger compatible reviewer; acceptance is not established."] };
       batch.push(check);
     }
-    if (batch.length) batches.push(batch);
-    if (batches.length > 16) return { passed: false,
-      findings: ["Review requires too many bounded checklist batches. Split the task or select a larger compatible reviewer; acceptance is not established."] };
   }
+  if (batch.length) batches.push(batch);
+  if (batches.length > MAX_REVIEW_BATCHES) return { passed: false,
+    findings: ["Review requires too many bounded checklist batches. Split the task or select a larger compatible reviewer; acceptance is not established."] };
+  // Every cited quotation must exist in the receipt output or current file.
+  // A file too large to read whole is checked against the pages shown.
+  const shown = new Map<string, string[]>();
+  const show = (file: string, content: string) => shown.set(file, [...shown.get(file) ?? [], normalText(content)]);
+  const readSourcePage = async (file: string, offset: number) => {
+    const page = await options.readSourcePage(file, offset);
+    if (!page.unavailable) show(file, page.content);
+    return page;
+  };
+  const fileTexts = new Map<string, Promise<string[] | undefined>>();
+  const fileText = (file: string) => {
+    if (!fileTexts.has(file)) fileTexts.set(file, options.readSource(file, 128 * 1024)
+      .then(source => /^\[(?:missing|binary|large)/.test(source.content) ? undefined : source.truncated ? [] : [normalText(source.content)], () => undefined));
+    return fileTexts.get(file)!.then(texts => texts && [...texts, ...shown.get(file) ?? []]);
+  };
+  const inputPaths = new Set(authoritativeInputs.map(value => value.id.replace(/^input:/, "")));
+  const receiptsById = new Map(options.receipts.map(receipt => [receipt.id, receipt]));
+  const answerOnly = !options.scope.changedPaths.length;
+  const citationProblem = async (entry: unknown, sourceId: string): Promise<string | undefined> => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "an evidence entry is not an object";
+    const cited = entry as Record<string, unknown>;
+    const quoted = (value: unknown) => typeof value === "string" && normalText(value).length >= MIN_QUOTE_CHARS ? normalText(value) : undefined;
+    if (typeof cited.receipt === "string") {
+      const receipt = receiptsById.get(cited.receipt);
+      if (!receipt) return `receipt ${cited.receipt} is not one of the supplied receipts`;
+      const observed = quoted(cited.observed);
+      if (!observed) return `quote at least ${MIN_QUOTE_CHARS} characters of receipt ${cited.receipt} output in observed`;
+      return normalText(receipt.output ?? "").includes(observed) ? undefined : `receipt ${cited.receipt} output does not contain "${observed.slice(0, 80)}"`;
+    }
+    if (typeof cited.path === "string") {
+      if (!reviewPaths.includes(cited.path)) return `${cited.path} is not a review source`;
+      if (inputPaths.has(cited.path)) return `${cited.path} states the requirements; it is not evidence of the build`;
+      if (sourceId === `delivered:${cited.path}`) return `${cited.path} cannot prove its own statement`;
+      const texts = await fileText(cited.path);
+      if (texts === undefined) return `${cited.path} is not available for a quotation check; cite a receipt`;
+      // A file shorter than the minimum quotation can be quoted whole.
+      const whole = typeof cited.quote === "string" && normalText(cited.quote) !== "" && texts.some(text => text === normalText(cited.quote as string));
+      const quote = whole ? normalText(cited.quote as string) : quoted(cited.quote);
+      if (!quote) return `quote at least ${MIN_QUOTE_CHARS} characters of ${cited.path}`;
+      return texts.some(text => text.includes(quote)) ? undefined : `"${quote.slice(0, 80)}" does not appear in ${cited.path}`;
+    }
+    if (answerOnly && typeof cited.summary === "string") {
+      const quote = quoted(cited.summary);
+      return quote && normalText(options.summary).includes(quote) ? undefined : "the quoted text does not appear in the proposed answer";
+    }
+    return 'cite {"receipt","observed"} or {"path","quote"}';
+  };
+  const approve = (selected: typeof checks) => async (verdict: Readonly<Record<string, unknown>>) => {
+    const evidence = verdict.evidence && typeof verdict.evidence === "object" && !Array.isArray(verdict.evidence) ? verdict.evidence as Record<string, unknown> : {};
+    const problems: string[] = [];
+    for (const check of selected) {
+      const value = evidence[check.id];
+      const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+      const reasons: string[] = [];
+      for (const entry of entries) {
+        const reason = await citationProblem(entry, quotes[check.quoteId].sourceId);
+        if (!reason) { reasons.length = 0; break; }
+        reasons.push(reason);
+      }
+      if (!entries.length) reasons.push("no evidence cited");
+      if (reasons.length) problems.push(`Unproven ${check.id} (${quotes[check.quoteId].sourceId}: ${check.expectedBehavior.slice(0, 200)}): ${reasons.join("; ")}. Show it with a test or journey step whose output demonstrates it, or fix the implementation, then verify again.`);
+    }
+    return problems;
+  };
   for (const [index, batch] of batches.entries()) {
     options.signal?.throwIfAborted();
     input.contractChecklist = checklist(batch);
@@ -130,14 +214,15 @@ export async function reviewTaskScope(options: {
       const addedChars = JSON.stringify({ [file]: evidence.content }).length + 32;
       if (addedChars > remaining) continue;
       input.source[file] = evidence.content; remaining -= addedChars;
+      show(file, evidence.content);
       if (evidence.truncated) input.sourceNextOffsets[file] = evidence.content.length;
       else { truncated.delete(file); delete input.sourceNextOffsets[file]; }
     }
     input.sourceTruncatedPaths = [...truncated];
     const result = await runTaskReview({ provider: options.provider, allowedPaths: reviewPaths,
-      initialSourceOffsets: input.sourceNextOffsets, readSourcePage: options.readSourcePage,
+      initialSourceOffsets: input.sourceNextOffsets, readSourcePage,
       maxInputChars: options.maxInputChars, maxOutputTokens: options.maxOutputTokens,
-      messages: messages(), signal: options.signal });
+      messages: messages(), signal: options.signal, approve: approve(batch) });
     if (!result.passed) return result;
   }
   return { passed: true, findings: [] };

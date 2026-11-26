@@ -21,16 +21,20 @@ export async function runTaskReview(options: {
   maxInputChars: number;
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  /** Checks an approval before it is accepted. Problems get one repair round,
+   * in which the reviewer may supply the missing evidence or reject; problems
+   * that remain become the review's findings. */
+  approve?: (verdict: Readonly<Record<string, unknown>>) => Promise<string[]>;
 }): Promise<TaskReviewResult> {
   const messages = [...options.messages];
   const requested = new Set<string>();
   const nextOffsets = new Map(Object.entries(options.initialSourceOffsets ?? {}));
   const reject = (finding: string): TaskReviewResult => ({ passed: false, findings: [finding] });
-  let sourceRounds = 0; let formatRepaired = false; let repeatReminded = false;
+  let sourceRounds = 0; let formatRepaired = false; let repeatReminded = false; let evidenceRepaired = false;
   // Four evidence rounds followed by a final decision. No execution tool or
   // permission widening is available. One received malformed JSON reply may be
   // repaired, still within the original contract, context and model-call budget.
-  for (let call = 0; call < 6; call++) {
+  for (let call = 0; call < 7; call++) {
     options.signal?.throwIfAborted();
     if (JSON.stringify(messages).length > options.maxInputChars) {
       return reject("Required review evidence exceeds the configured model context. Split the task or select a larger compatible reviewer context; acceptance is not established.");
@@ -58,6 +62,17 @@ export async function runTaskReview(options: {
       }
       if (typeof result.passed !== "boolean" || !Array.isArray(result.findings) || !result.findings.every(finding => typeof finding === "string")) {
         return reject("Review did not provide valid acceptance evidence.");
+      }
+      if (result.passed === true && result.findings.length === 0 && options.approve) {
+        const problems = await options.approve(result);
+        if (problems.length) {
+          if (evidenceRepaired) return { passed: false, findings: problems };
+          evidenceRepaired = true;
+          messages.push({ role: "assistant", content: response.message.content });
+          messages.push({ role: "user", content: JSON.stringify({ evidenceProblems: problems,
+            instruction: "The approval was not accepted: these checks lack verifiable evidence. For each one, cite evidence that exists exactly as quoted, or reject with a finding that names what is missing. Do not approve a check you cannot prove. Reply with the same verdict format, including evidence for every check in this portion." }) });
+          continue;
+        }
       }
       return { passed: result.passed === true && result.findings.length === 0,
         findings: result.findings.length ? result.findings : result.passed ? [] : ["Review rejected acceptance without a specific finding."] };
