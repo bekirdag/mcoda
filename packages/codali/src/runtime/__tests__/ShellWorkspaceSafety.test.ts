@@ -4,7 +4,7 @@ import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { contractReviewFixture } from "../../eval/fixtures/ContractReviewProvider.js";
-import { SessionController } from "../SessionController.js";
+import { SessionController, type SessionEvent } from "../SessionController.js";
 import type { Provider, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { orchestrationHash, type OrchestrationConfig } from "../../config/OrchestrationConfig.js";
 
@@ -32,6 +32,7 @@ test("a workspace conflict found after a shell call fails only that call, and th
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
   await fs.mkdir(path.join(root, "src")); await fs.mkdir(path.join(root, "out"));
   await fs.writeFile(path.join(root, "src", "ledger.py"), "def balance():\n    return 0\n");
+  await fs.writeFile(path.join(root, "notes.md"), "original notes\n");
   let step = 0; const pending: Promise<void>[] = []; const seen: string[] = [];
   const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
     const contract = contractReviewFixture(request); if (contract) return contract;
@@ -53,13 +54,14 @@ test("a workspace conflict found after a shell call fails only that call, and th
       case 4:
         seen.push(previous);
         return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('out/report.txt','ok');console.log('report written')"], writePaths: ["out"] });
-      case 5: seen.push(previous); return call("work_block", { taskId: "T1", reason: "Conflict regression finished" });
+      case 5: seen.push(previous); return call("read_file", { path: "notes.md" });
+      case 6: return call("work_block", { taskId: "T1", reason: "Conflict regression finished" });
       default: return reply("Stopped after recording the conflicts.");
     }
   } };
   const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
   if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
-  await controller.run("Produce the report without touching the ledger source.");
+  const outcome = await controller.run("Produce the report without touching the ledger source.");
   await Promise.all(pending);
   assert.match(seen[0], /Protected source changed during run_shell: "src\/ledger\.py"/);
   assert.match(seen[0], /prepare_edit/);
@@ -70,6 +72,74 @@ test("a workspace conflict found after a shell call fails only that call, and th
   assert.equal(await fs.readFile(path.join(root, "src", "ledger.py"), "utf8"), "def balance():\n    return 42\n");
   assert.match(seen[3], /report written/);
   assert.equal(await fs.readFile(path.join(root, "out", "report.txt"), "utf8"), "ok");
+  // The ledger edit was absorbed into the snapshot but never inspected: the final report says so.
+  // notes.md was read afterwards, so it is no longer listed.
+  assert.match(outcome.content, /not inspected since.*src\/ledger\.py/s);
+  assert.doesNotMatch(outcome.content, /not inspected since[^\n]*notes\.md/);
+});
+
+test("identical retries of a conflicting call trip the repeated-failure backstop despite changing output", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-conflict-repeat-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-conflict-repeat-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "cache")); await fs.writeFile(path.join(root, "Makefile"), "all:\n");
+  // Prints a different value every run, so the command output never repeats.
+  const script = `${waitForChange("cache/started.flag", "Makefile")};console.log(Math.random());require('fs').unlinkSync('cache/started.flag')`;
+  let step = 0, retries = 0, blocked = false; const pending: Promise<void>[] = []; const events: SessionEvent[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    if (step++ === 0) return call("work_claim", { taskId: "T1", allowedPaths: ["."] });
+    if (retries < 3 && !events.some(event => event.type === "progress_stalled")) {
+      retries++;
+      pending.push(editWhenStarted(root, "cache/started.flag", "Makefile", `all:\n\t@echo ${retries}\n`));
+      return call("run_shell", { command: "node", args: ["-e", script], writePaths: ["cache"] });
+    }
+    if (!blocked) { blocked = true; return call("work_block", { taskId: "T1", reason: "Repeated conflict regression finished" }); }
+    return reply("Stopped.");
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace", onEvent: event => { events.push(event); } });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await controller.run("Warm the cache.");
+  await Promise.all(pending);
+  const stalled = events.find(event => event.type === "progress_stalled");
+  assert.ok(stalled, "three identical conflicts are recognised as a repeated failure");
+  assert.ok(Number((stalled.data as { repeats?: number; repeatedFailures?: number }).repeats ?? (stalled.data as { repeatedFailures?: number }).repeatedFailures) >= 3);
+});
+
+test("tracked source under a build-output directory name stays protected; untracked output there does not", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tracked-build-"));
+  const storage = await fs.mkdtemp(path.join(os.tmpdir(), "codali-tracked-build-state-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(storage, { recursive: true, force: true }); });
+  await fs.mkdir(path.join(root, "build")); await fs.mkdir(path.join(root, "pkg", "dist"), { recursive: true });
+  await fs.writeFile(path.join(root, "build", "rollup.config.js"), "export default { input: 'src/main.js' };\n");
+  await fs.writeFile(path.join(root, "pkg", "dist", "release.go"), "package dist\n");
+  await fs.writeFile(path.join(root, "build", "bundle.js"), "/* old bundle */\n");
+  await fs.writeFile(path.join(root, ".gitignore"), "build/bundle.js\n");
+  const { execFileSync } = await import("node:child_process");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["add", ".gitignore", "build/rollup.config.js", "pkg/dist/release.go"], { cwd: root });
+  let step = 0; const seen: string[] = [];
+  const provider: Provider = { name: "fixture", supportsToolCalls: true, generate: async request => {
+    const contract = contractReviewFixture(request); if (contract) return contract;
+    const previous = request.messages.at(-1)!.content;
+    switch (step++) {
+      case 0: return call("work_claim", { taskId: "T1", allowedPaths: ["."] });
+      case 1: return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('build/bundle.js','/* new bundle */');console.log('bundled')"], writePaths: ["build"] });
+      case 2: seen.push(previous); return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('build/rollup.config.js','changed')"], writePaths: ["build"] });
+      case 3: seen.push(previous); return call("run_shell", { command: "node", args: ["-e", "require('fs').writeFileSync('pkg/dist/release.go','changed')"], writePaths: ["pkg"] });
+      case 4: seen.push(previous); return call("work_block", { taskId: "T1", reason: "Tracked build source regression finished" });
+      default: return reply("Done.");
+    }
+  } };
+  const controller = new SessionController({ workspaceRoot: root, storageRoot: storage, resolved, provider, docdex: false, permissions: "workspace" });
+  if (!controller.isolation.available) { t.skip(controller.isolation.reason); return; }
+  await controller.run("Rebuild the bundle.");
+  assert.match(seen[0], /bundled/);
+  assert.equal(await fs.readFile(path.join(root, "build", "bundle.js"), "utf8"), "/* new bundle */");
+  assert.match(seen[1], /EROFS|read-only|Operation not permitted/i); assert.match(seen[1], /build\/rollup\.config\.js/);
+  assert.match(seen[2], /EROFS|read-only|Operation not permitted/i); assert.match(seen[2], /pkg\/dist\/release\.go/);
+  assert.equal(await fs.readFile(path.join(root, "build", "rollup.config.js"), "utf8"), "export default { input: 'src/main.js' };\n");
+  assert.equal(await fs.readFile(path.join(root, "pkg", "dist", "release.go"), "utf8"), "package dist\n");
 });
 
 test("rebuilding output and regenerating files the session wrote does not trip source protection", async t => {

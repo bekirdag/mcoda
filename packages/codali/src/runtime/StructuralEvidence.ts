@@ -18,7 +18,9 @@ export const isSourcePath = (file: string): boolean => /\.(?:[cm]?[jt]sx?|py|rs|
  * bundles, source maps) is produced from other files: nothing calls into it and
  * a build replaces it wholesale. dist/, coverage/, .next/ and .nuxt/ are output
  * at any depth (packages/web/dist/); build/ and out/ only at the root, since
- * nested folders of those names often hold authored build scripts.
+ * nested folders of those names often hold authored build scripts. This is a
+ * location rule only: SessionController never treats a Git-tracked file as
+ * generated.
  */
 export const isGeneratedOutput = (file: string): boolean => /^(?:build|out)\/|(?:^|\/)(?:dist|coverage|\.next|\.nuxt)\//.test(file) || /\.min\.(?:js|css)$|\.map$/.test(file);
 
