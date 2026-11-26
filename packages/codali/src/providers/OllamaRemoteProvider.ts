@@ -173,6 +173,7 @@ export class OllamaRemoteProvider implements Provider {
     const url = new URL("api/chat", baseUrl).toString();
     let resolvedModel = this.config.model;
     const emitToken = (token: string) => {
+      request.onProgress?.();
       if (request.onEvent) {
         request.onEvent({ type: "token", content: token });
         return;

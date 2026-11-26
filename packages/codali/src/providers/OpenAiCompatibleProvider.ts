@@ -234,6 +234,7 @@ export class OpenAiCompatibleProvider implements Provider {
     const url = new URL("chat/completions", baseUrl).toString();
     const auth = this.resolveAuth();
     const emitToken = (token: string) => {
+      request.onProgress?.();
       if (request.onEvent) {
         request.onEvent({ type: "token", content: token });
         return;
@@ -386,6 +387,8 @@ export class OpenAiCompatibleProvider implements Provider {
               if (content.length > 4_000_000) throw new Error("Model stream exceeds output limit");
               emitToken(delta.content);
             }
+            // Tool arguments and reasoning are generation too: a stream producing them is alive.
+            if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length || typeof delta?.reasoning_content === "string" && delta.reasoning_content || typeof delta?.reasoning === "string" && delta.reasoning) request.onProgress?.();
             if (Array.isArray(delta?.tool_calls)) for (const call of delta.tool_calls) {
               const index = call.index ?? 0;
               if (!Number.isInteger(index) || index < 0 || index > 128) throw new Error("Invalid streamed tool index");

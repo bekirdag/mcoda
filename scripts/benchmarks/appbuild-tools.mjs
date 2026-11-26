@@ -14,10 +14,10 @@ import { createTextTool } from '../../packages/codali/dist/tools/system/TextTool
 import { createCalendarTool } from '../../packages/codali/dist/tools/system/CalendarTool.js';
 import { createIsolatedExecutor, executorStatus } from '../../packages/codali/dist/tools/shell/IsolatedExecutor.js';
 import { compactToolSchema } from '../../packages/codali/dist/runtime/InteractionRouter.js';
-import { modelStallAllowanceMs } from '../../packages/codali/dist/runtime/OutageWait.js';
+import { modelStallAllowanceMs, modelStreamGapAllowanceMs } from '../../packages/codali/dist/runtime/OutageWait.js';
 import { estimateProviderInputTokens } from '../../packages/codali/dist/providers/RequestSize.js';
 import { compressProviderContext } from '../../packages/codali/dist/runtime/ContextCompression.js';
-import { outageWaitMs } from '../../packages/codali/dist/runtime/OutageWait.js';
+import { outageRetryDelayMs } from '../../packages/codali/dist/runtime/OutageWait.js';
 import { SkillCatalog } from '../../packages/codali/dist/session/SkillCatalog.js';
 import { orchestrationHash } from '../../packages/codali/dist/config/OrchestrationConfig.js';
 import { fullTrustTools, exposeResearchWebTools } from './trust-full-tools.mjs';
@@ -166,28 +166,35 @@ export const RAW_OUTAGE_WAITS_MS = [500, 2000, 5000, 15_000, 30_000, 60_000, 60_
 /** The service error behind a failure: a native-reasoning preflight wraps it as its cause. */
 const modelErrorCode = error => error instanceof TypeError && error.message === 'fetch failed' ? 'transport_unavailable' : error?.code ?? error?.cause?.code;
 
-/** The same request again, unchanged: no added guidance, so it is not answer repair.
- * An outage is waited out exactly as Codali does (outageWaitMs: the ladder, then a
- * minute per retry, within 30 minutes and half the time left). */
 /** A regular request (or its retry wait) that would run into the final-answer
  * reserve. It is given up so the tool-free final turn keeps the whole reserve. */
 const reserveCutoff = () => Object.assign(new Error('Model request reached the final-answer reserve'), { code: 'final_answer_reserve', cutoff: true });
 
+/** The same request again, unchanged: no added guidance, so it is not answer repair.
+ * An outage is waited out exactly as Codali waits out a failed model request
+ * (outageRetryDelayMs: the ladder, then a minute per retry, within the outage
+ * allowance and the time left less the delivery reserve). The stall allowance
+ * is Codali's too, including its reset on streamed progress. */
 export async function generateWithRetry(provider, request, { signal, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onRetry = () => {}, deadlineAt, cutoffAt, now = Date.now, stall = { longestMs: 0 }, stallMs } = {}) {
-  let stalled = 0;
+  let stalled = 0, outageStartedAt, waitedMs = 0;
   for (let attempt = 0; ; attempt++) {
-    // The same allowance Codali gives each of its requests, sized by the time left as Codali does.
-    const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
-    const allowance = stallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? 65536, stall.longestMs, stalled, remainingMs);
+    // The same allowance Codali gives each of its requests.
+    const allowance = stallMs ?? modelStallAllowanceMs(estimateProviderInputTokens(request), request.maxTokens ?? 65536, stall.longestMs, stalled);
+    const gapMs = stallMs ?? modelStreamGapAllowanceMs(allowance, stall.longestMs);
     // Codali bounds a request that is not the final one by its answer reserve; so does the raw arm.
     const untilCutoff = cutoffAt === undefined ? Infinity : cutoffAt - now();
     if (untilCutoff <= 0) throw reserveCutoff();
-    const cut = untilCutoff < allowance;
-    const timer = new AbortController(); const handle = setTimeout(() => timer.abort(), cut ? untilCutoff : allowance); const started = now();
+    const timer = new AbortController(); let reason;
+    const stop = why => { if (timer.signal.aborted) return; reason = why; timer.abort(); };
+    let stallHandle = setTimeout(() => stop('stalled'), allowance);
+    const cutoffHandle = Number.isFinite(untilCutoff) ? setTimeout(() => stop('cutoff'), untilCutoff) : undefined;
+    // A stream that is producing output is not stalled: each chunk restarts the stall timer.
+    const onProgress = () => { if (timer.signal.aborted) return; clearTimeout(stallHandle); stallHandle = setTimeout(() => stop('stalled'), gapMs); request.onProgress?.(); };
+    const started = now();
     try {
-      const dispatched = provider.generate({ ...request, signal: request.signal ? AbortSignal.any([request.signal, timer.signal]) : timer.signal });
+      const dispatched = provider.generate({ ...request, stream: request.stream ?? true, onProgress, signal: request.signal ? AbortSignal.any([request.signal, timer.signal]) : timer.signal });
       dispatched.catch(() => undefined);
-      const response = await Promise.race([dispatched, new Promise((_, reject) => timer.signal.addEventListener('abort', () => reject(cut ? reserveCutoff() : Object.assign(new Error('Model request stalled'), { code: 'service_unavailable', stalled: true })), { once: true }))]);
+      const response = await Promise.race([dispatched, new Promise((_, reject) => timer.signal.addEventListener('abort', () => reject(reason === 'cutoff' ? reserveCutoff() : Object.assign(new Error('Model request stalled'), { code: 'service_unavailable', stalled: true })), { once: true }))]);
       stall.longestMs = Math.max(stall.longestMs, now() - started);
       return response;
     }
@@ -196,14 +203,21 @@ export async function generateWithRetry(provider, request, { signal, wait = ms =
       if (error?.stalled) stalled++;
       const code = modelErrorCode(error);
       const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
-      const waitMs = RAW_OUTAGE_CODES.has(code) ? outageWaitMs(attempt, remainingMs) : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
+      let waitMs;
+      if (RAW_OUTAGE_CODES.has(code)) {
+        outageStartedAt ??= now();
+        // Elapsed outage time is never less than the waits already scheduled.
+        const elapsedMs = Math.max(now() - outageStartedAt, waitedMs);
+        const retryAfter = error?.retryAfterSeconds ?? error?.cause?.retryAfterSeconds ?? 0;
+        waitMs = outageRetryDelayMs(attempt, remainingMs, elapsedMs, retryAfter, false);
+      } else waitMs = RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
       if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
       // A retry that could only start inside the reserve is not made; the final turn follows.
       if (cutoffAt !== undefined && now() + waitMs >= cutoffAt) throw reserveCutoff();
       await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}) });
-      await wait(waitMs);
+      await wait(waitMs); waitedMs += waitMs;
     }
-    finally { clearTimeout(handle); }
+    finally { clearTimeout(stallHandle); clearTimeout(cutoffHandle); }
   }
 }
 

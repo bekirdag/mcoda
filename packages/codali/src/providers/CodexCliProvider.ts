@@ -127,6 +127,7 @@ export class CodexCliProvider implements Provider {
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const last = request.messages[request.messages.length - 1];
     const emitToken = (token: string) => {
+      request.onProgress?.();
       if (request.onEvent) {
         request.onEvent({ type: "token", content: token });
         return;

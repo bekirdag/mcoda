@@ -2279,48 +2279,54 @@ test("the stall allowance follows the model's pace and doubles on every stall of
   assert.ok(modelStallAllowanceMs(67_000, 65_536, 226_000) < 16 * 60_000);
 });
 
-test("a time-limited turn gives a lost request what it is expected to need, not ten minutes", async () => {
-  const { modelStallAllowanceMs } = await import("../OutageWait.js");
-  // A 20-minute ticket-triage turn with 14 minutes left: answered calls took up to 52 s, the
-  // prompt is 70k tokens and every request asks for 65k output. Ten minutes would be 70% of what is left.
-  const triage = modelStallAllowanceMs(70_000, 65_536, 52_000, 0, 14 * 60_000);
-  assert.equal(triage, 120_000 + 70_000);
-  assert.ok(triage < 600_000 / 3);
-  // Three times the slowest call when that is longer than scheduling plus the prompt read.
-  assert.equal(modelStallAllowanceMs(20_000, 65_536, 75_000, 0, 25 * 60_000), 225_000);
-  // Before any call has answered: a quarter of the time left, when that is longer.
-  assert.equal(modelStallAllowanceMs(30_000, 65_536, 0, 0, 22 * 60_000), 330_000);
-  // Never under scheduling plus the prompt read, however fast earlier calls were; a stall still doubles it.
-  assert.equal(modelStallAllowanceMs(1_000, 65_536, 4_000, 0, 5 * 60_000), 121_000);
-  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 1, 10 * 60_000), 380_000);
-  // Long work keeps the full allowance: a build with nine hours left, and an open-ended turn.
-  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 0, 9 * 3_600_000), 600_000);
-  assert.equal(modelStallAllowanceMs(70_000, 65_536, 240_000, 0, 9 * 3_600_000), 960_000);
-  assert.equal(modelStallAllowanceMs(70_000, 65_536, 52_000, 0), 600_000);
-  // It is never longer than the open-ended allowance.
-  assert.equal(modelStallAllowanceMs(2_000, 256, 0, 0, 60_000), 122_000);
-  assert.ok(modelStallAllowanceMs(2_000, 256, 0, 0, 60_000) <= modelStallAllowanceMs(2_000, 256, 0));
+test("a streaming request is stalled by silence, not by how long it has been generating", async () => {
+  const { modelStreamGapAllowanceMs, modelStallAllowanceMs } = await import("../OutageWait.js");
+  // Two minutes of silence, or three times the slowest answered call, never more than the full allowance.
+  assert.equal(modelStreamGapAllowanceMs(600_000, 25_000), 120_000);
+  assert.equal(modelStreamGapAllowanceMs(600_000, 90_000), 270_000);
+  assert.equal(modelStreamGapAllowanceMs(100_000, 0), 100_000);
+  // The full allowance before any output is unchanged: a 30k prompt, 65k output ceiling, slowest call 25 s.
+  assert.equal(modelStallAllowanceMs(30_000, 65_536, 25_000), 600_000);
 });
 
-test("a time-limited turn passes its remaining time to the stall allowance", async t => {
-  const config = structuredClone(base);
-  config.interaction = { strategy: "adaptive", timeoutMs: 18 * 60_000 };
-  const seen: Array<{ remaining: number; allowance: number }> = [];
-  const { controller } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async () => reply("Seven.") }, config);
-  const outage = await import("../OutageWait.js");
-  t.mock.method(Object.getPrototypeOf(controller), "stallAllowanceMs", function (this: unknown, input: number, output: number, longest: number, stalls: number, remaining: number) {
-    const allowance = outage.modelStallAllowanceMs(input, output, longest, stalls, remaining);
-    seen.push({ remaining, allowance });
-    return allowance;
-  });
-  assert.equal((await controller.interact("What is 3+4?")).content, "Seven.");
-  assert.ok(seen.length >= 1);
-  assert.ok(seen[0].remaining > 17 * 60_000 && seen[0].remaining <= 18 * 60_000, `remaining ${seen[0].remaining}`);
-  assert.ok(seen[0].allowance < 600_000, `allowance ${seen[0].allowance}`);
+test("a live long generation in a short turn is never cut while it streams", async t => {
+  // A 30-minute task writes one large file: the request streams for far longer than the
+  // stall allowance (scaled here to 300 ms), with output every 60 ms. It must finish on its first attempt.
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", timeoutMs: 30 * 60_000 };
+  let calls = 0; let streamed: boolean | undefined;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    calls++; streamed = request.stream;
+    for (let chunk = 0; chunk < 25; chunk++) {
+      await new Promise(resolve => setTimeout(resolve, 60));
+      if (request.signal?.aborted) throw new Error("aborted");
+      request.onProgress?.();
+    }
+    return reply("The inventory module is written.");
+  } }, config, undefined, false, { modelStallMs: 300 });
+  assert.equal((await controller.interact("Write the inventory module.")).content, "The inventory module is written.");
+  assert.equal(calls, 1, "the live stream was not abandoned");
+  assert.equal(streamed, true, "requests ask for streaming so progress is visible");
+  assert.ok(!events.some(event => event.type === "model_failure"));
 });
 
-test("a gateway failure with no output does not spend its token reservation", async t => {
-  for (const failure of [() => new Response(null, { status: 504 }), () => Response.json({ error: { code: "upstream_timeout" } }, { status: 503 })]) {
+test("a stream that goes silent is abandoned after the gap and sent again", async t => {
+  const config = structuredClone(base); config.interaction = { strategy: "adaptive", timeoutMs: 30 * 60_000 };
+  let calls = 0; let abandoned = false;
+  const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
+    if (++calls === 1) {
+      // Two chunks, then nothing: the connection was lost mid-stream.
+      for (let chunk = 0; chunk < 2; chunk++) { await new Promise(resolve => setTimeout(resolve, 50)); request.onProgress?.(); }
+      return new Promise((_, reject) => request.signal!.addEventListener("abort", () => { abandoned = true; reject(new Error("aborted")); }, { once: true }));
+    }
+    return reply("Recovered.");
+  } }, config, undefined, false, { modelStallMs: 200 });
+  assert.equal((await controller.interact("Summarise the outage notes.")).content, "Recovered.");
+  assert.ok(abandoned); assert.equal(calls, 2);
+  assert.equal(events.filter(event => event.type === "model_failure" && event.data.responseReason === "stalled").length, 1);
+});
+
+test("a gateway failure before generation does not spend its token reservation; a 504 keeps it", async t => {
+  for (const failure of [() => new Response(null, { status: 502 }), () => Response.json({ error: { code: "upstream_unavailable" } }, { status: 503 })]) {
     const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 60000 };
     let calls = 0;
     const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
@@ -2338,13 +2344,27 @@ test("a gateway failure with no output does not spend its token reservation", as
     assert.equal(controller.usageSnapshot().modelCalls, 3);
     assert.equal(controller.usageSnapshot().estimated, false);
   }
-  // A lost connection keeps its reservation: the request may have run remotely.
+  // A gateway timeout often arrives after the upstream generated: its reservation stays within budget.
+  {
+    const config = structuredClone(base); config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 60000 };
+    let calls = 0;
+    const { controller, events } = await fixture(t, { name: "fixture", generate: async () => {
+      if (++calls === 1) throw await ModelServiceError.fromResponse(new Response(null, { status: 504 }));
+      return reply("The shipment left on Tuesday.");
+    } }, config);
+    await controller.interact("When did the shipment leave?");
+    assert.equal(events.filter(e => e.type === "model_receipt" && e.data.status === "outcome_unknown").length, 1);
+    assert.ok(controller.usageSnapshot().tokens > 320 + 2048);
+  }
   const { failedWithoutOutput } = await import("../../providers/ModelServiceError.js");
   assert.equal(failedWithoutOutput(new TypeError("fetch failed")), false);
   assert.equal(failedWithoutOutput(new ModelServiceError("service_unavailable", 504, undefined, false, "stalled")), false);
+  assert.equal(failedWithoutOutput(await ModelServiceError.fromResponse(new Response(null, { status: 504 }))), false);
+  assert.equal(failedWithoutOutput(await ModelServiceError.fromResponse(new Response(null, { status: 500 }))), false);
   const partial = await ModelServiceError.fromResponse(new Response(null, { status: 502 })); partial.partialText = "The shipment";
   assert.equal(failedWithoutOutput(partial), false);
   assert.equal(failedWithoutOutput(await ModelServiceError.fromResponse(new Response(null, { status: 429 }))), false);
+  assert.equal(failedWithoutOutput(ModelServiceError.fromRelayError({ code: "timeout", message: "Self-hosted scheduler reservation expired before dispatch completed" })), true);
 });
 
 test("a stalled request does not count as the model's pace, and its retry waits twice as long", async t => {
