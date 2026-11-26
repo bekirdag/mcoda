@@ -30,3 +30,27 @@ test("failed calls are not evidence and the round limit scales with effort", () 
   for (let round = 0; round < 20; round++) { convergence.observe("verify_tests", { files: [round] }, true, "ok"); convergence.endRound(); }
   assert.match(convergence.reason() ?? "", /20-round/);
 });
+
+test("revised programs that still crash keep inspection open; repeated or endless ones do not", () => {
+  // Fresh variant: a closed queueing network solved by a script that crashes six
+  // times with different bugs, after two tool lookups, before it runs.
+  const convergence = new InspectionConvergence("medium");
+  convergence.observe("tools_describe", { query: "python" }, true, "catalogue"); convergence.endRound();
+  convergence.observe("tools_describe", { names: ["run_code"] }, true, "schema"); convergence.endRound();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    assert.equal(convergence.observe("verify_tests", { runner: "python", files: [{ path: "test_mva.py", content: `bug ${attempt}` }] }, false, ""), false);
+    convergence.endRound();
+    assert.equal(convergence.reason(), undefined, `attempt ${attempt}`);
+  }
+  assert.equal(convergence.observe("run_code", { language: "python", source: "print(4.36)" }, true, "4.36"), true); convergence.endRound();
+  assert.equal(convergence.status().staleRounds, 0);
+  // Resending the same failing program is not progress (only its first run was new).
+  const stuck = new InspectionConvergence("high");
+  for (let round = 0; round < 9; round++) { stuck.observe("run_code", { language: "python", source: "raise SystemExit(1)" }, false, ""); stuck.endRound(); }
+  assert.match(stuck.reason() ?? "", /no new evidence/);
+  // A model that never gets any program to run still converges, just later.
+  const endless = new InspectionConvergence("high");
+  let rounds = 0;
+  while (!endless.reason() && rounds < 40) { endless.observe("calculate", { expression: `x${rounds} +` }, false, ""); endless.endRound(); rounds++; }
+  assert.equal(rounds, 16);
+});

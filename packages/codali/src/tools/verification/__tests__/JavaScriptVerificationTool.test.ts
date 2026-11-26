@@ -93,3 +93,23 @@ test("verification validates limits before launching code and extracts only one 
   assert.throws(() => javaScriptAnswerSource("```js\na\n```\n```js\nb\n```"), /one complete/);
   assert.throws(() => javaScriptAnswerSource("```python\nprint(3)\n```"), /JavaScript/);
 });
+
+test("a case without expected only runs and reports the full value it returned", options, async () => {
+  // Fresh variant: a projectile range table computed rather than checked.
+  const source = "export function solve(speeds) { return speeds.map(v => ({ v, range: Number((v * v * Math.sin(2 * 0.6) / 9.81).toFixed(6)) })); }";
+  const speeds = Array.from({ length: 40 }, (_, i) => 10 + i);
+  const result = await run(source, [{ args: [speeds] }] as never);
+  assert.equal(result.ok, true, result.error?.message || result.output);
+  const data = JSON.parse(result.output);
+  assert.equal(data.passed, undefined); assert.equal(data.runOnlyCases, 1); assert.match(data.scope, /Run only/);
+  assert.equal(data.checks[0].runOnly, true); assert.equal(data.checks[0].ran, true);
+  // The whole table comes back, not a 200-character prefix.
+  assert.equal(JSON.parse(data.checks[0].actual).length, 40);
+  assert.equal(JSON.parse(data.checks[0].actual)[39].range, Number((49 * 49 * Math.sin(1.2) / 9.81).toFixed(6)));
+  assert.equal((result.data as { actuals: unknown[] }).actuals.length, 1);
+  // Mixed cases: only those with expected decide passed.
+  const mixed = JSON.parse((await run("export function solve(x) { return x + 1; }", [{ args: [1], expected: 2 }, { args: [41] }] as never)).output);
+  assert.equal(mixed.passed, true); assert.equal(mixed.checks[1].actual, "42");
+  const crashed = JSON.parse((await run("export function solve() { throw new Error('x'); }", [{ args: [] }] as never)).output);
+  assert.equal(crashed.checks[0].ran, false); assert.match(crashed.checks[0].reason, /Program failed/);
+});

@@ -10,6 +10,7 @@ import { createDeterministicTools } from '../../packages/codali/dist/tools/deter
 import { createDocumentTools } from '../../packages/codali/dist/tools/documents/DocumentTools.js';
 import { createJavaScriptVerificationTool } from '../../packages/codali/dist/tools/verification/JavaScriptVerificationTool.js';
 import { createVitestTool } from '../../packages/codali/dist/tools/verification/VitestTool.js';
+import { createCodeRunTool } from '../../packages/codali/dist/tools/verification/CodeRunTool.js';
 import { createAdesTool } from '../../packages/codali/dist/tools/entities/AdesTool.js';
 import { createTnlTool } from '../../packages/codali/dist/tools/research/TnlTool.js';
 import { createBrowserTools } from '../../packages/codali/dist/tools/browser/BrowserTool.js';
@@ -19,7 +20,7 @@ import { toolDescriptorFor } from '../../packages/codali/dist/tools/ToolRegistry
 import { permissionKind } from '../../packages/codali/dist/permissions/PermissionGate.js';
 
 export function fullTrustTools(registry, workspace, startDocdex, initialTools) {
-  for (const tool of [...createFileTools(), createSearchTool(), createCalculatorTool(), ...createDeterministicTools(), ...createDocumentTools(), createJavaScriptVerificationTool(), createVitestTool(), createAdesTool(), createTnlTool(), createTimeTool(), ...createBrowserTools()]) {
+  for (const tool of [...createFileTools(), createSearchTool(), createCalculatorTool(), ...createDeterministicTools(), ...createDocumentTools(), createJavaScriptVerificationTool(), createVitestTool(), createCodeRunTool(), createAdesTool(), createTnlTool(), createTimeTool(), ...createBrowserTools()]) {
     if (tool.readOnly && ['read','web'].includes(permissionKind(toolDescriptorFor(tool)))) registry.register(tool);
   }
   let actual;
