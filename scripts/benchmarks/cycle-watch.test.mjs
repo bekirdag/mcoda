@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { watchCycle, systemdUnitState, completedCategories, POST_RUN_STEPS } from './cycle-watch.mjs';
+import { watchCycle, systemdUnitState, completedCategories, acquireLock, POST_RUN_STEPS } from './cycle-watch.mjs';
 
 const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'cycle-watch-'));
 const attempt = async (results, id, arm, { error } = {}) => {
@@ -61,7 +61,8 @@ test('a unit that dies without run_complete is marked died and still evaluated; 
   await attempt(results, 'zz-9', 'after');
   await fs.mkdir(path.join(C, 'design-packets')); await fs.writeFile(path.join(C, 'design-packets', 'zz-9.md'), '# zz-9');
   const calls = [];
-  await watchCycle({ cycleDir: C, unit: 'gone', tools: '/t.mjs', node: 'node', unitState: async () => ({ active: false, state: 'failed', result: 'exit-code', status: '1' }), run: fakeRun(calls), sleep: async () => {}, log: () => {} });
+  let pass = 0;
+  await watchCycle({ cycleDir: C, unit: 'gone', tools: '/t.mjs', node: 'node', unitState: async () => pass ? { active: false, state: 'failed', result: 'exit-code', status: '1' } : { active: true, state: 'active' }, run: fakeRun(calls), sleep: async () => { pass++; }, log: () => {} });
   const ended = JSON.parse(await fs.readFile(path.join(C, 'RUN-ENDED.json'), 'utf8'));
   assert.equal(ended.state, 'died'); assert.equal(ended.unitResult, 'exit-code'); assert.equal(ended.status, 1);
   assert.equal((await notifications(C))[0].kind, 'run_died');
@@ -116,4 +117,55 @@ test('categories complete only when every case has both arms, each reported once
   assert.deepEqual(completedCategories(cats, ['q-1-after-x', 'q-1-raw_tools-y', 'q-2-after-z'], []), []);
   assert.deepEqual(completedCategories(cats, ['q-1-after-x', 'q-1-raw_tools-y', 'q-2-after-z', 'q-2-raw_tools-w', 'q-3-after-v'], []), ['a']);
   assert.deepEqual(completedCategories(cats, ['q-1-after-x', 'q-1-raw_tools-y', 'q-2-after-z', 'q-2-raw_tools-w'], ['a']), []);
+});
+
+test('a mistyped or not-yet-started unit is waited for: no RUN-ENDED, no evaluation, one notice after the grace period', async () => {
+  const C = await tmp(); await fs.mkdir(path.join(C, 'results'));
+  let clock = Date.parse('2026-04-01T00:00:00Z');
+  const calls = [];
+  const out = await watchCycle({
+    cycleDir: C, unit: 'codali-cylce9', tools: '/t.mjs', node: 'node', startGraceMs: 30 * 60000, now: () => clock, maxPasses: 6,
+    unitState: async () => ({ active: false, state: 'inactive', loaded: 'not-found' }), run: fakeRun(calls), log: () => {}, sleep: async () => { clock += 10 * 60000; },
+  });
+  assert.equal(out.ended, false);
+  assert.equal(await fs.stat(path.join(C, 'RUN-ENDED.json')).then(() => true, () => false), false);
+  assert.equal(calls.filter(call => call[0] === 'grade').length, 0);
+  assert.deepEqual((await notifications(C)).map(item => item.kind).filter(kind => kind.startsWith('unit') || kind.startsWith('run') || kind.startsWith('post')), ['unit_not_seen']);
+  assert.equal(await fs.stat(path.join(C, 'cycle-watch.lock')).then(() => true, () => false), false, 'the lock is released');
+});
+
+test('a restarted watcher remembers the unit ran, and never repeats a finished evaluation', async () => {
+  const C = await tmp(), results = path.join(C, 'results'); await fs.mkdir(results);
+  await attempt(results, 'rs-1', 'after');
+  // First watcher sees the unit running, then is stopped before the run ends.
+  await watchCycle({ cycleDir: C, unit: 'u9', tools: '/t.mjs', node: 'node', maxPasses: 1, unitState: async () => ({ active: true, state: 'active' }), run: fakeRun([]), log: () => {}, sleep: async () => {} });
+  // Restarted after the transient unit is gone (not-found): the run has ended, so it is evaluated.
+  const calls = [];
+  const second = await watchCycle({ cycleDir: C, unit: 'u9', tools: '/t.mjs', node: 'node', unitState: async () => ({ active: false, state: 'inactive', loaded: 'not-found' }), run: fakeRun(calls), log: () => {}, sleep: async () => {} });
+  assert.equal(second.ended.state, 'died');
+  assert.equal(calls.filter(call => call[0] === 'grade').length, 1);
+  assert.ok(JSON.parse(await fs.readFile(path.join(C, 'RUN-ENDED.json'), 'utf8')).postRunCompletedAt);
+  // A further restart finds the final evaluation and does nothing.
+  const again = [];
+  const third = await watchCycle({ cycleDir: C, unit: 'u9', tools: '/t.mjs', node: 'node', unitState: async () => ({ active: false, state: 'inactive' }), run: fakeRun(again), log: () => {}, sleep: async () => {} });
+  assert.equal(third.skipped, 'already_evaluated'); assert.deepEqual(again, []);
+});
+
+test('two watchers on one cycle: the second exits on the lock; a stale lock is taken over', async () => {
+  const C = await tmp(), results = path.join(C, 'results'); await fs.mkdir(results);
+  let release, gate = new Promise(resolve => { release = resolve; }), pass = 0;
+  const firstCalls = [];
+  const first = watchCycle({ cycleDir: C, unit: 'u', tools: '/t.mjs', node: 'node', unitState: async () => ({ active: pass < 1, state: pass < 1 ? 'active' : 'inactive' }), run: fakeRun(firstCalls), log: () => {}, sleep: async () => { await gate; pass++; } });
+  while (!await fs.stat(path.join(C, 'cycle-watch.lock')).then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 5));
+  const secondCalls = [];
+  const second = await watchCycle({ cycleDir: C, unit: 'u', tools: '/t.mjs', node: 'node', unitState: async () => ({ active: false, state: 'inactive' }), run: fakeRun(secondCalls), log: () => {}, sleep: async () => {} });
+  assert.equal(second.skipped, 'locked'); assert.equal(second.holder.pid, process.pid); assert.deepEqual(secondCalls, []);
+  release();
+  assert.equal((await first).ended.state, 'died');
+  assert.equal(firstCalls.filter(call => call[0] === 'grade').length, 1, 'the evaluation ran once');
+  // A lock left by a process that no longer exists does not block a new watcher.
+  const lockFile = path.join(C, 'stale.lock');
+  await fs.writeFile(lockFile, JSON.stringify({ pid: 2 ** 22 + 12345 }));
+  const taken = await acquireLock(lockFile);
+  assert.equal(taken.acquired, true); await taken.release();
 });

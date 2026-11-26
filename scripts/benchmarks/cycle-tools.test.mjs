@@ -252,6 +252,27 @@ test('model-service loss: raw retries that hang near the deadline make a deadlin
   assert.equal(tools.deadlineBound({ result: { elapsedMs: 100 }, events: [ev('00:00.000', 'inspection_request_abandoned', { reason: 'answer_reserve' })], deadlineMs: 1000 }), true);
 });
 
+test('model-service loss: output-limit and context-length failures are model-caused, never infrastructure', async () => {
+  // A 30-minute attempt that ends on its deadline after two 10-minute calls that failed on the model's side.
+  const events = [
+    ev('00:00.000', 'model_request', { id: 'm1' }), ev('10:00.000', 'model_failure', { id: 'm1', code: 'output_limit', partial: true }),
+    ev('10:00.500', 'model_request', { id: 'm2' }), ev('20:00.000', 'model_failure', { id: 'm2', code: 'context_length_exceeded', httpStatus: 400 }),
+    ev('20:01.000', 'model_request', { id: 'm3' }), ev('21:00.000', 'model_failure', { id: 'm3', code: 'service_unavailable', httpStatus: 504 }),
+    ev('21:00.010', 'model_recovery', { attempt: 1, waitMs: 500 }), ev('21:00.600', 'model_request', { id: 'm3' }),
+  ];
+  const loss = tools.modelServiceLoss(events);
+  assert.equal(Math.round(loss.lostMs / 1000), 60, 'only the 504 counts as service time');
+  assert.equal(Math.round(loss.modelCausedMs / 1000), 1201);
+  assert.deepEqual(loss.failures.map(item => item.cause), ['model', 'model', 'service']);
+  const attempts = new Map([['ol-1', { task: { id: 'ol-1', execution: { deadlineMs: 30 * 60000 } }, run: 'main', arms: { after: { directory: 'd', result: { error: 'Error: workflow deadline exceeded', elapsedMs: 1800000 } } } }]]);
+  const report = await tools.serviceLossReport(attempts, { readEvents: async () => events });
+  assert.equal(report.affected.length, 0, 'model-caused time is not a rerun reason');
+  assert.deepEqual([report.rows[0].failures, report.rows[0].modelFailures, report.rows[0].modelCausedCodes], [1, 2, ['output_limit', 'context_length_exceeded']]);
+  // Service-side codes and transport errors without a code are service-caused.
+  for (const data of [{ code: 'rate_limited' }, { httpStatus: 503 }, { code: 'invalid_response' }, { message: 'Model service HTTP 429: rate_limited' }, { message: 'fetch failed: ECONNRESET' }, { code: 'service_unavailable', responseReason: 'stalled' }]) assert.equal(tools.failureCause(data), 'service', JSON.stringify(data));
+  for (const data of [{ code: 'output_limit' }, { code: 'context_length_exceeded', httpStatus: 400 }, { code: 'content_filter' }, {}]) assert.equal(tools.failureCause(data), 'model', JSON.stringify(data));
+});
+
 test('receipts: raw {ok} and Codali {status} shapes are each read correctly', () => {
   const events = [
     { type: 'tool_receipt', data: { call: { name: 'run_shell' }, receipt: { ok: true, output: 'x' } } },
