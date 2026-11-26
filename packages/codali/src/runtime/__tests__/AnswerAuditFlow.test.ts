@@ -131,18 +131,18 @@ const researchConfig = () => {
 };
 const ferryDraft = ["Winter service", "Fares", "Northern crossing", "Southern crossing", "Caveats"].map((title, index) =>
   `## ${title}\nPart ${index + 1}: the operator's notice on ${title.toLowerCase()} sets out the changes for this winter ([operator notice](https://example.org/source)). ${"Each change is described with its start date and the routes it affects. ".repeat(5)}`).join("\n\n");
-const research = async (t: test.TestContext, audit: ProviderResponse) => {
+const research = async (t: test.TestContext, audit: ProviderResponse, draft = ferryDraft, ask = "Research this winter's ferry service changes.") => {
   t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   t.mock.method(DocdexClient.prototype, "webResearch", async () => ({ web_context: [{ url: "https://example.org/source", content: "The winter timetable starts in November; the northern crossing keeps its sailings for a further three months." }] }));
   let calls = 0, system = "";
   const { controller, events } = await fixture(t, { name: "fixture", supportsToolCalls: true, generate: async request => {
     if (++calls === 1) return { ...reply(""), toolCalls: [{ id: "web", name: "codali", args: { name: "docdex_web_research", args: { query: "winter ferry timetable" } } }] };
-    if (calls === 2) return reply(ferryDraft);
+    if (calls === 2) return reply(draft);
     system = request.messages[0].content;
     return audit;
   } }, researchConfig(), { allowWeb: true }, true);
-  const answer = (await controller.interact("Research this winter's ferry service changes.")).content;
+  const answer = (await controller.interact(ask)).content;
   return { answer, events, system: () => system };
 };
 
@@ -173,4 +173,61 @@ test("restating a confirmed figure with rounding is not a change to it", async t
   const script = scripted([draftCheck, cleanCheck], [rewrite]);
   const { controller } = await fixture(t, script.provider, designConfig());
   assert.equal((await controller.interact(designPrompt)).content, rewrite);
+});
+
+// Review findings on the first version (fresh variants: a pallet-loading
+// warehouse design and a library-hours research answer).
+const palletPrompt = "Plan pallet loading for a cold store with 81 pallets per crew shift and $12 handling cost per pallet.";
+const palletDraft = [
+  "## Throughput", "We run 3 crews per day, each loading 81 pallets, so the dock loads 243 pallets per day.",
+  "## Cost", "At $12 per pallet, handling costs $2,916 per day.",
+  "## Schedule", "Dock slots start at 06:00, 10:00, 14:00 and 18:00, each lasting 45 minutes with a 15 minute changeover.",
+  "## Operations", "Each crew checks the seal, the probe temperature and the load plan before the doors open. ".repeat(40).trim(),
+].join("\n\n");
+const palletFigures = [
+  { claim: "the dock loads 243 pallets per day", expression: "3 * 81", stated: 243 },
+  { claim: "handling costs $2,916 per day", expression: "243 * 12[$]", stated: 2916, unit: "$" },
+];
+const palletCheck = (figures = palletFigures) => JSON.stringify({ figures, targets: [], conflicts: [] });
+
+test("an edit that changes an input of a confirmed figure frees that figure and what is built on it", async t => {
+  const fourCrews = [{ claim: "the dock loads 324 pallets per day", expression: "4 * 81", stated: 324 }, { claim: "handling costs $3,888 per day", expression: "324 * 12[$]", stated: 3888, unit: "$" }];
+  const script = scripted([palletCheck(), palletCheck(fourCrews)], [edits(["We run 3 crews per day", "We run 4 crews per day"],
+    ["loads 243 pallets per day", "loads 324 pallets per day"], ["handling costs $2,916 per day", "handling costs $3,888 per day"])], palletDraft);
+  const { controller, events } = await fixture(t, script.provider, designConfig());
+  const answer = (await controller.interact(palletPrompt)).content;
+  assert.match(answer, /4 crews/); assert.match(answer, /324 pallets/); assert.match(answer, /\$3,888/);
+  assert.equal(events.find(event => event.type === "consistency_answer_audit")?.data.refusedEdits, 0);
+});
+
+test("an edit that changes an input but leaves its result is undone when the re-check finds them inconsistent", async t => {
+  const stale = [{ claim: "the dock loads 243 pallets per day", expression: "4 * 81", stated: 243 }, palletFigures[1]];
+  const script = scripted([palletCheck(), palletCheck(stale)], [edits(["We run 3 crews per day", "We run 4 crews per day"])], palletDraft);
+  const { controller, events } = await fixture(t, script.provider, designConfig());
+  const answer = (await controller.interact(palletPrompt)).content;
+  assert.match(answer, /3 crews/);
+  assert.equal(events.find(event => event.type === "consistency_answer_audit")?.data.revertedEdits, 1);
+});
+
+const libraryDraft = [
+  "## Opening hours", `The central library opens 09:00-20:00 on weekdays from January ([city notice](https://example.org/source)). ${"Evening hours apply to the lending desk and the reading rooms alike. ".repeat(10).trim()}`,
+  "## Background", "The library has a long history in the city and its reading rooms are well known. ".repeat(16).trim(),
+  "## Branches", `Branch libraries keep their present hours ([city notice](https://example.org/source)). ${"Each branch posts its hours at the entrance and on its own page. ".repeat(10).trim()}`,
+].join("\n\n");
+
+test("one large legitimate deletion does not discard the other edits", async t => {
+  const background = libraryDraft.split("\n\n")[3];
+  const share = background.length / libraryDraft.length;
+  assert.ok(share > 0.4 && share < 0.5, `the deleted passage is ${share} of the draft`);
+  const { answer, events } = await research(t, reply(edits([background, "The library is the city's main public library."],
+    ["opens 09:00-20:00 on weekdays", "opens 09:00-21:00 on weekdays"])), libraryDraft, "Research the library's new opening hours.");
+  assert.match(answer, /09:00-21:00/); assert.match(answer, /main public library/); assert.match(answer, /## Branches/);
+  assert.equal(events.find(event => event.type === "research_answer_audit")?.data.edits, 2);
+});
+
+test("a research audit respects the request's explicit length limit over the draft's length", async t => {
+  const short = "## Opening hours\nThe central library opens 09:00-20:00 on weekdays from January ([city notice](https://example.org/source)).\n\n## Background\nIt is the main public library.\n\n## Branches\nBranches keep their present hours ([city notice](https://example.org/source)).";
+  const { answer, system } = await research(t, reply(short), libraryDraft, "Research the library's new opening hours in at most 80 words.");
+  assert.equal(answer, short);
+  assert.match(system(), /at most 80 words/); assert.match(system(), /takes precedence/);
 });

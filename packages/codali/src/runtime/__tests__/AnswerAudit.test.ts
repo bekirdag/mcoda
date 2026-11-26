@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { checkAnswer, checkFigures, checkTargets, evaluateWithUnits, parseConflictClaims, parseFigureClaims, MAX_FIGURES } from "../FigureCheck.js";
 import { applyAnswerEdits, endsInsideMarkup, parseAnswerEdits, structureLoss } from "../AnswerEdits.js";
-import { editChangesProtected, editsToRevert, introducedFailures, protectedFigures } from "../AuditGuards.js";
-import { rewriteDefect } from "../SessionController.js";
+import { editChangesProtected, editsToRevert, flaggedFigures, introducedFailures, protectedFigures } from "../AuditGuards.js";
+import { explicitLengthLimit, rewriteDefect } from "../SessionController.js";
 import { selectResearchEvidence, type ResearchPacket } from "../ResearchEvidence.js";
 
 // Fresh variants written for the .43 audit fixes; none comes from a benchmark task.
@@ -125,4 +125,45 @@ test("research evidence selection includes the passages of the pages the draft c
   const draft = "The northern crossing keeps its sailings for a further three months ([transport board](https://www.transport.example.gov/decisions/crossing/)).";
   const selected = selectResearchEvidence([...filler, cited], "What changes to the ferry timetable this winter?", draft, 3000);
   assert.ok(selected.includes(cited));
+});
+
+// Review findings on the first version.
+test("an edit applies only where its passage occurs once, never inside a link address or inline code", () => {
+  const repeated = "Rotate the signing key every 90 days at minimum. Later: Rotate the signing key every 90 days at minimum.";
+  assert.deepEqual(applyAnswerEdits(repeated, [{ find: "Rotate the signing key every 90 days", replace: "Rotate the signing key every 30 days" }]).skipped.map(item => item.reason), ["ambiguous"]);
+  const linked = "Schema v2024 is current ([schema](https://registry.example/schemas/v2024/index.json)); set `schema=v2024` to pin it.";
+  const result = applyAnswerEdits(linked, [{ find: "v2024", replace: "v2025" }]);
+  assert.equal(result.text, "Schema v2025 is current ([schema](https://registry.example/schemas/v2024/index.json)); set `schema=v2024` to pin it.");
+  assert.deepEqual(applyAnswerEdits(linked, [{ find: "schemas/v2024", replace: "schemas/v2025" }]).skipped.map(item => item.reason), ["inside_link_or_code"]);
+  const whole = applyAnswerEdits(linked, [{ find: "[schema](https://registry.example/schemas/v2024/index.json)", replace: "[schema](https://registry.example/schemas/v2025/index.json)" }]);
+  assert.equal(whole.applied.length, 1, "replacing a whole link is an explicit link edit");
+});
+
+test("an edit that removes a section heading is refused on its own; other edits stand", () => {
+  const draft = "## Scope\nTwo sites.\n\n## Risks\nPower loss.\n\n## Costs\nAbout $40 per month.";
+  const result = applyAnswerEdits(draft, [{ find: "## Risks\nPower loss.", replace: "" }, { find: "About $40 per month.", replace: "About $45 per month." }]);
+  assert.deepEqual(result.skipped.map(item => item.reason), ["removes_section"]);
+  assert.match(result.text, /## Risks/); assert.match(result.text, /\$45/);
+});
+
+test("scale words on counted quantities are millions and billions, and a bare B is bytes only beside data units", () => {
+  assert.equal(evaluateWithUnits("1.2[M] * 5[req/day]", "req/day"), 6_000_000);
+  assert.equal(evaluateWithUnits("1.2[million users] * 5[req/day]", "req/day"), 6_000_000);
+  assert.equal(evaluateWithUnits("2.5[B] * 4", ""), 10_000_000_000);
+  assert.equal(evaluateWithUnits("250[B] * 4", "KB"), 1);
+  assert.equal(evaluateWithUnits("3[k] * 2[$]", "$"), 6000);
+  assert.equal(checkFigures([{ claim: "6,000,000 requests a day", expression: "1.2[M] * 5[req/day]", stated: 6_000_000, unit: "req/day" }])[0].matches, true);
+});
+
+test("a unit-factor difference is a suspect even when the quantities carry units, and is not handed to the audit", () => {
+  const [slip] = checkFigures([{ claim: "a flush takes 800 s", expression: "64[MB] / 80[MB/s]", stated: 800, unit: "s" }]);
+  assert.equal(slip.matches, false); assert.equal(slip.suspect, "unit_slip");
+  assert.deepEqual(flaggedFigures({ figures: [slip], targets: [], conflicts: [] }), []);
+});
+
+test("an explicit length limit in the request is recognised", () => {
+  assert.equal(explicitLengthLimit("Summarise the ruling in at most 200 words."), "at most 200 words");
+  assert.equal(explicitLengthLimit("Give a 150-word summary or less? No: a 150-word limit."), "150-word limit");
+  assert.equal(explicitLengthLimit("Answer in 3 sentences."), "in 3 sentences");
+  assert.equal(explicitLengthLimit("Compare the 2 frameworks in detail."), undefined);
 });

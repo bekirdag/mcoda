@@ -8,7 +8,7 @@
 export interface AnswerEdit { find: string; replace: string; reason?: string; }
 export interface AppliedEdits { text: string; applied: AnswerEdit[]; skipped: Array<{ edit: AnswerEdit; reason: string }>; }
 
-export const EDIT_FORMAT_RULE = `Return only JSON: {"edits":[{"find":"...","replace":"...","reason":"..."}]}. Each "find" is a passage copied character for character from the draft, long enough to occur only once (a sentence, a table row or a heading line); "replace" is the text that goes in its place, in the draft's own format; "reason" names the defect in a few words. Correct every place a changed value or claim is used, each with its own edit. To add text, find the sentence or line it follows and replace it with that line plus the addition. To delete text, replace it with "". Do not edit passages that are correct and do not restate the draft. Return {"edits":[]} when there is no demonstrable defect.`;
+export const EDIT_FORMAT_RULE = `Return only JSON: {"edits":[{"find":"...","replace":"...","reason":"..."}]}. Each "find" is a passage copied character for character from the draft, long enough to occur only once (a sentence, a table row or a heading line), and an edit never changes a link address or inline code unless that is the defect, in which case its find includes the whole link; "replace" is the text that goes in its place, in the draft's own format; "reason" names the defect in a few words. Correct every place a changed value or claim is used, each with its own edit. To add text, find the sentence or line it follows and replace it with that line plus the addition. To delete text, replace it with "". Do not edit passages that are correct and do not restate the draft. Return {"edits":[]} when there is no demonstrable defect.`;
 
 /** The edits in an audit reply, or undefined when the reply is not an edit list
  * (then it is read as a full rewritten answer). */
@@ -32,22 +32,53 @@ const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\
  * often copy a passage with a line break turned into a space. */
 const loosePattern = (find: string): RegExp => new RegExp(find.trim().split(/\s+/u).map(escape).join("\\s+"), "gu");
 
-/** Apply edits in order. An edit whose passage is not in the text, or is too
- * short to place when it occurs more than once, is skipped; `refuse` may veto
- * an edit with a reason. */
-export function applyAnswerEdits(draft: string, edits: AnswerEdit[], refuse?: (edit: AnswerEdit, text: string) => string | undefined): AppliedEdits {
+/** Spans an edit may not touch: link targets, bare URLs and inline code. A
+ * figure edit (v2024 -> v2025) that also rewrote a link's address broke the link. */
+const maskedSpans = (text: string): Array<[number, number]> => {
+  const spans: Array<[number, number]> = [];
+  for (const pattern of [/\]\([^)\s]*\)/gu, /https?:\/\/[^\s<>()\[\]"'`\\]+/gu, /`[^`\n]+`/gu]) {
+    for (const match of text.matchAll(pattern)) spans.push([match.index!, match.index! + match[0].length]);
+  }
+  return spans;
+};
+const occurrences = (text: string, find: string): Array<[number, number]> => {
+  const found: Array<[number, number]> = [];
+  for (let at = text.indexOf(find); at >= 0; at = text.indexOf(find, at + 1)) found.push([at, at + find.length]);
+  if (found.length) return found;
+  return [...text.matchAll(loosePattern(find))].map(match => [match.index!, match.index! + match[0].length] as [number, number]);
+};
+const headingLines = (text: string): string[] => text.match(/^ {0,3}(?:#{1,6}[ \t]+\S.*|\*\*[^*\n]{2,120}\*\*:?[ \t]*)$/gmu) ?? [];
+
+/** Why one edit must not apply as a deletion: it removes a section heading, or
+ * most of the answer. Other large deletions are judged edit by edit and stand. */
+const deletionDefect = (edit: AnswerEdit, text: string, allowShrink: boolean): string | undefined => {
+  const kept = new Set(headingLines(edit.replace).map(line => line.trim()));
+  const all = headingLines(text).map(line => line.trim());
+  if (headingLines(edit.find).some(line => !kept.has(line.trim()) && all.filter(other => other === line.trim()).length === 1)) return "removes_section";
+  if (!allowShrink && edit.find.length - edit.replace.length > text.length * 0.5) return "removes_most_of_answer";
+  return undefined;
+};
+
+/** Apply edits in order. An edit is placed only where its passage occurs
+ * exactly once outside link targets, URLs and inline code; otherwise it is
+ * skipped (not_found, inside_link_or_code, ambiguous). `refuse` may veto an
+ * edit with a reason. `allowShrink` admits an edit that removes most of the
+ * answer, for a request with an explicit length limit. */
+export function applyAnswerEdits(draft: string, edits: AnswerEdit[], refuse?: (edit: AnswerEdit, text: string) => string | undefined, allowShrink = false): AppliedEdits {
   let text = draft;
   const applied: AnswerEdit[] = [], skipped: AppliedEdits["skipped"] = [];
   for (const edit of edits) {
-    const vetoed = refuse?.(edit, text);
+    const vetoed = refuse?.(edit, text) ?? deletionDefect(edit, text, allowShrink);
     if (vetoed) { skipped.push({ edit, reason: vetoed }); continue; }
-    const exact = text.split(edit.find).length - 1;
-    const pattern = loosePattern(edit.find);
-    const count = exact || (text.match(pattern) ?? []).length;
-    if (!count) { skipped.push({ edit, reason: "not_found" }); continue; }
-    // The same short passage in several places is not a place: "243" could be any of them.
-    if (count > 1 && edit.find.trim().length < 24) { skipped.push({ edit, reason: "ambiguous" }); continue; }
-    text = exact ? text.split(edit.find).join(edit.replace) : text.replace(pattern, () => edit.replace);
+    const masked = maskedSpans(text);
+    const all = occurrences(text, edit.find);
+    const free = all.filter(([start, end]) => !masked.some(([from, to]) => start < to && end > from && !(start <= from && end >= to)));
+    if (!all.length) { skipped.push({ edit, reason: "not_found" }); continue; }
+    if (!free.length) { skipped.push({ edit, reason: "inside_link_or_code" }); continue; }
+    // The same passage in several places is not a place: "243" could be any of them.
+    if (free.length > 1) { skipped.push({ edit, reason: "ambiguous" }); continue; }
+    const [[start, end]] = free;
+    text = text.slice(0, start) + edit.replace + text.slice(end);
     applied.push(edit);
   }
   return { text, applied, skipped };
