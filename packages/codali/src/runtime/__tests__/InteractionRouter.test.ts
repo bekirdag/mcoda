@@ -2560,7 +2560,9 @@ test("no mid-run draft is written early in a turn or without evidence", async t 
 
 test("when the turn's own time limit cuts into a tool call, the evidence gathered so far is still delivered", async t => {
   const config = structuredClone(base);
-  config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 80000, timeoutMs: 3_000 };
+  config.interaction = { strategy: "adaptive", maxModelCalls: 6, maxTotalTokens: 80000, timeoutMs: 8_000 };
+  // 8 s, not 3 s: on a slow CI runner routing alone could use 3 s, so the turn
+  // ended before the hanging search this test is about.
   t.mock.method(DocdexClient.prototype, "initialize", async () => ({ repoId: "fixture" }));
   t.mock.method(DocdexClient.prototype, "waitForIndex", async () => ({ num_docs: 1 }));
   let searches = 0;
