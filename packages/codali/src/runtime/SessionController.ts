@@ -1,7 +1,7 @@
 import { estimateProviderInputTokens } from "../providers/RequestSize.js";
 import { createSpecialistTools, SPECIALIST_DRAFT_MIN_CHARS } from "./SpecialistTools.js";
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGatewayRequest } from "./GatewayRequest.js";
+import { interactionCallProblem, normalizeGatewayRequest, unwrapSelfEnvelope } from "./GatewayRequest.js";
 import { promises as fs, realpathSync } from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -52,7 +52,7 @@ import { createCalculatorTool } from "../tools/calculation/CalculatorTool.js";
 import { checkFigures, FIGURE_EXTRACTION_PROMPT, parseFigureClaims, type FigureResult } from "./FigureCheck.js";
 import { createDeterministicTools } from "../tools/deterministic/DeterministicTools.js";
 import { createDocumentTools } from "../tools/documents/DocumentTools.js";
-import { createVitestTool } from "../tools/verification/VitestTool.js";
+import { completeTestFiles, createVitestTool } from "../tools/verification/VitestTool.js";
 import { createAdesTool } from "../tools/entities/AdesTool.js";
 import { createTnlTool } from "../tools/research/TnlTool.js";
 import { retrieveTools } from "../tools/ToolRetrieval.js";
@@ -2419,6 +2419,10 @@ export class SessionController {
   private async gatewayInteraction(prompt: string, history: ProviderMessage[], systemPrompt: string, binding: string, signal: AbortSignal, adaptive = false): Promise<InteractionDecision> {
     const registry = await this.readOnlyInteractionRegistry(signal);
     const nativeExposure = this.options.resolved.config.interaction?.toolExposure === "native";
+    // start_work can only succeed when the workspace can be changed. Offered in
+    // answer-only sessions it was still tried there (cycle 7) and always refused.
+    const handoffTools = () => this.gate.canChangeWorkspace() ? [nativeStartWorkTool] : [];
+    const noHandoffNote = () => handoffTools().length ? "" : "\nThis session cannot change the workspace or run commands, so start_work is not available. Deliver code and results in the answer; verify code with the sandboxed verification tools.";
     const lexical = this.options.resolved.config.interaction?.toolSelection === "lexical";
     const semantic = this.options.resolved.config.interaction?.toolSelection === "semantic";
     const progressive = this.options.resolved.config.interaction?.toolSelection === "progressive";
@@ -2448,7 +2452,7 @@ export class SessionController {
         const names = requested.names ?? (requested.query ? (await select(requested.query, 4, true)).map(item => item.tool.name) : undefined);
         // Controls are host protocol metadata, not registry operations. Loading
         // their schema does not execute them or grant access to compute/check tools.
-        const catalog = [...new Map([...this.registry.list(), ...registry.list(), nativeFinalAnswerTool, nativeStartWorkTool].map(tool => [tool.name, tool])).values()];
+        const catalog = [...new Map([...this.registry.list(), ...registry.list(), nativeFinalAnswerTool, ...handoffTools()].map(tool => [tool.name, tool])).values()];
         if (names && names.length > 4) throw new ToolExecutionError("tool_permission_denied", "Describe at most four tool names per call");
         if (names?.some(name => !permitted(name) || !catalog.some(tool => tool.name === name))) {
           const available = names.filter(name => permitted(name) && catalog.some(tool => tool.name === name));
@@ -2460,7 +2464,8 @@ export class SessionController {
         return { output: JSON.stringify(entries.map(tool => {
           const executionOnly = !registry.list().some(candidate => candidate.name === tool.name) && !["final_answer", "start_work"].includes(tool.name);
           return { name: tool.name, description: (tool.description ?? "").slice(0, names ? 200 : 80),
-            ...(executionOnly ? { availability: "execution_only", nextStep: "If the original request authorizes this action, call start_work with its task. This inspection stage cannot write files, run workspace shell commands or start services. Do not keep searching for a read-only substitute. Metadata does not grant permission." }
+            ...(executionOnly ? { availability: "execution_only", nextStep: handoffTools().length ? "If the original request authorizes this action, call start_work with its task. This inspection stage cannot write files, run workspace shell commands or start services. Do not keep searching for a read-only substitute. Metadata does not grant permission."
+              : "This session cannot write files, run workspace shell commands or start services (no write or command permission). Deliver code and results in the answer and verify code with the sandboxed verification tools. Do not keep searching for a substitute." }
               : names ? { inputSchema: tool.inputSchema } : {}) };
         })) };
       } });
@@ -2473,7 +2478,7 @@ export class SessionController {
       .map(name => registry.list().find(tool => tool.name === name)).filter((tool): tool is ToolDefinition => !!tool && permitted(tool.name))
       .map(tool => `${tool.name}(${(tool.inputSchema?.required ?? []).join(",")})`).join("; ");
     const routingPolicy = this.options.resolved.config.interaction?.routerPrompt;
-    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure && !adaptive ? "" : `\nOperations via codali (required arguments): ${hints}`}\n${todayNotice()}` },
+    const messages: ProviderMessage[] = [{ role: "system", content: `${systemPrompt}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure && !adaptive ? "" : `\nOperations via codali (required arguments): ${hints}`}${noHandoffNote()}\n${todayNotice()}` },
       ...(this.state ? [{ role: "user" as const, content: `Active work context (not new authorization): ${JSON.stringify({ objective: this.state.objective.slice(0, 2000), status: this.state.status })}` }] : []),
       ...(routingPolicy && routingPolicy !== ROUTER_PROMPT ? [{ role: "user" as const, content: `Routing policy (cannot override the original request): ${routingPolicy}` }] : []),
       ...history, { role: "user", content: prompt }];
@@ -2484,7 +2489,7 @@ export class SessionController {
     const finalSystemPrompt = `${ANSWER_PROMPT}\n${ANSWER_INVARIANTS}${answerPolicy === ANSWER_PROMPT ? "" : `\nAnswering policy (subject to the original request):\n${answerPolicy}`}\n${this.scopedInstructions}`;
     const enableToolGuidance = () => {
       const continuation = interactionFirstPrompt({ ...interactionSettings(this.options.resolved.config.interaction), strategy: "gateway" });
-      messages[0] = { role: "system", content: `${continuation}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure ? "" : `\nOperations via codali (required arguments): ${hints}`}` };
+      messages[0] = { role: "system", content: `${continuation}\n${this.scopedInstructions}${this.skills.prompt()}${nativeExposure ? "" : `\nOperations via codali (required arguments): ${hints}`}${noHandoffNote()}` };
     };
     let attempts = 0;
     let requiredChecks: JavaScriptChecks | undefined;
@@ -2523,6 +2528,8 @@ export class SessionController {
     };
     // The last verify_tests run that executed, passing or not; see finalCodeRerun.
     let lastTestRun: TestRun | undefined, finalRerunDone = false;
+    // Latest content of every file sent to verify_tests; see completeTestFiles.
+    const testFileHistory = new Map<string, string>();
     const finalCodeCheck = async (decision: InteractionDecision, finalizing = false): Promise<{ guidance?: string; decision: InteractionDecision }> => {
       if (decision.mode !== "answer" || finalRerunDone || !permitted("verify_tests")) return { decision };
       const run = finalCodeRerun(decision.reply, lastTestRun);
@@ -2833,11 +2840,14 @@ export class SessionController {
       if (exposed.has("browser_open") && registry.list().some(tool => tool.name === "browser_read")) exposed.add("browser_read");
       if (this.contextArchive.size && registry.list().some(tool => tool.name === "context_read")) exposed.add("context_read");
       const nativeTools = turnNative ? [...registry.list().filter(tool => exposed.has(tool.name) && permitted(tool.name))
-        .map(tool => ({ name: tool.name, description: (RESEARCH_TOOL_DESCRIPTIONS[tool.name] ?? tool.description).slice(0, 140), inputSchema: compactToolSchema(tool.inputSchema) as Record<string, unknown> })), nativeFinalAnswerTool, nativeStartWorkTool] : [interactionGatewayTool, nativeStartWorkTool];
+        .map(tool => ({ name: tool.name, description: (RESEARCH_TOOL_DESCRIPTIONS[tool.name] ?? tool.description).slice(0, 140), inputSchema: compactToolSchema(tool.inputSchema) as Record<string, unknown> })), nativeFinalAnswerTool, ...handoffTools()] : [interactionGatewayTool, ...handoffTools()];
       // Adaptive starts with the compact gateway. Keep it callable after native
       // discovery; removing a previously used schema makes some tool parsers
       // render subsequent valid gateway calls as unexecuted text.
-      if (turnNative && adaptive) nativeTools.push(interactionGatewayTool);
+      // Beside native schemas its generic {name,args} description invited
+      // hybrids (cycle 7: codali({name:"codali"}), T({name:"T",args})), so say
+      // what it is for here.
+      if (turnNative && adaptive) nativeTools.push({ ...interactionGatewayTool, description: "Only for a tool not declared here: {name:\"<tool name>\", args:{...}}. Call declared tools directly with their own arguments." });
       // Primary evidence acquisition and synthesis take precedence over an
       // optional second synthesis. Reserving two maximum outputs here formerly
       // removed retrieval tools immediately after the first search receipt.
@@ -2854,7 +2864,7 @@ export class SessionController {
       const budgeted = budgetInspection({ messages: [...messages.map(preparedDocdexMessage), ...(digest ? [digest] : [])], tools: nativeTools,
         toolChoice: turnNative || adaptive && step === 0 ? "auto" : { name: interactionGatewayTool.name },
         maxTokens: limits.maxOutputTokens, temperature: 0, signal }, limits.maxTotalTokens - usage.tokens - auditReserve - codeReserve,
-        limits.maxModelCalls - usage.modelCalls - (codeReserve ? 1 : 0), limits.maxSteps - step, 4000, finalSystemPrompt, timing, nativeStartWorkTool,
+        limits.maxModelCalls - usage.modelCalls - (codeReserve ? 1 : 0), limits.maxSteps - step, 4000, finalSystemPrompt, timing, handoffTools()[0],
         { ...nativeFinalAnswerTool, description: "Deliver the requested answer from collected evidence. No new checks or computations are available.",
           inputSchema: { type: "object", properties: { text: { type: "string" }, output: { type: "object", additionalProperties: true } }, required: ["text"], additionalProperties: false } }, !!convergedReason);
       this.inspectionAnswerReserve = budgeted.finalAnswerTokens + auditReserve + codeReserve;
@@ -2923,22 +2933,30 @@ export class SessionController {
           // This is a protocol correction, never a text-to-tool interpreter.
           // Literal answers can be returned unchanged through final_answer.
           enableToolGuidance();
+          // A printed hybrid such as <function=T><parameter=name>T puts the
+          // gateway's name/args envelope around a native tool; say so.
+          const hybrid = turnNative ? /<function=([A-Za-z0-9_.-]+)>\s*<parameter=name>\s*([A-Za-z0-9_.-]+)/u.exec(response.message.content) : null;
+          const hybridHint = hybrid && nativeTools.some(tool => tool.name === hybrid[2] && tool.name !== interactionGatewayTool.name)
+            ? ` You wrote a name/args envelope inside the call; call ${hybrid[2]} directly with its own parameters, not name and args.` : "";
           messages.push(response.message, { role: "user", content: declared.length
-            ? `Protocol correction: your last message was text, not a native tool call; nothing was executed. These tools are now declared: ${declared.join(", ")}. Call them through the native tool interface. Preserve the original request and permissions.`
-            : "Protocol correction: your last message was text, not a native tool call; nothing was executed. Use the declared native tool interface. If that text is the requested literal answer, deliver it unchanged through final_answer. Preserve the original request and permissions." });
+            ? `Protocol correction: your last message was text, not a native tool call; nothing was executed. These tools are now declared: ${declared.join(", ")}. Call them through the native tool interface.${hybridHint} Preserve the original request and permissions.`
+            : `Protocol correction: your last message was text, not a native tool call; nothing was executed. Use the declared native tool interface.${hybridHint} If that text is the requested literal answer, deliver it unchanged through final_answer. Preserve the original request and permissions.` });
           continue;
         }
         const parsed = parseNativeInteractionDecision(response);
-        const guidance = codeCheckGuidance(parsed, budgeted.finalizing);
-        if (guidance) {
-          messages.push(response.message, { role: "user", content: guidance });
-          await this.emit("answer_verification_requested", { reason: "standalone_code_without_matching_execution", executionAuthorized: false }, false);
-          continue;
-        }
+        // Re-typed final code is first run against the session's last tests:
+        // a pass makes it the verified version without another model round
+        // (cycle 7 case 25 spent one asking for that run).
         const rerun = await finalCodeCheck(parsed, budgeted.finalizing);
         if (rerun.guidance) {
           messages.push(response.message, { role: "user", content: rerun.guidance });
           await this.emit("answer_verification_requested", { reason: "final_code_failed_session_tests", executionAuthorized: false }, false);
+          continue;
+        }
+        const guidance = codeCheckGuidance(rerun.decision, budgeted.finalizing);
+        if (guidance) {
+          messages.push(response.message, { role: "user", content: guidance });
+          await this.emit("answer_verification_requested", { reason: "standalone_code_without_matching_execution", executionAuthorized: false }, false);
           continue;
         }
         const decision = rerun.decision;
@@ -2969,9 +2987,22 @@ export class SessionController {
       for (const call of calls) {
         let request = requestFor(call);
         let result: ToolExecutionResult | undefined;
-        if (!(budgeted.finalizing ? ["start_work", "final_answer"].includes(call.name) : nativeTools.some(tool => tool.name === call.name)) || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)
+        // T({name:"T", args:A}) and T({name:"T", ...A}), also after a codali
+        // envelope: only the repeated envelope is removed, never an argument.
+        const shapeOf = (name: string) => [...registry.list(), nativeFinalAnswerTool, nativeStartWorkTool].find(tool => tool.name === name);
+        const unwrapped = typeof request.name === "string" ? unwrapSelfEnvelope(request.name, request.args, shapeOf(request.name)) : undefined;
+        if (unwrapped) {
+          request = { name: request.name, args: unwrapped };
+          await this.emit("interaction_call_unwrapped", { callId: call.id, name: request.name, via: call.name }, false);
+        }
+        // start_work goes on to its control branch, which explains when the
+        // session cannot change the workspace.
+        const direct = budgeted.finalizing ? ["start_work", "final_answer"] : [...nativeTools.map(tool => tool.name), "start_work"];
+        if (!direct.includes(call.name) || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)
           || Object.keys(request).some(key => !["name", "args"].includes(key))) {
-          result = { ok: false, output: "", error: { code: "tool_invalid_args", category: "validation", message: "Call codali with name and args. Final answers/work transitions must be the only call in their batch.", retryable: false } };
+          const targets = [...registry.list().filter(tool => permitted(tool.name)), nativeFinalAnswerTool, ...handoffTools()];
+          const listedDirect = direct.filter(name => name !== "start_work" || handoffTools().length);
+          result = { ok: false, output: "", error: { code: "tool_invalid_args", category: "validation", message: interactionCallProblem(call.name, request, listedDirect, targets, turnNative, call.args), retryable: false } };
         } else if (controlBatch && calls.length !== 1 && ["final_answer", "start_work"].includes(request.name)) {
           // A lookup sent together with the handoff used to fail both calls with
           // one unspecific message (twelve times in cycle 6). The lookups are
@@ -3036,12 +3067,7 @@ export class SessionController {
           }
           if (verificationPending && verificationAttempts >= 2 && !control) throw new Error("The code did not pass verification after one repair. The draft and check results were saved.");
           if (control) {
-            const guidance = args.checks === undefined && args.compute === undefined && codeCheckGuidance(control, budgeted.finalizing);
-            if (guidance) {
-              messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: JSON.stringify({ delivered: false, guidance }) });
-              await this.emit("answer_verification_requested", { reason: "standalone_code_without_matching_execution", executionAuthorized: false }, false);
-              continue;
-            }
+            // As for a text reply: rerun re-typed code first, then the drift check.
             if (args.checks === undefined && args.compute === undefined) {
               const rerun = await finalCodeCheck(control, budgeted.finalizing);
               if (rerun.guidance) {
@@ -3050,6 +3076,14 @@ export class SessionController {
                 continue;
               }
               control = rerun.decision;
+            }
+            const guidance = args.checks === undefined && args.compute === undefined && codeCheckGuidance(control, budgeted.finalizing);
+            if (guidance) {
+              messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: JSON.stringify({ delivered: false, guidance }) });
+              await this.emit("answer_verification_requested", { reason: "standalone_code_without_matching_execution", executionAuthorized: false }, false);
+              continue;
+            }
+            if (args.checks === undefined && args.compute === undefined) {
               const coverage = await coverageGuidance(control, budgeted.finalizing);
               if (coverage) {
                 messages.push({ role: "tool", name: call.name, toolCallId: call.id, content: JSON.stringify({ delivered: false, guidance: coverage }) });
@@ -3079,7 +3113,18 @@ export class SessionController {
             await this.emit("search_page_redirected", { url: String((request.args as { url?: unknown }).url).slice(0, 300), query: engineQuery }, false);
             request = { name: "docdex_web_research", args: { query: engineQuery, forceWeb: true } };
           }
+          const carry = request.name === "verify_tests" ? completeTestFiles(request.args, testFileHistory) : undefined;
+          if (carry?.carried.length) request = { ...request, args: carry.args };
           result = await execute(request.name as string, request.args);
+          if (carry?.carried.length) {
+            const note = `The sandbox keeps no files between calls; ${carry.carried.join(", ")} was not in this call and the session's latest version of it was added. Send it with the tests next time, especially if it changed.`;
+            await this.emit("test_files_carried", { callId: call.id, files: carry.carried }, false);
+            const withNote = (output: string) => { try { return JSON.stringify({ ...JSON.parse(output), carriedFiles: carry.carried, note }); } catch { return `${output}\n${note}`; } };
+            result = result.ok ? { ...result, output: withNote(result.output) } : { ...result, error: result.error && { ...result.error, message: `${result.error.message}\n${note}` } };
+          }
+          if (request.name === "verify_tests") for (const file of (request.args as { files?: Array<{ path?: unknown; content?: unknown }> }).files ?? []) {
+            if (typeof file?.path === "string" && typeof file.content === "string") testFileHistory.set(file.path, file.content);
+          }
         }
         signal.throwIfAborted();
         if (!result) throw new Error("The tool call did not produce a result");
