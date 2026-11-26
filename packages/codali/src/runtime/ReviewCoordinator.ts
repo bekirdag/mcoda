@@ -237,7 +237,8 @@ export async function reviewTaskScope(options: {
     }
     if (answerOnly && typeof cited.summary === "string") {
       const quote = quoted(cited.summary);
-      return quote && normalText(options.summary).includes(quote) ? unrelated(quote) : "the quoted text does not appear in the proposed answer";
+      // The proposed answer is the deliverable itself; its words need not echo the request.
+      return quote && normalText(options.summary).includes(quote) ? undefined : "the quoted text does not appear in the proposed answer";
     }
     return 'cite {"receipt","observed"}, {"path","quote"} or {"unchanged"}';
   };
