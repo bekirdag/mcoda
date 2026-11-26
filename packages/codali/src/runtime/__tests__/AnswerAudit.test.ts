@@ -155,10 +155,26 @@ test("scale words on counted quantities are millions and billions, and a bare B 
   assert.equal(checkFigures([{ claim: "6,000,000 requests a day", expression: "1.2[M] * 5[req/day]", stated: 6_000_000, unit: "req/day" }])[0].matches, true);
 });
 
-test("a unit-factor difference is a suspect even when the quantities carry units, and is not handed to the audit", () => {
-  const [slip] = checkFigures([{ claim: "a flush takes 800 s", expression: "64[MB] / 80[MB/s]", stated: 800, unit: "s" }]);
+test("a unit-factor difference is marked as a possible slip but stays flagged, so a real 1000x error still reaches the audit", () => {
+  // Round-2 review: a draft stating 3 s x 2 as 6,000 s is a genuine error and must still be raised.
+  const [slip, foreign] = checkFigures([
+    { claim: "two retries take 6,000 s", expression: "3[s] * 2", stated: 6000, unit: "s" },
+    { claim: "two retries take 6 s", expression: "3[s] * 17", stated: 6, unit: "s" },
+  ], "Each retry waits 3 s; two retries take 6,000 s.");
   assert.equal(slip.matches, false); assert.equal(slip.suspect, "unit_slip");
-  assert.deepEqual(flaggedFigures({ figures: [slip], targets: [], conflicts: [] }), []);
+  assert.equal(foreign.suspect, "inputs_not_in_text");
+  assert.deepEqual(flaggedFigures({ figures: [slip, foreign], targets: [], conflicts: [] }), [slip]);
+});
+
+test("renaming a heading or correcting a figure in a bold line is an edit, not a removed section", () => {
+  const draft = "## Plan\nTwo vans.\n\n**Total cost: $243**\n\n## Risks\nRoad closures.";
+  const result = applyAnswerEdits(draft, [{ find: "**Total cost: $243**", replace: "**Total cost: $324**" }, { find: "## Plan", replace: "## Plan (revised)" }]);
+  assert.deepEqual(result.skipped, []);
+  assert.match(result.text, /^## Plan \(revised\)$/mu); assert.match(result.text, /\*\*Total cost: \$324\*\*/u);
+  assert.deepEqual(applyAnswerEdits(draft, [{ find: "**Total cost: $243**", replace: "Total cost: $324" }]).skipped, [], "unbolding keeps the line");
+  // Dropping a heading of its kind, or the bold line itself, is still a removed section.
+  assert.deepEqual(applyAnswerEdits(draft, [{ find: "## Risks\nRoad closures.", replace: "Road closures." }]).skipped.map(item => item.reason), ["removes_section"]);
+  assert.deepEqual(applyAnswerEdits(draft, [{ find: "Two vans.\n\n**Total cost: $243**", replace: "Two vans." }]).skipped.map(item => item.reason), ["removes_section"]);
 });
 
 test("an explicit length limit in the request is recognised", () => {

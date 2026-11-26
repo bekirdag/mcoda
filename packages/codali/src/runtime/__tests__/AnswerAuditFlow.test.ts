@@ -73,6 +73,17 @@ test("a rewrite that changes a figure the calculator confirmed is refused and th
   assert.deepEqual(rejected?.data.confirmedFigures, [233.28]);
 });
 
+test("a figure off by exactly a unit factor reaches the audit as a question marked as a possible slip", async t => {
+  // Round-2 review: the draft states 90 days of storage as 233,280 GB; the calculator says 233.28.
+  const draft = telemetryDraft.replace("about 233.28 GB", "about 233,280 GB");
+  const check = JSON.stringify({ figures: [...confirmedFigures.slice(0, 2), { claim: "90 days needs about 233,280 GB", expression: "2.592[GB/day] * 90[days]", stated: 233280, unit: "GB" }], targets: [], conflicts: [] });
+  const script = scripted([check], [JSON.stringify({ edits: [] })], draft);
+  const { controller } = await fixture(t, script.provider, designConfig());
+  await controller.interact(designPrompt);
+  assert.deepEqual((script.audits[0].figureChecks as Array<{ stated: number; possibleUnitSlip?: boolean }>).map(item => [item.stated, item.possibleUnitSlip]), [[233280, true]]);
+  assert.match(script.systems[0], /possibleUnitSlip/);
+});
+
 test("audit edits are applied one by one: an edit to a confirmed figure is refused, the fix is kept and the result re-checked", async t => {
   const script = scripted([draftCheck, cleanCheck], [edits(["about 233.28 GB", "about 466.56 GB"], ["flushed every 60 seconds", "flushed every 10 seconds"])]);
   const { controller, events } = await fixture(t, script.provider, designConfig());

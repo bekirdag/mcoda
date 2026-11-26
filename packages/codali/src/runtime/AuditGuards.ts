@@ -15,10 +15,11 @@ const keeps = (values: number[], value: number): boolean => values.some(other =>
 const distinctive = (value: number): boolean => !(Number.isInteger(value) && Math.abs(value) < 10);
 
 /** Figures in a mismatch the audit should resolve: not those whose expression
- * uses numbers the draft and request never state, and not those off by
- * exactly a unit factor (more likely a slip in the expression than in the draft). */
+ * uses numbers the draft and request never state. A difference of exactly a
+ * unit factor stays flagged, marked as a possible slip: it may be the
+ * expression's slip or a real unit error in the draft, and the audit judges which. */
 export const flaggedFigures = (check: AnswerCheck | undefined): FigureResult[] =>
-  (check?.figures ?? []).filter(figure => !figure.error && !figure.matches && figure.suspect === undefined);
+  (check?.figures ?? []).filter(figure => !figure.error && !figure.matches && figure.suspect !== "inputs_not_in_text");
 
 const inputsOf = (figure: FigureResult): number[] => numberValues(figure.expression.replace(/\[[^\]]*\]/gu, " "));
 

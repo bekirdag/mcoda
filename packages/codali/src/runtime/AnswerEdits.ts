@@ -48,13 +48,22 @@ const occurrences = (text: string, find: string): Array<[number, number]> => {
   return [...text.matchAll(loosePattern(find))].map(match => [match.index!, match.index! + match[0].length] as [number, number]);
 };
 const headingLines = (text: string): string[] => text.match(/^ {0,3}(?:#{1,6}[ \t]+\S.*|\*\*[^*\n]{2,120}\*\*:?[ \t]*)$/gmu) ?? [];
+/** A heading's kind: its level ("#", "##", ...) or "bold" for a bold-only line. */
+const headingKind = (line: string): string => /^\s*(#{1,6})[ \t]/u.exec(line)?.[1] ?? "bold";
 
 /** Why one edit must not apply as a deletion: it removes a section heading, or
- * most of the answer. Other large deletions are judged edit by edit and stand. */
+ * most of the answer. Other large deletions are judged edit by edit and stand.
+ * A heading counts as removed only when the replacement has fewer headings of
+ * its kind than the passage it replaces: renaming a heading or correcting a
+ * figure in it ("**Total cost: $243**" to "$324") is an ordinary edit. */
 const deletionDefect = (edit: AnswerEdit, text: string, allowShrink: boolean): string | undefined => {
-  const kept = new Set(headingLines(edit.replace).map(line => line.trim()));
-  const all = headingLines(text).map(line => line.trim());
-  if (headingLines(edit.find).some(line => !kept.has(line.trim()) && all.filter(other => other === line.trim()).length === 1)) return "removes_section";
+  const before = headingLines(edit.find), after = headingLines(edit.replace);
+  const lines = (value: string) => value.split("\n").filter(line => line.trim()).length;
+  for (const kind of new Set(before.map(headingKind))) {
+    const lost = before.filter(line => headingKind(line) === kind).length - after.filter(line => headingKind(line) === kind).length;
+    // A bold line is lost only when the line itself goes, not when it is reworded or unbolded.
+    if (lost > 0 && (kind !== "bold" || lines(edit.find) - lines(edit.replace) >= lost)) return "removes_section";
+  }
   if (!allowShrink && edit.find.length - edit.replace.length > text.length * 0.5) return "removes_most_of_answer";
   return undefined;
 };
