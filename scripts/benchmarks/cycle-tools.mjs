@@ -5,10 +5,13 @@
 //
 //   node cycle-tools.mjs grade     --cycle DIR [--python-runtime DIR]
 //   node cycle-tools.mjs selftest  --gold grading.json --refs DIR [--python-runtime DIR]
-//   node cycle-tools.mjs packets   --cycle DIR --kind design|research [--cases 41,42]
+//   node cycle-tools.mjs packets   --cycle DIR --kind design|research [--cases 41,42] [--skip-existing]
 //   node cycle-tools.mjs unblind   --cycle DIR --kind design|research [--margin 10]
 //   node cycle-tools.mjs cost      --cycle DIR
-//   node cycle-tools.mjs reruns    --cycle DIR [--write --cases 45,46 --reason TEXT]
+//   node cycle-tools.mjs reruns    --cycle DIR [--threshold 0.10] [--write --cases 45,46 --reason TEXT]
+//   node cycle-tools.mjs outages   --cycle DIR [--process 'strata|llama'] [--threshold 0.10]
+//   node cycle-tools.mjs losses    --cycle DIR [--write --ledger losses/ledger.jsonl --classes classes.json]
+//   node cycle-tools.mjs receipts  --cycle DIR
 //   node cycle-tools.mjs summary   --cycle DIR
 //
 // A cycle directory holds study.json (its output is the results directory),
@@ -293,6 +296,83 @@ export const affectedAttempts = (events, ledger, now = new Date().toISOString())
   });
 };
 
+// ---------- model-service time lost inside attempts ----------
+
+const BACKOFF_SLACK_MS = 10000;
+const LOSS_THRESHOLD = 0.10;
+
+/**
+ * Time an attempt spent on model-service failures, from its own events.jsonl:
+ * each failed call (Codali model_failure / model_preflight_failed, raw
+ * raw_model_retry) counts from its request to the failure plus the retry
+ * backoff; capacity waits and outage spans count whole. Overlaps are merged so
+ * nothing is counted twice. Both arms log these events, so both are measured.
+ */
+export const modelServiceLoss = events => {
+  const at = event => Date.parse(event.at);
+  const intervals = [], failures = [];
+  const requests = events.filter(event => event.type === 'model_request' && Number.isFinite(at(event)));
+  const nextRequestAfter = time => requests.find(event => at(event) > time);
+  events.forEach((event, index) => {
+    const time = at(event); if (!Number.isFinite(time)) return;
+    if (event.type === 'model_failure' || event.type === 'model_preflight_failed' || event.type === 'raw_model_retry') {
+      const id = event.data?.id;
+      const before = requests.filter(request => at(request) <= time);
+      const request = (id && before.findLast(item => item.data?.id === id)) || before.at(-1);
+      const retry = event.type === 'raw_model_retry' ? event : events.slice(index + 1, index + 4).find(item => item.type === 'model_recovery');
+      const waitMs = Number(retry?.data?.waitMs) || 0, next = nextRequestAfter(time);
+      const end = Math.min(time + waitMs + BACKOFF_SLACK_MS, next ? at(next) : time + waitMs);
+      const start = request ? at(request) : time;
+      intervals.push([start, Math.max(end, time)]);
+      failures.push({ at: event.at, type: event.type, code: event.data?.code ?? (event.data?.httpStatus ? `HTTP ${event.data.httpStatus}` : String(event.data?.message ?? '').slice(0, 60)), seconds: round1((time - start) / 1000) });
+    }
+    if (event.type === 'model_capacity_wait') intervals.push([time, time + (Number(event.data?.waitMs) || 0)]);
+    if (event.type === 'model_outage_ended' && Number.isFinite(Date.parse(event.data?.since))) intervals.push([Date.parse(event.data.since), time]);
+  });
+  intervals.sort((a, b) => a[0] - b[0]);
+  let lostMs = 0, open = null;
+  for (const [from, to] of intervals) {
+    if (!open || from > open[1]) { if (open) lostMs += open[1] - open[0]; open = [from, to]; } else open[1] = Math.max(open[1], to);
+  }
+  if (open) lostMs += open[1] - open[0];
+  return { lostMs, failures };
+};
+
+/** True when the attempt ran out of time: deadline error, reached its deadline, or cut work for the deadline. */
+export const deadlineBound = ({ result, events, deadlineMs }) => {
+  if (/deadline/i.test(String(result?.error?.message ?? result?.error ?? ''))) return true;
+  if (deadlineMs && Number.isFinite(result?.elapsedMs) && result.elapsedMs >= deadlineMs * 0.95) return true;
+  return events.some(event => (event.type === 'inspection_request_abandoned' && event.data?.reason === 'answer_reserve')
+    || (/_answer_audit_skipped$/.test(event.type ?? '') && event.data?.reason === 'deadline'));
+};
+
+/**
+ * Per-attempt model-service loss for every resolved attempt. An attempt is an
+ * infrastructure-affected rerun candidate when it was deadline-bound and lost
+ * more than `threshold` of its deadline to the model service. Both arms of a
+ * case are listed so the pair decision sees each side.
+ */
+export const serviceLossReport = async (attempts, { threshold = LOSS_THRESHOLD, readEvents } = {}) => {
+  const load = readEvents ?? (async directory => {
+    const file = path.join(directory, 'events.jsonl');
+    if (!await exists(file)) return [];
+    return (await fs.readFile(file, 'utf8')).split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  });
+  const rows = [];
+  for (const [id, entry] of attempts) for (const arm of ARMS) {
+    const record = entry.arms[arm]; if (!record?.directory) continue;
+    const events = await load(record.directory), deadlineMs = entry.task?.execution?.deadlineMs ?? null;
+    const { lostMs, failures } = modelServiceLoss(events);
+    if (!lostMs && !failures.length) continue;
+    const share = deadlineMs ? lostMs / deadlineMs : null, bound = deadlineBound({ result: record.result, events, deadlineMs });
+    rows.push({ id, arm, run: entry.run, lostMinutes: round1(lostMs / 60000), deadlineMinutes: deadlineMs ? round1(deadlineMs / 60000) : null,
+      lostShare: share == null ? null : Math.round(share * 1000) / 1000, deadlineBound: bound, failures: failures.length,
+      infraAffected: bound && share != null && share > threshold, longest: failures.reduce((max, item) => Math.max(max, item.seconds), 0) });
+  }
+  rows.sort((a, b) => (b.lostShare ?? 0) - (a.lostShare ?? 0));
+  return { threshold, rows, affected: rows.filter(row => row.infraAffected) };
+};
+
 // ---------- loss ledger: failure classes across cycles ----------
 
 /**
@@ -315,6 +395,58 @@ export const recurrence = rows => {
     }
   }
   return Object.values(classes).sort((a, b) => b.recurredAfterFix.length - a.recurredAfterFix.length || b.losses - a.losses);
+};
+
+/**
+ * Ledger rows for classified cycle losses. `losses` is the `losses` command
+ * output, `classes` maps caseId to a class string or {class, note}. A case
+ * already in the ledger for the same cycle is skipped, so a rerun of the
+ * command never duplicates rows; losses without a class are reported.
+ */
+export const appendLosses = (ledger, losses, classes, { source = 'cycle-tools losses' } = {}) => {
+  const present = new Set(ledger.filter(row => row.type === 'loss').map(row => `${row.cycle}|${row.caseId}`));
+  const byCase = new Map(losses.map(item => [item.caseId, item]));
+  const rows = [], duplicates = [], unknown = Object.keys(classes).filter(id => !byCase.has(id));
+  for (const item of losses) {
+    const given = classes[item.caseId]; if (!given) continue;
+    const { class: name, note } = typeof given === 'string' ? { class: given } : given;
+    if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) throw Error(`${item.caseId}: class must be a kebab-case name`);
+    if (present.has(`${item.cycle}|${item.caseId}`)) { duplicates.push(item.caseId); continue; }
+    rows.push({ type: 'loss', cycle: item.cycle, caseId: item.caseId, category: item.category, class: name, codali: item.codali, raw: item.raw,
+      ...(note ? { note } : {}), ...(item.infraLost || item.serviceAffected ? { infrastructure: { infraLost: !!item.infraLost, serviceAffected: !!item.serviceAffected } } : {}), source });
+    present.add(`${item.cycle}|${item.caseId}`);
+  }
+  return { rows, duplicates, unknown, unclassified: losses.filter(item => !classes[item.caseId]).map(item => item.caseId) };
+};
+
+// ---------- tool receipts: one reader for both arms ----------
+
+/**
+ * Outcome of a tool_receipt event in either arm. Codali receipts carry
+ * {receipt:{tool,status}} (status 'success' or 'failed'); raw-arm receipts carry
+ * {call:{name}, receipt:{ok}}. Reading one shape as the other counts every raw
+ * receipt as a failure (cycle 7 scan).
+ */
+export const receiptOutcome = event => {
+  const receipt = event?.data?.receipt ?? {};
+  const tool = receipt.tool ?? event?.data?.call?.name ?? receipt.name ?? '?';
+  if (typeof receipt.status === 'string') return { tool, shape: 'codali', ok: receipt.status === 'success' || receipt.status === 'passed' };
+  if (typeof receipt.ok === 'boolean') return { tool, shape: 'raw', ok: receipt.ok };
+  return { tool, shape: 'unknown', ok: !receipt.error };
+};
+
+/** Receipt and failure counts per arm and tool. */
+export const receiptCounts = attemptsEvents => {
+  const out = {};
+  for (const { arm, events } of attemptsEvents) {
+    const bucket = (out[arm] ??= { receipts: 0, failed: 0, byTool: {} });
+    for (const event of events) {
+      if (event.type !== 'tool_receipt') continue;
+      const { tool, ok } = receiptOutcome(event), item = (bucket.byTool[tool] ??= { receipts: 0, failed: 0 });
+      bucket.receipts++; item.receipts++; if (!ok) { bucket.failed++; item.failed++; }
+    }
+  }
+  return out;
 };
 
 // ---------- how sure a category result is ----------
@@ -452,7 +584,9 @@ const main = async () => {
     const gold = await goldFor(), mapFile = path.join(cycleDir, 'private', `${kind}-blind-map.json`);
     const ids = option(args, 'cases') ? caseIds(option(args, 'cases'), study.cycle) : cases.filter(task => category(task, gold.find(g => g.id === task.id)) === KIND_CATEGORY[kind]).map(task => task.id);
     const map = await exists(mapFile) ? await readJson(mapFile) : {};
-    const built = buildPackets({ kind, ids, cases, gold, attempts, map });
+    // --skip-existing (the watcher's post-run): leave out cases already packeted and cases without both answers yet, so it can run again later.
+    const wanted = args.includes('--skip-existing') ? ids.filter(id => !map[id] && ARMS.every(arm => attempts.get(id)?.arms[arm])) : ids;
+    const built = buildPackets({ kind, ids: wanted, cases, gold, attempts, map });
     await fs.mkdir(path.join(cycleDir, `${kind}-packets`), { recursive: true });
     for (const [id, md] of Object.entries(built.packets)) await fs.writeFile(path.join(cycleDir, `${kind}-packets`, `${id}.md`), md, { flag: 'wx' });
     await fs.writeFile(mapFile, JSON.stringify(built.map, null, 1));
@@ -471,10 +605,19 @@ const main = async () => {
     print({ mean: out.mean, wins: out.wins, needSecondReviewer: out.needSecondReviewer, reviewersDisagreeOnWinner: out.reviewersDisagreeOnWinner }); return;
   }
   if (command === 'cost') { print(costReport(attempts, await goldFor())); return; }
+  if (command === 'receipts') {
+    const list = [];
+    for (const [, entry] of attempts) for (const arm of ARMS) {
+      const directory = entry.arms[arm]?.directory, file = directory && path.join(directory, 'events.jsonl');
+      if (file && await exists(file)) list.push({ arm, events: (await fs.readFile(file, 'utf8')).split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }) });
+    }
+    print(receiptCounts(list)); return;
+  }
   if (command === 'losses') {
     // Codali losses with evidence, for classification into the private loss ledger.
     // Auto-graded: Codali below 100. Reviewed: Codali below raw. Infrastructure-lost attempts are listed apart.
     const gold = await goldFor(), lost = new Set(infraLost(attempts).map(item => item.id)), out = [];
+    const serviceAffected = new Set((await serviceLossReport(attempts)).affected.map(item => item.id));
     const reviewReasons = {};
     for (const kind of Object.keys(KIND_CATEGORY)) {
       const mapFile = path.join(cycleDir, 'private', `${kind}-blind-map.json`), dir = path.join(cycleDir, 'reviews');
@@ -503,9 +646,16 @@ const main = async () => {
         raw = rawFile && await exists(rawFile) ? (await readJson(rawFile)).score : null;
         evidence = [`formatCap ${scored.formatCap}`, ...scored.criteria.filter(c => !c.points).map(c => `${c.criterion}: ${c.error ?? (c.expected !== undefined ? `got ${JSON.stringify(c.actual)} want ${JSON.stringify(c.expected)}` : String(c.receipt?.output ?? c.receipt?.failures ?? '').slice(0, 300))}`.slice(0, 400))];
       }
-      out.push({ cycle: study.cycle, caseId: id, category: name, family: entry.task.family, codali, raw, infraLost: lost.has(id), error: entry.arms.after?.result?.error ?? null, elapsedMin: round1((entry.arms.after?.result?.elapsedMs ?? 0) / 60000), deadlineMin: round1((entry.task.execution?.deadlineMs ?? 0) / 60000), evidence });
+      out.push({ cycle: study.cycle, caseId: id, category: name, family: entry.task.family, codali, raw, infraLost: lost.has(id), serviceAffected: serviceAffected.has(id), error: entry.arms.after?.result?.error ?? null, elapsedMin: round1((entry.arms.after?.result?.elapsedMs ?? 0) / 60000), deadlineMin: round1((entry.task.execution?.deadlineMs ?? 0) / 60000), evidence });
     }
-    print(out); return;
+    if (!args.includes('--write')) { print(out); return; }
+    // --write --ledger FILE --classes FILE.json: append the classified losses ({caseId: class | {class, note}}) to the ledger.
+    const ledgerFile = path.resolve(option(args, 'ledger') ?? ''), classesFile = option(args, 'classes');
+    if (!option(args, 'ledger') || !classesFile) throw Error('losses --write needs --ledger FILE and --classes FILE.json');
+    const existing = await exists(ledgerFile) ? await readJsonl(ledgerFile) : [];
+    const written = appendLosses(existing, out, await readJson(path.resolve(classesFile)), { source: `cycle-tools losses ${new Date().toISOString().slice(0, 10)}` });
+    if (written.rows.length) await fs.appendFile(ledgerFile, written.rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    print({ appended: written.rows.length, skippedAlreadyInLedger: written.duplicates, unclassified: written.unclassified, unknownCases: written.unknown }); return;
   }
   if (command === 'outages') {
     // Rewrites <cycle>/outages.json from the kernel log and the runner ledgers; --process filters OOM kills (default: all).
@@ -522,14 +672,26 @@ const main = async () => {
       const kills = parseOomKills(kernel).filter(kill => !only || only.test(kill.process));
       events.push(...affectedAttempts([...kills, ...routeWaits(ledger)], ledger).map(event => ({ ...event, ledger: path.relative(cycleDir, output) })));
     }
+    // Keep OOM kills recorded by earlier passes: journald rotates, and a kill seen once must stay disclosed.
+    const file = path.join(cycleDir, 'outages.json'), seen = new Set(events.map(event => `${event.type}|${event.at}|${event.pid ?? ''}`));
+    if (await exists(file)) {
+      try { for (const event of (await readJson(file)).events ?? []) if (event.type === 'oom_kill' && !seen.has(`${event.type}|${event.at}|${event.pid ?? ''}`)) events.push(event); }
+      catch { /* an unreadable earlier file is replaced */ }
+    }
     events.sort((a, b) => a.at.localeCompare(b.at));
-    await fs.writeFile(path.join(cycleDir, 'outages.json'), JSON.stringify({ updatedAt: new Date().toISOString(), events }, null, 1));
+    const serviceLoss = await serviceLossReport(attempts, { threshold: Number(option(args, 'threshold') ?? LOSS_THRESHOLD) });
+    await fs.writeFile(file, JSON.stringify({ updatedAt: new Date().toISOString(), events, serviceLoss }, null, 1));
     for (const event of events) console.log(`${event.at.slice(0, 19)}Z ${event.type} ${event.process ?? event.key ?? ''}${event.minutes != null ? ` ${event.minutes} min` : ''} affected=${event.affected.join(',') || '-'}`);
+    for (const row of serviceLoss.rows) console.log(`model_service_loss ${row.id}:${row.arm} ${row.lostMinutes} of ${row.deadlineMinutes ?? '?'} min (${row.lostShare == null ? '?' : Math.round(row.lostShare * 100)}%) failures=${row.failures}${row.deadlineBound ? ' deadline-bound' : ''}${row.infraAffected ? ' INFRA_AFFECTED' : ''}`);
     return;
   }
   if (command === 'reruns') {
     const lost = infraLost(attempts);
-    if (!args.includes('--write')) { print({ lost, incomplete, pairsToRerun: [...new Set(lost.map(item => item.id))] }); return; }
+    if (!args.includes('--write')) {
+      // Final-error losses plus deadline-bound attempts that lost more than --threshold (default 0.10) of their deadline to the model service.
+      const serviceLoss = await serviceLossReport(attempts, { threshold: Number(option(args, 'threshold') ?? LOSS_THRESHOLD) });
+      print({ lost, serviceAffected: serviceLoss.affected, incomplete, pairsToRerun: [...new Set([...lost, ...serviceLoss.affected].map(item => item.id))] }); return;
+    }
     const ids = caseIds(option(args, 'cases') ?? '', study.cycle);
     const number = (await fs.readdir(cycleDir)).filter(name => /^rerun-\d+$/.test(name)).length + 1;
     const next = rerunStudy(study, ids, { number, reason: option(args, 'reason'), cycleDir });
@@ -558,9 +720,9 @@ const main = async () => {
       ...comparePaired(list, { seed: name }),
       ...(list.every(item => Number.isFinite(item.afterSubstance)) ? { substance: comparePaired(list.map(item => ({ after: item.afterSubstance, raw_tools: item.raw_toolsSubstance })), { seed: name + ':substance' }) } : {}),
     }]));
-    print({ scores, cost: costReport(attempts, gold), lost: infraLost(attempts), incomplete }); return;
+    print({ scores, cost: costReport(attempts, gold), lost: infraLost(attempts), serviceAffected: (await serviceLossReport(attempts)).affected, incomplete }); return;
   }
-  throw Error('Usage: node cycle-tools.mjs grade|selftest|packets|unblind|cost|reruns|summary --cycle DIR ...');
+  throw Error('Usage: node cycle-tools.mjs grade|selftest|packets|unblind|cost|receipts|losses|outages|reruns|summary --cycle DIR ...');
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main();
