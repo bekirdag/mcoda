@@ -101,10 +101,18 @@ const TIME: Record<string, number> = { ns: 1e-9, us: 1e-6, "µs": 1e-6, ms: 1e-3
   month: 2_629_800, months: 2_629_800, mo: 2_629_800, y: 31_536_000, yr: 31_536_000, yrs: 31_536_000, year: 31_536_000, years: 31_536_000 };
 const MONEY = new Set(["$", "usd", "eur", "€", "£", "gbp", "chf", "jpy", "¥", "dollar", "dollars", "euro", "euros"]);
 
-const unitToken = (raw: string): UnitValue | undefined => {
+/** Scale words on counted things: 1.2[M] users is 1.2 million, not 1.2. */
+const SCALE: Record<string, number> = { k: 1e3, K: 1e3, thousand: 1e3, thousands: 1e3, M: 1e6, mn: 1e6, mio: 1e6, million: 1e6, millions: 1e6,
+  bn: 1e9, billion: 1e9, billions: 1e9, tn: 1e12, trillion: 1e12, trillions: 1e12 };
+/** How a bare "B" reads: bytes when the expression or stated unit deals in data, a billion otherwise. */
+type BareB = "bytes" | "billion";
+const unitToken = (raw: string, bareB: BareB = "bytes"): UnitValue | undefined => {
   const token = raw.trim();
   if (!token || /^\d+(?:\.\d+)?$/u.test(token)) return token ? { factor: Number(token), dims: {} } : undefined;
   if (token === "%") return { factor: 0.01, dims: {} };
+  if (token === "B" && bareB === "billion") return { factor: 1e9, dims: {} };
+  if (SCALE[token] !== undefined) return { factor: SCALE[token], dims: {} };
+  if (SCALE[token.toLowerCase()] !== undefined && token.length > 2) return { factor: SCALE[token.toLowerCase()], dims: {} };
   if (TIME[token] !== undefined) return { factor: TIME[token], dims: { time: 1 } };
   if (TIME[token.toLowerCase()] !== undefined && token.length > 2) return { factor: TIME[token.toLowerCase()], dims: { time: 1 } };
   if (MONEY.has(token.toLowerCase())) return { factor: 1, dims: { money: 1 } };
@@ -129,7 +137,7 @@ const unitToken = (raw: string): UnitValue | undefined => {
 };
 
 /** Parse a unit such as "MB/s", "core-h", "$/month", "GB/day/worker", "1/h". */
-export const parseUnit = (unit: string | undefined): UnitValue | undefined => {
+export const parseUnit = (unit: string | undefined, bareB: BareB = "bytes"): UnitValue | undefined => {
   if (unit === undefined || !unit.trim()) return { factor: 1, dims: {} };
   const text = unit.trim().replace(/\bper\b/giu, "/").replace(/\s*\/\s*/gu, "/");
   let factor = 1; const dims: Dims = {};
@@ -138,8 +146,8 @@ export const parseUnit = (unit: string | undefined): UnitValue | undefined => {
     const sign = index === 0 ? 1 : -1;
     for (const piece of part.split(/[*·×]|(?<=\p{L})-(?=\p{L})|\s+/u).filter(Boolean)) {
       const power = /^(.*?)\^?([23])$/u.exec(piece);
-      const [base, exponent] = power && unitToken(power[1]) && !/^\d+$/u.test(piece) ? [power[1], Number(power[2])] : [piece, 1];
-      const value = unitToken(base);
+      const [base, exponent] = power && unitToken(power[1], bareB) && !/^\d+$/u.test(piece) ? [power[1], Number(power[2])] : [piece, 1];
+      const value = unitToken(base, bareB);
       if (!value) return undefined;
       factor *= value.factor ** (sign * exponent);
       for (const [key, count] of Object.entries(value.dims) as Array<[keyof Dims, number]>) dims[key] = (dims[key] ?? 0) + sign * exponent * count;
@@ -156,11 +164,14 @@ const evaluate = (expression: string): number => evaluateCalculation(expression.
 /** Evaluate an expression whose inputs may carry units, in `unit`. Throws when
  * a unit is unknown or the dimensions do not agree with `unit`. */
 export function evaluateWithUnits(expression: string, unit?: string): number {
-  const target = parseUnit(unit);
+  // A bare [B] is bytes only when some other unit here is a data unit.
+  const units = [...expression.matchAll(QUANTITY)].map(match => match[2].trim()).concat(unit?.trim() ? [unit.trim()] : []);
+  const bareB: BareB = units.some(text => text !== "B" && (parseUnit(text)?.dims.byte ?? 0) !== 0) ? "bytes" : "billion";
+  const target = parseUnit(unit, bareB);
   if (!target) throw new Error(`unknown unit ${unit}`);
   if (!HAS_QUANTITY.test(expression)) return evaluate(expression);
   const substitute = (scaled: boolean) => expression.replace(QUANTITY, (_whole, number: string, raw: string) => {
-    const value = parseUnit(raw);
+    const value = parseUnit(raw, bareB);
     if (!value) throw new Error(`unknown unit ${raw}`);
     return `(${number.replace(/,/gu, "")}*${value.factor * (scaled ? rescale(value.dims) : 1)})`;
   });
@@ -204,7 +215,7 @@ export function checkFigures(claims: FigureClaim[], sourceText?: string): Figure
       const matches = figureMatches(claim.stated, computed);
       if (matches) return { ...claim, computed, matches };
       const suspect = known && foreignInputs(claim.expression, known).length ? "inputs_not_in_text" as const
-        : !HAS_QUANTITY.test(claim.expression) && unitSlip(claim.stated, computed) ? "unit_slip" as const : undefined;
+        : unitSlip(claim.stated, computed) ? "unit_slip" as const : undefined;
       return { ...claim, computed, matches, ...(suspect ? { suspect } : {}) };
     } catch (error) {
       return { ...claim, matches: true, error: error instanceof Error ? error.message : String(error) };
