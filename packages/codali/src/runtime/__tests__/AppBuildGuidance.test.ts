@@ -30,10 +30,9 @@ test("delivery notes take their numbers from the code and are written early", as
 
 test("the web testing and UI skills carry the same journey obligations", async () => {
   const testing = await skill("webapp-testing");
-  assert.match(testing, /page\.step\(name, run, \{ allow \}\)/);
-  assert.match(testing, /reloads a signed-in page and then performs a mutation/);
-  assert.match(testing, /a missing control fails that assertion/);
+  assert.match(testing, /Put each scenario in page\.step/);
+  assert.match(testing, /reloads a signed-in page and then mutates through the UI; an API read never replaces the reload/);
+  assert.match(testing, /its reason text; a missing control fails/);
   const design = await skill("ui-ux-design");
-  assert.match(design, /keep its control visible but disabled, or show a notice in its place, with the reason/);
-  assert.match(design, /Tie a label to every input, select and textarea/);
+  assert.match(design, /stays visible but disabled, with its reason/);
 });

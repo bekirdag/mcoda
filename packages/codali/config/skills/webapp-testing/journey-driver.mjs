@@ -3,6 +3,25 @@
 // It records every console error, uncaught exception, HTTP 4xx/5xx response
 // and failed request; page.step() fails a step that produced one, or that
 // leaves a visible form control without an accessible name.
+// Page methods: goto, reload, step(name, run, { allow, labels }), click, type,
+// text, waitForSelector, waitForText, waitFor (any expression), evaluate,
+// screenshot, unlabelledControls, problems. A wait that fails reports what the
+// page shows. In allow, list a status or a RegExp for "STATUS METHOD URL" that
+// the step expects, such as a signed-out session probe: /^401 GET \S+\/api\/me$/.
+//
+// Usage (one run_shell call; every role gets a reload-then-act step):
+//   import { launch, startServer } from './journey-driver.mjs';
+//   const server = await startServer('node', ['server/index.js'], { url: 'http://127.0.0.1:3000/health', env: { PORT: '3000' } });
+//   const page = await launch(); let failed = false;
+//   const step = (name, run, options) => page.step(name, run, options).catch(() => { failed = true; });
+//   try {
+//     await step('admin signs in', async () => { await page.goto('http://127.0.0.1:3000/');
+//       await page.type('#email', 'a@example.test'); await page.click('button[type=submit]'); await page.waitForText('Dashboard');
+//     }, { allow: [/^401 GET \S+\/api\/me$/] });
+//     await step('after a reload, admin creates a project', async () => { await page.reload();
+//       await page.type('#name', 'Apollo'); await page.click('#create'); await page.reload(); await page.waitForText('Apollo'); });
+//   } finally { await page.close(); server.kill(); }
+//   process.exit(failed ? 1 : 0);
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
