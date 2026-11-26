@@ -108,6 +108,8 @@ test('a stall is marked once, a long stall runs the post-run on partial results,
 test('unit state: systemctl show is parsed, and an unreachable systemctl never counts as ended', async () => {
   const state = systemdUnitState(async () => ({ code: 0, stdout: 'ActiveState=failed\nResult=exit-code\nExecMainStatus=5\nLoadState=loaded\n', stderr: '' }));
   assert.deepEqual(await state('x'), { active: false, state: 'failed', result: 'exit-code', status: '5', loaded: 'loaded' });
+  assert.equal((await systemdUnitState(async () => ({ code: 0, stdout: 'ActiveState=inactive\nResult=success\nExecMainStartTimestamp=Mon 2026-04-06 10:00:00 UTC\n', stderr: '' }))('x')).startedAt, 'Mon 2026-04-06 10:00:00 UTC');
+  assert.equal((await systemdUnitState(async () => ({ code: 0, stdout: 'ActiveState=inactive\nResult=success\nExecMainStartTimestamp=\n', stderr: '' }))('x')).startedAt, undefined);
   assert.equal((await systemdUnitState(async () => ({ code: 1, stdout: '', stderr: 'Failed to connect to bus' }))('x')).active, true);
   assert.equal((await systemdUnitState(async () => ({ code: 0, stdout: 'ActiveState=deactivating\n', stderr: '' }))('x')).active, true);
 });
@@ -168,4 +170,30 @@ test('two watchers on one cycle: the second exits on the lock; a stale lock is t
   await fs.writeFile(lockFile, JSON.stringify({ pid: 2 ** 22 + 12345 }));
   const taken = await acquireLock(lockFile);
   assert.equal(taken.acquired, true); await taken.release();
+});
+
+test('a unit that ran and ended between two polls counts as ended: failed state, failed result, a start time, or a quiet ledger', async () => {
+  const cases = [
+    { name: 'failed', state: { active: false, state: 'failed', result: 'exit-code', status: '2' } },
+    { name: 'oom result', state: { active: false, state: 'inactive', result: 'oom-kill' } },
+    { name: 'start time', state: { active: false, state: 'inactive', result: 'success', startedAt: 'Tue 2026-04-07 08:00:00 UTC' } },
+    { name: 'quiet ledger', state: { active: false, state: 'inactive', loaded: 'not-found' }, ledger: true },
+  ];
+  for (const item of cases) {
+    const C = await tmp(), results = path.join(C, 'results'); await fs.mkdir(results);
+    if (item.ledger) {
+      await attempt(results, 'qb-1', 'after');
+      const old = new Date(Date.now() - 3 * 3600 * 1000); await fs.utimes(path.join(results, 'ledger.jsonl'), old, old);
+    }
+    const calls = [];
+    const out = await watchCycle({ cycleDir: C, unit: 'quick', tools: '/t.mjs', node: 'node', maxPasses: 3, unitState: async () => item.state, run: fakeRun(calls), log: () => {}, sleep: async () => {} });
+    assert.equal(out.ended?.state, 'died', item.name);
+    assert.equal(calls.filter(call => call[0] === 'grade').length, 1, item.name);
+    assert.equal((await notifications(C)).some(entry => entry.kind === 'unit_not_seen'), false, `${item.name}: no misleading unit-name notice`);
+  }
+  // A ledger still being written (another unit is running the study) is not an end.
+  const C = await tmp(), results = path.join(C, 'results'); await fs.mkdir(results);
+  await attempt(results, 'qb-2', 'after');
+  const out = await watchCycle({ cycleDir: C, unit: 'typo', tools: '/t.mjs', node: 'node', maxPasses: 3, unitState: async () => ({ active: false, state: 'inactive', loaded: 'not-found' }), run: fakeRun([]), log: () => {}, sleep: async () => {} });
+  assert.equal(out.ended, false);
 });

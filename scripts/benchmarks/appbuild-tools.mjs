@@ -182,7 +182,9 @@ export async function generateWithRetry(provider, request, { signal, wait = ms =
       const remainingMs = deadlineAt === undefined ? Infinity : Math.max(0, deadlineAt - now());
       const waitMs = RAW_OUTAGE_CODES.has(code) ? outageWaitMs(attempt, remainingMs) : RAW_OUTAGE_WAITS_MS.slice(0, RAW_MODEL_RETRIES)[attempt];
       if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
-      await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}) });
+      await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}),
+        // Cause details for the cycle's time-loss accounting (output limit vs a cut stream), as Codali logs them.
+        ...(error?.responseReason ? { responseReason: error.responseReason } : {}), ...(Number.isFinite(error?.status) ? { httpStatus: error.status } : {}) });
       await wait(waitMs);
     }
     finally { clearTimeout(handle); }

@@ -302,18 +302,28 @@ const BACKOFF_SLACK_MS = 10000;
 const LOSS_THRESHOLD = 0.10;
 
 // Failure codes that point at the model service or the route, not at the model or the request.
-// invalid_response is an empty or unparseable body from the service (cycle 7: hangs of 7-9 min ending
-// in one), so it counts as service loss. Anything else (output_limit, context_length_exceeded, refusals,
-// unknown codes) is model- or request-caused: reported apart, never a rerun reason.
-const SERVICE_CODES = new Set(['service_unavailable', 'invalid_response', 'rate_limited', 'model_unavailable', 'capacity_busy', 'overloaded',
+// Anything else (output_limit, context_length_exceeded, refusals, unknown codes) is model- or
+// request-caused: reported apart, never a rerun reason.
+const SERVICE_CODES = new Set(['service_unavailable', 'rate_limited', 'model_unavailable', 'capacity_busy', 'overloaded', 'transport_unavailable',
   'timeout', 'gateway_timeout', 'request_timeout', 'transport_error', 'network_error', 'connection_error', 'stalled', 'abandoned']);
+const SERVICE_REASONS = /^(stalled|abandoned|timeout|capacity_busy|incomplete_stream)$/i;
 const SERVICE_TEXT = /HTTP (?:5\d\d|429|408)|rate.?limit|service unavailable|timed? ?out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|fetch failed|stalled|abandoned/i;
 
-/** 'service' when a failure event points at the model service or route, else 'model'. */
+/**
+ * Cause of a failure event: 'service' (model service or route), 'model' (the
+ * model's own output or the request), or 'unclassified'. Codali's
+ * invalid_response covers both a stream cut off in transit (responseReason
+ * incomplete_stream: service) and a reply that hit the output limit or failed
+ * structured output (output_limit, or no stream reason with a 4xx/200 server
+ * code: model). Without a responseReason (raw-arm events before the harness
+ * logged it) invalid_response cannot be told apart and is 'unclassified'.
+ */
 export const failureCause = data => {
-  const code = String(data?.code ?? '').toLowerCase(), status = Number(data?.httpStatus);
+  const code = String(data?.code ?? '').toLowerCase(), status = Number(data?.httpStatus), reason = String(data?.responseReason ?? '');
+  if (reason === 'output_limit') return 'model';
+  if (SERVICE_REASONS.test(reason)) return 'service';
+  if (code === 'invalid_response') return status >= 500 ? 'service' : 'unclassified';
   if (SERVICE_CODES.has(code)) return 'service';
-  if (/^(stalled|abandoned|timeout)$/i.test(String(data?.responseReason ?? ''))) return 'service';
   if (!code && (status >= 500 || status === 429 || status === 408)) return 'service';
   if (!code && SERVICE_TEXT.test(String(data?.message ?? data?.error ?? ''))) return 'service';
   return 'model';
@@ -334,11 +344,12 @@ const mergedMs = intervals => {
  * backoff; capacity waits and outage spans count whole. Overlaps are merged so
  * nothing is counted twice. Only service-caused failures (failureCause) are
  * lostMs; model- or request-caused ones (output limit, context length, ...)
- * are measured apart as modelCausedMs. Both arms log these events.
+ * are measured apart as modelCausedMs, and failures whose cause the events do
+ * not show as unclassifiedMs. Both arms log these events.
  */
 export const modelServiceLoss = events => {
   const at = event => Date.parse(event.at);
-  const service = [], model = [], failures = [];
+  const service = [], model = [], unclassified = [], failures = [];
   const requests = events.filter(event => event.type === 'model_request' && Number.isFinite(at(event)));
   const nextRequestAfter = time => requests.find(event => at(event) > time);
   events.forEach((event, index) => {
@@ -351,13 +362,15 @@ export const modelServiceLoss = events => {
       const waitMs = Number(retry?.data?.waitMs) || 0, next = nextRequestAfter(time);
       const end = Math.min(time + waitMs + BACKOFF_SLACK_MS, next ? at(next) : time + waitMs);
       const start = request ? at(request) : time, cause = failureCause(event.data);
-      (cause === 'service' ? service : model).push([start, Math.max(end, time)]);
+      ({ service, model, unclassified })[cause].push([start, Math.max(end, time)]);
       failures.push({ at: event.at, type: event.type, cause, code: event.data?.code ?? (event.data?.httpStatus ? `HTTP ${event.data.httpStatus}` : String(event.data?.message ?? '').slice(0, 60)), seconds: round1((time - start) / 1000) });
     }
     if (event.type === 'model_capacity_wait') service.push([time, time + (Number(event.data?.waitMs) || 0)]);
     if (event.type === 'model_outage_ended' && Number.isFinite(Date.parse(event.data?.since))) service.push([Date.parse(event.data.since), time]);
   });
-  return { lostMs: mergedMs(service), modelCausedMs: mergedMs(model), failures };
+  // Unclassified time that overlaps service time is not counted again.
+  const lostMs = mergedMs(service);
+  return { lostMs, modelCausedMs: mergedMs(model), unclassifiedMs: mergedMs([...service, ...unclassified]) - lostMs, failures };
 };
 
 /** True when the attempt ran out of time: deadline error, reached its deadline, or cut work for the deadline. */
@@ -371,7 +384,9 @@ export const deadlineBound = ({ result, events, deadlineMs }) => {
 /**
  * Per-attempt model-service loss for every resolved attempt. An attempt is an
  * infrastructure-affected rerun candidate when it was deadline-bound and lost
- * more than `threshold` of its deadline to the model service. Both arms of a
+ * more than `threshold` of its deadline to the model service. When that holds
+ * only by adding failures whose cause is not recorded (old raw invalid_response),
+ * the attempt is `possiblyInfraAffected`: confirm from logs before a rerun. Both arms of a
  * case are listed so the pair decision sees each side.
  */
 export const serviceLossReport = async (attempts, { threshold = LOSS_THRESHOLD, readEvents } = {}) => {
@@ -384,17 +399,19 @@ export const serviceLossReport = async (attempts, { threshold = LOSS_THRESHOLD, 
   for (const [id, entry] of attempts) for (const arm of ARMS) {
     const record = entry.arms[arm]; if (!record?.directory) continue;
     const events = await load(record.directory), deadlineMs = entry.task?.execution?.deadlineMs ?? null;
-    const { lostMs, modelCausedMs, failures } = modelServiceLoss(events);
+    const { lostMs, modelCausedMs, unclassifiedMs, failures } = modelServiceLoss(events);
     if (!lostMs && !failures.length) continue;
     const share = deadlineMs ? lostMs / deadlineMs : null, bound = deadlineBound({ result: record.result, events, deadlineMs });
     rows.push({ id, arm, run: entry.run, lostMinutes: round1(lostMs / 60000), deadlineMinutes: deadlineMs ? round1(deadlineMs / 60000) : null,
       lostShare: share == null ? null : Math.round(share * 1000) / 1000, deadlineBound: bound,
       failures: failures.filter(item => item.cause === 'service').length, modelFailures: failures.filter(item => item.cause === 'model').length,
       modelCausedMinutes: round1(modelCausedMs / 60000), modelCausedCodes: [...new Set(failures.filter(item => item.cause === 'model').map(item => item.code))],
-      infraAffected: bound && share != null && share > threshold, longest: failures.filter(item => item.cause === 'service').reduce((max, item) => Math.max(max, item.seconds), 0) });
+      unclassifiedMinutes: round1(unclassifiedMs / 60000), unclassifiedFailures: failures.filter(item => item.cause === 'unclassified').length,
+      infraAffected: bound && share != null && share > threshold,
+      possiblyInfraAffected: bound && !!deadlineMs && !(share > threshold) && (lostMs + unclassifiedMs) / deadlineMs > threshold, longest: failures.filter(item => item.cause === 'service').reduce((max, item) => Math.max(max, item.seconds), 0) });
   }
   rows.sort((a, b) => (b.lostShare ?? 0) - (a.lostShare ?? 0));
-  return { threshold, rows, affected: rows.filter(row => row.infraAffected) };
+  return { threshold, rows, affected: rows.filter(row => row.infraAffected), possiblyAffected: rows.filter(row => row.possiblyInfraAffected) };
 };
 
 // ---------- loss ledger: failure classes across cycles ----------
@@ -706,7 +723,7 @@ const main = async () => {
     const serviceLoss = await serviceLossReport(attempts, { threshold: Number(option(args, 'threshold') ?? LOSS_THRESHOLD) });
     await fs.writeFile(file, JSON.stringify({ updatedAt: new Date().toISOString(), events, serviceLoss }, null, 1));
     for (const event of events) console.log(`${event.at.slice(0, 19)}Z ${event.type} ${event.process ?? event.key ?? ''}${event.minutes != null ? ` ${event.minutes} min` : ''} affected=${event.affected.join(',') || '-'}`);
-    for (const row of serviceLoss.rows) console.log(`model_service_loss ${row.id}:${row.arm} ${row.lostMinutes} of ${row.deadlineMinutes ?? '?'} min (${row.lostShare == null ? '?' : Math.round(row.lostShare * 100)}%) failures=${row.failures}${row.modelFailures ? ` model-caused=${row.modelFailures} (${row.modelCausedMinutes} min: ${row.modelCausedCodes.join(',')})` : ''}${row.deadlineBound ? ' deadline-bound' : ''}${row.infraAffected ? ' INFRA_AFFECTED' : ''}`);
+    for (const row of serviceLoss.rows) console.log(`model_service_loss ${row.id}:${row.arm} ${row.lostMinutes} of ${row.deadlineMinutes ?? '?'} min (${row.lostShare == null ? '?' : Math.round(row.lostShare * 100)}%) failures=${row.failures}${row.modelFailures ? ` model-caused=${row.modelFailures} (${row.modelCausedMinutes} min: ${row.modelCausedCodes.join(',')})` : ''}${row.deadlineBound ? ' deadline-bound' : ''}${row.unclassifiedFailures ? ` unclassified=${row.unclassifiedFailures} (${row.unclassifiedMinutes} min)` : ''}${row.infraAffected ? ' INFRA_AFFECTED' : ''}${row.possiblyInfraAffected ? ' POSSIBLE_INFRA' : ''}`);
     return;
   }
   if (command === 'reruns') {
@@ -714,7 +731,7 @@ const main = async () => {
     if (!args.includes('--write')) {
       // Final-error losses plus deadline-bound attempts that lost more than --threshold (default 0.10) of their deadline to the model service.
       const serviceLoss = await serviceLossReport(attempts, { threshold: Number(option(args, 'threshold') ?? LOSS_THRESHOLD) });
-      print({ lost, serviceAffected: serviceLoss.affected, incomplete, pairsToRerun: [...new Set([...lost, ...serviceLoss.affected].map(item => item.id))] }); return;
+      print({ lost, serviceAffected: serviceLoss.affected, possiblyServiceAffected: serviceLoss.possiblyAffected, incomplete, pairsToRerun: [...new Set([...lost, ...serviceLoss.affected].map(item => item.id))] }); return;
     }
     const ids = caseIds(option(args, 'cases') ?? '', study.cycle);
     const number = (await fs.readdir(cycleDir)).filter(name => /^rerun-\d+$/.test(name)).length + 1;
