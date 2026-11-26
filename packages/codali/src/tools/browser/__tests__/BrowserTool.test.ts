@@ -285,3 +285,30 @@ test("a short static page is not held back or labelled as script-rendered", { sk
   assert.equal(page.sourceNotice, undefined);
   assert.ok(Date.now() - started < 20000);
 });
+
+test("collapsed-section expansion never reveals text behind a toggle a reader cannot see, and is size-capped", { skip: !process.env.CODALI_TEST_BROWSER_BINARY, timeout: 45000 }, async t => {
+  const big = "Archive ledger line. ".repeat(1500); // about 31k characters, over the per-section cap
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end(`<title>Orchard grants</title><main><h1>Orchard replanting grants</h1><p>${"Grants cover rootstock and labour for growers who replant after frost damage. ".repeat(4)}</p>
+<button aria-expanded="false" aria-controls="eligible">Eligibility</button><div id="eligible" hidden><p>Holdings under 40 hectares qualify.</p></div>
+<button style="display:none" aria-expanded="false" aria-controls="inj1">More</button><div id="inj1" style="display:none">INJECTED HIDDEN TOGGLE TEXT</div>
+<div style="opacity:0"><button aria-expanded="false" aria-controls="inj2">More</button></div><div id="inj2" hidden>INJECTED TRANSPARENT TOGGLE TEXT</div>
+<button style="position:absolute;left:-9999px" aria-expanded="false" aria-controls="inj3">More</button><div id="inj3" hidden>INJECTED OFFSCREEN TOGGLE TEXT</div>
+<button style="width:0;height:0;padding:0;border:0;overflow:hidden" aria-expanded="false" aria-controls="inj4">More</button><div id="inj4" hidden>INJECTED ZERO SIZE TOGGLE TEXT</div>
+<button aria-expanded="false" aria-controls="inj5">Notes</button><div id="inj5" hidden style="visibility:hidden">INJECTED INVISIBLE PANEL TEXT</div>
+<details style="display:none"><summary>Hidden details</summary>INJECTED HIDDEN DETAILS TEXT</details>
+<details><summary>Full ledger</summary><p>${big}</p></details>
+</main>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const [open, read] = createBrowserTools({ executablePath: process.env.CODALI_TEST_BROWSER_BINARY });
+  const page = JSON.parse((await open.handler({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}/` }, { workspaceRoot: "." })).output);
+  let all = page.content, offset = page.nextOffset;
+  while (offset !== null) { const next = JSON.parse((await read.handler({ snapshotId: page.snapshotId, offset, maxChars: 8000 }, { workspaceRoot: "." })).output); all += next.content; offset = next.nextOffset; }
+  assert.match(all, /\[Collapsed section, expanded for reading\]\s*Holdings under 40 hectares qualify/);
+  assert.doesNotMatch(all, /INJECTED/);
+  assert.doesNotMatch(all, /Archive ledger line/);
+  assert.match(page.sourceNotice, /1 collapsed section was expanded/);
+  assert.match(page.sourceNotice, /1 collapsed section was left closed: over the size allowed/);
+});
