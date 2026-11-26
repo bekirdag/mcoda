@@ -7612,6 +7612,83 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("streams OpenAI tool pass-through chunks unchanged and assembles the final response", async () => {
+    const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => ({
+      id: "chatcmpl-runner", object: "chat.completion.chunk", created: 7, model: "local-qwen", choices, ...extra
+    });
+    const runnerChunks = [
+      chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]),
+      chunk([{ index: 0, delta: { reasoning_content: "think" }, finish_reason: null }]),
+      chunk([{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "lookup", arguments: "" } }] }, finish_reason: null }]),
+      chunk([{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "{\"q\":" } }] }, finish_reason: null }]),
+      chunk([{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\"x\"}" } }] }, finish_reason: null }]),
+      chunk([{ index: 0, delta: {}, finish_reason: "tool_calls" }]),
+      chunk([], { usage: { prompt_tokens: 9, completion_tokens: 5, total_tokens: 14 } })
+    ];
+    // Split one event across reads to exercise SSE reassembly.
+    const wire = runnerChunks.map((entry) => `data: ${JSON.stringify(entry)}\n\n`).join("") + "data: [DONE]\n\n";
+    const pieces = [wire.slice(0, 37), wire.slice(37, 400), wire.slice(400)];
+    let body: Record<string, unknown> | undefined;
+    let codaliCalls = 0;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "openai-api", config: { baseUrl: "http://runner.test/v1", runnerKind: "llama-cpp", authMode: "none" } })]),
+      fetchImpl: (async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        const encoder = new TextEncoder();
+        return new Response(new ReadableStream({
+          start(controller) {
+            for (const piece of pieces) controller.enqueue(encoder.encode(piece));
+            controller.close();
+          }
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }) as typeof fetch,
+      codaliExecutor: new StubCodaliExecutor(async input => { codaliCalls++; return successfulCodaliInvocation(input); })
+    });
+    const relayed: Record<string, unknown>[] = [];
+    const tools = [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }];
+    const result = await runtime.executeJob({ job_id: "tool-stream", request_id: "tool-stream", node_id: "shn_service", agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+      openai_request: { model: "mcoda-qwen-reviewer", stream: true, messages: [{ role: "user", content: "look up x" }], tools, tool_choice: "auto", max_tokens: 400 } },
+      { onOpenAIChunk: async (entry) => { relayed.push(entry); } });
+    assert.equal(result.status, "success", JSON.stringify(result.error));
+    assert.equal(codaliCalls, 0);
+    assert.equal(body?.stream, true);
+    assert.deepEqual(body?.stream_options, { include_usage: true });
+    assert.deepEqual(body?.tools, tools);
+    assert.deepEqual(relayed, runnerChunks);
+    assert.deepEqual(result.stream_events, runnerChunks);
+    assert.deepEqual(result.openai_response, {
+      id: "chatcmpl-runner", object: "chat.completion", created: 7, model: "local-qwen",
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: null, reasoning_content: "think",
+          tool_calls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{\"q\":\"x\"}" } }] },
+        finish_reason: "tool_calls"
+      }],
+      usage: { prompt_tokens: 9, completion_tokens: 5, total_tokens: 14 }
+    });
+  });
+
+  it("keeps non-streamed OpenAI tool pass-through requests unstreamed", async () => {
+    let body: Record<string, unknown> | undefined;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(tempStatePath()), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ adapter: "openai-api", config: { baseUrl: "http://runner.test/v1", runnerKind: "llama-cpp", authMode: "none" } })]),
+      fetchImpl: (async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({ choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] });
+      }) as typeof fetch,
+      codaliExecutor: new StubCodaliExecutor(async input => successfulCodaliInvocation(input))
+    });
+    const relayed: unknown[] = [];
+    const result = await runtime.executeJob({ job_id: "tool-nostream", request_id: "tool-nostream", node_id: "shn_service", agent_slug: "qwen-reviewer", source_agent_slug: "qwen-reviewer", provider: "mcoda", model: "mcoda-qwen-reviewer",
+      openai_request: { model: "mcoda-qwen-reviewer", messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "lookup" } }] } },
+      { onOpenAIChunk: async (entry) => { relayed.push(entry); } });
+    assert.equal(result.status, "success", JSON.stringify(result.error));
+    assert.equal(body?.stream, false);
+    assert.equal(body?.stream_options, undefined);
+    assert.equal(relayed.length, 0);
+    assert.equal(result.stream_events, undefined);
+  });
+
   it("preserves caller-owned tool history on final turns without tool declarations", async () => {
     const messages = [
       { role: "user", content: "Read the counter and report JSON." },

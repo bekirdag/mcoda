@@ -944,6 +944,7 @@ const DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE = "/v1/swarm/self-hosted/node
 const DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/events";
 const DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/result";
 const DEFAULT_STREAM_EVENT_BATCH_SIZE = 8;
+const DEFAULT_STREAM_EVENT_FLUSH_INTERVAL_MS = 250;
 const SELF_HOSTED_PROTOCOL_MISMATCH_CODE = "self_hosted_protocol_mismatch";
 const OWNER_LOCAL_TEST_ECHO_JOB_TYPE = "tenant.test-echo";
 const TEST_ECHO_RUNNER_ID = "test.echo";
@@ -6325,6 +6326,166 @@ export class MswarmSelfHostedNodeClient {
   }
 }
 
+/**
+ * Relays an OpenAI chat-completions SSE response chunk by chunk and assembles
+ * the equivalent non-streamed chat.completion, tool calls included, for the
+ * job result. Chunks are passed to `onChunk` unchanged.
+ */
+export async function relayOpenAIChatCompletionStream(
+  response: Response,
+  onChunk: (chunk: Record<string, unknown>) => Promise<void>
+): Promise<Record<string, unknown>> {
+  if (!response.body) {
+    throw new Error("local runner returned an empty OpenAI stream");
+  }
+  type ToolCallAccumulator = { id?: string; type?: string; name: string; arguments: string };
+  type ChoiceAccumulator = {
+    role?: string;
+    content: string;
+    reasoning: string;
+    reasoningField?: string;
+    toolCalls: Map<number, ToolCallAccumulator>;
+    finishReason: string | null;
+  };
+  const choices = new Map<number, ChoiceAccumulator>();
+  let id: string | undefined;
+  let created: number | undefined;
+  let model: string | undefined;
+  let usage: unknown;
+  let chunkCount = 0;
+  const choiceFor = (index: number): ChoiceAccumulator => {
+    let entry = choices.get(index);
+    if (!entry) {
+      entry = { content: "", reasoning: "", toolCalls: new Map(), finishReason: null };
+      choices.set(index, entry);
+    }
+    return entry;
+  };
+  const absorb = (chunk: Record<string, unknown>) => {
+    if (typeof chunk.id === "string" && !id) id = chunk.id;
+    if (typeof chunk.created === "number" && created === undefined) created = chunk.created;
+    if (typeof chunk.model === "string" && !model) model = chunk.model;
+    if (isRecord(chunk.usage)) usage = chunk.usage;
+    if (!Array.isArray(chunk.choices)) return;
+    for (const rawChoice of chunk.choices) {
+      if (!isRecord(rawChoice)) continue;
+      const entry = choiceFor(typeof rawChoice.index === "number" ? rawChoice.index : 0);
+      if (typeof rawChoice.finish_reason === "string" && rawChoice.finish_reason) {
+        entry.finishReason = rawChoice.finish_reason;
+      }
+      const delta = isRecord(rawChoice.delta) ? rawChoice.delta : null;
+      if (!delta) continue;
+      if (typeof delta.role === "string") entry.role = delta.role;
+      if (typeof delta.content === "string") entry.content += delta.content;
+      for (const field of ["reasoning_content", "reasoning"]) {
+        if (typeof delta[field] === "string") {
+          entry.reasoning += delta[field] as string;
+          entry.reasoningField ??= field;
+        }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const [position, rawCall] of delta.tool_calls.entries()) {
+          if (!isRecord(rawCall)) continue;
+          const callIndex = typeof rawCall.index === "number" ? rawCall.index : position;
+          let call = entry.toolCalls.get(callIndex);
+          if (!call) {
+            call = { name: "", arguments: "" };
+            entry.toolCalls.set(callIndex, call);
+          }
+          if (typeof rawCall.id === "string" && rawCall.id) call.id = rawCall.id;
+          if (typeof rawCall.type === "string" && rawCall.type) call.type = rawCall.type;
+          const fn = isRecord(rawCall.function) ? rawCall.function : null;
+          if (fn && typeof fn.name === "string") call.name += fn.name;
+          if (fn && typeof fn.arguments === "string") call.arguments += fn.arguments;
+        }
+      }
+    }
+  };
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let done = false;
+  const handleEvent = async (rawEvent: string) => {
+    const data = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /, ""))
+      .join("\n");
+    if (!data) return;
+    if (data.trim() === "[DONE]") {
+      done = true;
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!isRecord(parsed)) return;
+    if (isRecord(parsed.error)) {
+      const message = typeof parsed.error.message === "string" ? parsed.error.message : JSON.stringify(parsed.error);
+      throw new Error(`local runner OpenAI stream failed: ${message.slice(0, 300)}`);
+    }
+    absorb(parsed);
+    chunkCount += 1;
+    await onChunk(parsed);
+  };
+  const reader = response.body.getReader();
+  try {
+    while (!done) {
+      const { value, done: streamDone } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      if (streamDone) buffer += decoder.decode();
+      let boundary = buffer.search(/\r?\n\r?\n/);
+      while (boundary >= 0 && !done) {
+        const rawEvent = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
+        await handleEvent(rawEvent);
+        boundary = buffer.search(/\r?\n\r?\n/);
+      }
+      if (streamDone) {
+        if (buffer.trim() && !done) await handleEvent(buffer);
+        break;
+      }
+    }
+  } finally {
+    if (done) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  if (chunkCount === 0) {
+    throw new Error("local runner OpenAI stream ended without any chunks");
+  }
+  const assembledChoices = [...choices.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([index, entry]) => {
+      const toolCalls = [...entry.toolCalls.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([position, call]) => ({
+          id: call.id || `call_${position}`,
+          type: call.type || "function",
+          function: { name: call.name, arguments: call.arguments }
+        }));
+      return {
+        index,
+        message: {
+          role: entry.role || "assistant",
+          content: entry.content || (toolCalls.length > 0 ? null : ""),
+          ...(entry.reasoning ? { [entry.reasoningField || "reasoning_content"]: entry.reasoning } : {}),
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
+        },
+        finish_reason: entry.finishReason || (toolCalls.length > 0 ? "tool_calls" : "stop")
+      };
+    });
+  return {
+    ...(id ? { id } : {}),
+    object: "chat.completion",
+    ...(created !== undefined ? { created } : {}),
+    ...(model ? { model } : {}),
+    choices: assembledChoices,
+    ...(usage !== undefined ? { usage } : {})
+  };
+}
+
 export class SelfHostedNodeRuntime {
   private readonly config: SelfHostedNodeConfig;
   private readonly gateway: MswarmSelfHostedNodeClient;
@@ -7042,7 +7203,8 @@ export class SelfHostedNodeRuntime {
    */
   private async executeOpenAiToolPassthrough(
     job: SelfHostedNodeInvocationJob,
-    agent: MswarmCodaliAgent
+    agent: MswarmCodaliAgent,
+    onChunk?: (chunk: Record<string, unknown>) => Promise<void>
   ): Promise<Record<string, unknown>> {
     const baseUrl = optionalText(agent.baseUrl);
     if (!baseUrl) {
@@ -7081,6 +7243,18 @@ export class SelfHostedNodeRuntime {
       tools: job.openai_request.tools,
       stream: false
     };
+    /*
+     * A streaming caller gets the runner's chunks relayed unchanged as they
+     * arrive, so it can see progress (and silence) instead of waiting for the
+     * whole generation. Usage is requested in the final chunk.
+     */
+    const streaming = job.openai_request.stream === true && onChunk !== undefined;
+    if (streaming) {
+      body.stream = true;
+      body.stream_options = isRecord(job.openai_request.stream_options)
+        ? { ...job.openai_request.stream_options, include_usage: true }
+        : { include_usage: true };
+    }
     if (job.openai_request.tool_choice !== undefined) body.tool_choice = job.openai_request.tool_choice;
     if (job.openai_request.temperature !== undefined) body.temperature = job.openai_request.temperature;
     if (job.openai_request.top_p !== undefined) body.top_p = job.openai_request.top_p;
@@ -7108,6 +7282,9 @@ export class SelfHostedNodeRuntime {
       // The platform fetch accepts the dispatcher; a replaced global fetch ignores it.
       response = await this.fetchImpl(url, (dispatcher ? { ...request, dispatcher } : request) as RequestInit);
       if (!response.ok) throw await readLocalModelResponseError(response);
+      if (streaming && onChunk && /text\/event-stream/i.test(response.headers.get("content-type") ?? "")) {
+        return await relayOpenAIChatCompletionStream(response, onChunk);
+      }
       text = await response.text();
     } finally {
       clearTimeout(timeout);
@@ -8182,7 +8359,7 @@ export class SelfHostedNodeRuntime {
       // remains, including call IDs and result pairing.
       if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0 ||
           chatMessages.some(message => isRecord(message) && (message.role === "tool" || Array.isArray(message.tool_calls) && message.tool_calls.length > 0))) {
-        const passthrough = await this.executeOpenAiToolPassthrough(job, agent);
+        const passthrough = await this.executeOpenAiToolPassthrough(job, agent, emitOpenAIChunk);
         this.finishExecutionTelemetry({ executionClass, startedAt, ok: true });
         const passthroughResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
@@ -8190,6 +8367,7 @@ export class SelfHostedNodeRuntime {
           operation,
           status: "success",
           openai_response: passthrough,
+          ...(streamEvents.length ? { stream_events: streamEvents } : {}),
           ...(progressEvents.length ? { progress_events: progressEvents } : {}),
           timing: { local_latency_ms: Date.now() - startedAt }
         };
@@ -8707,10 +8885,12 @@ export class SelfHostedNodeRuntime {
     const pendingStreamEvents: Record<string, unknown>[] = [];
     let streamEventForwardingFailed = false;
     let forwardedStreamEventCount = 0;
+    let lastStreamEventFlushAt = Date.now();
     const flushStreamEvents = async () => {
       if (pendingStreamEvents.length === 0 || streamEventForwardingFailed) {
         return;
       }
+      lastStreamEventFlushAt = Date.now();
       const stream_events = pendingStreamEvents.splice(0, pendingStreamEvents.length);
       try {
         await this.gateway.postJobEvents(runtimeToken, job.job_id, {
@@ -8754,7 +8934,12 @@ export class SelfHostedNodeRuntime {
           return;
         }
         pendingStreamEvents.push(chunk);
-        if (pendingStreamEvents.length >= DEFAULT_STREAM_EVENT_BATCH_SIZE) {
+        // Flush on batch size or elapsed time, so a slow generation still
+        // reaches the caller promptly instead of waiting for a full batch.
+        if (
+          pendingStreamEvents.length >= DEFAULT_STREAM_EVENT_BATCH_SIZE ||
+          Date.now() - lastStreamEventFlushAt >= DEFAULT_STREAM_EVENT_FLUSH_INTERVAL_MS
+        ) {
           await flushStreamEvents();
         }
       },
