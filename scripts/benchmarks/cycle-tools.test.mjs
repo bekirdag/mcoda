@@ -220,7 +220,7 @@ const ev = (at, type, data = {}) => ({ at: `2026-03-02T09:${at}Z`, type, data })
 
 test('model-service loss: raw retries that hang near the deadline make a deadline-bound attempt infrastructure-affected', async () => {
   const raw = [
-    ev('00:00.000', 'model_request', { id: 'a' }), ev('06:40.000', 'raw_model_retry', { attempt: 1, code: 'invalid_response', waitMs: 500 }),
+    ev('00:00.000', 'model_request', { id: 'a' }), ev('06:40.000', 'raw_model_retry', { attempt: 1, code: 'invalid_response', responseReason: 'incomplete_stream', httpStatus: 200, waitMs: 500 }),
     ev('06:40.600', 'model_request', { id: 'b' }), ev('07:00.000', 'model_response'),
     ev('07:05.000', 'model_request', { id: 'c' }), ev('13:45.000', 'raw_model_retry', { attempt: 1, code: 'service_unavailable', waitMs: 2000 }),
     ev('13:47.000', 'model_request', { id: 'd' }), ev('20:00.000', 'attempt_error', { error: 'Error: Common workflow deadline exceeded' }),
@@ -269,8 +269,28 @@ test('model-service loss: output-limit and context-length failures are model-cau
   assert.equal(report.affected.length, 0, 'model-caused time is not a rerun reason');
   assert.deepEqual([report.rows[0].failures, report.rows[0].modelFailures, report.rows[0].modelCausedCodes], [1, 2, ['output_limit', 'context_length_exceeded']]);
   // Service-side codes and transport errors without a code are service-caused.
-  for (const data of [{ code: 'rate_limited' }, { httpStatus: 503 }, { code: 'invalid_response' }, { message: 'Model service HTTP 429: rate_limited' }, { message: 'fetch failed: ECONNRESET' }, { code: 'service_unavailable', responseReason: 'stalled' }]) assert.equal(tools.failureCause(data), 'service', JSON.stringify(data));
-  for (const data of [{ code: 'output_limit' }, { code: 'context_length_exceeded', httpStatus: 400 }, { code: 'content_filter' }, {}]) assert.equal(tools.failureCause(data), 'model', JSON.stringify(data));
+  for (const data of [{ code: 'rate_limited' }, { httpStatus: 503 }, { code: 'invalid_response', responseReason: 'incomplete_stream' }, { code: 'invalid_response', httpStatus: 502 }, { message: 'Model service HTTP 429: rate_limited' }, { message: 'fetch failed: ECONNRESET' }, { code: 'service_unavailable', responseReason: 'stalled' }]) assert.equal(tools.failureCause(data), 'service', JSON.stringify(data));
+  for (const data of [{ code: 'output_limit' }, { code: 'context_length_exceeded', httpStatus: 400 }, { code: 'content_filter' }, {}, { code: 'invalid_response', httpStatus: 200, responseReason: 'output_limit' }]) assert.equal(tools.failureCause(data), 'model', JSON.stringify(data));
+  assert.equal(tools.failureCause({ code: 'invalid_response', httpStatus: 200 }), 'unclassified', 'a malformed reply without a stream reason is not called infrastructure');
+});
+
+test('model-service loss: invalid_response is split by cause; unrecorded causes only make an attempt a possible infra case', async () => {
+  // A 20-minute review task: one reply cut at its output limit (model), one stream cut in transit (service),
+  // and two older-format raw retries with no recorded cause.
+  const events = [
+    ev('00:00.000', 'model_request', { id: 'v1' }), ev('04:00.000', 'model_failure', { id: 'v1', code: 'invalid_response', httpStatus: 200, responseReason: 'output_limit' }),
+    ev('04:00.500', 'model_request', { id: 'v2' }), ev('05:00.000', 'model_failure', { id: 'v2', code: 'invalid_response', httpStatus: 200, responseReason: 'incomplete_stream' }),
+    ev('05:00.010', 'model_recovery', { waitMs: 500 }), ev('05:00.600', 'model_request', { id: 'v2' }),
+    ev('07:00.000', 'raw_model_retry', { attempt: 1, code: 'invalid_response', waitMs: 500 }), ev('07:00.600', 'model_request', { id: 'v3' }),
+    ev('09:00.000', 'raw_model_retry', { attempt: 2, code: 'invalid_response', waitMs: 2000 }), ev('09:02.000', 'model_request', { id: 'v4' }),
+  ];
+  const loss = tools.modelServiceLoss(events);
+  assert.equal(Math.round(loss.lostMs / 1000), 60);
+  assert.equal(Math.round(loss.modelCausedMs / 1000), 241, 'four minutes plus the retry backoff');
+  assert.equal(Math.round(loss.unclassifiedMs / 1000), 241);
+  const attempts = new Map([['rv-1', { task: { id: 'rv-1', execution: { deadlineMs: 20 * 60000 } }, run: 'main', arms: { raw_tools: { directory: 'd', result: { error: 'Error: Common workflow deadline exceeded', elapsedMs: 1200000 } } } }]]);
+  const report = await tools.serviceLossReport(attempts, { readEvents: async () => events });
+  assert.deepEqual([report.affected.length, report.possiblyAffected.map(row => row.id)], [0, ['rv-1']], 'service 5% alone is under 10%; with the unclassified retries it is a candidate to confirm');
 });
 
 test('receipts: raw {ok} and Codali {status} shapes are each read correctly', () => {

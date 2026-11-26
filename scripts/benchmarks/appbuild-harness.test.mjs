@@ -133,6 +133,8 @@ test('raw arm retries a malformed model reply with the same request, at most twi
  assert.ok(seen.every(r=>r.messages===request.messages&&Object.keys(r).every(key=>['signal','stream','onProgress'].includes(key)||r[key]===request[key])),'retry must not add guidance (transport fields only: signal, streaming, progress)');assert.deepEqual(retries.map(r=>r.attempt),[1,2]);
  let m=0;await assert.rejects(generateWithRetry({generate:async()=>{m++;throw fail('invalid_response');}},request,{wait:async()=>{}}),/invalid_response/);assert.equal(m,3);
  let k=0;await assert.rejects(generateWithRetry({generate:async()=>{k++;throw fail('invalid_request');}},request,{wait:async()=>{}}),/invalid_request/);assert.equal(k,1);
+ const reasons=[];let r=0;await generateWithRetry({generate:async()=>{if(r++<1)throw Object.assign(Error('cut'),{code:'invalid_response',status:200,responseReason:'incomplete_stream'});return {message:{role:'assistant',content:'ok'}};}},request,{wait:async()=>{},onRetry:x=>reasons.push(x)});
+ assert.deepEqual(reasons.map(x=>[x.code,x.responseReason,x.httpStatus]),[['invalid_response','incomplete_stream',200]],'the retry event keeps the failure cause for time-loss accounting');
 });
 
 test('raw arm waits out a temporary outage on the schedule Codali uses', async () => {

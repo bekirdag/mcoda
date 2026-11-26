@@ -37,11 +37,12 @@ export const runCommand = (command, args, { cwd, timeoutMs = 6 * 3600 * 1000 } =
 
 /** systemd user unit state: {active, state, result, status}. An unreachable systemctl is "unknown", never "ended". */
 export const systemdUnitState = run => async unit => {
-  const shown = await run('systemctl', ['--user', 'show', unit, '-p', 'ActiveState', '-p', 'Result', '-p', 'ExecMainStatus', '-p', 'LoadState']);
+  const shown = await run('systemctl', ['--user', 'show', unit, '-p', 'ActiveState', '-p', 'Result', '-p', 'ExecMainStatus', '-p', 'LoadState', '-p', 'ExecMainStartTimestamp']);
   const props = Object.fromEntries(shown.stdout.split('\n').filter(line => line.includes('=')).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
   if (!props.ActiveState) return { active: true, state: 'unknown', detail: shown.stderr.trim().slice(0, 200) };
   const active = ['active', 'activating', 'reloading', 'deactivating'].includes(props.ActiveState);
-  return { active, state: props.ActiveState, result: props.Result, status: props.ExecMainStatus, loaded: props.LoadState };
+  const started = props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== 'n/a' ? props.ExecMainStartTimestamp : undefined;
+  return { active, state: props.ActiveState, result: props.Result, status: props.ExecMainStatus, loaded: props.LoadState, ...(started ? { startedAt: started } : {}) };
 };
 
 /** Categories whose every case has a result for both arms, not reported before. */
@@ -107,7 +108,9 @@ export const watchCycle = async ({
     const ledger = path.join(results, 'ledger.jsonl');
     const rows = (await fs.readFile(ledger, 'utf8').catch(() => '')).split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
     const done = rows.filter(row => row.type === 'result');
-    return { results: done.length, errors: done.filter(row => row.result?.error || row.launchError).length, complete: rows.some(row => row.type === 'run_complete') };
+    const mtimeMs = (await fs.stat(ledger).catch(() => null))?.mtimeMs ?? null;
+    return { results: done.length, errors: done.filter(row => row.result?.error || row.launchError).length, complete: rows.some(row => row.type === 'run_complete'),
+      ran: rows.some(row => row.type === 'start' || row.type === 'result'), mtimeMs };
   };
 
   const runPostRun = async (reason, ended) => {
@@ -149,8 +152,15 @@ export const watchCycle = async ({
     try {
       // 1. Unit state first.
       const state = await unitState(unit);
-      if (state.active && state.state !== 'unknown' && !seenActive) { seenActive = true; await writeJson(statePath, { unit, seenActiveAt: stamp() }); }
-      const complete = !state.active && !seenActive && (await counts()).complete;
+      // A unit that started and failed between two polls is never seen active: systemd still shows it
+      // failed, with a non-success Result or a main-process start time. A ledger with attempts that has
+      // not changed for the stall window also shows a run that stopped (a fresh one may belong to a
+      // study running under another unit name, so it is not taken as an end).
+      const ledger = !state.active && !seenActive ? await counts() : null;
+      const ran = state.state === 'failed' || (!!state.result && state.result !== 'success') || !!state.startedAt
+        || (!!ledger?.ran && ledger.mtimeMs != null && now() - ledger.mtimeMs > stallMs);
+      if (!seenActive && state.state !== 'unknown' && (state.active || ran)) { seenActive = true; await writeJson(statePath, { unit, seenActiveAt: stamp(), ...(state.active ? {} : { inferredFrom: state.state === 'failed' || (state.result && state.result !== 'success') ? `unit ${state.state}/${state.result}` : state.startedAt ? 'ExecMainStartTimestamp' : 'ledger' }) }); }
+      const complete = !!ledger?.complete;
       if (!state.active && !seenActive && !complete) {
         if (!notSeenNotified && now() - startedAt > startGraceMs) {
           notSeenNotified = true;
@@ -176,7 +186,7 @@ export const watchCycle = async ({
       if (await exists(results)) {
       // 3. OOM kills during attempts and attempts that lost their deadline to the model service.
       const outages = await run(node, [tools, 'outages', '--cycle', C, ...(processFilter ? ['--process', processFilter] : [])], { cwd: path.dirname(tools) });
-      const lines = outages.stdout.split('\n').filter(line => (/ oom_kill /.test(line) && !/affected=-$/.test(line)) || / INFRA_AFFECTED$/.test(line));
+      const lines = outages.stdout.split('\n').filter(line => (/ oom_kill /.test(line) && !/affected=-$/.test(line)) || / (INFRA_AFFECTED|POSSIBLE_INFRA)$/.test(line));
       if (lines.length) {
         const seenFile = path.join(C, 'outages-seen.txt'), seenLines = new Set((await fs.readFile(seenFile, 'utf8').catch(() => '')).split('\n').filter(Boolean));
         const fresh = lines.filter(line => !seenLines.has(line));

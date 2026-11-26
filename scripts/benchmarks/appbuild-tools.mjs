@@ -214,7 +214,9 @@ export async function generateWithRetry(provider, request, { signal, wait = ms =
       if (waitMs === undefined || !RAW_RETRYABLE_MODEL_CODES.has(code) || signal?.aborted) throw error;
       // A retry that could only start inside the reserve is not made; the final turn follows.
       if (cutoffAt !== undefined && now() + waitMs >= cutoffAt) throw reserveCutoff();
-      await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}) });
+      await onRetry({ attempt: attempt + 1, code, waitMs, ...(error?.stalled ? { stalledAfterMs: allowance } : {}),
+        // Cause details for the cycle's time-loss accounting (output limit vs a cut stream), as Codali logs them.
+        ...(error?.responseReason ? { responseReason: error.responseReason } : {}), ...(Number.isFinite(error?.status) ? { httpStatus: error.status } : {}) });
       await wait(waitMs); waitedMs += waitMs;
     }
     finally { clearTimeout(stallHandle); clearTimeout(cutoffHandle); }
