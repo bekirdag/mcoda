@@ -12,6 +12,9 @@ const RENDER_NETWORK_IDLE_MS = 6_000;
 const RENDER_STABLE_MS = 1_200;
 const RENDER_POLL_MS = 250;
 const COLLAPSED_MARKER = "[Collapsed section, expanded for reading]";
+/** Bounds on text revealed from collapsed sections, per section and per page. */
+const COLLAPSED_PANEL_MAX_CHARS = 20_000;
+const COLLAPSED_PAGE_MAX_CHARS = 100_000;
 process.once("message", async (input: { endpoint: string; url: string; scope: "main" | "page" }) => {
   let browser: Awaited<ReturnType<typeof chromium.connect>> | undefined;
   let session: import("browser-use/dist/browser/session.js").BrowserSession | undefined;
@@ -82,33 +85,72 @@ process.once("message", async (input: { endpoint: string; url: string; scope: "m
     // only. Reveal them in this disposable DOM without clicking anything, and
     // mark the text so it is not mistaken for what the page shows by default.
     // Content hidden for other reasons stays hidden.
-    const expanded = await tab.evaluate(marker => {
-      let count = 0;
+    // Only a section the reader could open is revealed: its toggle (summary or
+    // aria-controls button) must itself be visible, sized and on the page, and
+    // the panel must render once opened. A hidden toggle wired to a hidden panel
+    // is hidden text like any other and stays hidden. Revealed text is capped per
+    // section and per page so a page cannot flood the snapshot this way.
+    const expansion = await tab.evaluate(({ marker, panelMaxChars, pageMaxChars }) => {
+      let count = 0, skipped = 0, budget = pageMaxChars;
+      const visible = (element: Element): boolean => {
+        const box = element as HTMLElement;
+        if (typeof box.checkVisibility === "function" && !box.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, contentVisibilityAuto: true })) return false;
+        // checkVisibility covers display/visibility/opacity on the element and its ancestors;
+        // also refuse zero-size and off-page placement and near-transparent ancestors.
+        const rect = box.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) return false;
+        const left = rect.left + window.scrollX, top = rect.top + window.scrollY;
+        const doc = document.documentElement;
+        if (left + rect.width <= 0 || top + rect.height <= 0 || left >= Math.max(doc.scrollWidth, window.innerWidth) || top >= Math.max(doc.scrollHeight, window.innerHeight)) return false;
+        const own = getComputedStyle(box);
+        if (own.visibility !== "visible" || parseFloat(own.fontSize) < 4 && !box.getAttribute("aria-label")) return false;
+        for (let node: Element | null = box; node; node = node.parentElement) if (Number(getComputedStyle(node).opacity) < 0.1) return false;
+        return true;
+      };
+      const admit = (element: Element): boolean => {
+        const size = (element.textContent ?? "").length;
+        if (size > panelMaxChars || size > budget) { skipped++; return false; }
+        budget -= size; return true;
+      };
       const mark = (element: Element, after?: Element | null) => {
         const note = document.createTextNode(`${marker} `);
         if (after) after.after(note); else element.prepend(note);
         count++;
       };
       for (const details of Array.from(document.querySelectorAll("details:not([open])")).slice(0, 200)) {
+        const summary = details.querySelector(":scope > summary");
+        if (!visible(summary ?? details)) continue;
+        if (!admit(details)) continue;
         details.setAttribute("open", "");
-        mark(details, details.querySelector(":scope > summary"));
+        mark(details, summary);
       }
       const toggles = document.querySelectorAll('[aria-controls][aria-expanded="false"], [role="tab"][aria-controls][aria-selected="false"]');
       for (const toggle of Array.from(toggles).slice(0, 200)) {
+        if (!visible(toggle)) continue;
         for (const id of (toggle.getAttribute("aria-controls") ?? "").split(/\s+/).filter(Boolean).slice(0, 8)) {
           const panel = document.getElementById(id);
           if (!panel || panel.dataset.codaliExpanded) continue;
           if (!panel.hidden && getComputedStyle(panel).display !== "none") continue;
-          panel.hidden = false;
+          if (!admit(panel)) continue;
+          const hiddenAttribute = panel.hasAttribute("hidden"), inlineDisplay = panel.style.getPropertyValue("display"), inlinePriority = panel.style.getPropertyPriority("display");
           panel.removeAttribute("hidden");
           if (getComputedStyle(panel).display === "none") panel.style.setProperty("display", "block", "important");
           panel.dataset.codaliExpanded = "1";
+          if (!visible(panel)) {
+            // Opened, it still would not render to a reader: put it back.
+            if (hiddenAttribute) panel.setAttribute("hidden", "");
+            if (inlineDisplay) panel.style.setProperty("display", inlineDisplay, inlinePriority); else panel.style.removeProperty("display");
+            budget += (panel.textContent ?? "").length;
+            continue;
+          }
           mark(panel);
         }
       }
-      return count;
-    }, COLLAPSED_MARKER).catch(() => 0);
+      return { count, skipped };
+    }, { marker: COLLAPSED_MARKER, panelMaxChars: COLLAPSED_PANEL_MAX_CHARS, pageMaxChars: COLLAPSED_PAGE_MAX_CHARS }).catch(() => ({ count: 0, skipped: 0 }));
+    const expanded = expansion.count;
     if (expanded) notices.push(`${expanded} collapsed section${expanded === 1 ? " was" : "s were"} expanded for reading; ${expanded === 1 ? "its" : "their"} text starts with "${COLLAPSED_MARKER}".`);
+    if (expansion.skipped) notices.push(`${expansion.skipped} collapsed section${expansion.skipped === 1 ? " was" : "s were"} left closed: over the size allowed for expanded text.`);
     // Accessibility snapshots otherwise flatten deleted/struck-through text
     // into apparently current prose. Mark revisions in this disposable DOM;
     // no page action, form submission or remote mutation is performed.
