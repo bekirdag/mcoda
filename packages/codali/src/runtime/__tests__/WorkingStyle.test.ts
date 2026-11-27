@@ -35,7 +35,9 @@ test("only short, low-sensitivity style lines survive, deduplicated", () => {
   assert.ok(formatWorkingStyle({ items }, WORKING_STYLE_HEADER.length + 80).included < 3);
 });
 
-test("working style is on by default and every off-switch wins", () => {
+test("working style is on by default and every off-switch wins", t => {
+  const savedEnv = process.env.CODALI_WORKING_STYLE; delete process.env.CODALI_WORKING_STYLE;
+  t.after(() => { if (savedEnv === undefined) delete process.env.CODALI_WORKING_STYLE; else process.env.CODALI_WORKING_STYLE = savedEnv; });
   assert.equal(workingStyleEnabled(undefined, undefined, undefined), true);
   assert.equal(workingStyleEnabled(undefined, false, undefined), false);
   assert.equal(workingStyleEnabled(undefined, true, "0"), false);
@@ -44,6 +46,9 @@ test("working style is on by default and every off-switch wins", () => {
 });
 
 test("the working style reaches the model as lower-precedence guidance, and workingStyle: false keeps it out", { concurrency: false }, async t => {
+  // The test runner turns working style off for hermetic tests; this test checks the default.
+  const savedEnv = process.env.CODALI_WORKING_STYLE; delete process.env.CODALI_WORKING_STYLE;
+  t.after(() => { if (savedEnv === undefined) delete process.env.CODALI_WORKING_STYLE; else process.env.CODALI_WORKING_STYLE = savedEnv; });
   const config: OrchestrationConfig = { schemaVersion: 1, profile: "style", providers: { service: { adapter: "openai-compatible", baseUrl: "https://model.test/v1" } },
     models: { lead: { provider: "service", catalogId: "lead", revision: "1", operations: ["chat.completions"], contextWindow: 32768, maxOutputTokens: 2048, supportsTools: true } },
     bindings: { lead: { candidates: ["lead"] } }, interaction: { strategy: "native" } };

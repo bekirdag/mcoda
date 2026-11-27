@@ -71,6 +71,9 @@ const result = spawnSync(nodeBin, testArgs, {
   stdio: "inherit",
   env: {
     ...process.env,
+    // Hermetic by default: the working-style lookup would reach a host Docdex
+    // daemon. WorkingStyle.test sets this itself where it tests the default.
+    CODALI_WORKING_STYLE: "0",
     HOME: testHome.path,
     USERPROFILE: testHome.path,
   },
