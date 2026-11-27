@@ -5,23 +5,22 @@ This guide covers installation, workspace setup, and common CLI workflows.
 ## Install
 - Requires Node.js >= 20.
 - Global install: `npm i -g mcoda`
-- Interactive installs show the bundled mswarm data collection terms and require acceptance before setup can continue.
-- If installation cannot prompt, run `mcoda setup` before any other mcoda command.
+- Works right after install: no consent prompt, no mandatory setup step, and no usage data collection or upload.
 - Verify: `mcoda --version`
 - Repo-local global link of workspace packages: `pnpm run install:local`
 - Repo-local global link of CLI binaries only: `pnpm run install:local:bins`
 
-### Mandatory consent bootstrap
+### No consent or setup required
 
-mcoda requires acceptance of the bundled mswarm data collection terms before normal command use.
+Every mcoda command works immediately after installation. mcoda does not ask for
+telemetry consent and does not send usage, telemetry or other collected data to
+mswarm or anywhere else.
 
-```sh
-mcoda setup
-```
-
-- `mcoda setup` is the guided interactive path and is exempt from the normal consent gate.
-- `mcoda consent accept` remains available for explicit/manual acceptance and automation-friendly flows.
-- If consent is not accepted, mcoda blocks non-exempt commands.
+- To use mswarm cloud agents, workers or routing, configure your own key with
+  `mcoda config set mswarm-api-key <KEY>`.
+- `mcoda setup` only prints optional next steps; `mcoda consent` is kept for
+  backward compatibility and just removes consent tokens left by older releases
+  from the local config.
 
 ## Docdex setup
 mcoda relies on docdex for document search/context and the headless Chromium browser used for web enrichment.
@@ -369,7 +368,7 @@ mcoda task show web-01-us-01-t01 --project WEB --include-logs --include-history 
 - Lookup: prefers the workspace DB; if `MCODA_API_BASE_URL` (or legacy `MCODA_TASKS_API_URL`) is set, the task key is first resolved via `GET /tasks?key=...` to align with the OpenAPI surface, then hydrated from the local DB for details.
 
 ### Telemetry: tokens and config
-Summarize token usage (aggregated via the Telemetry API):
+Summarize token usage recorded in the local workspace DB (never uploaded):
 
 ```sh
 mcoda tokens --group-by project,command,agent --since 7d --format table
@@ -382,7 +381,7 @@ Inspect or toggle telemetry settings:
 
 ```sh
 mcoda telemetry show
-mcoda telemetry opt-out --strict   # disable remote export; strict also disables local logging
+mcoda telemetry opt-out --strict   # strict disables local token recording (nothing is ever uploaded)
 mcoda telemetry opt-in
 ```
 

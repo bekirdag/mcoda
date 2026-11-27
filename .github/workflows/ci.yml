@@ -35,3 +35,22 @@ jobs:
 
       - name: Packaging guardrails
         run: pnpm --filter mcoda run pack:verify
+
+  windows-compatibility:
+    # Existing embedded/CLI package compatibility; the new isolated terminal
+    # executor still requires Linux or macOS.
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: pnpm install
+      - run: pnpm -r run build
+      - name: Windows package regressions
+        timeout-minutes: 15
+        run: node tests/all.js

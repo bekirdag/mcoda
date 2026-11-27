@@ -25,6 +25,8 @@ from pathlib import Path
 from socketserver import TCPServer
 from typing import Any, Protocol
 
+from media_gpu_lock import MediaGpuError, MediaGpuRecoveryRequired, media_gpu_health, media_gpu_slot
+
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11446
@@ -165,7 +167,7 @@ class SubprocessBackend:
         seed: int | None,
     ) -> tuple[bytes, dict[str, Any]]:
         effective_seed = seed if seed is not None else secrets.randbelow(2**31)
-        with tempfile.TemporaryDirectory(prefix="stable-audio-3-") as temp_dir:
+        with media_gpu_slot("audio") as lease, tempfile.TemporaryDirectory(prefix="stable-audio-3-") as temp_dir:
             output_path = Path(temp_dir) / "generation.wav"
             command = [
                 str(self.python),
@@ -189,26 +191,48 @@ class SubprocessBackend:
                 command.extend(("--precision", self.precision))
             if self.models_dir:
                 command.extend(("--models-dir", str(self.models_dir)))
-            process = subprocess.Popen(
+            lease.mark_uncertain("audio_launch_pending")
+            try:
+                process = subprocess.Popen(
                     command,
                     cwd=self.runtime_root,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
-            )
+                )
+            except OSError:
+                # Popen reports failed exec only after reaping its failed child.
+                lease.confirm_finished()
+                raise
             try:
-                return_code = process.wait(timeout=self.timeout_seconds)
-            except subprocess.TimeoutExpired as error:
+                lease.record_native_process(process.pid)
                 try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
+                    return_code = process.wait(timeout=self.timeout_seconds)
+                except subprocess.TimeoutExpired as error:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    except ProcessLookupError:
+                        process.wait()
+                    raise RuntimeError("Stable Audio CLI timed out") from error
+            finally:
+                # A reaped wrapper does not prove that its process group stopped.
+                # Any unexpected wait/identity failure keeps the durable fence.
+                group_alive = True
+                try:
+                    os.killpg(process.pid, 0)
                 except ProcessLookupError:
+                    group_alive = False
+                except PermissionError:
                     pass
-                raise RuntimeError("Stable Audio CLI timed out") from error
+                if process.poll() is not None and not group_alive:
+                    lease.confirm_finished()
+            if lease.record["status"] == "uncertain":
+                raise MediaGpuRecoveryRequired("audio process group has no confirmed terminal outcome")
             if return_code != 0:
                 raise RuntimeError(
                     f"Stable Audio CLI exited with status {return_code}"
@@ -244,7 +268,8 @@ class ServerState:
 
 
 class AudioHttpServer(ThreadingHTTPServer):
-    daemon_threads = True
+    # Let active inference finish before process exit releases the shared GPU.
+    daemon_threads = False
     request_queue_size = 8
 
     def server_bind(self) -> None:
@@ -438,8 +463,9 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             if self.path == "/healthz":
-                if state.fatal_error.is_set():
-                    self._send_json(503, {"status": "unhealthy", "model": state.model_id})
+                gpu = media_gpu_health()
+                if state.fatal_error.is_set() or gpu not in ("ready", "busy"):
+                    self._send_json(503, {"status": "unhealthy", "model": state.model_id, "media_gpu": gpu})
                     return
                 self._send_json(
                     200,
@@ -447,6 +473,7 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         "status": "ok",
                         "model": state.model_id,
                         "backend": state.backend_name,
+                        "media_gpu": gpu,
                         "dit": state.dit,
                         "decoder": state.decoder,
                     },
@@ -568,6 +595,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                 )
             except ApiError as error:
                 self._send_error(error)
+            except MediaGpuError as error:
+                self._send_error(
+                    ApiError(error.status, str(error), error_type="server_error", code=error.code)
+                )
             except Exception as error:
                 logging.error("generation failed error_type=%s", type(error).__name__)
                 self._send_error(

@@ -1,0 +1,56 @@
+[
+  {
+    "id": "unseen-51",
+    "arm": "before",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-before-801a2d2b-10fe-486c-a9ce-f762a1d68c53/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-qK9pvz/workspace",
+    "score": 4,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-before-801a2d2b-10fe-486c-a9ce-f762a1d68c53/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-before-801a2d2b-10fe-486c-a9ce-f762a1d68c53/independent/api-checks.json"
+  },
+  {
+    "id": "unseen-51",
+    "arm": "after",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-after-b2b0bfb6-d8ed-4883-8ad0-43f927b6faf1/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-zAnHls/workspace",
+    "score": 16,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-after-b2b0bfb6-d8ed-4883-8ad0-43f927b6faf1/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-after-b2b0bfb6-d8ed-4883-8ad0-43f927b6faf1/independent/api-checks.json"
+  },
+  {
+    "id": "unseen-51",
+    "arm": "raw_tools",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-raw_tools-f6d9db45-ccae-484f-a2bc-ca029100e23b/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-W60KYb/workspace",
+    "score": 24,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-raw_tools-f6d9db45-ccae-484f-a2bc-ca029100e23b/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-51-raw_tools-f6d9db45-ccae-484f-a2bc-ca029100e23b/independent/api-checks.json"
+  },
+  {
+    "id": "unseen-52",
+    "arm": "before",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-before-49c59819-88df-456f-9ae5-8e8139c4a068/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-8G14FI/workspace",
+    "score": 4,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-before-49c59819-88df-456f-9ae5-8e8139c4a068/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-before-49c59819-88df-456f-9ae5-8e8139c4a068/independent/api-checks.json"
+  },
+  {
+    "id": "unseen-52",
+    "arm": "after",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-after-6278ca53-6b14-4496-9e23-c340fcfca43e/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-tbrdBX/workspace",
+    "score": 4,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-after-6278ca53-6b14-4496-9e23-c340fcfca43e/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-after-6278ca53-6b14-4496-9e23-c340fcfca43e/independent/api-checks.json"
+  },
+  {
+    "id": "unseen-52",
+    "arm": "raw_tools",
+    "project": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-raw_tools-49e2c502-9876-4ff2-ba57-b64bb96ae834/independent/project",
+    "originalWorkspace": "/home/wodo/.local/state/codali/evaluation-workspaces/run-Dhea0Y/workspace",
+    "score": 20,
+    "screenshots": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-raw_tools-49e2c502-9876-4ff2-ba57-b64bb96ae834/independent/browser",
+    "checks": "/home/wodo/.local/state/codali-generalization-20261106/study-repair68-results/unseen-52-raw_tools-49e2c502-9876-4ff2-ba57-b64bb96ae834/independent/api-checks.json"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "protocol": "trust-workflows-v1",
+  "configHash": "ca536befb3f7d9dbfff3f6815b6ce5621d89ef0e94f5dda2d8832e98768827fc",
+  "corpusHash": "7f5dd41a6b0933d79748eca9438bb7a5baa561b9a5079f8c4b6bcf561ccae0f7",
+  "gradingHash": "835eb11803fab99111b9091bb54510ce02e3d2587b047dff1efd1dbbb8c43f2a",
+  "clientFingerprint": "b1a8c055ece8820a4276529ad2833e9c9578bdbc6b7a9bc618b2c26ffd11b4cc",
+  "selectionEvidence": "Prospective configuration fixed before any scored prompt; current qualified eb1b36f runtime, fair raw-tools parity, unrelated web preflights only. No result-based tuning.",
+  "createdAt": "2026-11-05T10:12:27.946Z",
+  "sourceRevision": "b71dff0",
+  "scorerHashes": {
+    "complex52-app-checks.mjs": "169f4d3b4f1e3c49ebff686367e7ea88cd7b6309d4fc4f8edd094a9c60453fad",
+    "complex52-metrics.mjs": "14d86a2118676dd0f129c632f920a794e11250e5507699d04aa33155731c2447",
+    "build-complex52.py": "14caa6aa02cdb70b0d45690917d6d11aa653463490628831e2f6c4a95e3b32b3"
+  }
+}

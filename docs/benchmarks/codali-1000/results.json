@@ -1,0 +1,1622 @@
+{
+  "schemaVersion": 1,
+  "study": "codali-trust-1000-v1",
+  "at": "2026-10-29T04:54:36.002439+00:00",
+  "status": "completed_failed_promotion",
+  "promotion": {
+    "qualified": false,
+    "observedHeldOutGainPercentagePoints": 5,
+    "officialFamilyBootstrap95PercentagePoints": [
+      -5.5,
+      16.5
+    ],
+    "reasons": [
+      "The paired family confidence interval includes no improvement.",
+      "Three held-out first attempts had no logged model request; coverage retries remain separate and cannot replace first failures."
+    ],
+    "interpretation": "A useful tool-orchestration advantage is observed, but broad quality promotion is not established."
+  },
+  "frozen": {
+    "protocolVersion": "trust-opaque-paths-v2",
+    "runtimeFingerprint": "fb98481a3e973adaf7d3d278db4dbec07f07f7d70679f95b57a54791fe85c4cb",
+    "corpusSha256": "2dde4b4457589311ebf643555a29461472e7805a647128bc2774460a9fce4c8a",
+    "gradingSha256": "f24fae285e72ce1e3b55908a608ec384439e65d63280358aa4da62a0271af041",
+    "configGroups": {
+      "25eacc6d6e6c29e7b63ff3b130373c6f5a32021c73a4d4023708a96bfc0bd314": "c6-flash-v9-review",
+      "c41e3bb120741d723c8701ee12e25cf156ca3eeb7a03dbf3c1d4d7137d7fbd29": "c6-flash-v9-review"
+    },
+    "graderSha256": "7daf59677b4b63fb825b76202a7b88614aa02628dabe93a4ebe1bf6b2a0f01c9",
+    "scorerSha256": "c0da9fd673c764ee8526a69682d7b82e4ed92b3b0b18cc132c697f286f461fad"
+  },
+  "attempts": 2100,
+  "primaryAttempts": 2100,
+  "reviews": {
+    "rubric": 349,
+    "critical": 130,
+    "pendingRubric": 0,
+    "pendingCritical": 0,
+    "secondarySemantic": 97,
+    "secondarySemanticallyCorrect": 29,
+    "reviewer": "Primary Codex agent; also the corpus author. Not human or externally independent review. Rubric queues omit arm/model names; critical artifact paths can reveal arms."
+  },
+  "aggregates": {
+    "codali_selected:c6-flash-v9-review": {
+      "all": {
+        "attempts": 1000,
+        "passed": 789,
+        "strictAccuracy": 0.789,
+        "needsReview": 0,
+        "errors": 17,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 10,
+        "unansweredDispatch": 6,
+        "latencyMs": {
+          "p50": 10544,
+          "p95": 37475
+        },
+        "tokens": {
+          "p50": 2348,
+          "p95": 7799,
+          "sum": 2332621,
+          "known": 1000,
+          "estimated": 6
+        },
+        "semantic": {
+          "gradedEligible": 956,
+          "gradedPassed": 793,
+          "secondaryReviewed": 50,
+          "secondaryCorrect": 10,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      },
+      "splits": {
+        "development": {
+          "attempts": 600,
+          "passed": 470,
+          "strictAccuracy": 0.7833333333333333,
+          "needsReview": 0,
+          "errors": 11,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 7,
+          "unansweredDispatch": 3,
+          "latencyMs": {
+            "p50": 10337,
+            "p95": 36877
+          },
+          "tokens": {
+            "p50": 2326,
+            "p95": 7089,
+            "sum": 1330983,
+            "known": 600,
+            "estimated": 3
+          },
+          "semantic": {
+            "gradedEligible": 573,
+            "gradedPassed": 473,
+            "secondaryReviewed": 42,
+            "secondaryCorrect": 6,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "validation": {
+          "attempts": 200,
+          "passed": 150,
+          "strictAccuracy": 0.75,
+          "needsReview": 0,
+          "errors": 3,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 2,
+          "unansweredDispatch": 1,
+          "latencyMs": {
+            "p50": 11762,
+            "p95": 39608
+          },
+          "tokens": {
+            "p50": 2453,
+            "p95": 8647,
+            "sum": 530531,
+            "known": 200,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 193,
+            "gradedPassed": 151,
+            "secondaryReviewed": 2,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "held_out": {
+          "attempts": 200,
+          "passed": 169,
+          "strictAccuracy": 0.845,
+          "needsReview": 0,
+          "errors": 3,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 2,
+          "latencyMs": {
+            "p50": 10183,
+            "p95": 33109
+          },
+          "tokens": {
+            "p50": 2461,
+            "p95": 7907,
+            "sum": 471107,
+            "known": 200,
+            "estimated": 2
+          },
+          "semantic": {
+            "gradedEligible": 190,
+            "gradedPassed": 169,
+            "secondaryReviewed": 6,
+            "secondaryCorrect": 4,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "domains": {
+        "code_generation": {
+          "attempts": 180,
+          "passed": 174,
+          "strictAccuracy": 0.9666666666666667,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 13578,
+            "p95": 30751
+          },
+          "tokens": {
+            "p50": 2699,
+            "p95": 3568,
+            "sum": 487128,
+            "known": 180,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 180,
+            "gradedPassed": 174,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "daily_assistance": {
+          "attempts": 120,
+          "passed": 95,
+          "strictAccuracy": 0.7916666666666666,
+          "needsReview": 0,
+          "errors": 2,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 1,
+          "latencyMs": {
+            "p50": 4230,
+            "p95": 21316
+          },
+          "tokens": {
+            "p50": 739,
+            "p95": 2356,
+            "sum": 130537,
+            "known": 120,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 118,
+            "gradedPassed": 95,
+            "secondaryReviewed": 23,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "debugging_and_tests": {
+          "attempts": 100,
+          "passed": 97,
+          "strictAccuracy": 0.97,
+          "needsReview": 0,
+          "errors": 3,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 1,
+          "latencyMs": {
+            "p50": 11815,
+            "p95": 28909
+          },
+          "tokens": {
+            "p50": 2452,
+            "p95": 2741,
+            "sum": 243609,
+            "known": 100,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 97,
+            "gradedPassed": 97,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "general_knowledge": {
+          "attempts": 120,
+          "passed": 110,
+          "strictAccuracy": 0.9166666666666666,
+          "needsReview": 0,
+          "errors": 7,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 6,
+          "unansweredDispatch": 1,
+          "latencyMs": {
+            "p50": 3596,
+            "p95": 14452
+          },
+          "tokens": {
+            "p50": 698,
+            "p95": 706,
+            "sum": 81787,
+            "known": 120,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 113,
+            "gradedPassed": 110,
+            "secondaryReviewed": 3,
+            "secondaryCorrect": 2,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "history_and_ambiguity": {
+          "attempts": 40,
+          "passed": 38,
+          "strictAccuracy": 0.95,
+          "needsReview": 0,
+          "errors": 1,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3200,
+            "p95": 10364
+          },
+          "tokens": {
+            "p50": 710,
+            "p95": 754,
+            "sum": 28079,
+            "known": 40,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 39,
+            "gradedPassed": 38,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "math_and_data": {
+          "attempts": 120,
+          "passed": 113,
+          "strictAccuracy": 0.9416666666666667,
+          "needsReview": 0,
+          "errors": 1,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3654,
+            "p95": 18025
+          },
+          "tokens": {
+            "p50": 715,
+            "p95": 2192,
+            "sum": 101537,
+            "known": 120,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 119,
+            "gradedPassed": 113,
+            "secondaryReviewed": 6,
+            "secondaryCorrect": 1,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "repository_and_docdex": {
+          "attempts": 100,
+          "passed": 75,
+          "strictAccuracy": 0.75,
+          "needsReview": 0,
+          "errors": 1,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 1,
+          "latencyMs": {
+            "p50": 28446,
+            "p95": 57553
+          },
+          "tokens": {
+            "p50": 7799,
+            "p95": 9567,
+            "sum": 740787,
+            "known": 100,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 99,
+            "gradedPassed": 79,
+            "secondaryReviewed": 10,
+            "secondaryCorrect": 7,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "security_and_evidence": {
+          "attempts": 40,
+          "passed": 19,
+          "strictAccuracy": 0.475,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 4810,
+            "p95": 27066
+          },
+          "tokens": {
+            "p50": 746,
+            "p95": 4214,
+            "sum": 63460,
+            "known": 40,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 40,
+            "gradedPassed": 19,
+            "secondaryReviewed": 8,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "software_architecture": {
+          "attempts": 100,
+          "passed": 7,
+          "strictAccuracy": 0.07,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 21564,
+            "p95": 39808
+          },
+          "tokens": {
+            "p50": 3462,
+            "p95": 3663,
+            "sum": 345829,
+            "known": 100,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 76,
+            "gradedPassed": 7,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "writing_and_communication": {
+          "attempts": 80,
+          "passed": 61,
+          "strictAccuracy": 0.7625,
+          "needsReview": 0,
+          "errors": 2,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 2,
+          "latencyMs": {
+            "p50": 7247,
+            "p95": 24278
+          },
+          "tokens": {
+            "p50": 873,
+            "p95": 2866,
+            "sum": 109868,
+            "known": 80,
+            "estimated": 2
+          },
+          "semantic": {
+            "gradedEligible": 75,
+            "gradedPassed": 61,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "corpusCoverage": {
+        "expected": 1000,
+        "firstAttemptCases": 1000,
+        "missingCases": [],
+        "splits": {
+          "development": {
+            "expected": 600,
+            "firstAttemptCases": 600,
+            "dispatchedCasesIncludingRetries": 593
+          },
+          "validation": {
+            "expected": 200,
+            "firstAttemptCases": 200,
+            "dispatchedCasesIncludingRetries": 198
+          },
+          "held_out": {
+            "expected": 200,
+            "firstAttemptCases": 200,
+            "dispatchedCasesIncludingRetries": 199
+          }
+        },
+        "dispatchedCasesIncludingRetries": 990,
+        "answeredCasesIncludingRetries": 984
+      },
+      "retries": {
+        "attempts": 0,
+        "passed": 0,
+        "strictAccuracy": null,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 0,
+        "unansweredDispatch": 0,
+        "latencyMs": {
+          "p50": null,
+          "p95": null
+        },
+        "tokens": {
+          "p50": null,
+          "p95": null,
+          "sum": 0,
+          "known": 0,
+          "estimated": 0
+        },
+        "semantic": {
+          "gradedEligible": 0,
+          "gradedPassed": 0,
+          "secondaryReviewed": 0,
+          "secondaryCorrect": 0,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      }
+    },
+    "raw_direct:c6-flash-v9-review": {
+      "all": {
+        "attempts": 1000,
+        "passed": 769,
+        "strictAccuracy": 0.769,
+        "needsReview": 0,
+        "errors": 15,
+        "criticalFailures": 8,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 15,
+        "unansweredDispatch": 0,
+        "latencyMs": {
+          "p50": 3330,
+          "p95": 13687
+        },
+        "tokens": {
+          "p50": 209,
+          "p95": 532,
+          "sum": 235245,
+          "known": 1000,
+          "estimated": 0
+        },
+        "semantic": {
+          "gradedEligible": 902,
+          "gradedPassed": 773,
+          "secondaryReviewed": 30,
+          "secondaryCorrect": 4,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      },
+      "splits": {
+        "development": {
+          "attempts": 600,
+          "passed": 466,
+          "strictAccuracy": 0.7766666666666666,
+          "needsReview": 0,
+          "errors": 8,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 8,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3321,
+            "p95": 13204
+          },
+          "tokens": {
+            "p50": 193,
+            "p95": 519,
+            "sum": 133337,
+            "known": 600,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 551,
+            "gradedPassed": 470,
+            "secondaryReviewed": 30,
+            "secondaryCorrect": 4,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "validation": {
+          "attempts": 200,
+          "passed": 144,
+          "strictAccuracy": 0.72,
+          "needsReview": 0,
+          "errors": 5,
+          "criticalFailures": 8,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 5,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3611,
+            "p95": 13868
+          },
+          "tokens": {
+            "p50": 251,
+            "p95": 716,
+            "sum": 56152,
+            "known": 200,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 179,
+            "gradedPassed": 144,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "held_out": {
+          "attempts": 200,
+          "passed": 159,
+          "strictAccuracy": 0.795,
+          "needsReview": 0,
+          "errors": 2,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 2,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3235,
+            "p95": 14814
+          },
+          "tokens": {
+            "p50": 222,
+            "p95": 503,
+            "sum": 45756,
+            "known": 200,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 172,
+            "gradedPassed": 159,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "domains": {
+        "code_generation": {
+          "attempts": 180,
+          "passed": 172,
+          "strictAccuracy": 0.9555555555555556,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3611,
+            "p95": 13868
+          },
+          "tokens": {
+            "p50": 277,
+            "p95": 608,
+            "sum": 56594,
+            "known": 180,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 179,
+            "gradedPassed": 172,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "daily_assistance": {
+          "attempts": 120,
+          "passed": 98,
+          "strictAccuracy": 0.8166666666666667,
+          "needsReview": 0,
+          "errors": 3,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 3,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2140,
+            "p95": 10693
+          },
+          "tokens": {
+            "p50": 136,
+            "p95": 162,
+            "sum": 16275,
+            "known": 120,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 117,
+            "gradedPassed": 98,
+            "secondaryReviewed": 19,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "debugging_and_tests": {
+          "attempts": 100,
+          "passed": 98,
+          "strictAccuracy": 0.98,
+          "needsReview": 0,
+          "errors": 2,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 2,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2651,
+            "p95": 10987
+          },
+          "tokens": {
+            "p50": 203,
+            "p95": 278,
+            "sum": 20402,
+            "known": 100,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 98,
+            "gradedPassed": 98,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "general_knowledge": {
+          "attempts": 120,
+          "passed": 111,
+          "strictAccuracy": 0.925,
+          "needsReview": 0,
+          "errors": 7,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 7,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2195,
+            "p95": 11597
+          },
+          "tokens": {
+            "p50": 96,
+            "p95": 103,
+            "sum": 10934,
+            "known": 120,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 113,
+            "gradedPassed": 111,
+            "secondaryReviewed": 2,
+            "secondaryCorrect": 2,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "history_and_ambiguity": {
+          "attempts": 40,
+          "passed": 34,
+          "strictAccuracy": 0.85,
+          "needsReview": 0,
+          "errors": 1,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 1,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3143,
+            "p95": 14601
+          },
+          "tokens": {
+            "p50": 135,
+            "p95": 227,
+            "sum": 5825,
+            "known": 40,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 39,
+            "gradedPassed": 34,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "math_and_data": {
+          "attempts": 120,
+          "passed": 113,
+          "strictAccuracy": 0.9416666666666667,
+          "needsReview": 0,
+          "errors": 2,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 2,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2309,
+            "p95": 11719
+          },
+          "tokens": {
+            "p50": 112,
+            "p95": 136,
+            "sum": 13308,
+            "known": 120,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 118,
+            "gradedPassed": 113,
+            "secondaryReviewed": 5,
+            "secondaryCorrect": 2,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "repository_and_docdex": {
+          "attempts": 100,
+          "passed": 88,
+          "strictAccuracy": 0.88,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2524,
+            "p95": 10809
+          },
+          "tokens": {
+            "p50": 252,
+            "p95": 283,
+            "sum": 24978,
+            "known": 100,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 100,
+            "gradedPassed": 92,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "security_and_evidence": {
+          "attempts": 40,
+          "passed": 16,
+          "strictAccuracy": 0.4,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 8,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 2818,
+            "p95": 11056
+          },
+          "tokens": {
+            "p50": 183,
+            "p95": 768,
+            "sum": 12144,
+            "known": 40,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 40,
+            "gradedPassed": 16,
+            "secondaryReviewed": 4,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "software_architecture": {
+          "attempts": 100,
+          "passed": 5,
+          "strictAccuracy": 0.05,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 6870,
+            "p95": 17677
+          },
+          "tokens": {
+            "p50": 515,
+            "p95": 562,
+            "sum": 51066,
+            "known": 100,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 47,
+            "gradedPassed": 5,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "writing_and_communication": {
+          "attempts": 80,
+          "passed": 34,
+          "strictAccuracy": 0.425,
+          "needsReview": 0,
+          "errors": 0,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 3907,
+            "p95": 12913
+          },
+          "tokens": {
+            "p50": 299,
+            "p95": 354,
+            "sum": 23719,
+            "known": 80,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 51,
+            "gradedPassed": 34,
+            "secondaryReviewed": 0,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "corpusCoverage": {
+        "expected": 1000,
+        "firstAttemptCases": 1000,
+        "missingCases": [],
+        "splits": {
+          "development": {
+            "expected": 600,
+            "firstAttemptCases": 600,
+            "dispatchedCasesIncludingRetries": 592
+          },
+          "validation": {
+            "expected": 200,
+            "firstAttemptCases": 200,
+            "dispatchedCasesIncludingRetries": 195
+          },
+          "held_out": {
+            "expected": 200,
+            "firstAttemptCases": 200,
+            "dispatchedCasesIncludingRetries": 198
+          }
+        },
+        "dispatchedCasesIncludingRetries": 985,
+        "answeredCasesIncludingRetries": 985
+      },
+      "retries": {
+        "attempts": 0,
+        "passed": 0,
+        "strictAccuracy": null,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 0,
+        "unansweredDispatch": 0,
+        "latencyMs": {
+          "p50": null,
+          "p95": null
+        },
+        "tokens": {
+          "p50": null,
+          "p95": null,
+          "sum": 0,
+          "known": 0,
+          "estimated": 0
+        },
+        "semantic": {
+          "gradedEligible": 0,
+          "gradedPassed": 0,
+          "secondaryReviewed": 0,
+          "secondaryCorrect": 0,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      }
+    },
+    "raw_tools:c6-flash-v9-review": {
+      "all": {
+        "attempts": 100,
+        "passed": 39,
+        "strictAccuracy": 0.39,
+        "needsReview": 0,
+        "errors": 31,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 0,
+        "unansweredDispatch": 0,
+        "latencyMs": {
+          "p50": 22122,
+          "p95": 52205
+        },
+        "tokens": {
+          "p50": 7372,
+          "p95": 13526,
+          "sum": 777181,
+          "known": 100,
+          "estimated": 1
+        },
+        "semantic": {
+          "gradedEligible": 69,
+          "gradedPassed": 50,
+          "secondaryReviewed": 17,
+          "secondaryCorrect": 15,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      },
+      "splits": {
+        "development": {
+          "attempts": 60,
+          "passed": 29,
+          "strictAccuracy": 0.48333333333333334,
+          "needsReview": 0,
+          "errors": 13,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 18230,
+            "p95": 78818
+          },
+          "tokens": {
+            "p50": 4017,
+            "p95": 12576,
+            "sum": 366345,
+            "known": 60,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 47,
+            "gradedPassed": 40,
+            "secondaryReviewed": 7,
+            "secondaryCorrect": 7,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "validation": {
+          "attempts": 20,
+          "passed": 6,
+          "strictAccuracy": 0.3,
+          "needsReview": 0,
+          "errors": 10,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 34003,
+            "p95": 41555
+          },
+          "tokens": {
+            "p50": 10843,
+            "p95": 14271,
+            "sum": 231056,
+            "known": 20,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 10,
+            "gradedPassed": 6,
+            "secondaryReviewed": 2,
+            "secondaryCorrect": 0,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        },
+        "held_out": {
+          "attempts": 20,
+          "passed": 4,
+          "strictAccuracy": 0.2,
+          "needsReview": 0,
+          "errors": 8,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 22531,
+            "p95": 47334
+          },
+          "tokens": {
+            "p50": 7121,
+            "p95": 12103,
+            "sum": 179780,
+            "known": 20,
+            "estimated": 0
+          },
+          "semantic": {
+            "gradedEligible": 12,
+            "gradedPassed": 4,
+            "secondaryReviewed": 8,
+            "secondaryCorrect": 8,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "domains": {
+        "repository_and_docdex": {
+          "attempts": 100,
+          "passed": 39,
+          "strictAccuracy": 0.39,
+          "needsReview": 0,
+          "errors": 31,
+          "criticalFailures": 0,
+          "criticalUnreviewed": 0,
+          "zeroDispatch": 0,
+          "unansweredDispatch": 0,
+          "latencyMs": {
+            "p50": 22122,
+            "p95": 52205
+          },
+          "tokens": {
+            "p50": 7372,
+            "p95": 13526,
+            "sum": 777181,
+            "known": 100,
+            "estimated": 1
+          },
+          "semantic": {
+            "gradedEligible": 69,
+            "gradedPassed": 50,
+            "secondaryReviewed": 17,
+            "secondaryCorrect": 15,
+            "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+          }
+        }
+      },
+      "corpusCoverage": {
+        "expected": 100,
+        "firstAttemptCases": 100,
+        "missingCases": [],
+        "splits": {
+          "development": {
+            "expected": 60,
+            "firstAttemptCases": 60,
+            "dispatchedCasesIncludingRetries": 60
+          },
+          "validation": {
+            "expected": 20,
+            "firstAttemptCases": 20,
+            "dispatchedCasesIncludingRetries": 20
+          },
+          "held_out": {
+            "expected": 20,
+            "firstAttemptCases": 20,
+            "dispatchedCasesIncludingRetries": 20
+          }
+        },
+        "dispatchedCasesIncludingRetries": 100,
+        "answeredCasesIncludingRetries": 100
+      },
+      "retries": {
+        "attempts": 0,
+        "passed": 0,
+        "strictAccuracy": null,
+        "needsReview": 0,
+        "errors": 0,
+        "criticalFailures": 0,
+        "criticalUnreviewed": 0,
+        "zeroDispatch": 0,
+        "unansweredDispatch": 0,
+        "latencyMs": {
+          "p50": null,
+          "p95": null
+        },
+        "tokens": {
+          "p50": null,
+          "p95": null,
+          "sum": 0,
+          "known": 0,
+          "estimated": 0
+        },
+        "semantic": {
+          "gradedEligible": 0,
+          "gradedPassed": 0,
+          "secondaryReviewed": 0,
+          "secondaryCorrect": 0,
+          "qualification": "Semantic grades include applied rubric reviews, so this is not an automatic-only metric. Secondary semantic review never changes strict correctness, tool evidence or critical grades."
+        }
+      }
+    }
+  },
+  "pairedComparisons": [
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "all",
+      "cases": 1000,
+      "families": 100,
+      "accuracyGain": 0.02,
+      "familyBootstrap95": [
+        -0.014,
+        0.056
+      ],
+      "candidatePasses": 789,
+      "baselinePasses": 769,
+      "wins": 81,
+      "losses": 61,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "held_out",
+      "cases": 200,
+      "families": 20,
+      "accuracyGain": 0.05,
+      "familyBootstrap95": [
+        -0.06,
+        0.16
+      ],
+      "candidatePasses": 169,
+      "baselinePasses": 159,
+      "wins": 19,
+      "losses": 9,
+      "pendingReviews": 0,
+      "qualification": "Use the frozen study promotion rules; no automatic promotion here."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:code_generation",
+      "cases": 180,
+      "families": 18,
+      "accuracyGain": 0.011111111111111112,
+      "familyBootstrap95": [
+        -0.022222222222222223,
+        0.05
+      ],
+      "candidatePasses": 174,
+      "baselinePasses": 172,
+      "wins": 8,
+      "losses": 6,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:daily_assistance",
+      "cases": 120,
+      "families": 12,
+      "accuracyGain": -0.025,
+      "familyBootstrap95": [
+        -0.08333333333333333,
+        0.025
+      ],
+      "candidatePasses": 95,
+      "baselinePasses": 98,
+      "wins": 8,
+      "losses": 11,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:debugging_and_tests",
+      "cases": 100,
+      "families": 10,
+      "accuracyGain": -0.01,
+      "familyBootstrap95": [
+        -0.04,
+        0.02
+      ],
+      "candidatePasses": 97,
+      "baselinePasses": 98,
+      "wins": 1,
+      "losses": 2,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:general_knowledge",
+      "cases": 120,
+      "families": 12,
+      "accuracyGain": -0.008333333333333333,
+      "familyBootstrap95": [
+        -0.05,
+        0.03333333333333333
+      ],
+      "candidatePasses": 110,
+      "baselinePasses": 111,
+      "wins": 3,
+      "losses": 4,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:history_and_ambiguity",
+      "cases": 40,
+      "families": 4,
+      "accuracyGain": 0.1,
+      "familyBootstrap95": [
+        0,
+        0.3
+      ],
+      "candidatePasses": 38,
+      "baselinePasses": 34,
+      "wins": 5,
+      "losses": 1,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:math_and_data",
+      "cases": 120,
+      "families": 12,
+      "accuracyGain": 0,
+      "familyBootstrap95": [
+        -0.041666666666666664,
+        0.03333333333333333
+      ],
+      "candidatePasses": 113,
+      "baselinePasses": 113,
+      "wins": 3,
+      "losses": 3,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:repository_and_docdex",
+      "cases": 100,
+      "families": 10,
+      "accuracyGain": -0.13,
+      "familyBootstrap95": [
+        -0.25,
+        -0.04
+      ],
+      "candidatePasses": 75,
+      "baselinePasses": 88,
+      "wins": 4,
+      "losses": 17,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:security_and_evidence",
+      "cases": 40,
+      "families": 4,
+      "accuracyGain": 0.075,
+      "familyBootstrap95": [
+        -0.25,
+        0.375
+      ],
+      "candidatePasses": 19,
+      "baselinePasses": 16,
+      "wins": 8,
+      "losses": 5,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:software_architecture",
+      "cases": 100,
+      "families": 10,
+      "accuracyGain": 0.02,
+      "familyBootstrap95": [
+        -0.06,
+        0.12
+      ],
+      "candidatePasses": 7,
+      "baselinePasses": 5,
+      "wins": 7,
+      "losses": 5,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "domain:writing_and_communication",
+      "cases": 80,
+      "families": 8,
+      "accuracyGain": 0.3375,
+      "familyBootstrap95": [
+        0.1375,
+        0.55
+      ],
+      "candidatePasses": 61,
+      "baselinePasses": 34,
+      "wins": 34,
+      "losses": 7,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_direct",
+      "scope": "sensitivity:excluded-families",
+      "cases": 990,
+      "families": 99,
+      "accuracyGain": 0.022222222222222223,
+      "familyBootstrap95": [
+        -0.012121212121212121,
+        0.05858585858585859
+      ],
+      "candidatePasses": 789,
+      "baselinePasses": 767,
+      "wins": 81,
+      "losses": 59,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_tools",
+      "scope": "all",
+      "cases": 100,
+      "families": 10,
+      "accuracyGain": 0.36,
+      "familyBootstrap95": [
+        0.21,
+        0.49
+      ],
+      "candidatePasses": 75,
+      "baselinePasses": 39,
+      "wins": 39,
+      "losses": 3,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_tools",
+      "scope": "held_out",
+      "cases": 20,
+      "families": 2,
+      "accuracyGain": 0.5,
+      "familyBootstrap95": [
+        0.4,
+        0.6
+      ],
+      "candidatePasses": 14,
+      "baselinePasses": 4,
+      "wins": 10,
+      "losses": 0,
+      "pendingReviews": 0,
+      "qualification": "Use the frozen study promotion rules; no automatic promotion here."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_tools",
+      "scope": "domain:repository_and_docdex",
+      "cases": 100,
+      "families": 10,
+      "accuracyGain": 0.36,
+      "familyBootstrap95": [
+        0.21,
+        0.49
+      ],
+      "candidatePasses": 75,
+      "baselinePasses": 39,
+      "wins": 39,
+      "losses": 3,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    },
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "baselineArm": "raw_tools",
+      "scope": "sensitivity:excluded-families",
+      "cases": 90,
+      "families": 9,
+      "accuracyGain": 0.4,
+      "familyBootstrap95": [
+        0.25555555555555554,
+        0.5222222222222223
+      ],
+      "candidatePasses": 75,
+      "baselinePasses": 39,
+      "wins": 39,
+      "losses": 3,
+      "pendingReviews": 0,
+      "qualification": "Descriptive/exploratory comparison, not an independent promotion test."
+    }
+  ],
+  "officialHeldOutGate": [
+    {
+      "candidate": "codali_selected:c6-flash-v9-review",
+      "cases": 200,
+      "families": 20,
+      "accuracyGain": 0.05,
+      "familyBootstrap95": [
+        -0.055,
+        0.165
+      ],
+      "complete": false,
+      "numericQualityGate": false,
+      "qualification": "Numeric gate alone is insufficient: critical-error review and tool-parity comparison are also required."
+    }
+  ],
+  "bootstrapMethod": {
+    "resamples": 10000,
+    "unit": "Whole task families, preserving their case counts",
+    "scorer": "Original scorer iteration order and RNG stream retained for the official promotion test.",
+    "analyzer": "Sorted families, seed20261028 reset per comparison; its descriptive interval can differ slightly from the official scorer draws."
+  },
+  "artifactAudit": {
+    "completed": 2100,
+    "missingArtifacts": 0,
+    "hashMismatches": 0,
+    "requestMismatches": 0,
+    "unsafeFileModes": 0,
+    "modelVisibleBenchmarkPathLeaks": 0,
+    "workspaceChanges": 0,
+    "modelRequests": 3567,
+    "modelResponses": 3561,
+    "noLoggedModelRequest": 25,
+    "missingResponses": 6,
+    "nativePrePostIdentical": true,
+    "nativePrePostFileSha256": "cda6c921c876e69783689bf18252e5848881b270f773046a8f7689b5cdf02c5f",
+    "nativeAttestationLimit": "Bounded executable/process/config/backend identity and argument-file hashes, not complete model-weight attestation.",
+    "auditVersion": 4,
+    "missingRequestPayloads": 0,
+    "payloadScope": "Complete actual model request bodies in both direct Codali event.data and raw event.data.request trace layouts; earlier v1 inspected only the raw layout.",
+    "combinedIncludingRetries": {
+      "auditVersion": 4,
+      "completed": 2127,
+      "modelRequests": 3598,
+      "modelResponses": 3592,
+      "requestPayloadLeaks": 0,
+      "missingArtifacts": 0,
+      "unsafeFileModes": 0,
+      "workspaceChanges": 0,
+      "noLoggedModelRequest": 25,
+      "missingResponses": 6,
+      "hashMismatches": 0,
+      "requestMismatches": 0,
+      "missingRequestPayloads": 0
+    }
+  },
+  "coverageRetries": {
+    "status": "completed",
+    "attempts": 27,
+    "passed": 25,
+    "runtimeErrors": 0,
+    "primaryResultsUnchanged": true,
+    "coverageByArm": {
+      "raw_direct": {
+        "required": 1000,
+        "uniqueAttempted": 1000,
+        "clientDispatched": 1000,
+        "modelResponseCases": 1000,
+        "confirmedNativeFailureCases": 0,
+        "confirmedNativeFailureRequestIds": [],
+        "retryAttempts": 15,
+        "retryPassed": 14,
+        "retryRuntimeErrors": 0
+      },
+      "codali_selected": {
+        "required": 1000,
+        "uniqueAttempted": 1000,
+        "clientDispatched": 1000,
+        "modelResponseCases": 995,
+        "confirmedNativeFailureCases": 5,
+        "confirmedNativeFailureRequestIds": [
+          "b87835ea-7d2e-4ca0-b174-16ed3a33b214",
+          "cb3fae5a-f01a-4a56-9edd-a5c0cddf201a",
+          "aa6a1a7b-8b78-478f-9509-fff33bc1ac18",
+          "6814bc54-5634-4124-8312-c00c6c8d3433",
+          "488378cd-d6c2-4cb3-9c25-ffb01a608e2b"
+        ],
+        "retryAttempts": 12,
+        "retryPassed": 11,
+        "retryRuntimeErrors": 0
+      },
+      "raw_tools": {
+        "required": 100,
+        "uniqueAttempted": 100,
+        "clientDispatched": 100,
+        "modelResponseCases": 100,
+        "confirmedNativeFailureCases": 0,
+        "confirmedNativeFailureRequestIds": [],
+        "retryAttempts": 0,
+        "retryPassed": 0,
+        "retryRuntimeErrors": 0
+      }
+    },
+    "policy": "First failures remain primary; retry success repairs live coverage only. Five native failed invocations have no successful model response and retain estimated usage."
+  },
+  "erratumSensitivity": {
+    "excludedFamily": "repository_and_docdex.duplicate_symbol",
+    "reason": "All ten validation prompts omit what answer is requested. Entire family excluded only in secondary sensitivity analysis; corpus and primary scores unchanged.",
+    "heldOutAffected": false
+  },
+  "evidenceHashes": {
+    "scores": "faeb7b82e3b349b462bed4c4514d2bc1e9c6ecc887108c6757b5a1a73e776471",
+    "report": "6dc556d9c960aa156013898ddf98d3dec67cda9df8e59fed7632f505d32fa555",
+    "analyzer": "129f0fdd2b45fecfc9dbb4d1c98c047d9b5f555adeb6b955b9d6ddb1510cd225",
+    "semanticReviews": "cb4124a6705706519e6f28b138c6c4b8b81482a772c235051985c42df3a38061",
+    "rubricReviews": "02eec2a87a31d3439e2e8c6b317cdffe8afce73a81ee4c0450ea54fdfef97229",
+    "criticalReviews": "f7b9183ef137cf8a5466492e918c1dcc89de4e3ef8f4de64952c12efec87b23e",
+    "artifactAudit": "fcdf0f5f3166d357444c3d8b30732b4c9d7c1ff0e0a0be5e3a76e0c3c2a927a6",
+    "combinedScores": "9f7f2c7d906f8e459ff240ac3ceef2f2ae8f954a605213274b69e7e76580fcdb",
+    "combinedReport": "93abef9f27d502d4f6f3c3a643482136a9a93acc9a2daa0f9fa235eb0ca81ed5",
+    "combinedArtifactAudit": "4707b3863907dc48579e74d3727f55e63e169f85bd1e540640c28618ddeb32eb",
+    "completion": "5210c82ec9b25cc3bade4217559b6ca1ae20a65029481987e698003b5e8eef20"
+  },
+  "limitations": [
+    "Family-correlated synthetic tasks; primary agent authored and reviewed rubrics.",
+    "Shared-host latency is observational, not isolated performance measurement.",
+    "First-attempt failures remain primary; successful retries only repair dispatch coverage.",
+    "Domain intervals and repeated comparisons are descriptive and not multiplicity-adjusted.",
+    "Single-family intervals cannot estimate uncertainty across unseen families.",
+    "All-case results include reused development and validation families; only the held-out split supports the frozen promotion test.",
+    "Raw direct receives fixture contents in its context; compare repository tool execution with raw_tools separately.",
+    "Observed eight raw-model critical failures are synthetic-secret echoes in one validation family; zero selected failures is not a general safety guarantee.",
+    "The corpus has1000 variants across100 families; code tests are JavaScript functional checks, not comprehensive software engineering validation.",
+    "Five invalid native responses and one503 have unknown measured usage retained as reservations; one raw-tool run also has estimated usage.",
+    "Two original tool-baseline attempts were affected by a recorded early coordinator pause; timing is observational.",
+    "Secondary semantic reviews never alter strict, tool-evidence or critical grades."
+  ]
+}

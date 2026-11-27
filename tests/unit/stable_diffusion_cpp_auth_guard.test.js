@@ -26,6 +26,22 @@ function resolvePython() {
   return null;
 }
 
+function guardArguments(...args) {
+  // Emit the blocked Python frame before the existing startup deadline expires.
+  const pythonSource = `import faulthandler
+import runpy
+import sys
+
+faulthandler.dump_traceback_later(5)
+sys.argv = sys.argv[1:]
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+finally:
+    faulthandler.cancel_dump_traceback_later()
+`;
+  return ["-X", "faulthandler", "-c", pythonSource, guardScript, ...args];
+}
+
 function waitForListening(child, stdout, stderr) {
   return new Promise((resolve, reject) => {
     let buffered = "";
@@ -100,14 +116,14 @@ test("stable-diffusion.cpp auth guard fails closed for invalid configuration", (
     if (process.platform !== "win32") chmodSync(emptyKey, 0o600);
     const missing = spawnSync(
       python,
-      [guardScript, "--port", "0", "--api-key-file", path.join(directory, "missing")],
+      guardArguments("--port", "0", "--api-key-file", path.join(directory, "missing")),
       { cwd: repoRoot, encoding: "utf8", timeout: 10_000 },
     );
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /cannot be opened safely/);
     const empty = spawnSync(
       python,
-      [guardScript, "--port", "0", "--api-key-file", emptyKey],
+      guardArguments("--port", "0", "--api-key-file", emptyKey),
       { cwd: repoRoot, encoding: "utf8", timeout: 10_000 },
     );
     assert.notEqual(empty.status, 0);
@@ -118,7 +134,7 @@ test("stable-diffusion.cpp auth guard fails closed for invalid configuration", (
     if (process.platform !== "win32") chmodSync(validKey, 0o600);
     const nonLoopback = spawnSync(
       python,
-      [guardScript, "--host", "0.0.0.0", "--port", "0", "--api-key-file", validKey],
+      guardArguments("--host", "0.0.0.0", "--port", "0", "--api-key-file", validKey),
       { cwd: repoRoot, encoding: "utf8", timeout: 10_000 },
     );
     assert.notEqual(nonLoopback.status, 0);
@@ -191,8 +207,7 @@ test(
     const stderr = [];
     const child = spawn(
       python,
-      [
-        guardScript,
+      guardArguments(
         "--port",
         "0",
         "--upstream-base-url",
@@ -203,7 +218,7 @@ test(
         "512",
         "--max-response-bytes",
         "1024",
-      ],
+      ),
       { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
     );
     child.stderr.setEncoding("utf8");

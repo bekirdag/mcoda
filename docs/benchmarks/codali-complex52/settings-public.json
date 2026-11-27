@@ -1,0 +1,154 @@
+{
+  "profile": "complex52-frozen-eb1b36f",
+  "models": {
+    "benchmark-qwen": {
+      "provider": "mswarm",
+      "catalogId": "qwen-latest-flash-next",
+      "revision": "catalog-unversioned",
+      "operations": [
+        "chat.completions"
+      ],
+      "backend": "strata",
+      "contextWindow": 65536,
+      "maxOutputTokens": 8192,
+      "supportsTools": true,
+      "supportsStreaming": false,
+      "reasoning": {
+        "low": {
+          "reasoning_effort": "low",
+          "reasoning_budget_tokens": 1024
+        },
+        "medium": {
+          "reasoning_effort": "medium",
+          "reasoning_budget_tokens": 2048
+        }
+      }
+    }
+  },
+  "bindings": {
+    "lead": {
+      "candidates": [
+        "benchmark-qwen"
+      ]
+    },
+    "architect": {
+      "useBinding": "lead"
+    },
+    "worker": {
+      "useBinding": "lead"
+    },
+    "reviewer": {
+      "useBinding": "lead"
+    },
+    "planner": {
+      "useBinding": "lead"
+    },
+    "compactor": {
+      "useBinding": "lead"
+    },
+    "router": {
+      "useBinding": "lead"
+    },
+    "adjudicator": {
+      "useBinding": "lead"
+    },
+    "synthesizer": {
+      "useBinding": "lead"
+    },
+    "verifier": {
+      "useBinding": "lead"
+    },
+    "repair": {
+      "useBinding": "lead"
+    },
+    "helper": {
+      "enabled": false
+    },
+    "embedding": {
+      "candidates": [
+        "mcoda-raijin-nomic-embed-text-v1-5",
+        "mcoda-sukunahikona-nomic-embed-text-v1-5"
+      ],
+      "embeddingSpace": "catalog-pinned-v1"
+    },
+    "image": {
+      "candidates": [
+        "mcoda-sukunahikona-sd3-5-large-q4"
+      ]
+    },
+    "audio": {
+      "candidates": [
+        "mcoda-sukunahikona-stable-audio-3"
+      ]
+    },
+    "video": {
+      "candidates": [
+        "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m"
+      ]
+    },
+    "intent": {
+      "candidates": [
+        "benchmark-qwen"
+      ]
+    }
+  },
+  "interaction": {
+    "strategy": "adaptive",
+    "toolExposure": "native",
+    "toolSelection": "progressive",
+    "initialTools": [
+      "read_file",
+      "calculate",
+      "calendar_calculate",
+      "transform_text",
+      "docdex_search",
+      "docdex_open"
+    ],
+    "calculator": true,
+    "answerBinding": "lead",
+    "maxTotalTokens": 120000,
+    "maxModelCalls": 20,
+    "maxInspectionSteps": 20,
+    "maxOutputTokens": 4096,
+    "timeoutMs": 600000,
+    "historyChars": 12000,
+    "routerBinding": "intent"
+  },
+  "effort": {
+    "low": {
+      "maxTotalTokens": 120000,
+      "maxModelCalls": 20,
+      "maxToolCalls": 40,
+      "maxSteps": 20,
+      "maxOutputTokens": 4096,
+      "timeoutMs": 600000
+    },
+    "medium": {
+      "maxTotalTokens": 1000000,
+      "maxModelCalls": 100,
+      "maxToolCalls": 240,
+      "maxSteps": 160,
+      "maxOutputTokens": 8192,
+      "timeoutMs": 3600000
+    }
+  },
+  "taskControl": {
+    "requirePlan": true,
+    "immutableInputs": [
+      "RFP.md",
+      "ENVIRONMENT.md"
+    ],
+    "maxWritingTasksPerWorktree": 1,
+    "maxConcurrentHelpers": 1,
+    "helpers": "read-only-or-draft",
+    "repeatedFailureThreshold": 2,
+    "repairAttemptsBeforeReplan": 2,
+    "checkpointOn": [
+      "task-transition",
+      "before-compaction",
+      "before-exit"
+    ],
+    "reviewPolicy": "risk-and-evidence"
+  },
+  "configHash": "ca536befb3f7d9dbfff3f6815b6ce5621d89ef0e94f5dda2d8832e98768827fc"
+}

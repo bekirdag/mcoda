@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "protocol": "trust-workflows-v1",
+  "caseCount": 50,
+  "createdAt": "2026-11-05T10:02:25.318202+00:00",
+  "promptsSha256": "48381f6071bdffe468dc737fcb197686f4108a744120268847d0ef36c917a51d",
+  "gradingSha256": "04d42e6e5f28a13aa186743b3db6a0b36a2be4b7a039218c321aa6be4801292e",
+  "limitations": [
+    "Newly authored tasks, not proof of absence from model pretraining.",
+    "Raw baseline uses tools and the same Qwen model, not raw-direct.",
+    "One first attempt per arm; no tuning on these results.",
+    "Live web and production-host contention vary; latency is observational.",
+    "Docdex-owned model inference is not included in client token totals; report separately as unmetered."
+  ]
+}

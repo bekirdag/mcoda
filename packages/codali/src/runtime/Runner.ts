@@ -12,8 +12,13 @@ import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolContext } from "../tools/ToolTypes.js";
 import type { RunLogger } from "./RunLogger.js";
 import { truncateToolResult } from "../tools/TruncateResult.js";
+import { ModelServiceError } from "../providers/ModelServiceError.js";
 
 export interface RunnerOptions {
+  signal?: AbortSignal;
+  /** A controller may reject a premature final answer within this same bounded loop. */
+  continueAfterFinal?: (message: ProviderMessage) => string | undefined | Promise<string | undefined>;
+  onMessages?: (messages: ProviderMessage[]) => Promise<void>;
   provider: Provider;
   tools: ToolRegistry;
   context: ToolContext;
@@ -92,6 +97,8 @@ const buildToolMessage = (call: ProviderToolCall, content: string): ProviderMess
 });
 
 export class Runner {
+  private continueAfterFinal?: RunnerOptions["continueAfterFinal"];
+  private onMessages?: RunnerOptions["onMessages"];
   private provider: Provider;
   private tools: ToolRegistry;
   private context: ToolContext;
@@ -109,6 +116,7 @@ export class Runner {
   private streamFlushMs?: number;
   private timeoutMs?: number;
   private logger?: RunLogger;
+  private signal?: AbortSignal;
 
   constructor(options: RunnerOptions) {
     this.provider = options.provider;
@@ -127,15 +135,26 @@ export class Runner {
     this.onToken = options.onToken;
     this.streamFlushMs = options.streamFlushMs;
     this.timeoutMs = options.timeoutMs;
+    this.continueAfterFinal = options.continueAfterFinal;
+    this.onMessages = options.onMessages;
     this.logger = options.logger;
+    this.signal = options.signal ?? options.context.signal;
   }
 
   async run(initialMessages: ProviderMessage[]): Promise<RunnerResult> {
+    this.signal?.throwIfAborted();
+    const abortController = new AbortController();
+    const onAbort = () => abortController.abort(this.signal?.reason);
+    this.signal?.addEventListener("abort", onAbort, { once: true });
+    const timeout = this.timeoutMs ? setTimeout(() => abortController.abort(new Error("Runner timeout exceeded")), this.timeoutMs) : undefined;
+    const signal = abortController.signal;
+    try {
     const messages: ProviderMessage[] = [...initialMessages];
     let toolCallsExecuted = 0;
     let usageTotals: ProviderUsage | undefined;
     const deadline = this.timeoutMs ? Date.now() + this.timeoutMs : undefined;
     const emitEvent = (event: AgentEvent) => {
+      if (signal.aborted) return;
       if (this.onEvent) {
         this.onEvent(event);
         return;
@@ -185,16 +204,21 @@ export class Runner {
 
     const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
       const remaining = timeRemaining();
-      if (remaining === undefined) return promise;
-      if (remaining <= 0) {
+      if (remaining !== undefined && remaining <= 0) {
         await throwBudgetError("runner_timeout_exceeded", -1);
       }
       let timeoutId: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("Runner timeout exceeded")), remaining);
+        if (remaining !== undefined) timeoutId = setTimeout(() => reject(new Error("Runner timeout exceeded")), remaining);
+      });
+      let onCancel: (() => void) | undefined;
+      const cancelled = new Promise<never>((_, reject) => {
+        // Provider streams may not honor AbortSignal; never accept their late reply.
+        // Tools are allowed to finish their cancellation cleanup before unlocking.
+        if (label === "provider") { onCancel = () => reject(signal.reason ?? new Error("Cancelled")); signal.addEventListener("abort", onCancel, { once: true }); if (signal.aborted) onCancel(); }
       });
       try {
-        return await Promise.race([promise, timeoutPromise]);
+        return await Promise.race([promise, timeoutPromise, cancelled]);
       } catch (error) {
         if (error instanceof Error && /Runner timeout exceeded/i.test(error.message)) {
           await throwBudgetError("runner_timeout_exceeded", -1);
@@ -202,10 +226,12 @@ export class Runner {
         throw error;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
+        if (onCancel) signal.removeEventListener("abort", onCancel);
       }
     };
 
     for (let step = 0; step < this.maxSteps; step += 1) {
+      signal.throwIfAborted();
       if (deadline && timeRemaining()! <= 0) {
         await throwBudgetError("runner_timeout_exceeded", step);
       }
@@ -231,6 +257,7 @@ export class Runner {
       }
       const response = await withTimeout(
         this.provider.generate({
+          signal,
           messages,
           tools: allowTools ? toolSpecs : undefined,
           toolChoice: allowTools ? this.toolChoice ?? "auto" : finalSummaryStep ? "none" : undefined,
@@ -243,13 +270,18 @@ export class Runner {
           streamFlushMs: this.streamFlushMs,
         }),
         "provider",
-      );
+      ).catch((error: unknown) => {
+        if (error instanceof ModelServiceError) error.completedModelCalls = step;
+        throw error;
+      });
 
       recordUsage(response.usage);
+      signal.throwIfAborted();
       messages.push({
         ...response.message,
         ...(response.toolCalls?.length ? { toolCalls: response.toolCalls } : {}),
       });
+      await this.onMessages?.([...messages]);
       if (this.logger) {
         await this.logger.log("provider_response", {
           message: response.message,
@@ -259,6 +291,8 @@ export class Runner {
       }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
+        const continuation = await this.continueAfterFinal?.(response.message);
+        if (continuation) { messages.push({ role: "user", content: continuation }); continue; }
         return {
           finalMessage: response.message,
           messages,
@@ -268,6 +302,7 @@ export class Runner {
       }
 
       for (const call of response.toolCalls) {
+        signal.throwIfAborted();
         if (toolCallsExecuted >= this.maxToolCalls) {
           await throwBudgetError("runner_tool_call_limit_exceeded", step);
         }
@@ -275,7 +310,7 @@ export class Runner {
         emitStatus("executing", call.name);
         this.onEvent?.({ type: "tool_call", name: call.name, args: call.args });
         const result = await withTimeout(
-          this.tools.execute(call.name, call.args, this.context),
+          this.tools.execute(call.name, call.args, { ...this.context, signal }),
           "tool",
         );
         const toolError = result.error;
@@ -290,7 +325,11 @@ export class Runner {
           }
           content = truncateToolResult(structured, content, limit).text;
         }
+        if (result.invocationReceipt) {
+          content += `\n\n[Tool metadata: invocation receipt ID ${result.invocationReceipt.id}; receiptRef=${result.invocationReceipt.reference}]`;
+        }
         messages.push(buildToolMessage(call, content));
+        await this.onMessages?.([...messages]);
         this.onEvent?.({
           type: "tool_result",
           name: call.name,
@@ -326,5 +365,9 @@ export class Runner {
 
     await throwBudgetError("runner_step_limit_exceeded", this.maxSteps);
     throw new Error("unreachable_runner_budget_path");
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.signal?.removeEventListener("abort", onAbort);
+    }
   }
 }

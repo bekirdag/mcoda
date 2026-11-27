@@ -1,0 +1,111 @@
+# Native Docdex tool reference (0.2.99)
+
+All 107 packaged tools; verified against the system service on 2026-11-04. Use tools_discover/tools_enable for current permitted schemas. Some tools require enabled server features or authorization. This is a purpose index, not a guarantee every operation can execute in every mode. Read only relevant pages using skill_read offsets.
+
+- **docdex_search**: Search repo docs/code and return hits with rel_path/path, summary, snippet, and doc_id.
+- **docdex_capabilities**: Return the Docdex optional-feature capability contract for Codali integration.
+- **docdex_rerank**: Rerank candidate hits with transparent score updates and deterministic fallback behavior.
+- **docdex_batch_search**: Run batched search queries with deterministic truncation and per-query responses.
+- **docdex_web_research**: Run local search plus web discovery/fetch and return the combined response (requires web enabled).
+- **docdex_index**: Rebuild the index (or ingest specific files) for the current repo root; use after large changes or stale results.
+- **docdex_files**: List indexed documents (rel_path/doc_id/token_estimate) for the current repo.
+- **docdex_open**: Read a file from the repo (optional line window); rejects paths outside the repo.
+- **docdex_tree**: Render a folder tree with standard excludes (git, node_modules, build artifacts).
+- **docdex_stats**: Inspect index metadata: doc count, state dir, size on disk, and last update time.
+- **docdex_repo_inspect**: Inspect how Docdex resolves repo identity (normalized path, fingerprint, and any shared-state mapping).
+- **docdex_symbols**: Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed).
+- **docdex_ast**: Read Tree-sitter AST nodes for a file, including per-file outcome (ok/skipped/failed).
+- **docdex_impact_diagnostics**: List unresolved dynamic import diagnostics by file.
+- **docdex_impact_graph**: Fetch impact graph traversal for a repo-relative file.
+- **docdex_dag_export**: Export a DAG session for a given session_id (json/text/dot).
+- **docdex_memory_save**: Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).
+- **docdex_memory_store**: Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).
+- **docdex_memory_recall**: Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).
+- **docdex_conversation_import**: Import a normalized conversation session, plain-text transcript, or native export format into repo-scoped conversation memory or an explicit global conversation namespace.
+- **docdex_conversation_search**: Search conversation archive summaries and raw message snippets for a repo or explicit global conversation namespace.
+- **docdex_conversation_list**: List conversation sessions with summaries and metadata for a repo or explicit global conversation namespace.
+- **docdex_conversation_read**: Read a conversation session with ordered messages and derived artifacts from a repo or explicit global conversation namespace.
+- **docdex_conversation_delete**: Delete a conversation session and its derived artifacts from a repo or explicit global conversation namespace.
+- **docdex_conversation_export**: Export one conversation session with any linked diary entries from a repo or explicit global conversation namespace.
+- **docdex_conversation_redact**: Redact one conversation session and clear its derived wake-up artifacts in a repo or explicit global conversation namespace.
+- **docdex_conversation_prune**: Preview or apply conversation retention cleanup for a repo or explicit global conversation namespace using current config or explicit overrides.
+- **docdex_diary_write**: Write one diary entry for an agent in a repo or explicit global conversation namespace.
+- **docdex_diary_read**: Read diary entries for an optional agent in a repo or explicit global conversation namespace.
+- **docdex_conversation_hook**: Enqueue or synchronously process a conversation-memory hook action for a repo or explicit global conversation namespace.
+- **docdex_wakeup**: Assemble bounded startup memory from conversation history in a repo or explicit global conversation namespace for the active agent/query.
+- **docdex_kg_query**: Query temporal knowledge facts extracted from conversation memory in a repo or explicit global conversation namespace.
+- **docdex_kg_search_nodes**: Search canonical graph entities extracted from conversation memory in a repo or explicit global conversation namespace.
+- **docdex_kg_search_edges**: Search graph-native edges extracted from conversation memory in a repo or explicit global conversation namespace.
+- **docdex_kg_timeline**: Read the temporal timeline for one entity or decision topic in a repo or explicit global conversation namespace.
+- **docdex_kg_search_episodes**: Search provenance episodes extracted from conversation memory in a repo or explicit global conversation namespace.
+- **docdex_kg_neighborhood**: Inspect graph edges adjacent to one entity or topic in a repo or explicit global conversation namespace.
+- **docdex_kg_entity_links**: Fetch code-facing links recorded for one graph entity in a repo or explicit global conversation namespace.
+- **docdex_kg_episode**: Fetch one provenance episode together with its graph edges and evidence in a repo or explicit global conversation namespace.
+- **docdex_kg_delete_edge**: Delete one graph edge together with its fact projection and evidence in a repo or explicit global conversation namespace.
+- **docdex_kg_delete_episode**: Delete one provenance episode and its graph edges/facts in a repo or explicit global conversation namespace.
+- **docdex_kg_rebuild**: Rebuild graph-side link projections and reindex SQLite structures for conversation knowledge in a repo or explicit global conversation namespace.
+- **docdex_kg_clear**: Delete all conversation knowledge graph data in a repo or explicit global conversation namespace.
+- **docdex_local_completion**: Offload a small local task to a local model and return the draft output.
+- **docdex_llm_diagnostics**: Return local LLM service detection/default-selection diagnostics and status messages.
+- **docdex_personal_preferences_status**: Show personal-preferences storage and queue status.
+- **docdex_personal_preferences_categories**: List personal-preferences categories and context policy.
+- **docdex_personal_preferences_retention_policies**: List personal-preferences retention policies by memory lane.
+- **docdex_personal_preferences_list**: List captured personal-preferences sessions.
+- **docdex_personal_preferences_read**: Read one captured personal-preferences session.
+- **docdex_personal_preferences_search**: Search derived personal-preferences records.
+- **docdex_personal_preferences_reviews**: List derived personal-preferences records by review status.
+- **docdex_personal_preferences_review**: Approve, reject, or re-queue one derived personal-preferences record.
+- **docdex_personal_preferences_process**: Manually process queued captures with a local mcoda agent.
+- **docdex_personal_preferences_scan**: Scan supported local AI-client transcript roots and queue new personal-preferences captures.
+- **docdex_personal_preferences_export**: Export one capture or the whole personal-preferences store to JSON.
+- **docdex_personal_preferences_redact**: Redact raw transcript content for one captured session.
+- **docdex_personal_preferences_delete**: Delete one captured personal-preferences session and its derived records.
+- **docdex_personal_preferences_prune**: Preview or apply personal-preferences retention pruning.
+- **docdex_personal_preferences_purge**: Purge all personal-preferences captures and derived records.
+- **docdex_personal_preferences_claims**: List extracted personal-preference claims with truth/origin filters.
+- **docdex_personal_preferences_claim_read**: Read one extracted personal-preference claim.
+- **docdex_personal_preferences_claim_review**: Approve, reject, or re-queue one extracted claim.
+- **docdex_personal_preferences_claim_override**: Override one claim with an explicit corrected value.
+- **docdex_personal_preferences_claim_forget**: Forget one claim, redact its usable content, and rebuild snapshots.
+- **docdex_personal_preferences_feedback**: Add a feedback event that influences future mind-clone context.
+- **docdex_personal_preferences_operator_events**: List first-class operator events captured from commands, approvals, and planning artifacts.
+- **docdex_personal_preferences_operator_event_record**: Record one manual operator event such as a git/test/deploy/approval/action step.
+- **docdex_personal_preferences_operator_events_scan_artifacts**: Scan repo planning/progress/SDS markdown artifacts into first-class operator events.
+- **docdex_personal_preferences_snapshots**: List temporal identity snapshots compiled from claims.
+- **docdex_personal_preferences_snapshot_read**: Read one temporal identity snapshot.
+- **docdex_personal_preferences_snapshots_rebuild**: Rebuild temporal identity snapshots from the current claim set.
+- **docdex_personal_preferences_routines**: List synthesized operator routines compiled from repeated personal-preference claims.
+- **docdex_personal_preferences_routine_read**: Read one synthesized operator routine by id or routine key.
+- **docdex_personal_preferences_routine_explain**: Explain one synthesized operator routine with source claims grouped by step.
+- **docdex_personal_preferences_routines_rebuild**: Rebuild synthesized operator routines from the current claim set.
+- **docdex_personal_preferences_mind_map**: Compile a queryable operator mind map from approved claims and synthesized routines.
+- **docdex_personal_preferences_playbooks**: Compile stable operator routines into SKILL.md-compatible playbook artifacts.
+- **docdex_ai_terminal_integrations**: List configured AI-terminal integrations for automatic capture, generated-skill sync, and activation.
+- **docdex_ai_terminal_detect**: Detect supported AI-terminal generated-skill targets without persisting integration records.
+- **docdex_ai_terminal_status**: Show AI-terminal capture and generated-skill sync status.
+- **docdex_ai_terminal_events**: List normalized AI-terminal capture events.
+- **docdex_ai_terminal_integrations_bootstrap**: Create or update Docdex-owned generated-skill roots for supported AI terminals.
+- **docdex_ai_terminal_capture**: Record a normalized AI-terminal session summary into personal preferences and mind-clone inputs.
+- **docdex_ai_terminal_sync_skills**: Promote stable mind-clone playbooks into generated skills and install low-risk validated skills into enabled AI terminals.
+- **docdex_personal_preferences_generated_skills**: List generated skills derived from personal preferences and mind-clone operator routines.
+- **docdex_personal_preferences_generated_skill**: Read one generated skill by skill id, slug, or portable skill name.
+- **docdex_personal_preferences_generated_skill_events**: List registry audit events for generated skills.
+- **docdex_personal_preferences_generated_skills_sync**: Promote stable operator playbooks into versioned generated skills and optionally install them to terminal integrations.
+- **docdex_personal_preferences_generated_skills_preview**: Render registry-backed generated-skill candidates without installing them.
+- **docdex_personal_preferences_generated_skills_render**: Render registry-backed generated-skill candidates without installing them.
+- **docdex_personal_preferences_generated_skills_autopilot**: Run one generated-skills autopilot pass through registry, validation, and install policy.
+- **docdex_personal_preferences_generated_skill_validate**: Validate one generated skill's current version and persist the result.
+- **docdex_personal_preferences_generated_skill_install**: Install one generated skill into enabled Docdex-owned terminal roots.
+- **docdex_personal_preferences_generated_skill_disable**: Disable one generated skill while preserving registry provenance.
+- **docdex_personal_preferences_generated_skill_rollback**: Roll back one generated skill to the previous rendered version when available.
+- **docdex_clone_context**: Compile a bounded personal-preferences clone context pack for a query.
+- **docdex_clone_directive**: Compile an auditable operator-clone directive checklist for an agent task.
+- **docdex_clone_explain**: Explain the evidence trace for a bounded clone context pack.
+- **docdex_clone_evaluate**: Score clone-pack fidelity heuristics for a query.
+- **docdex_clone_replay_evaluate**: Score whether a clone context pack predicts expected operator next-step categories.
+- **docdex_clone_replay_dataset**: Generate replay dataset cases from executable operator routines for clone-prediction evaluation.
+- **docdex_clone_replay_suite**: Run replay cases through clone directives and report aggregate category, routine, step, and approval metrics.
+- **docdex_memory_layers**: Describe the six Docdex memory layers, their scope, storage, and recommended agent usage for the current repo or conversation namespace.
+- **docdex_memory_route**: Recommend which Docdex memory lanes to consult first or write to for a specific query, including core versus retrievable memory.
+- **docdex_save_preference**: Store a global profile preference for an agent (profile memory, async evolution).
+- **docdex_get_profile**: Fetch profile preferences for an agent (profile memory).

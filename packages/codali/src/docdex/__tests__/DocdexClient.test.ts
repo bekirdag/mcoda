@@ -72,6 +72,100 @@ const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>):
   }
 };
 
+test("HTTP 200 error envelopes cannot masquerade as successful search evidence", { concurrency: false }, async () => {
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ error: { code: "indexing_in_progress", message: "Index is warming" } }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture" });
+    await assert.rejects(client.search("symbols"), /indexing_in_progress/);
+  });
+});
+
+test("index ingestion binds relative paths to the client repository, not the daemon cwd", { concurrency: false }, async () => {
+  let payload: unknown;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    payload = JSON.parse(String(init?.body)); return makeJsonResponse({ ok: true });
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", repoRoot: "/repo" });
+    await client.indexIngest("src/a.ts");
+    assert.deepEqual(payload, { file: "/repo/src/a.ts" });
+    await assert.rejects(client.indexIngest("../outside.ts"), /escapes/);
+  });
+});
+
+test("a repository the daemon unmounted is mounted again and the request resent once", { concurrency: false }, async () => {
+  const original = globalThis.fetch; let mounted = false, initializations = 0, ingests = 0; const repoHeaders: Array<string | null> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/healthz")) return new Response("ok");
+    if (url.endsWith("/v1/initialize")) { initializations++; mounted = true; return Response.json({ repo_id: "remounted", repo_root: "/repo" }); }
+    ingests++; repoHeaders.push(new Headers(init?.headers).get("x-docdex-repo-id"));
+    return mounted ? Response.json({ ok: true }) : Response.json({ error: { code: "unknown_repo", message: "unknown repo" } }, { status: 404 });
+  }) as typeof fetch;
+  try {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "stale", repoRoot: "/repo" });
+    // Concurrent lookups share one remount.
+    await Promise.all([client.indexIngest("src/a.ts"), client.indexIngest("src/b.ts")]);
+    assert.equal(initializations, 1); assert.equal(ingests, 4);
+    assert.deepEqual(repoHeaders.slice(0, 2), ["stale", "stale"]); assert.deepEqual(repoHeaders.slice(2), ["remounted", "remounted"]);
+    assert.equal(client.getRepoId(), "remounted");
+    // A daemon that still refuses after the remount is reported, not retried forever.
+    mounted = false; initializations = 0; ingests = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/healthz")) return new Response("ok");
+      if (url.endsWith("/v1/initialize")) { initializations++; return Response.json({ repo_id: "remounted" }); }
+      ingests++; return Response.json({ error: { code: "unknown_repo" } }, { status: 404 });
+    }) as typeof fetch;
+    await assert.rejects(client.indexIngest("src/a.ts"));
+    assert.equal(initializations, 1); assert.equal(ingests, 2);
+  } finally { globalThis.fetch = original; }
+});
+
+for (const authenticated of [true, false]) test(`MCP initializes once with scoped session (authenticated: ${authenticated})`, { concurrency: false }, async () => {
+  let initializations = 0; let invocations = 0;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) return makeTextResponse("ok");
+    const body = JSON.parse(String(init?.body));
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.authorization, authenticated ? "Bearer private-token" : undefined);
+    if (body.method === "initialize") {
+      initializations++;
+      assert.match(body.params.rootUri, /fixture$/);
+      assert.equal(body.params.auth_token, authenticated ? "private-token" : undefined);
+      assert.equal(headers["mcp-session-id"], undefined);
+      return makeJsonResponse({ result: {} }, { "mcp-session-id": "private-session" });
+    }
+    invocations++;
+    assert.equal(headers["mcp-session-id"], "private-session");
+    return invocations <= 2 ? makeJsonResponse({ result: { ok: true } }) : makeErrorResponse(404, "unknown or expired MCP session");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", authToken: authenticated ? "private-token" : undefined, requireMcpSession: true, repoRoot: "/tmp/fixture" });
+    await Promise.all([client.stats(), client.files()]);
+    assert.equal(initializations, 1);
+    // An expired session is renewed once (the daemon restarted); a second refusal is final.
+    await assert.rejects(client.memorySave("fact"), /expired/);
+    assert.equal(invocations, 4);
+    assert.equal(initializations, 2);
+  });
+});
+
+test("MCP tool error envelopes cannot become successful evidence", { concurrency: false }, async () => {
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ result: { isError: true, content: [{ type: "text", text: "embedding dimension mismatch" }] } }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture" });
+    await assert.rejects(client.memorySave("fact"), /embedding dimension mismatch/);
+  });
+});
+
+test("index readiness waits locally and cancellation remains responsive", { concurrency: false }, async () => {
+  const abort = new AbortController();
+  let progress = 0;
+  await withStubbedFetch(url => url.endsWith("/healthz") ? makeTextResponse("ok") : makeJsonResponse({ ready: false, status: "indexing", indexing_in_progress: true }), async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", signal: () => abort.signal });
+    await assert.rejects(client.waitForIndex(10_000, () => { progress++; abort.abort(); }), /abort/i);
+    assert.equal(progress, 1);
+  });
+});
+
 test("DocdexClient initializes repo before HTTP search when repo id is missing", {
   concurrency: false,
 }, async () => {
@@ -736,7 +830,7 @@ test("DocdexClient capability probe falls back when MCP probe is unavailable", {
   });
 });
 
-test("DocdexClient falls back to HTTP search for web research when MCP fails", {
+test("DocdexClient falls back to HTTP search only when the MCP transport is absent", {
   concurrency: false,
 }, async () => {
   const calls: string[] = [];
@@ -747,9 +841,9 @@ test("DocdexClient falls back to HTTP search for web research when MCP fails", {
     }
     if (url.endsWith("/v1/mcp")) {
       const body = typeof init?.body === "string" ? init.body : "{}";
-      const payload = JSON.parse(body) as { method?: string };
-      if (payload.method === "docdex_web_research") {
-        return makeErrorResponse(500, "mcp proxy timeout");
+      const payload = JSON.parse(body) as { method?: string; params?: { name: string } };
+      if (payload.method === "tools/call" && payload.params?.name === "docdex_web_research") {
+        return makeErrorResponse(404, "MCP route not found");
       }
       return makeJsonResponse({ jsonrpc: "2.0", result: { ok: true } });
     }
@@ -827,4 +921,40 @@ test("DocdexClient forwards metadata for memorySave and savePreference", {
   assert.deepEqual(preferenceCall?.params?.metadata, {
     dedupe_key: "profile_memory::constraint::do not use moment.js",
   });
+});
+
+test("a Docdex daemon that restarts mid-session is reconnected and the call sent again", { concurrency: false }, async () => {
+  let up = false, calls = 0, health = 0;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) { health++; if (!up) throw new TypeError("fetch failed"); return makeTextResponse("ok"); }
+    const body = JSON.parse(String(init?.body));
+    if (body.method === "initialize") return makeJsonResponse({ result: {} }, { "mcp-session-id": "s" });
+    calls++;
+    return makeJsonResponse({ result: { ok: true } });
+  }, async () => {
+    const waits: number[] = [];
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", requireMcpSession: true, repoRoot: "/tmp/fixture", reconnectWaitsMs: [5, 5, 5, 5, 5] });
+    // Down for the first two health checks, then back.
+    const timer = setTimeout(() => { up = true; }, 12);
+    const result = await client.stats();
+    clearTimeout(timer); void waits;
+    assert.ok(result); assert.equal(calls, 1); assert.ok(health >= 2);
+    // Still down after every wait: the outage is reported, not hidden.
+    up = false;
+    const down = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", reconnectWaitsMs: [1, 1] });
+    await assert.rejects(down.stats(), /health check failed|unavailable/i);
+  });
+});
+
+test("an optional working-style lookup on an offline host probes once", { concurrency: false }, async () => {
+  let probes = 0;
+  await withStubbedFetch(url => {
+    assert.ok(url.endsWith("/healthz"));
+    probes++;
+    throw new TypeError("fetch failed");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoId: "fixture", reconnectWaitsMs: [1, 1] });
+    await assert.rejects(client.workingStyle("answer", "/tmp/fixture"), /health check failed/);
+  });
+  assert.equal(probes, 1);
 });

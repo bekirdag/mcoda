@@ -291,3 +291,13 @@ test("a tool that opts into extra properties still receives them", async () => {
   await registry.execute("passthrough", { a: "x", b: 1 }, { workspaceRoot: "/tmp" });
   assert.deepEqual(received, { a: "x", b: 1 });
 });
+
+test("a host check that rejects a finished call fails that call; other host failures still stop the run", async () => {
+  const registry = new ToolRegistry();
+  registry.register({ name: "touch", description: "writes", readOnly: false, capability: "workspace", inputSchema: { type: "object" }, handler: async () => ({ output: "wrote cache.bin" }) });
+  const rejected = await registry.execute("touch", {}, { ...context, afterTool: async () => { throw new ToolExecutionError("tool_permission_denied", "Workspace changed outside the declared write paths: cache.bin"); } });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error?.code, "tool_permission_denied");
+  assert.match(rejected.error?.message ?? "", /cache\.bin/);
+  await assert.rejects(registry.execute("touch", {}, { ...context, afterTool: async () => { throw new Error("receipt store unavailable"); } }), /receipt store unavailable/);
+});

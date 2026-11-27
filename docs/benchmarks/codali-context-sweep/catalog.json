@@ -1,0 +1,93 @@
+[
+  {
+    "slug": "mcoda-raijin-qwen-latest-flash-next",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "load_balanced": false,
+    "member_count": null,
+    "candidate_node_ids": [],
+    "pool_scope": null
+  },
+  {
+    "slug": "mcoda-sukunahikona-qwen-latest-flash-next",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "load_balanced": false,
+    "member_count": null,
+    "candidate_node_ids": [],
+    "pool_scope": null
+  },
+  {
+    "slug": "mcoda-sukunahikona-qwen-latest-flash-next-docdex",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 4096,
+    "load_balanced": false,
+    "member_count": null,
+    "candidate_node_ids": [],
+    "pool_scope": null
+  },
+  {
+    "slug": "mswarm-lb-mcoda-qwen-latest-flash-next-0a4a20df558f",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "load_balanced": true,
+    "member_count": 2,
+    "candidate_node_ids": [
+      "shn_b46e300549214d85b52c75cb1e92d54c",
+      "shn_e35f763823d1416ebddce1b5b20524bf"
+    ],
+    "pool_scope": "owner"
+  },
+  {
+    "slug": "mswarm-lb-mcoda-qwen-latest-flash-next-7360e717e04a",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "load_balanced": true,
+    "member_count": 1,
+    "candidate_node_ids": [
+      "shn_b46e300549214d85b52c75cb1e92d54c"
+    ],
+    "pool_scope": null
+  },
+  {
+    "slug": "mswarm-lb-mcoda-qwen-latest-flash-next-82ca0121e08a",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 8192,
+    "load_balanced": true,
+    "member_count": 1,
+    "candidate_node_ids": [
+      "shn_e35f763823d1416ebddce1b5b20524bf"
+    ],
+    "pool_scope": null
+  },
+  {
+    "slug": "mswarm-lb-mcoda-qwen-latest-flash-next-b9ca9544d967",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 4096,
+    "load_balanced": true,
+    "member_count": 1,
+    "candidate_node_ids": [
+      "shn_e35f763823d1416ebddce1b5b20524bf"
+    ],
+    "pool_scope": null
+  },
+  {
+    "slug": "mswarm-lb-mcoda-qwen-latest-flash-next-fa0e50dd0b05",
+    "health_status": "healthy",
+    "context_window": 65536,
+    "max_output_tokens": 4096,
+    "load_balanced": true,
+    "member_count": 1,
+    "candidate_node_ids": [
+      "shn_e35f763823d1416ebddce1b5b20524bf"
+    ],
+    "pool_scope": "owner"
+  }
+]

@@ -18,7 +18,7 @@ test("WorkspaceLock blocks concurrent runs", { concurrency: false }, async () =>
   await lock1.release();
 });
 
-test("WorkspaceLock clears stale lock", { concurrency: false }, async () => {
+test("WorkspaceLock does not evict an unknown owner based only on age", { concurrency: false }, async () => {
   const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-lock-"));
   const lockPath = path.join(workspaceRoot, "locks", "codali.lock");
   mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -26,10 +26,10 @@ test("WorkspaceLock clears stale lock", { concurrency: false }, async () => {
   writeFileSync(lockPath, JSON.stringify(staleInfo), "utf8");
 
   const lock = new WorkspaceLock(workspaceRoot, "new-run", 1);
-  await lock.acquire();
+  await assert.rejects(lock.acquire(), /Workspace is locked/);
 
   const current = JSON.parse(readFileSync(lockPath, "utf8")) as { runId: string };
-  assert.equal(current.runId, "new-run");
+  assert.equal(current.runId, "old-run");
 
   await lock.release();
 });
@@ -103,4 +103,36 @@ test("WorkspaceLock releases on signal", { concurrency: false }, async () => {
   }
   assert.ok(!existsSync(lockPath));
   unregister();
+});
+
+test("WorkspaceLock explains a suspended owner without evicting it", { skip: process.platform !== "linux", concurrency: false }, async () => {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-lock-stopped-"));
+  const lockPath = path.join(workspaceRoot, "locks", "codali.lock");
+  try {
+    process.kill(child.pid!, "SIGSTOP");
+    const deadline = Date.now() + 3000;
+    while (!/^State:\s+T\b/m.test(readFileSync(`/proc/${child.pid}/status`, "utf8"))) {
+      assert.ok(Date.now() < deadline, "child did not stop");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    mkdirSync(path.dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ runId: "paused-session", acquiredAt: Date.now(), pid: child.pid, hostname: os.hostname() }));
+    const lock = new WorkspaceLock(workspaceRoot, "new-session");
+    await assert.rejects(lock.acquire(), error => {
+      assert.match(String(error), /suspended Codali session/);
+      assert.match(String(error), /run fg/);
+      assert.match(String(error), new RegExp(`process ${child.pid}`));
+      return true;
+    });
+    assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).runId, "paused-session");
+  } finally {
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.kill("SIGKILL"); await exited;
+  }
+  const next = new WorkspaceLock(workspaceRoot, "recovered-session");
+  await next.acquire();
+  await next.release();
+  assert.equal(existsSync(lockPath), false);
 });

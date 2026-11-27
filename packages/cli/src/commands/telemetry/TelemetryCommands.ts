@@ -36,7 +36,10 @@ const tokensUsage = `mcoda tokens \\
 const telemetryUsage = `mcoda telemetry <show|opt-out|opt-in> \\
   [--workspace-root <PATH>] \\
   [--format <table|json>] \\
-  [--strict] (opt-out only)`;
+  [--strict] (opt-out only)
+
+Controls local token-usage recording only (used by \`mcoda tokens\`).
+mcoda never uploads usage or telemetry data. \`opt-out --strict\` stops local recording.`;
 
 const normalizeGroupBy = (input?: string[]): string[] => {
   const allowed = new Set(["project", "agent", "command", "day", "model", "job", "action"]);
@@ -240,7 +243,7 @@ export const renderTokensTable = (rows: TokenUsageSummaryRow[], groupBy: string[
 const renderTelemetryConfig = (config: TelemetryConfigState): void => {
   const rows = [
     ["Local recording", config.localRecording ? "enabled" : "disabled"],
-    ["Remote export", config.remoteExport ? "enabled" : "disabled"],
+    ["Remote export", config.remoteExport ? "enabled (custom telemetry endpoint)" : "never (mcoda does not upload usage data)"],
     ["Strict mode", config.strict ? "on" : "off"],
     ["Config path", config.configPath],
   ];
@@ -330,7 +333,7 @@ export class TelemetryCommands {
         const config = await telemetry.optOut(parsed.strict ?? false);
         // eslint-disable-next-line no-console
         console.log(
-          `Telemetry opted out.${config.strict ? " Strict mode enabled; local recording disabled." : " Local recording still enabled."}`,
+          `Telemetry opted out. mcoda never uploads usage data.${config.strict ? " Strict mode enabled; local recording disabled." : " Local token recording still enabled (use --strict to disable it)."}`,
         );
         await jobService.finishCommandRun(commandRun.id, "succeeded");
         return;
@@ -339,7 +342,7 @@ export class TelemetryCommands {
         const config = await telemetry.optIn();
         // eslint-disable-next-line no-console
         console.log(
-          `Telemetry opted in. Local recording ${config.localRecording ? "enabled" : "disabled"}, remote export ${config.remoteExport ? "enabled" : "disabled"}.`,
+          `Local token recording ${config.localRecording ? "enabled" : "disabled"}. mcoda never uploads usage data.`,
         );
         await jobService.finishCommandRun(commandRun.id, "succeeded");
       }

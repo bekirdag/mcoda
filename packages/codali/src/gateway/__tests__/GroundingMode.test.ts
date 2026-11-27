@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decideGroundingMode, retrievalCanResolveAmbiguity } from "../GroundingMode.js";
+import { decideGroundingMode, requestTouchesOwnData, retrievalCanResolveAmbiguity } from "../GroundingMode.js";
 
 const classifier = (overrides: Record<string, boolean> = {}) => ({
   needsPrivateData: false,
@@ -153,4 +153,37 @@ test("virtual app tools count as something to retrieve with", () => {
     ),
     true,
   );
+});
+
+test("Turkish generation requests answer from the model despite a verb-final sentence", () => {
+  for (const query of ["Python ile bir dizgiyi ters çeviren fonksiyon yaz.", "Sonbahar yağmuru hakkında kısa bir şiir yazar mısın?", "Toplantıyı reddeden kibar bir e-posta hazırlayın", "Bir karşılama sayfası oluşturabilir misiniz?"]) {
+    assert.equal(modeOf(query, { needsDocdex: true }), "open", query);
+  }
+});
+
+test("Turkish requests about the user's own data stay grounded when the classifier misses them", () => {
+  for (const query of ["Benim açık görevlerimi özetle", "Faturalarım ne kadar tutuyor?", "Görevlerimiz neler?", "Bana atanan işleri listele"]) {
+    assert.equal(modeOf(query), "grounded", query);
+  }
+});
+
+test("Turkish freshness questions stay grounded, including dotted capital folding", () => {
+  for (const query of ["Bugünkü dolar kuru kaç?", "BUGÜN hava nasıl?", "Şu an şirketin genel müdürü kim?", "İstanbul'da en son deprem ne zaman oldu?"]) {
+    assert.equal(modeOf(query), "grounded", query);
+  }
+});
+
+test("Turkish workspace references outrank a generation verb", () => {
+  assert.equal(modeOf("Bu projedeki hatalar için bir özet yaz."), "grounded");
+});
+
+test("a Turkish question with no anchor still follows the classifier", () => {
+  assert.equal(modeOf("Türkiye'nin başkenti neresidir?"), "open");
+  assert.equal(modeOf("Türkiye'nin başkenti neresidir?", { needsDocdex: true }), "grounded");
+});
+
+test("a Turkish possessive offers the account connectors", () => {
+  const none = { needsPrivateData: false, needsAppTools: false };
+  assert.equal(requestTouchesOwnData("Faturalarım ne durumda?", none), true);
+  assert.equal(requestTouchesOwnData("Türkiye'nin başkenti neresidir?", none), false);
 });

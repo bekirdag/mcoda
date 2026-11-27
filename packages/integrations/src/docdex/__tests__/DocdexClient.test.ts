@@ -128,7 +128,7 @@ test("DocdexClient falls back to local docs when baseUrl is missing", async (t) 
   const docPath = path.join(dir, "docs", "rfp.md");
   await fs.mkdir(path.dirname(docPath), { recursive: true });
   await fs.writeFile(docPath, "# RFP\nContent", "utf8");
-  const client = new DocdexClient({ workspaceRoot: dir });
+  const client = new DocdexClient({ workspaceRoot: dir, baseUrl: "" });
 
   try {
     const doc = await client.ensureRegisteredFromFile(docPath, "RFP", { projectKey: "proj" });
@@ -148,7 +148,7 @@ test("DocdexClient findDocumentByPath falls back to local file", async (t) => {
   const docPath = path.join(dir, "docs", "sds", "tl.md");
   await fs.mkdir(path.dirname(docPath), { recursive: true });
   await fs.writeFile(docPath, "# SDS\nLocal content", "utf8");
-  const client = new DocdexClient({ workspaceRoot: dir });
+  const client = new DocdexClient({ workspaceRoot: dir, baseUrl: "" });
 
   try {
     const doc = await client.findDocumentByPath("docs/sds/tl.md", "SDS");

@@ -197,42 +197,6 @@ export interface MswarmApiOptions {
   clientIdentity?: string;
 }
 
-export interface MswarmConsentResponse {
-  consent_token: string;
-  expires_in_seconds?: number;
-  consent_types?: string[];
-  issued_at_ms?: number;
-  client_id?: string;
-  client_type?: string;
-  tenant_id?: string;
-  upload_signing_secret?: string;
-}
-
-export interface RegisterFreeMcodaClientOptions {
-  clientId?: string;
-  policyVersion?: string;
-  productVersion: string;
-}
-
-export interface RequestMswarmDataDeletionInput {
-  consentToken: string;
-  product: string;
-  clientId?: string;
-  clientType?: string;
-  reason?: string;
-}
-
-export interface MswarmDataDeletionResponse {
-  accepted: boolean;
-  request_id: number;
-  product: string;
-  client_id?: string;
-  client_type?: string;
-  tenant_id?: string;
-  status: string;
-  requested_at?: string;
-}
-
 interface ResolvedMswarmApiOptions {
   baseUrl: string;
   openAiBaseUrl?: string;
@@ -581,10 +545,6 @@ const DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX = 'mswarm-self-hosted';
 const DEFAULT_WORKER_AGENT_SLUG_PREFIX = 'mswarm-worker';
 const DEFAULT_LOCAL_NODE_BASE_URL = 'http://127.0.0.1:18488/';
 const DEFAULT_NODE_TOKEN_TTL_SECONDS = 3_600;
-export const MSWARM_CONSENT_POLICY_VERSION = '2026-03-18';
-export const MCODA_FREE_CLIENT_TYPE = 'free_mcoda_client';
-const MCODA_PRODUCT_SLUG = 'mcoda';
-const MCODA_CONSENT_TYPES = ['anonymous', 'non_anonymous'] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -2067,7 +2027,7 @@ export class MswarmApi {
   }
 
   private getRepository(): Promise<GlobalRepository> {
-    // Consent and other HTTP-only calls do not need a writable local catalog.
+    // HTTP-only calls do not need a writable local catalog.
     return (this.repoPromise ??= GlobalRepository.create());
   }
 
@@ -3091,84 +3051,5 @@ export class MswarmApi {
       deleted: records.filter((record) => record.action === 'deleted').length,
       agents: records,
     };
-  }
-
-  async issuePaidConsent(
-    policyVersion = MSWARM_CONSENT_POLICY_VERSION
-  ): Promise<MswarmConsentResponse> {
-    const apiKey = this.requireApiKey();
-    return this.requestJson<MswarmConsentResponse>(
-      '/v1/swarm/consent/issue',
-      undefined,
-      {
-        method: 'POST',
-        body: {
-          consent_types: [...MCODA_CONSENT_TYPES],
-          policy_version: policyVersion,
-          timestamp_ms: Date.now(),
-          proof: {
-            type: 'api_key',
-            value: apiKey,
-          },
-        },
-      }
-    );
-  }
-
-  async registerFreeMcodaClient(
-    options: RegisterFreeMcodaClientOptions
-  ): Promise<MswarmConsentResponse> {
-    return this.requestJson<MswarmConsentResponse>(
-      '/v1/swarm/mcoda/free-client/register',
-      undefined,
-      {
-        method: 'POST',
-        body: {
-          client_id: options.clientId,
-          product: MCODA_PRODUCT_SLUG,
-          product_version: options.productVersion,
-          policy_version:
-            options.policyVersion ?? MSWARM_CONSENT_POLICY_VERSION,
-          timestamp_ms: Date.now(),
-          consent_types: [...MCODA_CONSENT_TYPES],
-        },
-      }
-    );
-  }
-
-  async revokeConsent(
-    consentToken: string,
-    reason?: string
-  ): Promise<{ revoked: boolean; revoked_at_ms?: number }> {
-    return this.requestJson<{ revoked: boolean; revoked_at_ms?: number }>(
-      '/v1/swarm/consent/revoke',
-      undefined,
-      {
-        method: 'POST',
-        body: {
-          consent_token: consentToken,
-          reason,
-        },
-      }
-    );
-  }
-
-  async requestDataDeletion(
-    input: RequestMswarmDataDeletionInput
-  ): Promise<MswarmDataDeletionResponse> {
-    return this.requestJson<MswarmDataDeletionResponse>(
-      '/v1/swarm/data/deletion-request',
-      undefined,
-      {
-        method: 'POST',
-        body: {
-          consent_token: input.consentToken,
-          product: input.product,
-          client_id: input.clientId,
-          client_type: input.clientType,
-          reason: input.reason,
-        },
-      }
-    );
   }
 }

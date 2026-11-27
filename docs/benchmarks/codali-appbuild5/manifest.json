@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "protocol": "trust-workflows-v1",
+  "caseCount": 5,
+  "createdAt": "2026-11-04T21:22:56.800927+00:00",
+  "promptsSha256": "66103d2092b9654917b54857193b87ced614915fe7de45814ad66123abbe14d9",
+  "gradingSha256": "0c976c7ec579613432492afc5151dcb5aaffd5466f5111b275be172260311865",
+  "limitations": [
+    "Raw baseline is a native tool loop,not a single text completion.",
+    "One first attempt per arm/job; no evaluator code repairs.",
+    "Native iOS execution requires external Mac/Xcode; otherwise mark unverified.",
+    "Source and UX review include documented reviewer judgment,not universal intelligence measurement."
+  ]
+}

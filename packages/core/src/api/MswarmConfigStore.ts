@@ -2,19 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { CryptoHelper, PathHelper } from '@mcoda/shared';
 
-export interface StoredMswarmConfigState {
+export interface StoredMswarmConfigState extends Record<string, unknown> {
   baseUrl?: string;
   encryptedApiKey?: string;
   timeoutMs?: number;
   agentSlugPrefix?: string;
-  consentAccepted?: boolean;
-  consentPolicyVersion?: string;
-  consentToken?: string;
-  clientId?: string;
-  clientType?: string;
-  registeredAtMs?: number;
-  uploadSigningSecret?: string;
-  deletionRequestedAtMs?: number;
 }
 
 export interface MswarmConfigFileState extends Record<string, unknown> {
@@ -26,26 +18,23 @@ export interface MswarmConfigState {
   apiKey?: string;
   timeoutMs?: number;
   agentSlugPrefix?: string;
-  consentAccepted?: boolean;
-  consentPolicyVersion?: string;
-  consentToken?: string;
-  clientId?: string;
-  clientType?: string;
-  registeredAtMs?: number;
-  uploadSigningSecret?: string;
-  deletionRequestedAtMs?: number;
 }
 
-export interface MswarmConsentState {
-  consentAccepted: boolean;
-  consentPolicyVersion?: string;
-  consentToken?: string;
-  clientId?: string;
-  clientType?: string;
-  registeredAtMs?: number;
-  uploadSigningSecret?: string;
-  deletionRequestedAtMs?: number;
-}
+/**
+ * Keys written by older mcoda releases that required mswarm telemetry consent.
+ * mcoda no longer collects or uploads usage data, so these values are ignored
+ * and can be removed from the local config file.
+ */
+export const LEGACY_MSWARM_CONSENT_KEYS = [
+  'consentAccepted',
+  'consentPolicyVersion',
+  'consentToken',
+  'clientId',
+  'clientType',
+  'registeredAtMs',
+  'uploadSigningSecret',
+  'deletionRequestedAtMs',
+] as const;
 
 export class MswarmConfigStore {
   constructor(
@@ -74,14 +63,6 @@ export class MswarmConfigStore {
       apiKey,
       timeoutMs: stored.timeoutMs,
       agentSlugPrefix: stored.agentSlugPrefix,
-      consentAccepted: stored.consentAccepted,
-      consentPolicyVersion: stored.consentPolicyVersion,
-      consentToken: stored.consentToken,
-      clientId: stored.clientId,
-      clientType: stored.clientType,
-      registeredAtMs: stored.registeredAtMs,
-      uploadSigningSecret: stored.uploadSigningSecret,
-      deletionRequestedAtMs: stored.deletionRequestedAtMs,
     };
   }
 
@@ -102,45 +83,20 @@ export class MswarmConfigStore {
     return this.readState();
   }
 
-  async saveConsentState(
-    consent: MswarmConsentState
-  ): Promise<MswarmConfigState> {
+  /**
+   * Removes consent tokens and client identifiers left behind by older mcoda
+   * releases. Local-only; never contacts mswarm. Returns the removed keys.
+   */
+  async clearLegacyConsentState(): Promise<string[]> {
     const fileState = await this.readConfigFile();
-    await this.writeConfigFile({
-      ...fileState,
-      mswarm: {
-        ...(fileState.mswarm ?? {}),
-        consentAccepted: consent.consentAccepted,
-        consentPolicyVersion: normalizeOptionalString(
-          consent.consentPolicyVersion
-        ),
-        consentToken: normalizeOptionalString(consent.consentToken),
-        clientId: normalizeOptionalString(consent.clientId),
-        clientType: normalizeOptionalString(consent.clientType),
-        registeredAtMs: normalizeOptionalPositiveInt(consent.registeredAtMs),
-        uploadSigningSecret: normalizeOptionalString(
-          consent.uploadSigningSecret
-        ),
-        deletionRequestedAtMs: normalizeOptionalPositiveInt(
-          consent.deletionRequestedAtMs
-        ),
-      },
-    });
-    return this.readState();
-  }
-
-  async clearConsentState(): Promise<MswarmConfigState> {
-    const fileState = await this.readConfigFile();
-    await this.writeConfigFile({
-      ...fileState,
-      mswarm: {
-        ...(fileState.mswarm ?? {}),
-        consentAccepted: false,
-        consentToken: undefined,
-        uploadSigningSecret: undefined,
-      },
-    });
-    return this.readState();
+    const stored = fileState.mswarm;
+    if (!stored) return [];
+    const removed = LEGACY_MSWARM_CONSENT_KEYS.filter((key) => key in stored);
+    if (removed.length === 0) return [];
+    const next: StoredMswarmConfigState = { ...stored };
+    for (const key of removed) delete next[key];
+    await this.writeConfigFile({ ...fileState, mswarm: next });
+    return [...removed];
   }
 
   private async readConfigFile(): Promise<MswarmConfigFileState> {
@@ -164,19 +120,4 @@ export class MswarmConfigStore {
       'utf8'
     );
   }
-}
-
-function normalizeOptionalString(
-  value: string | undefined
-): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function normalizeOptionalPositiveInt(
-  value: number | undefined
-): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.trunc(value)
-    : undefined;
 }

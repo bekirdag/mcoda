@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import http.client
 import ipaddress
 import json
 import logging
@@ -27,6 +28,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Any
+
+from media_gpu_lock import MediaGpuError, media_gpu_health, media_gpu_slot
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -116,7 +119,11 @@ class UpstreamError(Exception):
     pass
 
 
-class UpstreamTimeout(UpstreamError):
+class UpstreamTransportError(UpstreamError):
+    pass
+
+
+class UpstreamTimeout(UpstreamTransportError):
     pass
 
 
@@ -459,10 +466,10 @@ def _bounded_json_request(
         raw = error.read(max_bytes + 1)
         status = error.code
         content_type = error.headers.get_content_type()
-    except (OSError, urllib.error.URLError) as error:
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         if _is_timeout_error(error):
             raise UpstreamTimeout("stable-diffusion.cpp request timed out") from error
-        raise UpstreamError("stable-diffusion.cpp is unreachable") from error
+        raise UpstreamTransportError("stable-diffusion.cpp is unreachable") from error
     if len(raw) > max_bytes:
         raise UpstreamError("stable-diffusion.cpp response exceeds the configured limit")
     if content_type != "application/json":
@@ -507,6 +514,19 @@ def _native_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generate_image(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
+    with media_gpu_slot("image", cancelled=state.shutdown_requested) as lease:
+        try:
+            return _generate_image_locked(state, request)
+        except (UpstreamTransportError, OSError, urllib.error.URLError, http.client.HTTPException) as error:
+            # A lost HTTP connection does not prove the synchronous native
+            # renderer stopped. Keep a durable fence after this worker exits.
+            lease.mark_uncertain("image_transport_lost")
+            if isinstance(error, UpstreamError):
+                raise
+            raise UpstreamTransportError("native image outcome is uncertain") from error
+
+
+def _generate_image_locked(state: ServerState, request: dict[str, Any]) -> dict[str, Any]:
     max_json_bytes = math.ceil(state.max_output_bytes / 3) * 4 + 131_072
     status, payload = _bounded_json_request(
         f"{state.upstream_base_url}/v1/images/generations",
@@ -776,6 +796,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                     ApiError(404, "not found", error_type="not_found_error")
                 )
                 return
+            gpu = media_gpu_health() if self.path == "/healthz" else None
+            if self.path == "/healthz" and gpu not in ("ready", "busy"):
+                self._send_json(503, {"status": "unhealthy", "model": state.model_id, "media_gpu": gpu})
+                return
             try:
                 _check_upstream_model(state)
             except UpstreamError:
@@ -801,6 +825,7 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                         "status": "ok",
                         "model": state.model_id,
                         "upstream_model": state.upstream_model_id,
+                        "media_gpu": gpu,
                         "upstream": "stable-diffusion.cpp",
                     },
                 )
@@ -921,7 +946,8 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
             threading.Thread(
                 target=run_generation,
                 name="sd-cpp-image-generation",
-                daemon=True,
+                # Preserve the GPU lease until non-cancellable inference ends.
+                daemon=False,
             ).start()
             if not completed.wait(state.inference_timeout_seconds):
                 logging.error("generation exceeded client deadline; native request still active")
@@ -947,6 +973,10 @@ def _handler_for(state: ServerState) -> type[BaseHTTPRequestHandler]:
                 )
             elif isinstance(error, ApiError):
                 self._send_error(error)
+            elif isinstance(error, MediaGpuError):
+                self._send_error(
+                    ApiError(error.status, str(error), error_type="server_error", code=error.code)
+                )
             elif isinstance(error, UpstreamTimeout):
                 logging.error("generation failed reason=upstream timeout")
                 self._send_error(

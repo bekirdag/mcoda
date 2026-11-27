@@ -4,6 +4,7 @@ import { Runner, RunnerBudgetError } from "../Runner.js";
 import { ToolRegistry } from "../../tools/ToolRegistry.js";
 import { ToolExecutionError } from "../../tools/ToolTypes.js";
 import { OpenAiCompatibleProvider } from "../../providers/OpenAiCompatibleProvider.js";
+import { ModelServiceError } from "../../providers/ModelServiceError.js";
 import type { AgentEvent, Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 
 class StubProvider implements Provider {
@@ -21,6 +22,23 @@ class StubProvider implements Provider {
     return response;
   }
 }
+
+test("Runner identifies first-call context refusals without erasing earlier generation", async () => {
+  for (const priorCalls of [0, 1]) {
+    let calls = 0;
+    const failure = new ModelServiceError("context_length_exceeded", 400);
+    const runner = new Runner({
+      provider: { name: "fixture", generate: async () => {
+        if (calls++ < priorCalls) return { message: { role: "assistant", content: "Continue" }, usage: { totalTokens: 9 } };
+        throw failure;
+      } },
+      tools: new ToolRegistry(), context: { workspaceRoot: process.cwd() }, maxSteps: 3, maxToolCalls: 0,
+      continueAfterFinal: () => "Next step",
+    });
+    await assert.rejects(runner.run([{ role: "user", content: "Work" }]), error => error === failure);
+    assert.equal((failure as Error & { completedModelCalls?: number }).completedModelCalls, priorCalls);
+  }
+});
 
 test("Runner executes tool calls", { concurrency: false }, async () => {
   const tools = new ToolRegistry();
@@ -53,6 +71,25 @@ test("Runner executes tool calls", { concurrency: false }, async () => {
   assert.equal(result.finalMessage.content, "done");
   assert.equal(result.toolCallsExecuted, 1);
 });
+
+for (const structured of [false, true]) {
+  test(`host receipt references survive ${structured ? "structured" : "text"} output truncation`, async () => {
+    const tools = new ToolRegistry();
+    const data = structured ? { items: Array.from({ length: 20 }, (_, index) => ({ index, value: "example" })) } : undefined;
+    tools.register({ name: "inspect", description: "Inspect", handler: async () => ({ output: data ? JSON.stringify(data) : "large log\n".repeat(500), data }) });
+    let calls = 0;
+    const provider: Provider = { name: "fixture", generate: async request => {
+      if (calls++ === 0) return { message: { role: "assistant", content: "" }, toolCalls: [{ id: "provider-call", name: "inspect", args: {} }] };
+      const output = request.messages.at(-1)!.content;
+      assert.match(output, /TRUNCATED/); assert.match(output, /invocation receipt ID host-receipt; receiptRef=receipt:12345678/);
+      assert.ok(output.length < 600);
+      return { message: { role: "assistant", content: "Done" } };
+    } };
+    const runner = new Runner({ provider, tools, maxSteps: 2, maxToolCalls: 1, maxToolResultChars: 128,
+      context: { workspaceRoot: process.cwd(), afterTool: async (_tool, _args, result) => { result.invocationReceipt = { id: "host-receipt", reference: "receipt:12345678" }; } } });
+    assert.equal((await runner.run([{ role: "user", content: "Inspect" }])).finalMessage.content, "Done");
+  });
+}
 
 test("Runner emits tool events", { concurrency: false }, async () => {
   const tools = new ToolRegistry();
